@@ -5,9 +5,9 @@
 //
 //   node scripts/readme-pictures/server.mjs [port]     (47291 by default)
 import { createServer } from "node:http";
-import { pathToFileURL } from "node:url";
 
-const here = new URL(".", import.meta.url).pathname;
+// Beside this file, as a URL: a path with a space in it (as under Application Support) stays whole.
+const scenarioURL = new URL("scenario.mjs", import.meta.url).href;
 const log = (line) => console.log(`${new Date().toISOString()} ${line}`);
 const port = Number(process.argv[2] ?? 47291);
 
@@ -15,7 +15,7 @@ const textOf = (content) => typeof content === "string" ? content : Array.isArra
 
 async function scenario() {
 	// Read afresh on every request, so the script can be corrected while a copy runs.
-	return (await import(`${pathToFileURL(`${here}scenario.mjs`).href}?${Date.now()}`)).turns;
+	return (await import(`${scenarioURL}?${Date.now()}`)).turns;
 }
 
 function pick(turns, messages) {
@@ -65,7 +65,7 @@ createServer(async (req, res) => {
 		res.write("data: [DONE]\n\n");
 		res.end();
 	} catch (error) {
-		log(`error ${error?.stack ?? error}`);
+		log(`error ${error?.message ?? error}`);
 		if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
 		res.end(JSON.stringify({ error: { message: String(error) } }));
 	}

@@ -22,7 +22,7 @@ From the checkout, with a development build (`./app/build.sh`) and `jq`:
 | `hero-light.png` | `reopen test-N --show 'project:storefront#now' --appearance light`, `size test-N 1360 860`, the `show` of `hero.png`; then `reopen … --appearance dark` |
 | `chat.png` | `show test-N chat:<the chat>` |
 | `usage.png` | once Atlas has finished: `reopen test-N --show usage`, `size test-N 1360 860` |
-| `computer-use.png` | `reopen test-N --show 'agent:<Scout>#computer'` (a `#section` is reached at launch, not by `show`) |
+| (`computer-use.png`) | `reopen test-N --show 'agent:<Scout>#computer'` (an agent's `#section` is reached at launch, not by `show`). Not in the README for now: in a copy both permissions show as not granted, and the section ends with a sentence only a development build has. |
 
 5. `scripts/test-copy stop test-N`, stop the server, and `scripts/readme-pictures/reset.sh /Users/Shared/Projects --remove`.
 

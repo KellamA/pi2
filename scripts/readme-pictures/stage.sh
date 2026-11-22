@@ -21,6 +21,7 @@ O='"provider":"custom-ollama"'
 log() { echo "== $*"; }
 
 curl -fsS "http://127.0.0.1:$port/v1/models" >/dev/null || { echo "The stand-in server is not answering on port $port: start server.mjs first." >&2; exit 1; }
+curl -fsS -H 'content-type: application/json' -d '{"model":"check","messages":[]}' "http://127.0.0.1:$port/v1/chat/completions" >/dev/null || { echo "The stand-in server cannot answer (its output says why)." >&2; exit 1; }
 "$here/reset.sh" "$base"
 
 call endpoints.save "{\"name\":\"Ollama\",\"baseUrl\":\"http://127.0.0.1:$port/v1\",\"api\":\"openai-completions\",\"models\":[{\"id\":\"qwen3-coder:30b\",\"name\":\"Qwen3 Coder 30B\",\"contextWindow\":262144},{\"id\":\"gpt-oss:120b\",\"name\":\"GPT-OSS 120B\",\"contextWindow\":131072},{\"id\":\"gemma3:27b\",\"name\":\"Gemma 3 27B\",\"contextWindow\":131072}]}" >/dev/null
