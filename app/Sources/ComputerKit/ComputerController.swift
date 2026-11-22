@@ -20,9 +20,14 @@ public actor ComputerController {
         let statusWindow: AXUIElement?
         let statusWindowID: CGWindowID?
         let controls: [Control]
+        /// Whether this is a parked test copy's window, where a hit test finds next to nothing and a click at a point
+        /// falls back to the listed controls (`AtPoint.target`). Never for any other app (#770).
+        let parked: Bool
     }
 
     private var views: [String: View] = [:]
+    /// What each approval card for a click or context menu at a point named, for the action to act on (#770).
+    private var chosenAtPoint = AtPoint.Kept<AXUIElement>()
     private let ownBundleID: String?
 
     /// `ownBundleID` is refused as a target, so an agent cannot work the app that approves its actions.
@@ -228,6 +233,9 @@ public actor ComputerController {
         case busy
         /// The copy answered that it did not raise its window, in `why`: its own words, kept for the answer given.
         case failed(String)
+        /// The copy raised its window and gives it to accessibility, but the window server's record of it disagrees
+        /// with where accessibility has it, so the tool turns it down (`ParkedWindow.refusal`), in the copy's words.
+        case turnedDown(String)
     }
 
     /// Ask the copy running under `bundleID`, already verified a throwaway test copy, to expose its parked window
@@ -273,7 +281,8 @@ public actor ComputerController {
             guard let data = try? Data(contentsOf: dir.appendingPathComponent("response.json")),
                   let answer = (try? JSONSerialization.jsonObject(with: data)) as? [String: String] else { continue }
             if let error = answer["error"] {
-                return error.contains("unknown test-copy window command") ? .oldBuild : .failed(error)
+                if error.contains("unknown test-copy window command") { return .oldBuild }
+                return error.contains(ParkedWindow.notTaken) ? .turnedDown(error) : .failed(error)
             }
             return .listed
         }
@@ -293,6 +302,8 @@ public actor ComputerController {
             return "The copy raised its parked window, but pi² still cannot read its controls. A click at a point in a picture is still sent to the window, and what the copy holds can be read through its engine (scripts/test-copy call)."
         case .failed(let why):
             return "The copy's window is parked out of the way and the copy did not raise it: \(why). A click at a point in a picture is still sent to the window, and what the copy holds can be read through its engine (scripts/test-copy call)."
+        case .turnedDown(let why):
+            return "The copy raised its parked window and gives it to accessibility, but the window server and accessibility disagree on where it is, so pi² does not read it, in case it is another window: \(why). Take another screenshot in a moment, since the two disagree while macOS moves the window between Spaces. A click at a point in a picture is still sent to the window, and what the copy holds can be read through its engine (scripts/test-copy call)."
         case nil:
             return "The copy's window is parked out of the way, so its controls are not readable. A click at a point in a picture is still sent to the window, and what the copy holds can be read through its engine (scripts/test-copy call)."
         }
@@ -355,21 +366,23 @@ public actor ComputerController {
         let parkedCopy = Self.isParkedCopy(running, bundleID: bundleID)
         let server = ServerWindow.all(of: pid)
         var minimized = false
-        func search() -> (ordered: [AXUIElement], accessible: (AXUIElement, CGRect)?) {
+        func search() -> (ordered: [AXUIElement], accessible: (AXUIElement, CGRect)?, main: AXUIElement?) {
             let candidates = Self.windowCandidates(of: app, includeStatusWindows: beforeStatusPress != nil || previous?.statusWindow != nil || previous?.statusWindowID != nil)
             let ordered = WindowChoice.order(candidates, beforePress: beforeStatusPress?.windows, preferred: previous?.statusWindow)
             minimized = Self.minimizedWindow(in: candidates) != nil
             let parked = parkedCopy && !minimized ? ServerWindow.parkedCopy(in: server, pid: pid) : nil
+            let main = parked == nil ? nil : AX.element(app, kAXMainWindowAttribute)
             let accessible = WindowChoice.first(in: ordered, minimized: Self.isMinimized) { candidate in
                 guard let frame = AX.frame(candidate) else { return nil }
                 // A stale AXFocusedWindow can still have a frame after Settings closes. In a parked copy,
                 // prefer evidence from the window server over an AX frame that does not belong to a current window;
-                // the parked window itself counts by its size, since its place differs while it changes Space (#748).
+                // the parked window itself counts by its size, since its place differs while it changes Space (#748),
+                // but only as the app's main window, which a stale focused window is not (#770).
                 if parked != nil, !["AXPopover", "AXDialog", "AXSheet"].contains(AX.role(candidate)),
-                   ServerWindow.backing(frame, in: server, pid: pid, parked: parked) == nil { return nil }
+                   ServerWindow.backing(frame, in: server, pid: pid, parked: candidate == main ? parked : nil) == nil { return nil }
                 return frame
             }
-            return (ordered, accessible)
+            return (ordered, accessible, main)
         }
         var found = search()
         var exposed: ExposedCopy?
@@ -389,7 +402,7 @@ public actor ComputerController {
         } ?? false
         let fallback = !newAXWindow && popup != nil ? popup : accessible == nil ? parked : nil
         let frame = fallback?.frame ?? accessible?.1 ?? .zero
-        let matched = fallback ?? accessible.flatMap { ServerWindow.backing($0.1, in: server, pid: pid, parked: parked) }
+        let matched = fallback ?? accessible.flatMap { ServerWindow.backing($0.1, in: server, pid: pid, parked: $0.0 == found.main ? parked : nil) }
         // AX can omit a parked window or popup from the application's list but still answer a hit at its position.
         var window = fallback == nil ? accessible?.0 : nil
         if window == nil, let fallback {
@@ -439,7 +452,8 @@ public actor ComputerController {
         }
         let scale = shot?.scale ?? 1
         views[key(request, bundleID)] = View(pid: pid, app: app, frame: frame, scale: scale, windowID: shot?.windowID ?? matched?.id,
-                                             window: window, statusWindow: statusWindow, statusWindowID: statusWindowID, controls: reader.controls)
+                                             window: window, statusWindow: statusWindow, statusWindowID: statusWindowID, controls: reader.controls,
+                                             parked: parked != nil)
         if !menus.isEmpty {
             lines.append(menuItems == 0
                 ? "A menu is open, but its items could not be read. Press escape to close it."
@@ -548,21 +562,32 @@ public actor ComputerController {
         return (ownKind, ownLabel, nil, secure)
     }
 
-    /// What is at `point` in the window last read: what a hit test there finds, or, when that is nothing that can be
-    /// worked, the innermost listed control there. A hit test reads the screen, so it finds nothing where the window is
-    /// off the screen or behind another window, as all of a parked copy's window is but its corner, and every click at
-    /// a point in a copy then went as a real click, which an app in the background ignores (#748).
-    private static func element(at point: CGPoint, in view: View, usable: (AXUIElement) -> Bool) -> AXUIElement? {
+    /// What a click or a context menu at `point` in the window last read acts on, as `AtPoint.target` decides it, with
+    /// what the hit test there found. Outside a parked copy that is the hit test's own find, as it always was. In a
+    /// parked copy a hit test finds nothing where the window is off the screen or behind another window, as all of it
+    /// is but its corner, so there the innermost listed control at the point is taken instead (#748).
+    private static func target(at point: CGPoint, in view: View) -> (element: AXUIElement?, hit: AXUIElement?) {
         let hit = AX.hitTest(view.app, point)
-        if let hit, usable(hit) { return hit }
-        let frames = view.controls.map { $0.statusItem ? CGRect.null : $0.frame }
-        return WindowChoice.innermost(containing: point, in: frames).map { view.controls[$0].element } ?? hit
+        let listed = view.parked ? view.controls.map { (element: $0.element, frame: $0.statusItem ? CGRect.null : $0.frame) } : []
+        let element = AtPoint.target(at: point, hit: hit, listed: listed, parked: view.parked) { hit in
+            // In the window read: the copy's own element, and not one of another of its windows.
+            var owner: pid_t = 0
+            guard AXUIElementGetPid(hit, &owner) == .success, owner == view.pid else { return false }
+            return Self.enclosingWindow(of: hit).map { $0 == view.window } ?? true
+        }
+        return (element, hit)
     }
 
-    /// What is at `point`, for clicking it or naming it, as `element(at:in:usable:)` finds it: usable when it can be
-    /// worked through accessibility.
-    private static func identify(at point: CGPoint, in view: View) -> (kind: String, label: String?, reach: Reach?, secure: Bool)? {
-        element(at: point, in: view) { identify(element: $0).reach != nil }.map(identify(element:))
+    /// What a click or context menu at a point acts on after its approval: the element its card named, while that is
+    /// still what is at the point, or `.changed`, and the action is refused (#770). With no card, what is there now.
+    private func settledTarget(_ action: String, request: ComputerRequest, bundleID: String, point: CGPoint, in view: View) -> AtPoint.Settled<AXUIElement> {
+        let now = Self.target(at: point, in: view)
+        return chosenAtPoint.settle(now.element, hit: now.hit, for: atPointKey(action, request, bundleID), at: point, frameNow: AX.frame)
+    }
+
+    /// Which action at which point a card's choice is kept for: one conversation's, in one app.
+    private func atPointKey(_ action: String, _ request: ComputerRequest, _ bundleID: String) -> String {
+        "\(key(request, bundleID))|\(action)|\(request.x ?? 0)|\(request.y ?? 0)"
     }
 
     /// A cheap fingerprint of the window, to notice when an action changed nothing.
@@ -619,7 +644,12 @@ public actor ComputerController {
             case .success(let found): point = found
             case .failure(let reply): return reply
             }
-            let found = Self.identify(at: point, in: view)
+            let target: AXUIElement?
+            switch settledTarget("click", request: request, bundleID: bundleID, point: point, in: view) {
+            case .act(let element): target = element
+            case .changed: return .failure(AtPoint.changed("nothing was clicked", x: request.x ?? 0, y: request.y ?? 0))
+            }
+            let found = target.map(Self.identify(element:))
             let named = found.map { thing in thing.label.map { "the “\($0.clipped(60))” \(thing.kind)" } ?? "the \(thing.kind)" } ?? "that point"
             what = found?.label.map { "“\($0.clipped(40))”" } ?? "(\(Int(request.x ?? 0)), \(Int(request.y ?? 0)))"
             var reached = false
@@ -701,7 +731,10 @@ public actor ComputerController {
             case .success(let found): point = found
             case .failure(let reply): return reply
             }
-            element = Self.element(at: point, in: view) { Reaching.menuTarget(of: AXNode($0)) != nil }
+            switch settledTarget("context_menu", request: request, bundleID: bundleID, point: point, in: view) {
+            case .act(let target): element = target
+            case .changed: return .failure(AtPoint.changed("no menu was opened", x: request.x ?? 0, y: request.y ?? 0))
+            }
             phrase = "what is at (\(Int(request.x ?? 0)), \(Int(request.y ?? 0)))"
             what = "(\(Int(request.x ?? 0)), \(Int(request.y ?? 0)))"
         }
@@ -906,7 +939,9 @@ public actor ComputerController {
             if let listed { return "\(verb) \(listed.phrase) in \(name)" }
             if let view, let x = request.x, let y = request.y {
                 let point = CGPoint(x: view.frame.minX + x / view.scale, y: view.frame.minY + y / view.scale)
-                if let found = Self.identify(at: point, in: view), let label = found.label {
+                let target = Self.target(at: point, in: view).element
+                chosenAtPoint.keep(target, for: atPointKey("click", request, bundleID))
+                if let found = target.map(Self.identify(element:)), let label = found.label {
                     return "\(verb) “\(label.clipped(60))”\(found.kind.isEmpty ? "" : " (\(found.kind))") in \(name)"
                 }
                 return "\(verb) at (\(Int(x)), \(Int(y))) in \(name)’s window"
@@ -927,8 +962,9 @@ public actor ComputerController {
             if let listed { return "Open the context menu of \(listed.phrase) in \(name)" }
             if let view, let x = request.x, let y = request.y {
                 let point = CGPoint(x: view.frame.minX + x / view.scale, y: view.frame.minY + y / view.scale)
-                if let found = Self.element(at: point, in: view, usable: { Reaching.menuTarget(of: AXNode($0)) != nil }).map(Self.identify(element:)),
-                   let label = found.label {
+                let target = Self.target(at: point, in: view).element
+                chosenAtPoint.keep(target, for: atPointKey("context_menu", request, bundleID))
+                if let found = target.map(Self.identify(element:)), let label = found.label {
                     return "Open the context menu of “\(label.clipped(60))”\(found.kind.isEmpty ? "" : " (\(found.kind))") in \(name)"
                 }
                 return "Open the context menu at (\(Int(x)), \(Int(y))) in \(name)’s window"

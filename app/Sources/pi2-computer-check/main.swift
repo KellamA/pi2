@@ -26,6 +26,10 @@
 //   macOS moves it between Spaces, and that the copy's own answer to `can-click` turns it down exactly where the tool
 //   would; and that a click at a point lands on the innermost listed control there, which a hit test cannot find off
 //   the screen (#748);
+// - that the size alone takes a window only as the app's main window and only when no other window of the process is
+//   that size; that a click at a point acts on what the hit test found in every app but a parked copy, and there falls
+//   back to the listed controls only where the hit test found nothing in the window; and that the action acts on what
+//   its approval card named, or is refused once that no longer holds (#770);
 // - the size and direction of the wheel event (as AppKit decodes it, without posting it), and how actual movement
 //   is reported.
 //
@@ -412,15 +416,111 @@ Task { @MainActor in
                                    parked: ServerWindow(id: 3, pid: pid + 1, layer: -1, frame: moving.frame)) == nil)
         // can-click asks the copy the same question, from its side, so that it says no where the tool would.
         check("the copy says yes for its window where the tool would take it",
-              ParkedWindow.refusal(id: 1, frame: ax, server: server, pid: pid) == nil)
-        let resized = ParkedWindow.refusal(id: 1, frame: CGRect(x: 1760, y: 1130, width: 1120, height: 700), server: server, pid: pid)
+              ParkedWindow.refusal(id: 1, frame: ax, server: server, pid: pid, main: true) == nil)
+        let resized = ParkedWindow.refusal(id: 1, frame: CGRect(x: 1760, y: 1130, width: 1120, height: 700), server: server, pid: pid, main: true)
         check("and no, with both places, where the window server has it at another size",
               resized?.contains("window server has the main window at 1120×740 at (3560, 1130)") == true
                   && resized?.contains("accessibility gives it at 1120×700 at (1760, 1130)") == true, resized ?? "nil")
-        let missing = ParkedWindow.refusal(id: 9, frame: ax, server: server, pid: pid)
+        let missing = ParkedWindow.refusal(id: 9, frame: ax, server: server, pid: pid, main: true)
         check("and no where the window server has no record of it", missing?.contains("no record of the main window") == true, missing ?? "nil")
         check("and no where the window server's parked window is another one",
-              ParkedWindow.refusal(id: 2, frame: CGRect(x: 0, y: 0, width: 500, height: 500), server: server, pid: pid) != nil)
+              ParkedWindow.refusal(id: 2, frame: CGRect(x: 0, y: 0, width: 500, height: 500), server: server, pid: pid, main: true) != nil)
+    }
+
+    await group("a window is taken by its size alone only as the main window, and only when no other is that size (#770)") {
+        // The size alone said which window it was: a stale focused window, or a second window of the copy at the
+        // parked window's size, was taken for the parked one, and its controls paired with the other's picture and
+        // clicks. Each is a window of the same throwaway copy, never another app's.
+        let pid: pid_t = 42
+        let ax = CGRect(x: 1760, y: 1130, width: 1120, height: 740)
+        let moving = ServerWindow(id: 1, pid: pid, layer: -1, frame: ax.offsetBy(dx: 1800, dy: 0))
+        let twin = ServerWindow(id: 4, pid: pid, layer: 0, frame: ax.offsetBy(dx: -900, dy: -600))
+        let helper = ServerWindow(id: 2, pid: pid, layer: 0, frame: CGRect(x: 0, y: 682, width: 500, height: 500))
+        let alone = [moving, helper]
+        let twinned = [moving, twin, helper]
+        let parked = ServerWindow.parkedCopy(in: twinned, pid: pid)
+        check("a window accessibility does not give as the main one is not taken by its size",
+              ServerWindow.backing(ax, in: alone, pid: pid, parked: nil) == nil)
+        check("a second window of the process at that size elsewhere is refused, for either of the two",
+              ServerWindow.backing(ax, in: twinned, pid: pid, parked: parked) == nil
+                  && ServerWindow.backing(ax, in: twinned, pid: pid, parked: twin) == nil)
+        check("a window of another process at that size does not stop it",
+              ServerWindow.backing(ax, in: alone + [ServerWindow(id: 9, pid: pid + 1, layer: 0, frame: twin.frame)], pid: pid,
+                                   parked: ServerWindow.parkedCopy(in: alone, pid: pid))?.id == 1)
+        check("an exact match is still taken beside a window of the same size",
+              ServerWindow.backing(twin.frame, in: twinned, pid: pid, parked: parked)?.id == 4)
+        // can-click turns them down where the tool would, saying why.
+        let notMain = ParkedWindow.refusal(id: 1, frame: ax, server: alone, pid: pid, main: false)
+        check("the copy says no for a window that is not the app's main window, and why",
+              notMain?.contains("does not give it as the app's main window") == true && notMain?.contains(ParkedWindow.notTaken) == true,
+              notMain ?? "nil")
+        let twice = ParkedWindow.refusal(id: 1, frame: ax, server: twinned, pid: pid, main: true)
+        check("and for a window another of the copy's windows is the size of, and why",
+              twice?.contains("another window of the copy is that size") == true && twice?.contains(ParkedWindow.notTaken) == true,
+              twice ?? "nil")
+        check("and yes for a window at its own frame, main or not",
+              ParkedWindow.refusal(id: 1, frame: moving.frame, server: twinned, pid: pid, main: false) == nil)
+    }
+
+    await group("a click at a point acts on what the hit test found, but in a parked copy where it found nothing (#770)") {
+        // What a click or a context menu at a point acts on, and what its approval card names: the hit test's find
+        // in every app, as before #748; in a parked copy, the innermost listed control where the hit test, which reads
+        // the screen, found nothing in the window. Stand-ins: a button listed over a row, and what a hit test gave.
+        let row = CGRect(x: 1770, y: 1440, width: 270, height: 30)
+        let button = CGRect(x: 1800, y: 1445, width: 80, height: 20)
+        let listed = [(element: "row", frame: row), (element: "button", frame: button), (element: "menu bar item", frame: CGRect.null)]
+        let point = CGPoint(x: 1810, y: 1450)
+        var asked = 0
+        func target(hit: String?, parked: Bool, inWindow: Bool = true) -> String? {
+            AtPoint.target(at: point, hit: hit, listed: listed, parked: parked) { _ in asked += 1; return inWindow }
+        }
+        check("a hit that can be pressed wins, in any app and in a parked copy",
+              target(hit: "Send", parked: false) == "Send" && target(hit: "Send", parked: true) == "Send")
+        check("a hit that cannot be pressed, such as an overlay, is not replaced by a listed control outside a parked copy",
+              target(hit: "overlay", parked: false) == "overlay")
+        check("nor in a parked copy, where it is in the window", target(hit: "overlay", parked: true) == "overlay")
+        check("outside a parked copy, no hit is a real click, whatever is listed there", target(hit: nil, parked: false) == nil)
+        asked = 0
+        _ = target(hit: "Send", parked: false)
+        _ = target(hit: nil, parked: false)
+        check("outside a parked copy nothing more is asked of the hit than before", asked == 0)
+        check("in a parked copy with no hit, the innermost listed control holding the point", target(hit: nil, parked: true) == "button")
+        check("and the same where the hit is outside the window read",
+              target(hit: "another window's button", parked: true, inWindow: false) == "button")
+        check("and a real click where no listed control holds the point, never the outside hit",
+              AtPoint.target(at: CGPoint(x: 0, y: 0), hit: "another app's button", listed: listed, parked: true) { _ in false } == nil)
+
+        // The card and the action choose once: the card's choice is acted on, or refused once it no longer holds.
+        var kept = AtPoint.Kept<String>()
+        let here: (String) -> CGRect? = { $0 == "button" ? button : $0 == "row" ? row : nil }
+        kept.keep("Send", for: "click@1")
+        check("the card and the press act on the same element",
+              kept.settle("Send", hit: "Send", for: "click@1", at: point, frameNow: here) == .act("Send"))
+        check("a choice is used once; an action with no card acts on what is there",
+              kept.settle("Cancel", hit: "Cancel", for: "click@1", at: point, frameNow: here) == .act("Cancel"))
+        kept.keep("Send", for: "click@1")
+        check("a window that changed during the wait refuses, and is not redirected",
+              kept.settle("Cancel", hit: "Cancel", for: "click@1", at: point, frameNow: here) == .changed)
+        kept.keep(nil, for: "click@1")
+        check("a card that named a real click refuses where something can be named there now",
+              kept.settle("Send", hit: "Send", for: "click@1", at: point, frameNow: here) == .changed)
+        kept.keep(nil, for: "click@1")
+        check("and is a real click where nothing still is", kept.settle(nil, hit: nil, for: "click@1", at: point, frameNow: here) == .act(nil))
+        kept.keep("button", for: "click@1")
+        check("a listed control the card named, still there and at the point, is acted on",
+              kept.settle("button", hit: nil, for: "click@1", at: point, frameNow: here) == .act("button"))
+        kept.keep("button", for: "click@1")
+        check("one that is gone refuses", kept.settle("button", hit: nil, for: "click@1", at: point, frameNow: { _ in nil }) == .changed)
+        kept.keep("button", for: "click@1")
+        check("one that moved off the point refuses",
+              kept.settle("button", hit: nil, for: "click@1", at: point, frameNow: { _ in button.offsetBy(dx: 0, dy: 200) }) == .changed)
+        kept.keep("Send", for: "click@1")
+        check("a card's choice is kept for its own action and point only",
+              kept.settle("Cancel", hit: "Cancel", for: "context_menu@1", at: point, frameNow: here) == .act("Cancel")
+                  && kept.settle("Send", hit: "Send", for: "click@1", at: point, frameNow: here) == .act("Send"))
+        let refused = AtPoint.changed("nothing was clicked", x: 120, y: 80)
+        check("the refusal says the window changed and to look again",
+              refused.contains("window changed while this waited") && refused.contains("(120, 80)") && refused.contains("Take a screenshot"))
     }
 
     await group("a click at a point in a parked copy lands on the listed control there (#748)") {
@@ -523,6 +623,12 @@ Task { @MainActor in
         let refused = "the main window did not join the app's accessibility window list when raised"
         check("a copy that says its window did not join the list is a failure, in its own words",
               await ComputerController.exposeParkedCopy(pid: 42, folder: folder) == .failed(refused))
+        // A copy that raised its window and found the window server's record of it disagrees did not fail to raise it.
+        let disagrees = "the window server has the main window at 1120×740 at (3560, 1130) and accessibility gives it at 1120×700 at (1760, 1130), \(ParkedWindow.notTaken) as the same window"
+        folder = standInFolder(base)
+        copy = standInCopy(folder, ["error": disagrees])
+        check("a copy whose window the tool would turn down is told apart from one that did not raise it (#770)",
+              await ComputerController.exposeParkedCopy(pid: 42, folder: folder) == .turnedDown(disagrees))
         folder = standInFolder(base)
         check("a copy that never answers is busy, and its request is cleaned up",
               await ComputerController.exposeParkedCopy(pid: 42, folder: folder) == .busy
@@ -559,8 +665,16 @@ Task { @MainActor in
         let failed = ComputerController.unreadableParkedCopy(.failed("the main window is not parked behind other windows, so it was not raised"))
         check("a copy that refused says why in the copy's own words",
               failed.contains("not parked behind other windows"))
+        let why = ParkedWindow.refusal(id: 1, frame: CGRect(x: 0, y: 0, width: 900, height: 550),
+                                       server: [ServerWindow(id: 1, pid: 42, layer: -1, frame: CGRect(x: 2000, y: 0, width: 900, height: 500))],
+                                       pid: 42, main: true) ?? ""
+        let turnedDown = ComputerController.unreadableParkedCopy(.turnedDown(why))
+        check("a copy that raised its window, which the tool then turned down, is said to have raised it, and where each has it (#770)",
+              turnedDown.contains("raised") && !turnedDown.contains("did not raise")
+                  && turnedDown.contains("window server and accessibility disagree on where it is") && turnedDown.contains("900×500 at (2000, 0)"),
+              turnedDown)
         check("every reason says what still works",
-              [old, busy, listed, failed, ComputerController.unreadableParkedCopy(nil)].allSatisfy { $0.contains("click at a point") })
+              [old, busy, listed, failed, turnedDown, ComputerController.unreadableParkedCopy(nil)].allSatisfy { $0.contains("click at a point") })
     }
 
     await group("what a click is told when the window could not be read") {
