@@ -4,15 +4,20 @@
 //
 //   node scripts/deploy.mjs development|production [--dry-run]
 //
-// Before anything is built it checks what the deployment would be, as Wrangler reads wrangler.jsonc: logs, Logpush and
-// tail consumers off, no preview or version addresses, no secret among the variables, and for production a custom
-// domain and no workers.dev address. Then it runs `wrangler deploy` as scripts/isolated.mjs runs a tool: a throwaway
-// home folder, Wrangler's usage events off, `--config` named; and it passes the Cloudflare token and account id on
+// Before anything is built it checks what the deployment would be, as Wrangler reads wrangler.jsonc, against what it
+// may be: logs, traces, Issues, Logpush and tail consumers off; no preview or version addresses; no build command;
+// the three Durable Objects and the settings' variables as its only bindings, and no secret among them; for
+// production, a custom domain and no workers.dev address. Anything else refuses, a dry run included (so CI fails a pull
+// request that changes one), but for production's missing domain, which a dry run only reports.
+//
+// Then it runs `wrangler deploy` as scripts/isolated.mjs runs a tool: a throwaway home folder, Wrangler's usage events
+// off, `--config` named, and `--env-file` naming an empty file, so that Wrangler reads no `.env` file of relay/ (one
+// could set CLOUDFLARE_API_BASE_URL and send the token elsewhere). It passes the Cloudflare token and account id on
 // (CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID), and nothing else of the caller's environment but PATH. A dry run
-// passes neither.
+// passes neither. scripts/test-deploy.mjs tests the refusals and the `.env` file left unread.
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,11 +31,52 @@ const deployment = names[0];
 if (names.length !== 1 || (deployment !== "development" && deployment !== "production")) {
 	fail("usage: node scripts/deploy.mjs development|production [--dry-run]");
 }
-// The settings a deployment keeps as Workers secrets, never in wrangler.jsonc, which is public (README.md, "Settings").
-const SECRETS = ["APP_ATTEST_TEAM_ID", "ADDRESS_KEY", "APNS_KEY", "APNS_KEY_ID", "APNS_TEAM_ID"];
+
+// The variables a deployment may have: the settings that are not secret (README.md, "Settings"). The secrets
+// (APP_ATTEST_TEAM_ID, ADDRESS_KEY, and the push key's) are never in wrangler.jsonc, which is public.
+const VARIABLES = ["APP_ATTEST_BUNDLE_ID", "APP_ATTEST_ENVIRONMENTS", "APP_ATTEST_CATEGORIES", "MIN_BUILD_MAC", "MIN_BUILD_DEVICE"];
+const OBJECTS = [
+	{ name: "PAIRINGS", class_name: "Pairing" },
+	{ name: "ATTEST_KEYS", class_name: "AttestKey" },
+	{ name: "ADDRESSES", class_name: "Address" },
+];
+// What Wrangler's resolved configuration may hold that is not empty. Anything else (a binding of any other kind,
+// assets, `unsafe`, a key a later Wrangler adds) refuses, so that nothing reaches a deployment unchecked.
+const ALLOWED = new Set([
+	// Wrangler's own bookkeeping and local development's settings.
+	"configPath",
+	"userConfigPath",
+	"topLevelName",
+	"definedEnvironments",
+	"targetEnvironment",
+	"jsx_factory",
+	"jsx_fragment",
+	"python_modules",
+	"dev",
+	// What wrangler.jsonc says, each checked below.
+	"name",
+	"main",
+	"compatibility_date",
+	"compatibility_flags",
+	"send_metrics",
+	"dependencies_instrumentation",
+	"keep_vars",
+	"observability",
+	"logpush",
+	"upload_source_maps",
+	"workers_dev",
+	"preview_urls",
+	"routes",
+	"build",
+	"vars",
+	"durable_objects",
+	"migrations",
+]);
 
 home = mkdtempSync(join(tmpdir(), "pi2-relay-deploy-"));
 for (const folder of ["config", "cache", "data", "logs"]) mkdirSync(join(home, folder));
+const noEnvFile = join(home, "empty.env");
+writeFileSync(noEnvFile, "");
 const env = {
 	PATH: process.env.PATH ?? "",
 	HOME: home,
@@ -43,13 +89,15 @@ const env = {
 
 let status = 1;
 try {
-	const problems = check(readConfig());
-	if (problems.refuse.length > 0) {
-		for (const problem of problems.refuse) process.stderr.write(`deploy: ${problem}\n`);
-		if (!dryRun) fail(`not deploying the ${deployment} relay.`);
-		process.stderr.write(`deploy: a deploy would stop here; building anyway, since this is a dry run.\n`);
+	const { refuse, noDomain } = check(readConfig());
+	for (const problem of refuse) process.stderr.write(`deploy: ${problem}\n`);
+	if (refuse.length > 0) fail(`not ${dryRun ? "building" : "deploying"} the ${deployment} relay.`);
+	if (noDomain) {
+		process.stderr.write("deploy: production has no custom domain yet: add it to wrangler.jsonc (docs/relay.md, \"The production relay\")\n");
+		if (!dryRun) fail("not deploying the production relay.");
+		process.stderr.write("deploy: a deploy would stop here; building anyway, since this is a dry run.\n");
 	}
-	const wrangler = ["deploy", "--config", "wrangler.jsonc", "--env", deployment];
+	const wrangler = ["deploy", "--config", "wrangler.jsonc", "--env", deployment, "--env-file", noEnvFile];
 	if (dryRun) {
 		wrangler.push("--dry-run", "--outdir", join(home, "out"));
 	} else {
@@ -83,24 +131,49 @@ function readConfig() {
 	return JSON.parse(run.stdout);
 }
 
+/** Whether a resolved value is empty: nothing, false, an empty list, or an object of nothing but empty values. */
+function empty(value) {
+	if (value === undefined || value === null || value === false) return true;
+	if (Array.isArray(value)) return value.length === 0;
+	if (typeof value === "object") return Object.values(value).every(empty);
+	return false;
+}
+
+function same(a, b) {
+	return JSON.stringify(a) === JSON.stringify(b);
+}
+
 /** What would make this deployment other than docs/iphone.md 5.3 and docs/relay.md say it is. */
 function check(config) {
 	const refuse = [];
+	for (const [key, value] of Object.entries(config)) {
+		if (!ALLOWED.has(key) && !empty(value)) refuse.push(`wrangler.jsonc sets \`${key}\`, which no deployment of the relay has`);
+	}
 	if (config.name !== `pi2-relay-${deployment}`) refuse.push(`the ${deployment} environment of wrangler.jsonc is missing, or has another name`);
-	const logs = config.observability ?? {};
-	if (logs.enabled !== false || logs.logs?.enabled !== false || logs.logs?.invocation_logs !== false) refuse.push("Workers Logs or invocation logs are not off");
-	if (config.logpush === true) refuse.push("Logpush is on");
-	if ((config.tail_consumers ?? []).length > 0 || (config.streaming_tail_consumers ?? []).length > 0) refuse.push("a tail consumer is set");
+	if (!same(config.observability, { enabled: false, logs: { enabled: false, invocation_logs: false }, traces: { enabled: false }, issues: { enabled: false } })) {
+		refuse.push("logs, invocation logs, traces and Issues are not all off, exactly as wrangler.jsonc writes them");
+	}
+	if (config.logpush !== false) refuse.push("Logpush is not off");
 	if (config.preview_urls !== false) refuse.push("preview and version addresses are not off");
 	if (config.send_metrics !== false) refuse.push("Wrangler's usage events are not off");
-	const secrets = Object.keys(config.vars ?? {}).filter((name) => SECRETS.includes(name));
-	if (secrets.length > 0) refuse.push(`wrangler.jsonc names a secret among its variables: ${secrets.join(", ")}`);
+	if (config.dependencies_instrumentation?.enabled !== false) refuse.push("Wrangler's report of the packages used is not off");
+	if (config.keep_vars !== false) refuse.push("`keep_vars` is on: variables added in the dashboard would outlive a deploy");
+	if (config.main !== join(relay, "src/index.ts")) refuse.push("the Worker's entry is not src/index.ts");
+	// Wrangler runs a build command in a shell, which on a deploy would have the token in reach.
+	if (Object.keys(config.build ?? {}).some((key) => key !== "watch_dir")) refuse.push("wrangler.jsonc has a build step, which a deploy would run beside the token");
+	if (!same(config.durable_objects, { bindings: OBJECTS })) refuse.push("the Durable Objects are not exactly the relay's three");
+	const unknown = Object.keys(config.vars ?? {}).filter((name) => !VARIABLES.includes(name));
+	if (unknown.length > 0) refuse.push(`wrangler.jsonc has variables that are not the relay's settings, or are its secrets: ${unknown.join(", ")}`);
+	const routes = config.routes ?? [];
+	if (routes.some((route) => typeof route !== "object" || route.custom_domain !== true)) refuse.push("a route is not a custom domain");
+	let noDomain = false;
 	if (deployment === "production") {
 		if (config.workers_dev !== false) refuse.push("production has a workers.dev address, which no rate limit of the domain's covers");
-		const domains = (config.routes ?? []).filter((route) => typeof route === "object" && route.custom_domain === true);
-		if (domains.length === 0) refuse.push("production has no custom domain yet: add it to wrangler.jsonc (docs/relay.md, \"The production relay\")");
+		noDomain = routes.length === 0;
+	} else if (routes.length > 0) {
+		refuse.push("the development relay has a route: it lives at its workers.dev address");
 	}
-	return { refuse };
+	return { refuse, noDomain };
 }
 
 function fail(message) {

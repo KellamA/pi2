@@ -166,6 +166,7 @@ jobs:
       - run: npm run check-bundle
       - run: npm run deploy -- development --dry-run
       - run: npm run deploy -- production --dry-run
+      - run: npm run test-deploy
 
   app:
     name: App (build)

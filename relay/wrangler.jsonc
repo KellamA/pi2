@@ -23,12 +23,15 @@
 	// The deployments' variables are this file's alone: a deploy removes any added in the dashboard. Secrets stay.
 	"keep_vars": false,
 
-	// Logs off (5.3): no Workers Logs, no invocation logs (which keep a request's URL), no Logpush, and the code writes
-	// nothing to the console. P15 (#683) adds the check in CI that fails if either changes. Every environment inherits
+	// Logs off (5.3): no Workers Logs, no invocation logs (which keep a request's URL), no traces, no Issues (which keep
+	// an exception's text), no Logpush, and the code writes nothing to the console. Each is written out, so that a deploy
+	// says so rather than leaving whatever the dashboard has. P15 (#683) adds the check in CI that fails if either changes. Every environment inherits
 	// these; tail consumers, which an environment does not inherit, are written out empty in each.
 	"observability": {
 		"enabled": false,
-		"logs": { "enabled": false, "invocation_logs": false }
+		"logs": { "enabled": false, "invocation_logs": false },
+		"traces": { "enabled": false },
+		"issues": { "enabled": false }
 	},
 	"logpush": false,
 	// No source maps uploaded: with logs off nothing would use them.

@@ -342,10 +342,10 @@ The relay (`relay/`, [iphone.md 5.3](iphone.md#53-the-relay), #676) has a packag
 
 ```bash
 cd relay && npm ci && npm run check && npm test && npm run check-bundle
-npm run deploy -- development --dry-run && npm run deploy -- production --dry-run
+npm run deploy -- development --dry-run && npm run deploy -- production --dry-run && npm run test-deploy
 ```
 
-The last line builds each deployment as its deploy would, and checks its configuration, uploading nothing. **An agent never deploys**: no `wrangler deploy` without `--dry-run`, no `wrangler login`, no Cloudflare token, no secret; and every Wrangler command goes through `npm run`, never `npx wrangler`, so that it gets a throwaway home folder and sends nothing ([relay/README.md](../relay/README.md#tests)). Deploying is the owner's ([relay.md](relay.md#deploying-the-relay)).
+The last line builds each deployment as its deploy would, and checks its configuration, uploading nothing; `test-deploy` checks those checks, in a temporary copy of `relay/`. **An agent never deploys**: no `wrangler deploy` without `--dry-run`, no `wrangler login`, no Cloudflare token, no secret; and every Wrangler command goes through `npm run`, never `npx wrangler`, so that it gets a throwaway home folder and sends nothing ([relay/README.md](../relay/README.md#tests)). Deploying is the owner's ([relay.md](relay.md#deploying-the-relay)).
 
 ### Trying changes in a throwaway copy
 

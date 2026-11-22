@@ -53,6 +53,7 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm run check-bundle
+      - run: npm run test-deploy
       - name: Build it as the deploy will, and check its configuration
         env:
           RELAY: ${{ inputs.relay }}
