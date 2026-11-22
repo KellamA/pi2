@@ -734,7 +734,6 @@ export class Providers {
 	readonly #credentials: CredentialStore;
 	readonly #endpointsPath: string;
 	#endpoints: EndpointConfig[];
-	readonly #builtinIds: Set<string>;
 	readonly #deviceId: () => string;
 	/** Each built-in provider as the library made it, without the models added by hand: its catalog. */
 	readonly #catalogs = new Map<string, Provider>();
@@ -766,7 +765,6 @@ export class Providers {
 			modelsStore: new FileModelsStore(join(home, "model-catalogs.json")),
 			identity: { attribution: { name: "pi2", url: "https://github.com/earendil-works/pi" } },
 		});
-		this.#builtinIds = new Set(this.models.getProviders().map((p) => p.id));
 		this.#addedPath = join(home, "added-models.json");
 		try {
 			this.#added = JSON.parse(readFileSync(this.#addedPath, "utf8"));

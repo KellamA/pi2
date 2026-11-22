@@ -236,6 +236,9 @@ extension EngineClient {
 extension EnvironmentValues {
     /// Whether the view is in one of several panes, where room is short.
     @Entry var inSplitPane = false
+    /// In a project's hub: shows a conversation in place of the board, as the hub's links to another conversation do
+    /// (#632). Nil elsewhere, where a link selects the conversation.
+    @Entry var showInHub: ((Int) -> Void)? = nil
 }
 
 /// A conversation being dragged from the sidebar onto a pane.

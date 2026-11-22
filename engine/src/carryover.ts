@@ -303,8 +303,6 @@ const byRecent = (a: { updatedAt: number; id: number | string }, b: { updatedAt:
 /** Agents, or projects, in the order they were made, then by id. */
 const byMade = (a: { createdAt: number; id: string }, b: { createdAt: number; id: string }) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
-const isTemplate = (agent: AgentProfile | undefined): agent is AgentProfile => agent !== undefined && agent.projectId === undefined;
-
 /**
  * An agent the plan may copy into a project: a template, and, for a restore (3.6, `from` the deleted project), an agent
  * of that project too, since the conversation being restored ran as it and it cannot start work where it is.

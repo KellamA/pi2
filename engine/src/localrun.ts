@@ -152,13 +152,8 @@ let working: ReadonlySet<number> = new Set();
 const watching = new Set<number>();
 let shuttingDown = false;
 let engine: Engine | undefined;
-let recipe: EngineRecipe = STRATA;
+const recipe: EngineRecipe = STRATA;
 let readSetup: () => LocalSetup = () => ({ engine: null, models: [] });
-
-/** For the tests' and #293's use: another description of the engine. */
-export function useRecipe(next: EngineRecipe): void {
-	recipe = next;
-}
 
 const tilde = (path: string) => (path.startsWith(`${homedir()}/`) ? `~${path.slice(homedir().length)}` : path);
 

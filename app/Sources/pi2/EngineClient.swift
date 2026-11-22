@@ -379,14 +379,15 @@ final class EngineClient {
         perform("conversation.configure", params)
     }
 
-    /// Branch a conversation at one of its entries and show the new one.
-    func fork(_ id: Int, at entryId: Int) {
+    /// Branch a conversation at one of its entries and show the new one: by `then`, given, as a project's hub shows it in
+    /// place of its board (#632), else as the window shows any conversation chosen.
+    func fork(_ id: Int, at entryId: Int, then show: ((Int) -> Void)? = nil) {
         Task {
             do {
                 let result = try await call("conversation.fork", ["id": id, "entryId": entryId])
                 if let fork = result["id"]?.intValue {
                     openConversation(fork)
-                    onNavigate(fork, nil)
+                    if let show { show(fork) } else { onNavigate(fork, nil) }
                 }
             } catch {
                 lastError = error.localizedDescription

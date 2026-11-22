@@ -179,12 +179,19 @@ struct ProjectSettingsTab: View {
     // MARK: Orchestrator
 
     private var orchestratorSection: some View {
-        titled("Orchestrator", footer: "The model the orchestrator answers on. Changing it changes the orchestrator’s agent, so every conversation with it uses the new model from its next message.") {
+        titled("Orchestrator", footer: "The model the orchestrator answers on, and the size at which its conversation’s earlier messages are summarised, so later turns read less. Changing either changes the orchestrator’s agent, from its next message. The context meter in the conversation’s header summarises at once, or starts a fresh conversation.") {
             HStack(alignment: .center, spacing: 10) {
                 Text("Model").rowLabel()
                 OrchestratorModelMenu(engine: engine, agent: engine.agent(project.orchestratorId))
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+            Divider().overlay(Theme.line)
+            HStack(alignment: .center, spacing: 10) {
+                Text("Summarise at").rowLabel()
+                OrchestratorSummarySize(engine: engine, agent: engine.agent(project.orchestratorId)) { problems["summaries"] = $0 }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if let problem = problems["summaries"] { Text(problem).problemText() }
         }
     }
 
