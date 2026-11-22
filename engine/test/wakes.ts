@@ -251,6 +251,67 @@ try {
 		step(`an old failure still wakes the agent, but says the sub-chat was continued and is ${batched ? "idle (batched)" : "working"}`);
 	}
 
+	// ---- sub_chats with stop (#789): the person's Stop on a sub-chat, by the agent that handed it the work
+	{
+		const a = await open(lead);
+		const stop = (chats: number[]) => client.tool(a, `/tool sub_chats ${JSON.stringify({ action: "stop", chats })}`);
+		const g = gate();
+		const sub = await handOff(a, task(g, "never-said"), "Overtaken");
+		await client.call("conversation.open", { id: sub });
+		await client.until("the sub-chat working", () => client.conversations.get(sub)?.state.busy === true);
+		// Not the caller itself, nor a sub-chat another conversation opened.
+		const other = await open(lead);
+		const theirs = gate();
+		const stranger = await handOff(other, task(theirs, "theirs"), "Not yours");
+		theirs.open();
+		await client.woken(other, 1);
+		const refused = await stop([a, stranger]);
+		assert.equal(refused.isError, true);
+		assert.equal(refused.text, `- ${a}: that is this conversation, not one of its sub-chats, so nothing was stopped.\n- ${stranger}: there is no sub-chat ${stranger} in this conversation, so nothing was stopped.`);
+		assert.ok(client.conversations.get(sub)!.state.busy, "the sub-chat still works");
+
+		const stopped = await stop([sub]);
+		assert.equal(stopped.isError, false, stopped.text);
+		assert.equal(stopped.text, `- ${sub}: stopped (“Overtaken”). If its answer was to come to you, its report comes instead, saying its run was stopped. To continue it, call delegate again with chat: ${sub}.`);
+		assert.deepEqual(stopped.details, { action: "stop", stopped: [sub], idle: [], refused: [] });
+		// As the person's Stop leaves it, with a line naming who stopped it; and a line in the caller.
+		await client.until("the sub-chat stopped", () => client.idle(sub) && client.conversations.get(sub)!.state.failure?.reason === "aborted");
+		await client.until("who stopped it, in the sub-chat", () => client.markers(sub).some((text) => new RegExp(`^Lead stopped this run from conversation “.+” \\(${a}\\)$`).test(text)));
+		assert.ok(client.markers(a).includes(`The agent stopped the run of sub-chat “Overtaken” (${sub})`), JSON.stringify(client.markers(a)));
+		// Its report comes as for a run the person stopped, once.
+		const line = await client.woken(a, 1);
+		assert.equal(line, `pi² woke the agent: sub-chat ${sub} “Overtaken” stopped without answering`);
+		const given = client.items(a, "marker").find((item) => item.text === line)!.details.wake.text as string;
+		assert.match(given, /its run was stopped/);
+		assert.ok(given.includes(`call delegate again with chat: ${sub}.`), given);
+		assert.doesNotMatch(given, /never-said/);
+
+		// Idle now: nothing to stop.
+		const idle = await stop([sub]);
+		assert.equal(idle.isError, false, idle.text);
+		assert.equal(idle.text, `- ${sub}: was not working, so there was nothing to stop.`);
+		assert.deepEqual(idle.details, { action: "stop", stopped: [], idle: [sub], refused: [] });
+
+		// One waiting on the person's question is not stopped: Stop would take the question away.
+		await client.call("submit", { id: sub, text: "/ask Which colour?" });
+		const question = await client.until("the sub-chat asking", () => (client.events.inbox?.items ?? []).find((item: Event) => item.conversationId === sub && item.kind === "question"));
+		const waiting = await stop([sub]);
+		assert.equal(waiting.isError, true);
+		assert.equal(waiting.text, `- ${sub}: not stopped, because it is waiting on the person (a question), which stopping could take away unanswered. Stop it once they have answered.`);
+		assert.ok((client.events.inbox?.items ?? []).some((item: Event) => item.id === question.id), "the question still waits");
+		await client.call("inbox.answer", { id: question.id, text: "blue" });
+		await client.until("the sub-chat idle after the answer", () => client.idle(sub) && !(client.events.inbox?.items ?? []).some((item: Event) => item.conversationId === sub));
+
+		// Continued with delegate, it works and answers as before.
+		const resumed = gate();
+		const continued = await client.tool(a, `/tool delegate ${JSON.stringify({ agent: "Worker", chat: sub, task: task(resumed, "after-the-stop"), wait: false })}`);
+		assert.equal(continued.isError, false, continued.text);
+		resumed.open();
+		assert.equal(await client.woken(a, 2), `pi² woke the agent: sub-chat ${sub} “Overtaken” answered`);
+		assert.match(client.items(a, "assistant").at(-1)!.text as string, /after-the-stop/);
+		step("sub_chats with stop: a working sub-chat is stopped as by the person's Stop, says who stopped it, and its report comes once; an idle one was not working; the caller, another's sub-chat and one waiting on the person are refused; continuing it works");
+	}
+
 	// ---- A command in the background with wake: true
 	{
 		const b = await open(lead);
