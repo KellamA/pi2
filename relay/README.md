@@ -2,7 +2,7 @@
 
 The relay is the path between a Mac and its paired phones that must always work ([docs/iphone.md 5.3](../docs/iphone.md#53-the-relay), #676): a Cloudflare Worker and one Durable Object for each pairing, which pass sealed bytes they cannot read, keep a small mailbox for an end that is away, and serve only genuine pi² for iPhone. It is written for any number of pairings ([9.2](../docs/iphone.md#92-nothing-assumes-one-person)): nothing of the owner's is in its code, and a deployment is this code with its own settings.
 
-This folder is an owner's path (`.github/CODEOWNERS`): a pull request that changes it waits for the owner's review. Nothing here deploys anything. Deploying is #677 (P9), and waits for the owner ([docs/relay.md](../docs/relay.md)).
+This folder is an owner's path (`.github/CODEOWNERS`): a pull request that changes it waits for the owner's review. Only the owner deploys the relay, as [docs/relay.md](../docs/relay.md#deploying-the-relay) says (#677, P9): through `.github/workflows/relay.yml`, which waits for their approval, or by hand, always with `scripts/deploy.mjs`.
 
 ## Files
 
@@ -23,7 +23,9 @@ This folder is an owner's path (`.github/CODEOWNERS`): a pull request that chang
 | `test/` | The tests ([Tests](#tests)) |
 | `scripts/check-bundle.mjs` | Checks the bundle Wrangler makes for a deploy, without deploying ([The verifier](#the-verifier)) |
 | `scripts/isolated.mjs` | Runs Wrangler, Vitest or TypeScript with a throwaway home folder, Wrangler's usage events off, and no Cloudflare credential ([Tests](#tests)) |
-| `wrangler.jsonc` | The Worker's configuration for local runs and tests: its objects, logs off, Node's modules off, no settings |
+| `scripts/deploy.mjs` | Deploys one of the two deployments, or with `--dry-run` builds it as the deploy would; checks its configuration first (logs, Logpush and tail consumers off, no preview addresses, no secret among the variables, production on a custom domain), and gives Wrangler the Cloudflare token and nothing else ([docs/relay.md](../docs/relay.md#deploying-the-relay)) |
+| `scripts/register.mjs` | A test client for a deployed relay: asks whether it has its settings, then registers a pending pairing as a Mac would. Node alone, no account |
+| `wrangler.jsonc` | The Worker's configuration: its objects, logs off, Node's modules off; at the top level, for local runs and tests, no settings; and the two deployments, `development` and `production`, with every setting but the secrets |
 
 `src/apns.ts` (pushes, #689) and the recorder in `test/` (#683) are other issues'.
 
@@ -35,9 +37,11 @@ npm ci
 npm run check         # the type-check, which includes engine/src/appattest.ts as the relay bundles it
 npm test              # the tests, inside workerd
 npm run check-bundle  # the verifier in the deploy bundle is the engine's file
+npm run deploy -- development --dry-run   # each deployment built as its deploy would, uploading nothing
+npm run deploy -- production --dry-run
 ```
 
-The tests run inside the Workers runtime (workerd, through `@cloudflare/vitest-plugin`), on this computer, with no Cloudflare account; never in Node's `vm` contexts, where the verifier refuses every byte array as another context's. Their settings, in `vitest.config.ts`, are a test deployment's: Apple's sample attestation's team and bundle ids. They move the clock themselves (`vi.setSystemTime`), so nothing depends on how fast the computer is. Vitest prints warnings that `node:inspector` is not available: with Node's modules off (`wrangler.jsonc`), its own optional look for the inspector fails, which changes nothing; no one line of configuration quiets it without turning Node's modules back on for the tests. CI runs all three in the job **Relay (tests)**.
+The tests run inside the Workers runtime (workerd, through `@cloudflare/vitest-plugin`), on this computer, with no Cloudflare account; never in Node's `vm` contexts, where the verifier refuses every byte array as another context's. Their settings, in `vitest.config.ts`, are a test deployment's: Apple's sample attestation's team and bundle ids. They move the clock themselves (`vi.setSystemTime`), so nothing depends on how fast the computer is. Vitest prints warnings that `node:inspector` is not available: with Node's modules off (`wrangler.jsonc`), its own optional look for the inspector fails, which changes nothing; no one line of configuration quiets it without turning Node's modules back on for the tests. CI runs all of them in the job **Relay (tests)**, on every pull request; `.github/workflows/relay.yml` runs them again before each deploy. A dry run of `production` says that a deploy would stop for want of a custom domain, until it has one, and builds it all the same.
 
 - `protocol.test.ts`: the Worker's door, register and hello with their challenges, builds below the minimum, a second Mac refused and the connected one told, a Mac socket gone quiet replaced, the ten seconds to prove oneself, strict reading.
 - `join.test.ts`: join with a stand-in for the verifier: the window, the token, the three tries, what the verifier is asked, Apple's category and bundle version, App Attest keys tied to one pairing and device, the contract's pairing end to end with two App Attest keys, a joined slot added under the engine's id or let go.
@@ -62,7 +66,7 @@ The verifier takes only byte arrays made in its own runtime: the relay gives it 
 
 ## Settings
 
-Every one is required, and none has a default: a relay missing any, or given one that is not well formed, answers 503 to every connection. `wrangler.jsonc` holds none; the deployments' environments are P9's.
+Every one is required, and none has a default: a relay missing any, or given one that is not well formed, answers 503 to every connection, and closes one already open at its next message. `wrangler.jsonc`'s top level holds none. Its two environments, `development` and `production`, hold all but `APP_ATTEST_TEAM_ID` and `ADDRESS_KEY`, which the owner adds to each deployment as Workers secrets ([docs/relay.md](../docs/relay.md#the-development-relay-step-by-step)); deleting `ADDRESS_KEY` is how the relay is turned off for everyone ([docs/relay.md](../docs/relay.md#turning-it-off-for-everyone)).
 
 | Setting | What it is |
 |---|---|
@@ -125,4 +129,4 @@ Where the contract left something open, or the relay had to choose:
 - **Pushes**: `token` is kept and deleted with its device; `push` is P20's (#689), with `src/apns.ts`.
 - **The check that logs stay off** and that the code writes nothing to the console is P15's (#683). Logs are off in `wrangler.jsonc`, and nothing in `src` writes to the console.
 - **A join without an attestation**, which only a local relay for tests may take ([10](../docs/iphone.md#10-testing-with-no-phone-in-hand)), is P13's (#681) to add when the simulator needs it; this relay takes none.
-- **The deployments**: their environments, settings and minimum builds in `wrangler.jsonc`, and the workflow that deploys, are P9's (#677).
+- **Counting an IPv6 address by its /64**, for registrations and for connections, is #801.

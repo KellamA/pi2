@@ -8,6 +8,7 @@
 		"check": "node scripts/isolated.mjs tsc --noEmit",
 		"test": "node scripts/isolated.mjs vitest run",
 		"check-bundle": "node scripts/check-bundle.mjs",
+		"deploy": "node scripts/deploy.mjs",
 		"dev": "node scripts/isolated.mjs wrangler dev --ip 127.0.0.1"
 	},
 	"devDependencies": {
