@@ -8,7 +8,9 @@ struct ActivityView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                if let recovery = engine.recovery { recoveryBanner(recovery) }
+                if let recovery = engine.recovery {
+                    RecoveryNotice(engine: engine, recovery: recovery, open: { _, root in model.openConversation(root) })
+                }
                 running
                 if !engine.localRunning.isEmpty { LocalModelsActivity(model: model) }
                 if !engine.backgroundCommands.isEmpty { background }
@@ -46,104 +48,6 @@ struct ActivityView: View {
         let loaded = models == 0 ? nil : "\(models) model\(models == 1 ? "" : "s") on this Mac"
         let parts = [working, loaded, left].compactMap(\.self)
         return parts.isEmpty ? "Nothing running" : parts.joined(separator: " · ")
-    }
-
-    private func recoveryBanner(_ recovery: RecoveryReport) -> some View {
-        let when = Date(timeIntervalSince1970: recovery.at / 1000).formatted(date: .omitted, time: .shortened)
-        let left = recovery.background ?? []
-        let setups = recovery.setups ?? []
-        return VStack(alignment: .leading, spacing: 6) {
-            Label("The engine restarted after stopping unexpectedly (\(when))", systemImage: "arrow.clockwise.circle.fill")
-                .font(.callout.weight(.semibold))
-            if recovery.conversations.isEmpty && left.isEmpty && setups.isEmpty {
-                Text("Nothing was running at the time. Everything is as it was.").font(.callout).foregroundStyle(.secondary)
-            }
-            if !recovery.conversations.isEmpty {
-                Text("These conversations were working and were picked up from where they stopped. A model request that was cut off is sent again; a shell command that was cut off is not run again, and its agent is told.")
-                    .font(.callout).foregroundStyle(.secondary)
-                ForEach(recovery.conversations) { conversation in
-                    Button(conversation.title.isEmpty ? "New conversation" : conversation.title) {
-                        model.openConversation(conversation.id)
-                    }
-                    .buttonStyle(.plain).foregroundStyle(Theme.acc)
-                }
-            }
-            if !left.isEmpty {
-                Text(leftIntro(left))
-                    .font(.callout).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, recovery.conversations.isEmpty ? 0 : 4)
-                ForEach(left) { command in
-                    leftRow(title: command.title, conversation: command.rootConversationId, command: command.command, outcome: command.outcome, group: command.group, background: true)
-                }
-            }
-            if !setups.isEmpty {
-                Text(setupsIntro(setups))
-                    .font(.callout).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, recovery.conversations.isEmpty && left.isEmpty ? 0 : 4)
-                ForEach(setups) { setup in
-                    leftRow(title: setup.title, conversation: setup.rootConversationId, command: setup.command, outcome: setup.outcome, group: setup.group, background: false)
-                }
-            }
-            Button("Dismiss") { engine.perform("recovery.dismiss") }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .panel(fill: Theme.ok.opacity(0.08), border: Theme.ok.opacity(0.35))
-    }
-
-    /// What the notice says of the commands agents had left running in the background when the engine stopped.
-    private func leftIntro(_ left: [RecoveryReport.LeftCommand]) -> String {
-        let intro = left.count == 1
-            ? "An agent had left a command running in the background. It is not started again; its conversation has a line about it, and its agent is told."
-            : "Agents had left commands running in the background. None is started again; each conversation has a line about it, and its agent is told."
-        let unsure = left.contains { ["partly", "unsure", "unknown"].contains($0.outcome) }
-        return unsure ? intro + " pi² leaves alone whatever it cannot be sure belongs to a command, so part of one may still be running." : intro
-    }
-
-    /// What the notice says of the worktrees' set-up commands that were running when the engine stopped.
-    private func setupsIntro(_ setups: [RecoveryReport.LeftSetup]) -> String {
-        let intro = setups.count == 1
-            ? "A worktree’s set-up command was running. It is not run again; its conversation has a line about it, and its agent is told."
-            : "Set-up commands were running in new worktrees. None is run again; each conversation has a line about it, and its agent is told."
-        let unsure = setups.contains { ["partly", "unsure", "unknown"].contains($0.outcome) }
-        return unsure ? intro + " pi² leaves alone whatever it cannot be sure belongs to a set-up, so part of one may still be running." : intro
-    }
-
-    /// One command the last engine left, in the background or setting up a worktree: its conversation, the command, and
-    /// what became of it.
-    private func leftRow(title: String, conversation: Int, command: String, outcome: String, group: Int?, background: Bool) -> some View {
-        let group = group.map { " (process group \($0))" } ?? ""
-        let said: String
-        switch outcome {
-        case "stopped": said = "stopped"
-        case "partly": said = "stopped in part; the rest may still be running\(group)"
-        // A set-up that was not running any more had not finished: it was cut off.
-        case "gone": said = background ? "had already ended" : "cut off"
-        case "unsure", "unknown": said = "left alone; it may still be running\(group)"
-        default: said = "ended"
-        }
-        let settled = outcome == "stopped" || outcome == "gone"
-        return VStack(alignment: .leading, spacing: 1) {
-            Button(title.isEmpty ? "New conversation" : title) {
-                model.openConversation(conversation)
-            }
-            .buttonStyle(.plain).foregroundStyle(Theme.acc)
-            .lineLimit(1).truncationMode(.tail)
-            .help(background ? "Open the conversation that started it" : "Open the conversation whose worktree it was setting up")
-            // The command is what gets cut short; what became of it keeps its size.
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(command.split(whereSeparator: \.isNewline).joined(separator: " "))
-                    .font(Theme.mono).foregroundStyle(Theme.tx2)
-                    .lineLimit(1).truncationMode(.tail)
-                    .help(command)
-                Text("·").foregroundStyle(Theme.tx3)
-                Text(said)
-                    .font(.callout).foregroundStyle(settled ? Theme.tx2 : Theme.warn)
-                    .fixedSize()
-            }
-        }
     }
 
     /// Conversations in the sidebar that are working, plus any subagent whose parent is not itself listed.
@@ -242,37 +146,6 @@ private struct RunRow: View {
         let seconds = max(0, Int(now.timeIntervalSince1970 - run.since / 1000))
         if seconds >= 3600 { return "\(seconds / 3600)h \(seconds % 3600 / 60)m" }
         return String(format: "%d:%02d", seconds / 60, seconds % 60)
-    }
-}
-
-/// The shell command a run is waiting on: what it runs, for how long, and how long it has printed nothing once that is
-/// a while (#196), so a stuck command can be told from a slow one. Ticks by itself; the engine sends only the times.
-private struct CommandClockLine: View {
-    let command: RunningCommand
-    /// Other commands of the same run running beside it.
-    let more: Int
-
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            let quiet = command.quiet(at: context.date)
-            HStack(spacing: 6) {
-                Image(systemName: "terminal").font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.tx3)
-                Text(command.command.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? command.command)
-                    .font(Theme.mono).foregroundStyle(Theme.tx2)
-                    .lineLimit(1).truncationMode(.tail)
-                Text(command.elapsed(at: context.date)).font(.system(size: 11.5).monospacedDigit()).foregroundStyle(Theme.tx3)
-                    .fixedSize()
-                if let quiet {
-                    Text(quiet).font(.system(size: 11.5).monospacedDigit()).foregroundStyle(Theme.warn).fixedSize()
-                }
-                if more > 0 {
-                    Text("and \(more) more").font(.system(size: 11.5)).foregroundStyle(Theme.tx3).fixedSize()
-                }
-            }
-            .help(quiet == nil
-                ? "Running for \(command.elapsed(at: context.date)): \(command.command)"
-                : "Running for \(command.elapsed(at: context.date)), and nothing printed for a while. It may be waiting on something, such as a prompt on the screen. Stop stops the run.")
-        }
     }
 }
 

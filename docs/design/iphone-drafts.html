@@ -1,0 +1,667 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>pi² for iPhone — drafts</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+/* Drafts for docs/design/iphone.md (#620). Self-contained: no scripts or fonts from elsewhere. */
+:root{
+  --page:#0b0c0f; --scr:#000; --bar:#121317; --card:#1c1d22; --card2:#26272e; --line:#ffffff16; --line2:#ffffff26;
+  --tx:#f2f2f6; --tx2:#a3a5b0; --tx3:#6e7080; --acc:#8b93ff; --accbg:#8b93ff26; --ok:#4cc38a; --okbg:#4cc38a22;
+  --warn:#f0b24a; --warnbg:#f0b24a1f; --bad:#f2647a; --badbg:#f2647a1f; --glass:#1c1d22e6; --lock:linear-gradient(160deg,#283070,#121426 60%,#07070c);
+  --mac:#17181c; --macside:#1d1e23;
+}
+body.light{
+  --page:#e9eaef; --scr:#f2f2f7; --bar:#f9f9fb; --card:#ffffff; --card2:#eeeef3; --line:#0000000f; --line2:#0000001f;
+  --tx:#111216; --tx2:#5b5d68; --tx3:#8e909c; --acc:#4b55e6; --accbg:#4b55e61a; --ok:#1f9a62; --okbg:#1f9a621a;
+  --warn:#b7790f; --warnbg:#f0b24a26; --bad:#d2334d; --badbg:#d2334d17; --glass:#ffffffe6; --lock:linear-gradient(160deg,#9aa6ff,#d9dcff 60%,#f4f4ff);
+  --mac:#ffffff; --macside:#f3f3f6;
+}
+*{box-sizing:border-box;margin:0}
+body{background:var(--page);color:var(--tx);font:13px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;padding:28px 24px 60px;-webkit-font-smoothing:antialiased}
+header{max-width:1280px;margin:0 auto 16px}
+h1{font-size:22px;font-weight:650;letter-spacing:-.02em}
+header p{color:var(--tx2);margin-top:4px;max-width:760px}
+nav{display:flex;gap:6px;flex-wrap:wrap;margin-top:14px}
+nav button{font:inherit;color:var(--tx2);background:transparent;border:1px solid var(--line2);border-radius:999px;padding:6px 13px;cursor:pointer}
+nav button.on{background:var(--tx);color:var(--page);border-color:var(--tx);font-weight:600}
+nav .theme{margin-left:auto}
+.screen{display:none;max-width:1280px;margin:0 auto}.screen.on{display:block}
+.cap{color:var(--tx2);margin:0 0 14px;max-width:900px}.cap b{color:var(--tx)}
+.row{display:flex;align-items:center;gap:8px}.col{display:flex;flex-direction:column}.sp{flex:1}.grow{flex:1;min-width:0}
+.t2{color:var(--tx2)}.t3{color:var(--tx3)}.sm{font-size:11.5px}.xs{font-size:10.5px}.b{font-weight:600}
+.mono{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:11px}
+.phones{display:flex;gap:26px;flex-wrap:wrap;align-items:flex-start}
+.fig{display:flex;flex-direction:column;gap:8px;width:300px}
+.fig>.lbl{color:var(--tx2);font-size:12px}
+/* the phone */
+.ph{width:300px;height:640px;border-radius:44px;border:9px solid #2a2b31;background:var(--scr);position:relative;overflow:hidden;box-shadow:0 24px 60px #0007;display:flex;flex-direction:column}
+body.light .ph{border-color:#c9cad3}
+.island{position:absolute;top:9px;left:50%;transform:translateX(-50%);width:92px;height:26px;border-radius:14px;background:#000;z-index:5}
+.status{height:44px;flex:none;display:flex;align-items:flex-end;justify-content:space-between;padding:0 24px 6px;font-size:12px;font-weight:600}
+.nav{flex:none;padding:6px 14px 8px;display:flex;flex-direction:column;gap:4px}
+.nav .top{display:flex;align-items:center;gap:8px;color:var(--acc);font-size:13px}
+.nav h2{font-size:24px;font-weight:700;letter-spacing:-.02em}
+.nav h3{font-size:15px;font-weight:650;text-align:center}
+.body{flex:1;min-height:0;overflow:hidden;padding:0 12px;display:flex;flex-direction:column;gap:8px}
+.tabs{flex:none;height:62px;border-top:1px solid var(--line);background:var(--bar);display:flex;justify-content:space-around;padding-top:7px;font-size:10px;color:var(--tx3)}
+.tabs span{display:flex;flex-direction:column;align-items:center;gap:3px;position:relative}
+.tabs span.on{color:var(--acc)}
+.tabs i{width:20px;height:16px;border-radius:5px;border:2px solid currentColor;display:block}
+.tabs em{position:absolute;top:-5px;right:-6px;background:var(--bad);color:#fff;font-style:normal;font-size:9px;font-weight:700;border-radius:8px;padding:0 4px}
+.home{height:5px;width:110px;border-radius:3px;background:var(--tx);opacity:.8;margin:6px auto 7px;flex:none}
+/* parts */
+.conn{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--tx2);background:var(--card);border:1px solid var(--line);border-radius:9px;padding:5px 9px}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--tx3);flex:none}.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.acc{background:var(--acc)}.dot.bad{background:var(--bad)}
+.sec{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--tx3);padding:6px 4px 0;display:flex}
+.list{background:var(--card);border-radius:12px;overflow:hidden}
+.list .r{display:flex;align-items:center;gap:9px;padding:9px 11px;border-bottom:1px solid var(--line)}.list .r:last-child{border:0}
+.av{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;font-size:12px;font-weight:700;color:#111;flex:none}
+.av.s{width:20px;height:20px;border-radius:6px;font-size:10px}
+.a1{background:#b9a6ff}.a2{background:#ffb37a}.a3{background:#7fd8c4}.a4{background:#9fc5ff}.a5{background:#ff9fb7}
+.badge{min-width:18px;height:18px;border-radius:9px;background:var(--warn);color:#111;font-size:10.5px;font-weight:700;display:grid;place-items:center;padding:0 5px}
+.spin{width:12px;height:12px;border-radius:50%;border:2px solid var(--accbg);border-top-color:var(--acc);animation:s 1s linear infinite;flex:none}@keyframes s{to{transform:rotate(360deg)}}
+.ell{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.need{border:1px solid #f0b24a55;background:var(--warnbg);border-radius:12px;padding:9px 10px;display:flex;flex-direction:column;gap:6px}
+.need .q{font-size:12.5px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:5px;border-radius:9px;padding:6px 10px;background:var(--card2);color:var(--tx);font-size:12px;font-weight:550;white-space:nowrap}
+.btn.pri{background:var(--acc);color:#fff}.btn.bad{color:var(--bad)}.btn.wide{flex:1}
+.fid{font-size:10px;border:1px solid currentColor;border-radius:4px;padding:0 3px;opacity:.85}
+.tag{font-size:10px;border-radius:5px;padding:1px 6px;background:var(--card2);color:var(--tx2);white-space:nowrap}
+.tag.ok{background:var(--okbg);color:var(--ok)}.tag.warn{background:var(--warnbg);color:var(--warn)}.tag.acc{background:var(--accbg);color:var(--acc)}.tag.bad{background:var(--badbg);color:var(--bad)}
+.u{align-self:flex-end;background:var(--acc);color:#fff;border-radius:16px 16px 4px 16px;padding:7px 11px;max-width:80%;font-size:12.5px}
+.a{font-size:12.5px;max-width:96%}
+.tool{border:1px solid var(--line);border-radius:10px;background:var(--card);padding:6px 9px;display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--tx2)}
+.sub{border:1px solid var(--line);border-left:3px solid #7fd8c4;border-radius:10px;background:var(--card);padding:7px 9px;font-size:11.5px}
+.chg{border-left-color:var(--acc)}
+.field{flex:none;margin:6px 10px 0;border:1px solid var(--line2);border-radius:20px;background:var(--card);padding:7px 8px 7px 12px;display:flex;align-items:center;gap:8px;color:var(--tx3);font-size:12.5px}
+.field .ic{width:24px;height:24px;border-radius:12px;background:var(--card2);display:grid;place-items:center;font-size:12px;color:var(--tx2);flex:none}
+.field .send{background:var(--acc);color:#fff}
+.field .stop{background:var(--bad);color:#fff}
+.seg{display:flex;background:var(--card2);border-radius:9px;padding:2px;font-size:11.5px}
+.seg span{flex:1;text-align:center;padding:4px 0;border-radius:7px;color:var(--tx2)}.seg span.on{background:var(--card);color:var(--tx);font-weight:600;box-shadow:0 1px 2px #0003}
+.meter{height:4px;border-radius:2px;background:var(--card2);overflow:hidden}.meter i{display:block;height:100%;background:var(--acc)}
+.dim{opacity:.55}
+.diff{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:10.5px;line-height:1.5;border-radius:10px;overflow:hidden;background:var(--card)}
+.diff div{padding:0 8px;white-space:pre-wrap;word-break:break-all}
+.diff .add{background:var(--okbg);color:var(--ok)}.diff .del{background:var(--badbg);color:var(--bad)}.diff .hunk{color:var(--tx3);background:var(--card2)}
+/* lock screen */
+.lockbg{background:var(--lock)}
+.clock{text-align:center;color:#fff;margin-top:18px}.clock b{display:block;font-size:56px;font-weight:300;letter-spacing:-.02em;line-height:1}
+body.light .clock{color:#1a1c3a}
+.notif{margin:0 10px;background:var(--glass);border-radius:18px;padding:10px 12px;display:flex;flex-direction:column;gap:3px;backdrop-filter:blur(12px)}
+.notif .app{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--tx2)}
+.notif .app i{width:16px;height:16px;border-radius:4px;background:#8b93ff;display:block}
+.acts{margin:6px 10px 0;background:var(--glass);border-radius:14px;overflow:hidden}
+.acts div{padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;display:flex;align-items:center}.acts div:last-child{border:0}
+.acts .bad{color:var(--bad)}
+.la{margin:0 10px;background:#000;color:#fff;border-radius:20px;padding:11px 12px;display:flex;flex-direction:column;gap:6px}
+.dyn{position:absolute;top:9px;left:50%;transform:translateX(-50%);height:26px;border-radius:14px;background:#000;z-index:6;display:flex;align-items:center;justify-content:space-between;padding:0 9px;width:170px;color:#fff;font-size:11px}
+.widget{background:var(--glass);border-radius:18px;padding:10px 11px;display:flex;flex-direction:column;gap:5px}
+.wsmall{width:122px;height:122px}.wmed{height:122px}
+.sheet{position:absolute;left:0;right:0;bottom:0;background:var(--bar);border-radius:16px 16px 0 0;padding:12px 14px 22px;box-shadow:0 -10px 40px #0006;display:flex;flex-direction:column;gap:8px}
+.scrim{position:absolute;inset:0;background:#0007}
+.qr{width:150px;height:150px;margin:0 auto;border-radius:10px;background:
+  repeating-linear-gradient(90deg,#111 0 7px,#fff 7px 12px,#111 12px 15px,#fff 15px 22px),
+  repeating-linear-gradient(0deg,#111 0 6px,#fff 6px 13px);background-blend-mode:difference;border:8px solid #fff}
+.digits{font:600 26px/1 "SF Mono",ui-monospace,Menlo,monospace;letter-spacing:.18em;text-align:center}
+.cam{flex:1;margin:0 12px;border-radius:18px;background:linear-gradient(135deg,#2b2d38,#101117);position:relative;display:grid;place-items:center}
+.cam .frame{width:170px;height:170px;border:3px solid #ffffffcc;border-radius:18px}
+.cam .qr{position:absolute;width:120px;height:120px;transform:rotate(-6deg)}
+/* the Mac window */
+.mac{background:var(--mac);border:1px solid var(--line2);border-radius:12px;overflow:hidden;box-shadow:0 30px 80px #0006;display:flex;flex-direction:column}
+.mac .bar{height:44px;flex:none;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--line)}
+.lights{display:flex;gap:8px;margin-right:6px}.lights i{width:12px;height:12px;border-radius:50%;background:#ff5f57}.lights i:nth-child(2){background:#febc2e}.lights i:nth-child(3){background:#28c840}
+.mtabs{display:flex;gap:4px;margin:0 auto}.mtabs span{padding:5px 10px;border-radius:7px;color:var(--tx2);font-size:11.5px}.mtabs span.on{background:var(--card2);color:var(--tx);font-weight:600}
+.mpane{padding:18px 22px;display:flex;flex-direction:column;gap:12px}
+.mbox{border:1px solid var(--line);border-radius:10px;background:var(--macside)}
+.mbox .r{display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--line)}.mbox .r:last-child{border:0}
+.sw{width:30px;height:18px;border-radius:9px;background:var(--card2);position:relative;flex:none}.sw::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 2px #0004}.sw.on{background:var(--ok)}.sw.on::after{left:14px}
+table{width:100%;border-collapse:collapse;font-size:11.5px}th{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--tx3);text-align:left;font-weight:600;padding:6px 10px;border-bottom:1px solid var(--line)}td{padding:6px 10px;border-bottom:1px solid var(--line);white-space:nowrap}tr:last-child td{border:0}
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;margin-top:18px}
+.notes div{border:1px solid var(--line);border-radius:10px;padding:10px 12px;color:var(--tx2)}
+.notes b{display:block;color:var(--tx);margin-bottom:3px}
+.pages{display:flex;gap:5px;justify-content:center;padding:4px 0}.pages i{width:6px;height:6px;border-radius:3px;background:var(--tx3);opacity:.5}.pages i.on{opacity:1;background:var(--tx)}
+.strip{display:flex;gap:6px;overflow:hidden}.strip span{font-size:11px;padding:4px 9px;border-radius:12px;background:var(--card);color:var(--tx2);display:flex;align-items:center;gap:5px;white-space:nowrap}.strip span.on{background:var(--tx);color:var(--scr);font-weight:600}
+</style></head>
+<body>
+<header>
+  <h1>pi² for iPhone — drafts</h1>
+  <p>The screens of <a href="iphone.md" style="color:var(--acc)">the design</a> (#620), in phone-sized frames. The example is pi² itself as a project, mid-run, with a second project beside it. Everything the phone shows comes from the Mac's engine; the phone keeps only its last copy.</p>
+  <nav>
+    <button data-s="pair">Pairing</button>
+    <button data-s="list">Projects</button>
+    <button data-s="dash">Dashboard</button>
+    <button data-s="hub">A project's hub</button>
+    <button data-s="card">A card, and its notification</button>
+    <button data-s="agent">An agent's conversation</button>
+    <button data-s="work">Work and a pull request</button>
+    <button data-s="devices">Devices on the Mac</button>
+    <button data-s="asleep">Mac asleep, relay down</button>
+    <button data-s="adds">What a phone adds</button>
+    <button class="theme" id="theme">Light</button>
+  </nav>
+</header>
+
+<!-- ============================== Pairing ============================== -->
+<section class="screen" id="pair">
+  <p class="cap"><b>Pairing, once, with both devices in hand; or the demo mode, with none.</b> The Mac shows a code good for one claim and five minutes; the phone scans it with its own camera and reaches the Mac through pi²'s relay, or directly if both are on the same network; the phone shows six digits, and the person types them on the Mac. Only the Mac can pair a device, and it checks the claim comes from a genuine pi² for iPhone.</p>
+  <div class="phones">
+    <div class="fig" style="width:420px"><div class="lbl">1 · On the Mac: Settings › Devices › Pair an iPhone</div>
+      <div class="mac" style="height:500px">
+        <div class="bar"><div class="lights"><i></i><i></i><i></i></div><div class="b">Pair an iPhone</div></div>
+        <div class="mpane" style="align-items:center;text-align:center;gap:9px">
+          <div class="t2">Open pi² on your iPhone and scan this code.<br>The iPhone can be on any network.</div>
+          <div class="qr" style="width:120px;height:120px"></div>
+          <div class="t3 sm">Good for 4:52 more, for one iPhone · <span style="color:var(--acc)">Make a new code</span></div>
+          <div class="t2 sm">Then type the six digits your iPhone shows:</div>
+          <div class="row" style="gap:5px"><div style="width:30px;height:36px;border:1px solid var(--line2);border-radius:7px;display:grid;place-items:center;font:600 18px/1 ui-monospace,Menlo,monospace">4</div>
+            <div style="width:30px;height:36px;border:1px solid var(--line2);border-radius:7px;display:grid;place-items:center;font:600 18px/1 ui-monospace,Menlo,monospace">8</div>
+            <div style="width:30px;height:36px;border:1px solid var(--line2);border-radius:7px;display:grid;place-items:center;font:600 18px/1 ui-monospace,Menlo,monospace">2</div>
+            <div style="width:30px;height:36px;border:1px solid var(--line2);border-radius:7px;display:grid;place-items:center;font:600 18px/1 ui-monospace,Menlo,monospace">
+            </div>
+            <div style="width:30px;height:36px;border:1px solid var(--line2);border-radius:7px;display:grid;place-items:center;font:600 18px/1 ui-monospace,Menlo,monospace">
+            </div>
+            <div style="width:30px;height:36px;border:1px solid var(--line2);border-radius:7px;display:grid;place-items:center;font:600 18px/1 ui-monospace,Menlo,monospace">
+            </div></div>
+          <div class="t3 xs">Kept out of screen sharing and recordings. Once paired, the iPhone can answer for you and change what agents may do. You can revoke it here at any time.</div>
+        </div>
+      </div>
+    </div>
+    <div class="fig"><div class="lbl">2 · The phone's first screen</div>
+      <div class="ph"><div class="island"></div><div class="status"><span>9:41</span><span>●●●</span></div>
+        <div class="body" style="justify-content:center;align-items:center;text-align:center;gap:14px;padding:0 26px">
+          <div class="av" style="width:64px;height:64px;border-radius:18px;font-size:30px;background:#8b93ff">π²</div>
+          <div style="font-size:21px;font-weight:700">pi² on your iPhone</div>
+          <div class="t2">Your Mac does the work. This iPhone shows it, and answers for you when agents need you.</div>
+          <div class="t3 sm">On your Mac: pi² › Settings › Devices › Pair an iPhone.</div>
+        </div>
+        <div style="padding:0 18px 10px" class="col"><div class="btn pri" style="width:100%;padding:11px">Scan the code on your Mac</div><div style="text-align:center;color:var(--acc);padding:10px 0 2px">Try it without a Mac</div></div>
+        <div class="home"></div></div>
+    </div>
+    <div class="fig"><div class="lbl">3 · Scanning</div>
+      <div class="ph"><div class="island"></div><div class="status"><span>9:41</span><span>●●●</span></div>
+        <div class="nav"><h3>Scan the code</h3></div>
+        <div class="cam"><div class="qr"></div><div class="frame"></div></div>
+        <div class="t2 sm" style="text-align:center;padding:10px 20px">Connecting to “Studio Mac” through pi²'s relay…</div>
+        <div class="home"></div></div>
+    </div>
+    <div class="fig"><div class="lbl">4 · The phone shows six digits; the person types them on the Mac</div>
+      <div class="ph"><div class="island"></div><div class="status"><span>9:41</span><span>●●●</span></div>
+        <div class="nav"><h3>Type these on your Mac</h3></div>
+        <div class="body" style="justify-content:center;gap:14px;text-align:center;padding:0 22px">
+          <div class="t2">Type these digits in the window on your Mac. Nobody else can see them, so nobody else can pair in your place.</div>
+          <div class="digits">482 913</div>
+          <div class="row" style="justify-content:center"><div class="spin"></div><span class="t3 sm">Waiting for your Mac</span></div>
+        </div>
+        <div style="padding:0 16px 10px" class="col"><div class="t3 xs" style="text-align:center">Next: notifications, then Face ID, each with what it is for.</div></div>
+        <div class="home"></div></div>
+    </div>
+    <div class="fig"><div class="lbl">5 · Or: the demo mode, with no Mac</div>
+      <div class="ph"><div class="island"></div><div class="status"><span>9:41</span><span>●●●</span></div>
+        <div style="background:var(--accbg);color:var(--acc);font-size:11.5px;font-weight:600;padding:6px 14px;display:flex;align-items:center">Demo · nothing here is real<span class="sp"></span><span>Leave</span></div>
+        <div class="nav"><h2>pi²</h2><div class="conn"><span class="dot acc"></span>Demo Mac · canned data, no network</div></div>
+        <div class="body">
+          <div class="sec">Needs you · 2</div>
+          <div class="need"><div class="row xs t2"><span class="av s a2">F</span>Forge · Garden planner · approval</div><div class="mono" style="font-size:11px">npm test</div><div class="row"><span class="btn pri wide">Allow once</span><span class="btn wide">Deny</span></div></div>
+          <div class="sec">Projects</div>
+          <div class="list">
+            <div class="r"><span class="av a3">G</span><div class="grow"><div class="row"><span class="b">Garden planner</span><span class="sp"></span><span class="badge">2</span></div><div class="t3 sm ell">The watering schedule is ready for review.</div></div></div>
+            <div class="r"><span class="av a4">R</span><div class="grow"><div class="row"><span class="b">Recipe site</span><span class="sp"></span><div class="spin"></div></div><div class="t3 sm ell">Scout is checking every recipe's links.</div></div></div>
+          </div>
+          <div class="t3 xs" style="padding:0 4px">Every screen works here: answer cards, write to an orchestrator, open a pull request and merge it; Face ID opens it, as it will on your phone. When you have pi² on a Mac, pair it from Settings.</div>
+        </div>
+        <div class="home"></div></div>
+    </div>
+  </div>
+  <div class="notes">
+    <div><b>What the code holds</b>The Mac's name, its public key, the relay's address, and a one-time secret. No account, no password. The relay is told only that a phone may join for the next five minutes.</div>
+    <div><b>Why the digits are typed</b>The code can be seen by anyone at the screen, in a screen share, or by an agent on the Mac. The digits are worked out from the encrypted connection and shown only on the phone that made it, so only the person's own phone can pair. If another device claims the code first, the Mac says so and asks to start again. The Mac also checks the claim comes from a genuine pi² for iPhone.</div>
+    <div><b>Not from a link</b>The phone pairs only from its own camera. A link in a message or a web page can never pair it with someone else's Mac.</div>
+    <div><b>The demo mode</b>For someone who has not paired yet, and for App Review, whose reviewer has no Mac running pi². The real screens, fed by a recording made with pi²'s scripted demo model; it connects nowhere, and Leave deletes what it wrote.</div>
+    <div><b>After pairing</b>The phone asks for notifications, then Face ID, each with a line on what it is for. Face ID opens pi² from then on, with no passcode instead; a phone without it cannot be paired.</div>
+  </div>
+</section>
+
+<!-- ============================== Projects ============================== -->
+<section class="screen" id="list">
+  <p class="cap"><b>The phone opens on one list.</b> What needs the person first, answered in place; then the Dashboard and the projects, with the badges of the Mac's sidebar; then chats and the archive. The bar on top says which Mac and how it is reached.</p>
+  <div class="phones">
+    <div class="fig"><div class="lbl">The top of the list</div>
+      <div class="ph"><div class="island"></div><div class="status"><span>9:41</span><span>●●●</span></div>
+        <div class="nav"><div class="top"><span class="sp"></span><span>Search</span></div><h2>pi²</h2>
+          <div class="conn"><span class="dot ok"></span>Studio Mac · through pi²'s relay<span class="sp"></span><span class="t3">now</span></div></div>
+        <div class="body">
+          <div class="sec">Needs you · 2</div>
+          <div class="need"><div class="row xs t2"><span class="av s a2">F</span>Forge · pi2 · approval</div><div class="q mono" style="font-size:11px">npm --prefix engine test</div>
+            <div class="row"><span class="btn pri wide">Allow once</span><span class="btn wide">Deny</span></div></div>
+          <div class="need"><div class="row xs t2"><span class="av s a1">O</span>Orchestrator · pi2 · more reach</div><div class="q">Let Forge merge its own pull requests</div>
+            <div class="row"><span class="btn pri wide">Allow</span><span class="btn wide">Refuse</span></div></div>
+          <div class="list"><div class="r"><span class="av s a4" style="background:var(--card2);color:var(--tx)">▦</span><span class="b">Dashboard</span><span class="sp"></span><span class="t3 sm">3 projects</span></div></div>
+          <div class="sec">Projects</div>
+          <div class="list">
+            <div class="r"><span class="av a1">π</span><div class="grow"><div class="row"><span class="b">pi2</span><span class="sp"></span><span class="badge">2</span></div><div class="t3 sm ell">Two PRs ready; #612 is waiting on your answer.</div></div></div>
+            <div class="r"><span class="av a3">W</span><div class="grow"><div class="row"><span class="b">website</span><span class="sp"></span><div class="spin"></div></div><div class="t3 sm ell">Scout is checking the links on every page.</div></div></div>
+            <div class="r"><span class="av a5">T</span><div class="grow"><div class="row"><span class="b">taxes 2026</span><span class="sp"></span><span class="t3 sm">idle</span></div><div class="t3 sm ell">All receipts filed. Nothing open.</div></div></div>
+          </div>
+        </div>
+        <div class="home"></div></div>
+    </div>
+    <div class="fig"><div class="lbl">Further down</div>
+      <div class="ph"><div class="island"></div><div class="status"><span>9:41</span><span>●●●</span></div>
+        <div class="nav"><h3>pi²</h3></div>
+        <div class="body">
+          <div class="list">
+            <div class="r"><span class="av a5">T</span><div class="grow"><div class="row"><span class="b">taxes 2026</span><span class="sp"></span><span class="t3 sm">idle</span></div><div class="t3 sm ell">All receipts filed. Nothing open.</div></div></div>
+          </div>
+          <div class="sec">Chats</div>
+          <div class="list">
+            <div class="r"><span class="av s a4">A</span><span class="grow ell">Recipe for 12, scaled</span><span class="t3 sm">Tue</span></div>
+            <div class="r"><span class="av s a4">A</span><span class="grow ell">Which lens for low light?</span><span class="t3 sm">Mon</span></div>
+          </div>
+          <div class="sec">More</div>
+          <div class="list">
+            <div class="r"><span class="grow">Templates</span><span class="t3">›</span></div>
+            <div class="r"><span class="grow">Schedules</span><span class="t3">›</span></div>
+            <div class="r"><span class="grow">Background commands</span><span class="tag acc">1 running</span></div>
+            <div class="r"><span class="grow">Usage and limits</span><span class="t3 sm">week 41%</span></div>
+            <div class="r"><span class="grow">Archive</span><span class="t3">›</span></div>
+            <div class="r"><span class="grow">Settings</span><span class="t3">›</span></div>
+          </div>
+        </div>
+        <div class="home"></div></div>
+    </div>
+  </div>
+  <div class="notes">
+    <div><b>One list, not tabs</b>A project opens a hub with its own tab bar; a second tab bar at the top level would nest one in the other. The list keeps what needs the person one tap away from everywhere (it is also on every project's Now).</div>
+    <div><b>Badges as on the Mac</b>A count when something needs the person, a spinner while the project's agents work, "idle" otherwise. The line under the name is the orchestrator's last words.</div>
+    <div><b>The connection bar</b>Through pi²'s relay (the usual case, on any network), at home, direct, Mac asleep since a time, or relay unreachable · at home only. Tapping it says what can be done from here.</div>
+  </div>
+</section>
+
+<!-- ============================== Dashboard ============================== -->
+<section class="screen" id="dash">
+  <p class="cap"><b>The Dashboard on a phone</b>: the Mac's columns become pages, one per watched project, swiped sideways. Cards are answered on the page; the field messages that project's orchestrator.</p>
+  <div class="phones">
+    <div class="fig"><div class="lbl">pi2's page</div>
+      <div class="ph"><div class="island"></div><div class="status"><span>9:41</span><span>●●●</span></div>
+        <div class="nav"><div class="top">‹ pi²</div><h2>Dashboard</h2>
+          <div class="strip"><span class="on">pi2 <span class="dot warn"></span></span><span>website <span class="dot acc"></span></span><span>taxes 2026</span></div></div>
+        <div class="body">
+          <div class="need"><div class="row xs t2"><span class="av s a2">F</span>Forge · approval</div><div class="mono" style="font-size:11px">npm --prefix engine test</div>
+            <div class="row"><span class="btn pri wide">Allow once</span><span class="btn wide">Deny</span></div></div>
+          <div class="sec">Working · 3</div>
+          <div class="list">
+            <div class="r"><span class="av s a2">F</span><div class="grow"><div class="row"><span class="b sm">Forge</span><span class="t3 xs">opus · 14 min</span></div><div class="t3 xs ell">Running the engine's tests</div></div><div class="spin"></div></div>
+            <div class="r"><span class="av s a3">S</span><div class="grow"><div class="row"><span class="b sm">Scribe</span><span class="t3 xs">sonnet · 3 min</span></div><div class="t3 xs ell">Writing docs/iphone.md section 6</div></div><div class="spin"></div></div>
+            <div class="r"><span class="av s a4">R</span><div class="grow"><div class="row"><span class="b sm">Reviewer</span><span class="t3 xs">opus · 1 min</span></div><div class="t3 xs ell">Reading PR #619</div></div><div class="spin"></div></div>
+          </div>
+          <div class="sec">The orchestrator said</div>
+          <div class="a t2" style="border-left:2px solid var(--acc);padding-left:9px">Two pull requests are ready. #619 needs your answer on the merge before I hand out #621.</div>
+          <div class="pages"><i class="on"></i><i></i><i></i></div>
+        </div>
+        <div class="field">Message pi2's orchestrator<span class="sp"></span><span class="ic">🎤</span></div>
+        <div class="home"></div></div>
+    </div>
+    <div class="fig"><div class="lbl">Swiped to website</div>
+      <div class="ph"><div class="island"></div><div class="status"><span>9:41</span><span>●●●</span></div>
+        <div class="nav"><div class="top">‹ pi²</div><h2>Dashboard</h2>
+          <div class="strip"><span>pi2 <span class="dot warn"></span></span><span class="on">website <span class="dot acc"></span></span><span>taxes 2026</span></div></div>
+        <div class="body">
+          <div class="t3 sm" style="padding:2px 4px">Nothing needs you here.</div>
+          <div class="sec">Working · 1</div>
+          <div class="list"><div class="r"><span class="av s a3">S</span><div class="grow"><div class="row"><span class="b sm">Scout</span><span class="t3 xs">haiku · 6 min</span></div><div class="t3 xs ell">Checking the links on every page</div></div><div class="spin"></div></div></div>
+          <div class="sec">Finished today</div>
+          <div class="list"><div class="r"><span class="tag ok">done</span><span class="grow sm ell">New pricing page</span><span class="t3 xs">10:12</span></div><div class="r"><span class="tag ok">done</span><span class="grow sm ell">Fix the footer on narrow screens</span><span class="t3 xs">8:40</span></div></div>
+          <div class="sec">The orchestrator said</div>
+          <div class="a t2" style="border-left:2px solid var(--acc);padding-left:9px">Pricing is live. Scout is checking links; I'll tell you if any are broken.</div>
+          <div class="sp"></div><div class="row" style="justify-content:center"><span class="btn">Open website’s hub</span></div>
+          <div class="pages"><i></i><i class="on"></i><i></i></div>
+        </div>
+        <div class="field">Message website's orchestrator<span class="sp"></span><span class="ic">🎤</span></div>
+        <div class="home"></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== Hub ============================== -->
+<section class="screen" id="hub">
+  <p class="cap"><b>A project's hub</b> opens on the conversation with its orchestrator, full width. The board is the tab bar along the bottom: Chat, Now, Work, and More for Agents, Rules, Notes, Branches and the project's settings.</p>
+  <div class="phones">
+    <div class="fig"><div class="lbl">Chat (the orchestrator)</div>
+      <div class="ph"><div class="island"></div><div class="status"><span>9:41</span><span>●●●</span></div>
+        <div class="nav"><div class="top">‹ pi²<span class="sp"></span><span class="t2 sm">main · opus</span></div><div class="row"><span class="av a1">π</span><div class="col grow"><span class="b">pi2</span><div class="meter" style="width:120px"><i style="width:41%"></i></div></div><span class="tag warn">2 need you</span></div></div>
+        <div class="body" style="gap:9px">
+          <div class="u">What's left before we can ship the hub?</div>
+          <div class="a">Three things. I've given two to Forge and one to Scribe:</div>
+          <div class="sub">↳ <b>Forge</b> · “Fold the board on narrow windows” · <span class="tag acc">working</span></div>
+          <div class="sub">↳ <b>Scribe</b> · “Document the Dashboard” · <span class="tag ok">reported</span></div>
+          <div class="sub chg">✎ Made Reviewer use opus for this project <span style="color:var(--acc)">Undo</span></div>
+          <div class="tool">▸ work · list open · 12 items</div>
+          <div class="a">#619 is ready to merge. Merging is yours in this project, so I've put it under Needs you.</div>
+        </div>
+        <div class="field">Message the orchestrator<span class="sp"></span><span class="ic">＋</span><span class="ic stop">■</span></div>
+        <div class="tabs"><span class="on"><i></i>Chat</span><span><i></i>Now<em>2</em></span><span><i></i>Work</span><span><i></i>More</span></div></div>
+    </div>
+    <div class="fig"><div class="lbl">Now</div>
+      <div class="ph"><div class="island"></div><div class="status"><span>9:41</span><span>●●●</span></div>
+        <div class="nav"><div class="top">‹ pi²</div><h2>Now</h2></div>
+        <div class="body">
+          <div class="sec">Needs you · 2</div>
+          <div class="need"><div class="row xs t2"><span class="av s a2">F</span>Forge · approval</div><div class="mono" style="font-size:11px">npm --prefix engine test</div><div class="row"><span class="btn pri wide">Allow once</span><span class="btn wide">Deny</span></div></div>
+          <div class="need"><div class="row xs t2"><span class="av s a1">O</span>Orchestrator · merge</div><div class="q">Merge #619 “Hub: fold the board”</div><div class="row"><span class="btn pri wide">Merge</span><span class="btn wide">Open</span></div></div>
+          <div class="sec">Working</div>
+          <div class="list">
+            <div class="r"><span class="av s a2">F</span><div class="grow"><div class="b sm">Forge <span class="t3 xs">opus · 14 min</span></div><div class="t3 xs ell">Running the engine's tests</div></div><div class="spin"></div></div>
+            <div class="r"><span class="av s a3">S</span><div class="grow"><div class="b sm">Scribe <span class="t3 xs">sonnet · 3 min</span></div><div class="t3 xs ell">Writing the Dashboard's page</div></div><div class="spin"></div></div>
+          </div>
+          <div class="sec">Finished today</div>
+          <div class="list"><div class="r"><span class="tag ok">done</span><span class="grow sm ell">#617 Sidebar badges</span><span class="t3 xs">9:02</span></div></div>
+        </div>
+        <div class="tabs"><span><i></i>Chat</span><span class="on"><i></i>Now<em>2</em></span><span><i></i>Work</span><span><i></i>More</span></div></div>
+    </div>
+    <div class="fig"><div class="lbl">More: the rest of the board</div>
+      <div class="ph"><div class="island"></div><div class="status"><span>9:41</span><span>●●●</span></div>
+        <div class="nav"><div class="top">‹ pi²</div><h2>More</h2></div>
+        <div class="body">
+          <div class="list">
+            <div class="r"><span class="grow">Agents</span><span class="t3 sm">6</span><span class="t3">›</span></div>
+            <div class="r"><span class="grow">Rules</span><span class="t3 sm">9 · about 640 tokens</span><span class="t3">›</span></div>
+            <div class="r"><span class="grow">Notes</span><span class="t3 sm">41</span><span class="t3">›</span></div>
+            <div class="r"><span class="grow">Branches</span><span class="t3 sm">5 worktrees</span><span class="t3">›</span></div>
+          </div>
+          <div class="list">
+            <div class="r"><span class="grow">What the orchestrator may do</span><span class="t3">›</span></div>
+            <div class="r"><span class="grow">Limits</span><span class="t3 sm">stop at 90%</span><span class="t3">›</span></div>
+            <div class="r"><span class="grow">Wake on reports</span><div class="sw on"></div></div>
+            <div class="r"><span class="grow">Other conversations</span><span class="t3 sm">4</span><span class="t3">›</span></div>
+          </div>
+          <div class="list"><div class="r"><span class="grow" style="color:var(--acc)">Start fresh</span></div><div class="r"><span class="grow" style="color:var(--bad)">Archive project</span></div></div>
+          <div class="t3 xs" style="padding:0 4px">Face ID opened pi²; nothing is asked again. A change that widens what agents may do is notified on the Mac.</div>
+        </div>
+        <div class="tabs"><span><i></i>Chat</span><span><i></i>Now<em>2</em></span><span><i></i>Work</span><span class="on"><i></i>More</span></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== A card ============================== -->
+<section class="screen" id="card">
+  <p class="cap"><b>A card that needs the person, in the app and as a notification.</b> The notification carries the card's buttons; every button opens pi² on the card, asks Face ID if pi² was closed, shows the whole card, then does what was chosen. Nothing is answered from the Lock Screen.</p>
+  <div class="phones">
+    <div class="fig"><div class="lbl">On the Lock Screen (details hidden until unlocked, the default)</div>
+      <div class="ph lockbg"><div class="island"></div><div class="status" style="color:#fff"><span>9:41</span><span>●●●</span></div>
+        <div class="clock"><span class="sm">Thursday 26 November</span><b>9:41</b></div>
+        <div class="sp"></div>
+        <div class="notif"><div class="app"><i></i>pi²<span class="sp"></span>now</div><div class="b sm">Forge needs approval</div><div class="sm t2">pi2 · unlock to see the command</div></div>
+        <div style="height:6px"></div>
+        <div class="notif"><div class="app"><i></i>pi²<span class="sp"></span>2 min ago</div><div class="b sm">The orchestrator asks for more reach</div><div class="sm t2">pi2 · Let Forge merge its own pull requests</div></div>
+        <div style="height:30px"></div><div class="home" style="background:#fff"></div></div>
+    </div>
+    <div class="fig"><div class="lbl">Pressed: the card's buttons</div>
+      <div class="ph lockbg"><div class="island"></div><div class="status" style="color:#fff"><span>9:41</span><span>●●●</span></div>
+        <div class="scrim"></div>
+        <div style="position:relative;margin-top:120px">
+          <div class="notif"><div class="app"><i></i>pi²<span class="sp"></span>now</div><div class="b sm">Forge needs approval</div><div class="sm t2">pi2 · npm --prefix engine test</div><div class="xs t3">In Forge's sub-chat “Fold the board”, folder pi2</div></div>
+          <div class="acts"><div>Allow once</div><div class="bad">Deny</div><div>Open in pi²</div></div>
+        </div></div>
+    </div>
+    <div class="fig"><div class="lbl">A question: Reply in the notification</div>
+      <div class="ph lockbg"><div class="island"></div><div class="status" style="color:#fff"><span>9:41</span><span>●●●</span></div>
+        <div class="scrim"></div>
+        <div style="position:relative;margin-top:120px">
+          <div class="notif"><div class="app"><i></i>pi²<span class="sp"></span>now</div><div class="b sm">Scribe has a question</div><div class="sm t2">pi2 · Should the Dashboard page show archived projects?</div></div>
+          <div class="acts"><div>Reply</div><div>Open in pi²</div></div>
+        </div>
+        <div class="sheet" style="background:var(--glass)"><div class="row"><div class="grow" style="border:1px solid var(--line2);border-radius:16px;padding:7px 11px;font-size:12.5px">No, only live ones</div><span class="btn pri">↑</span></div></div></div>
+    </div>
+    <div class="fig"><div class="lbl">A button pressed: pi² opens, Face ID, then the answer</div>
+      <div class="ph"><div class="island"></div><div class="status"><span>9:41</span><span>●●●</span></div>
+        <div class="nav"><div class="top">‹ Needs you</div><h3>More reach</h3></div>
+        <div class="body">
+          <div class="need"><div class="row xs t2"><span class="av s a1">O</span>Orchestrator · pi2 · more reach</div>
+            <div class="q b">Let Forge merge its own pull requests</div>
+            <div class="sm t2">Why: “#612 to #618 were each held an hour waiting for a merge; the reviews all passed.”</div>
+            <div class="xs t3">Changes the project's setting “merge without asking” for Forge. It can be undone.</div>
+            <div class="row"><span class="btn pri wide">Allow</span><span class="btn wide">Refuse</span></div></div>
+        </div>
+        <div class="scrim"></div>
+        <div style="position:absolute;top:220px;left:70px;width:142px;height:142px;border-radius:26px;background:var(--glass);display:grid;place-items:center;text-align:center;font-size:12px">
+          <div><div style="font-size:42px;line-height:1">⌾</div>Face ID</div></div>
+        <div class="home"></div></div>
+    </div>
+  </div>
+  <div class="notes">
+    <div><b>What a notification may say</b>The agent, the project, the kind of card and its short line, with any secret the Mac knows, and anything shaped like a key or token, replaced by •••. Never a file's contents, a command's output, or a transcript. On the Lock Screen only who and why, until the phone is unlocked, unless the person turns details on. The words come only from inside the seal: if it does not open, the phone shows “pi²: something needs you”.</div>
+    <div><b>Buttons, by kind</b>Each opens pi² first. Approval: Allow once (only when the whole command is shown; otherwise Open), Deny. Question: Reply. Decision: Open. More reach: Allow…, Refuse. Proposed rule: Accept, Refuse. Limit: Start anyway… (Face ID), Wait.</div>
+    <div><b>Answered elsewhere</b>A card answered on the Mac or on another device takes its notification away, and a button pressed on a stale one is told “This is no longer waiting”.</div>
+  </div>
+</section>
+
+<!-- ============================== Agent ============================== -->
+<section class="screen" id="agent">
+  <p class="cap"><b>An agent's conversation</b>, on a screen of its own, opened from Now, Agents or a sub-chat line. The same transcript page as the Mac's; what is written here is told to the orchestrator.</p>
+  <div class="phones">
+    <div class="fig"><div class="lbl">Forge, working</div>
+      <div class="ph"><div class="island"></div><div class="status"><span>9:41</span><span>●●●</span></div>
+        <div class="nav"><div class="top">‹ Now<span class="sp"></span><span class="t2 sm">hub-fold · worktree</span></div><div class="row"><span class="av a2">F</span><div class="col grow"><span class="b">Forge</span><span class="t3 xs">opus · sub-chat 214 · #619</span></div><div class="spin"></div></div></div>
+        <div class="body" style="gap:9px">
+          <div class="a t2 sm">Handed over by the orchestrator: “Fold the board on narrow windows.”</div>
+          <div class="tool">▸ read · ProjectHub.swift · 412 lines</div>
+          <div class="tool">▸ edit · ProjectHub.swift · +38 −6</div>
+          <div class="tool">▸ bash · ./app/build.sh · <span class="tag ok">0</span> · 1 m 52 s</div>
+          <div class="a">The build is green. The board now folds below 900 points and comes back above 1,000. Running the engine's tests next.</div>
+          <div class="tool"><div class="spin"></div>bash · npm --prefix engine test · <span class="tag warn">waiting for you</span></div>
+        </div>
+        <div class="field">Write to Forge (the orchestrator is told)<span class="sp"></span><span class="ic stop">■</span></div>
+        <div class="home"></div></div>
+    </div>
+    <div class="fig"><div class="lbl">A long output, opened</div>
+      <div class="ph"><div class="island"></div><div class="status"><span>9:41</span><span>●●●</span></div>
+        <div class="nav"><div class="top">‹ Forge</div><h3>./app/build.sh</h3></div>
+        <div class="body"><div class="diff" style="flex:1"><div class="hunk">exit 0 · 1 m 52 s · 1,204 lines, the last 300</div><div>Compiling pi2 ProjectHub.swift</div><div>Compiling pi2 ProjectHubViews.swift</div><div>Linking pi2</div><div>Build complete! (112.40s)</div><div>Copying pi2-peer into the bundle</div><div>Signing ad hoc</div><div>Built app/build/pi² dev.app</div></div>
+        <div class="row"><span class="btn wide">Copy</span><span class="btn wide">Show on Mac</span></div></div>
+        <div class="home"></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== Work ============================== -->
+<section class="screen" id="work">
+  <p class="cap"><b>The Work tab, and a pull request with its diff.</b> The list in the Mac's states; a pull request with its checks and what a reviewer found; one file's diff at a time, lines wrapped. Merge needs nothing more than the Face ID that opened pi²; the Mac is notified.</p>
+  <div class="phones">
+    <div class="fig"><div class="lbl">Work</div>
+      <div class="ph"><div class="island"></div><div class="status"><span>9:41</span><span>●●●</span></div>
+        <div class="nav"><div class="top">‹ pi²<span class="sp"></span><span>＋</span></div><h2>Work</h2><div class="seg"><span class="on">Open</span><span>Mine</span><span>Waiting</span><span>Done</span></div></div>
+        <div class="body">
+          <div class="list">
+            <div class="r"><div class="grow"><div class="row"><span class="t3 sm">#619</span><span class="b sm ell">Hub: fold the board</span></div><div class="row xs"><span class="tag acc">PR · ready</span><span class="t3">Forge</span></div></div></div>
+            <div class="r"><div class="grow"><div class="row"><span class="t3 sm">#621</span><span class="b sm ell">Dashboard on narrow windows</span></div><div class="row xs"><span class="tag">open</span><span class="t3">local model</span></div></div><span class="btn">Give</span></div>
+            <div class="r"><div class="grow"><div class="row"><span class="t3 sm">#618</span><span class="b sm ell">Rules tab: token count</span></div><div class="row xs"><span class="tag acc">in progress</span><span class="t3">Scribe</span></div></div></div>
+            <div class="r"><div class="grow"><div class="row"><span class="t3 sm">#615</span><span class="b sm ell">Archive a project with work open</span></div><div class="row xs"><span class="tag warn">waiting</span><span class="t3">on you</span></div></div></div>
+            <div class="r"><div class="grow"><div class="row"><span class="t3 sm">#611</span><span class="b sm ell">Usage by project</span></div><div class="row xs"><span class="tag bad">blocked</span><span class="t3">needs #604</span></div></div></div>
+          </div>
+        </div>
+        <div class="tabs"><span><i></i>Chat</span><span><i></i>Now<em>2</em></span><span class="on"><i></i>Work</span><span><i></i>More</span></div></div>
+    </div>
+    <div class="fig"><div class="lbl">A pull request</div>
+      <div class="ph"><div class="island"></div><div class="status"><span>9:41</span><span>●●●</span></div>
+        <div class="nav"><div class="top">‹ Work</div><div class="b">#619 Hub: fold the board</div><div class="t3 xs">Forge · hub-fold → main · +214 −38</div></div>
+        <div class="body">
+          <div class="list"><div class="r"><span class="dot ok"></span><span class="grow sm">engine</span><span class="t3 xs">3 m</span></div><div class="r"><span class="dot ok"></span><span class="grow sm">app</span><span class="t3 xs">9 m</span></div><div class="r"><span class="dot ok"></span><span class="grow sm">issue-labels</span><span class="t3 xs">20 s</span></div></div>
+          <div class="sub"><b>Reviewer</b> approved: “Folding works at both widths; one nit on the key's name, fixed in 3e1c.”</div>
+          <div class="sec">Files · 4</div>
+          <div class="list"><div class="r mono"><span class="grow ell">app/Sources/pi2/ProjectHub.swift</span><span class="t3">+132 −30</span></div><div class="r mono"><span class="grow ell">app/Sources/pi2/ProjectHubViews.swift</span><span class="t3">+61 −8</span></div><div class="r mono"><span class="grow ell">docs/projects.md</span><span class="t3">+12</span></div><div class="r mono"><span class="grow ell">changelog.d/619.md</span><span class="t3">+2</span></div></div>
+        </div>
+        <div style="padding:6px 12px 0" class="row"><span class="btn pri wide">Merge</span><span class="btn wide">Send back</span></div>
+        <div class="home"></div></div>
+    </div>
+    <div class="fig"><div class="lbl">One file's diff</div>
+      <div class="ph"><div class="island"></div><div class="status"><span>9:41</span><span>●●●</span></div>
+        <div class="nav"><div class="top">‹ #619<span class="sp"></span><span class="t2 sm">1 of 4 ›</span></div><div class="mono b">ProjectHub.swift</div></div>
+        <div class="body"><div class="diff">
+          <div class="hunk">@@ -88,12 +88,31 @@ struct ProjectHub</div>
+          <div>    var body: some View {</div>
+          <div class="del">-        HStack { conversation; board }</div>
+          <div class="add">+        HStack(spacing: 0) {</div>
+          <div class="add">+            conversation</div>
+          <div class="add">+            if !boardFolded { board }</div>
+          <div class="add">+        }</div>
+          <div class="add">+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in</div>
+          <div class="add">+            // Folds below 900 points and opens again above 1,000, so a window dragged across one width does not flicker.</div>
+          <div class="add">+            if width &lt; 900 { boardFolded = true } else if width &gt; 1000 { boardFolded = false }</div>
+          <div class="add">+        }</div>
+          <div>    }</div>
+          <div class="hunk">@@ -140,6 +159,8 @@</div>
+          <div>    private var board: some View {</div>
+        </div></div>
+        <div class="home"></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== Devices ============================== -->
+<section class="screen" id="devices">
+  <p class="cap"><b>The Devices page on the Mac</b>, a new tab in Settings: the switch, each paired device with Revoke, and what each did.</p>
+  <div class="mac" style="width:760px">
+    <div class="bar"><div class="lights"><i></i><i></i><i></i></div><div class="mtabs"><span>General</span><span>Chat</span><span>Providers</span><span>Tools</span><span>Storage</span><span class="on">Devices</span></div></div>
+    <div class="mpane">
+      <div class="mbox">
+        <div class="r"><div class="grow"><div class="b">Reach from an iPhone</div><div class="t3 sm">1 device paired. Reachable while pi² runs on this Mac.</div></div><div class="sw on"></div></div>
+        <div class="r"><div class="grow"><div class="b">Reach through pi²'s relay</div><div class="t3 sm">From any network, and notifications. Encrypted end to end; the relay cannot read what it passes. Connected · relay.pi2.example</div></div><div class="sw on"></div></div>
+        <div class="r"><div class="grow"><div class="b">Find on this network</div><div class="t3 sm">Talks directly at home, which is faster. macOS asked once for Local Network.</div></div><div class="sw on"></div></div>
+        <div class="r"><div class="grow"><div class="b">Direct from any address</div><div class="t3 sm">Off: direct connections only from home and private networks. Keys in this Mac's Secure Enclave.</div></div><div class="sw"></div></div>
+      </div>
+      <div class="mbox"><div class="r" style="background:var(--accbg)"><span class="dot ok"></span><div class="grow sm"><b>Alex's iPhone is connected</b> through the relay, since 9:36. The menu bar and the sidebar show it too.</div></div></div>
+      <div class="mbox">
+        <div class="r"><div class="av a4" style="border-radius:8px">📱</div><div class="grow"><div class="b">Alex's iPhone <span class="t3 sm" style="font-weight:400">iPhone 17 Pro · iOS 27.1</span></div><div class="t3 sm">Paired 26 Nov · last seen 2 min ago, at home · Face ID set up</div></div><span class="t2 sm" style="color:var(--acc)">What it did</span><span class="tag bad" style="padding:4px 9px">Revoke</span></div>
+        <div class="r"><span class="grow" style="color:var(--acc)">Pair an iPhone…</span><span class="t3 sm">up to 5 devices</span></div>
+        <div class="r t3 sm">Lost your iPhone away from this Mac? Erase it with Find My: that destroys the keys that pair it.</div>
+      </div>
+      <div class="b" style="margin-top:4px">What Alex's iPhone did</div>
+      <div class="mbox"><table>
+        <tr><th>When</th><th>What</th><th>Path</th><th>Face ID</th><th></th></tr>
+        <tr><td>9:41</td><td>Allowed once: Forge, npm --prefix engine test (pi2)</td><td>home</td><td></td><td class="t3">done</td></tr>
+        <tr><td>9:36</td><td>Connected, Face ID</td><td>relay</td><td>✓</td><td class="t3">done</td></tr>
+        <tr><td>9:38</td><td>Merged #617 “Sidebar badges” (pi2) · notified</td><td>home</td><td>✓</td><td class="t3">done</td></tr>
+        <tr><td>Yesterday 22:05</td><td>Answered Scribe: “No, only live ones” (pi2)</td><td>mailbox</td><td></td><td class="t3">done</td></tr>
+        <tr><td>Yesterday 19:12</td><td>Sent to website's orchestrator: “Publish once the links check”</td><td>relay</td><td></td><td class="t3">done</td></tr>
+        <tr><td>Yesterday 19:10</td><td>Allow everything for Forge</td><td>relay</td><td>✓</td><td class="t3" style="color:var(--bad)">refused: only on this Mac</td></tr>
+      </table></div>
+    </div>
+  </div>
+  <div class="notes">
+    <div><b>Revoke</b>Takes effect at once: the device's keys are forgotten, its connection is closed, and the relay forgets it, its mailbox and its push token. The phone, when it next reaches the Mac, is told and wipes what it kept.</div>
+    <div><b>The log</b>Every answer, message, start, stop and change a device made, every connection and refused try, and every file it read or conversation it exported, kept 90 days, with the path and the Face ID that opened the session. A change that widens what agents may do is also notified on this Mac. Other reads are not logged. After five refused tries in ten minutes the Mac suspends the device until it is resumed here.</div>
+    <div><b>Off</b>Turning “Reach from an iPhone” off closes the Mac's connection to the relay and its listener at home; paired devices stay paired and can do nothing until it is on again.</div>
+  </div>
+</section>
+
+<!-- ============================== Asleep ============================== -->
+<section class="screen" id="asleep">
+  <p class="cap"><b>When the Mac is asleep, or pi²'s relay is down</b>: the last copy, dimmed and dated; answers and messages wait in an Outbox, then in the relay's mailbox, and say whether they went. With the relay down, everything still works at home.</p>
+  <div class="phones">
+    <div class="fig"><div class="lbl">Mac asleep</div>
+      <div class="ph"><div class="island"></div><div class="status"><span>7:02</span><span>●●●</span></div>
+        <div class="nav"><h2>pi²</h2><div class="conn" style="border-color:#f0b24a66"><span class="dot warn"></span>Studio Mac asleep · last seen 23:10<span class="sp"></span><span style="color:var(--acc)">Why</span></div></div>
+        <div class="body">
+          <div class="sec">Needs you · 1 · as of 23:10</div>
+          <div class="need"><div class="row xs t2"><span class="av s a3">S</span>Scribe · pi2 · question</div><div class="q">Should the Dashboard page show archived projects?</div><div class="row"><span class="btn pri wide">Answer</span></div></div>
+          <div class="sec">Projects · as of 23:10</div>
+          <div class="list dim">
+            <div class="r"><span class="av a1">π</span><div class="grow"><div class="b">pi2</div><div class="t3 sm ell">Stopped for the night: 2 PRs ready.</div></div><span class="badge">1</span></div>
+            <div class="r"><span class="av a3">W</span><div class="grow"><div class="b">website</div><div class="t3 sm ell">Links checked; none broken.</div></div></div>
+          </div>
+          <div class="list"><div class="r"><span class="grow">Outbox</span><span class="tag warn">1 waiting</span><span class="t3">›</span></div></div>
+        </div>
+        <div class="home"></div></div>
+    </div>
+    <div class="fig"><div class="lbl">The Outbox</div>
+      <div class="ph"><div class="island"></div><div class="status"><span>7:02</span><span>●●●</span></div>
+        <div class="nav"><div class="top">‹ pi²</div><h2>Outbox</h2></div>
+        <div class="body">
+          <div class="list">
+            <div class="r"><div class="grow"><div class="sm">To pi2's orchestrator: “Start #621 first thing.”</div><div class="t3 xs">Written 6:58 · waiting in the relay's mailbox for Studio Mac</div></div><span class="tag warn">waiting</span></div>
+            <div class="r"><div class="grow"><div class="sm">Answered Scribe: “No, only live ones”</div><div class="t3 xs">Yesterday 22:05 · taken by Studio Mac at 22:06</div></div><span class="tag ok">sent</span></div>
+            <div class="r"><div class="grow"><div class="sm">Allowed Forge: npm test</div><div class="t3 xs">Tue 18:40 · not sent: more than a day passed before the Mac saw it</div></div><span class="tag bad">not sent</span></div>
+          </div>
+          <div class="t3 xs" style="padding:0 4px">While the Mac sleeps, answers and short messages wait for it in the relay's mailbox, sealed, for a day. Everything else waits until the Mac is awake.</div>
+        </div>
+        <div class="home"></div></div>
+    </div>
+    <div class="fig"><div class="lbl">The relay down, at home</div>
+      <div class="ph"><div class="island"></div><div class="status"><span>9:12</span><span>●●●</span></div>
+        <div class="nav"><h2>pi²</h2><div class="conn" style="border-color:#f0b24a66"><span class="dot warn"></span>Studio Mac · at home · relay unreachable<span class="sp"></span><span style="color:var(--acc)">Why</span></div></div>
+        <div class="body">
+          <div class="t2 sm" style="padding:2px 4px">Everything works here, on this network. Away from home, and for notifications while the app is closed, pi² needs its relay; it will be used again as soon as it answers.</div>
+          <div class="sec">Needs you · 1</div>
+          <div class="need"><div class="row xs t2"><span class="av s a2">F</span>Forge · pi2 · approval</div><div class="mono" style="font-size:11px">npm --prefix engine test</div><div class="row"><span class="btn pri wide">Allow once</span><span class="btn wide">Deny</span></div></div>
+          <div class="sec">Projects</div>
+          <div class="list">
+            <div class="r"><span class="av a1">π</span><div class="grow"><div class="b">pi2</div><div class="t3 sm ell">Forge is running the engine's tests.</div></div><div class="spin"></div></div>
+            <div class="r"><span class="av a3">W</span><div class="grow"><div class="b">website</div><div class="t3 sm ell">Links checked; none broken.</div></div></div>
+          </div>
+        </div>
+        <div class="home"></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== Adds ============================== -->
+<section class="screen" id="adds">
+  <p class="cap"><b>What a phone adds</b>: a Live Activity and the Dynamic Island for a project the person follows, widgets, and the share sheet. A Live Activity is updated through the relay with numbers only (the relay can read those, so the person turns each one on), and says how old it is.</p>
+  <div class="phones">
+    <div class="fig"><div class="lbl">Live Activity and the Dynamic Island</div>
+      <div class="ph lockbg"><div class="dyn"><span>π² pi2</span><span>3 ◐ · 1 !</span></div><div class="status" style="color:#fff"><span>9:41</span><span>●●●</span></div>
+        <div class="clock"><span class="sm">Thursday 26 November</span><b>9:41</b></div><div class="sp"></div>
+        <div class="la"><div class="row"><span class="av s a1">π</span><span class="b sm">pi2</span><span class="sp"></span><span class="xs" style="opacity:.7">as of 9:40</span></div>
+          <div class="row sm"><span>3 working</span><span style="opacity:.5">·</span><span style="color:#f0b24a">1 needs you</span><span style="opacity:.5">·</span><span>2 finished</span></div>
+          <div class="xs" style="opacity:.75">Last finished: #617 Sidebar badges</div></div>
+        <div style="height:30px"></div><div class="home" style="background:#fff"></div></div>
+    </div>
+    <div class="fig"><div class="lbl">Widgets</div>
+      <div class="ph lockbg"><div class="island"></div><div class="status" style="color:#fff"><span>9:41</span><span>●●●</span></div>
+        <div style="padding:14px 12px;display:flex;flex-direction:column;gap:12px">
+          <div class="row" style="gap:12px">
+            <div class="widget wsmall"><div class="xs t2">pi² · Needs you</div><div style="font-size:34px;font-weight:700;line-height:1">2</div><div class="xs ell">Forge · approval</div><div class="xs t3 ell">pi2</div></div>
+            <div class="widget wsmall"><div class="xs t2">Today</div><div style="font-size:22px;font-weight:700">$4.10</div><div class="meter"><i style="width:41%"></i></div><div class="xs t3">week 41% · 5 h 22%</div></div>
+          </div>
+          <div class="widget wmed"><div class="xs t2">pi² · Working</div>
+            <div class="row sm"><span class="av s a2">F</span><span class="grow ell">Forge · pi2 · 14 min</span></div>
+            <div class="row sm"><span class="av s a3">S</span><span class="grow ell">Scribe · pi2 · 3 min</span></div>
+            <div class="row sm"><span class="av s a3">S</span><span class="grow ell">Scout · website · 6 min</span></div></div>
+        </div></div>
+    </div>
+    <div class="fig"><div class="lbl">The share sheet</div>
+      <div class="ph"><div class="island"></div><div class="status"><span>9:41</span><span>●●●</span></div>
+        <div class="body" style="padding-top:10px"><div class="list"><div class="r"><span class="t3 sm">Safari</span></div></div><div class="a t2">An article about notification limits…</div></div>
+        <div class="scrim"></div>
+        <div class="sheet"><div class="row"><span class="b">Send to pi²</span><span class="sp"></span><span style="color:var(--acc)" class="b">Send</span></div>
+          <div class="list"><div class="r"><span class="t3 sm">To</span><span class="grow">pi2 · orchestrator</span><span class="t3">›</span></div></div>
+          <div style="border:1px solid var(--line2);border-radius:10px;padding:8px 10px;min-height:56px;font-size:12.5px">Read this and say whether it changes how we deliver notifications.</div>
+          <div class="list"><div class="r"><span class="tag">link</span><span class="grow ell sm">developer.apple.com/documentation/…</span></div></div>
+          <div class="t3 xs">Sent through pi²'s relay; if the Mac is asleep it waits in the mailbox.</div></div></div>
+    </div>
+  </div>
+  <div class="notes">
+    <div><b>Shortcuts and Siri</b>“Ask pi² to …”, “What needs me in pi²”, “Stop pi² in &lt;project&gt;”: the same requests the app makes, with the answer spoken or shown when it comes.</div>
+    <div><b>Camera and dictation</b>The message field takes a photo, a scan or the keyboard's dictation, as the Mac's field takes attachments.</div>
+    <div><b>Watch and iPad</b>Left for later, if wanted.</div>
+  </div>
+</section>
+
+<script>
+const buttons = document.querySelectorAll('nav button[data-s]');
+// The address says the screen and the appearance, as #card or #card:light, so either can be linked to.
+let light = location.hash.endsWith(':light');
+function show(id){
+  document.querySelectorAll('.screen').forEach(s=>s.classList.toggle('on', s.id===id));
+  buttons.forEach(b=>b.classList.toggle('on', b.dataset.s===id));
+  document.body.classList.toggle('light', light);
+  document.getElementById('theme').textContent = light ? 'Dark' : 'Light';
+  history.replaceState(null,'','#'+id+(light?':light':''));
+}
+function current(){ return (location.hash.slice(1).split(':')[0]) || 'pair'; }
+// onclick, not addEventListener: a page that runs this script twice (some previewers do) still acts once a click.
+buttons.forEach(b=>{ b.onclick=()=>show(b.dataset.s); });
+document.getElementById('theme').onclick=()=>{ light=!light; show(current()); };
+show(current());
+</script>
+</body></html>

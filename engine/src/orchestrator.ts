@@ -615,10 +615,29 @@ async function startFresh(host: Host, engine: Engine, id: string, agentId: strin
 	return conversation;
 }
 
+/** Start fresh for a project, once the feature has started; undefined before. */
+let freshFor: ((id: string) => Promise<number>) | undefined;
+
+/**
+ * The project's current conversation with its orchestrator, made as the hub makes it when there is none yet (a project
+ * whose orchestrator was never opened, or whose conversation was deleted): for chat mode's Continue with an Agent, which
+ * writes to it as the person (#654, docs/chat.md). Making one where there is none moves nothing, so it is not the
+ * person's Start fresh, which `projects.startFresh` is.
+ */
+export async function orchestratorConversation(id: string): Promise<number> {
+	const project = allProjects()[id];
+	if (project === undefined || project.deletedAt !== undefined) throw new Error(`Unknown project: ${id}`);
+	if (project.archivedAt !== undefined) throw new Error(PROJECT_ARCHIVED);
+	if (project.conversation !== null) return project.conversation;
+	if (freshFor === undefined) throw new Error("The engine is still starting. Try again in a moment.");
+	return freshFor(id);
+}
+
 // ---- The feature
 
 export const orchestrator: Feature = (given, engine) => {
 	host = given;
+	freshFor = (id) => startFresh(given, engine, id, undefined);
 	/** By project: the last line of its orchestrator's last finished answer (4.3). */
 	const lastWords = new Map<string, { text: string; at: number }>();
 	/** By conversation of a project: the last line its agent wrote, for Activity (4.3). */

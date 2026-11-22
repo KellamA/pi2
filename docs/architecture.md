@@ -23,6 +23,7 @@ Read only the sections that apply to your work. For more on one feature, see its
 | Storage and credentials | [Where things live](#where-things-live) |
 | Logs and known limits | [The logs](#the-logs), [Known limits](#known-limits) |
 | Projects (the preview of #450) | [projects.md](projects.md), the contract every issue of the epic is built against: read its sections 1, 2 and your issue's row in its section 12 |
+| pi² for iPhone (the epic of #620; not built yet) | [iphone.md](iphone.md), the contract every issue of the epic is built against: read its sections 1, 2, 4 and 5.1, and your issue's row in its section 12; what the person sees is [design/iphone.md](design/iphone.md), with drawings in [design/iphone-drafts.html](design/iphone-drafts.html) |
 | A worker's question that does not hold it (#507) | [design/worker-questions.md](design/worker-questions.md), agreed and built; the contract is [projects.md](projects.md#39-needs-you-pi2needs-and-the-inbox) (3.9, 5.5) and the code `src/needs.ts` and `src/wakes.ts` |
 
 ## The two programs
