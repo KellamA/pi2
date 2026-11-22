@@ -22,6 +22,7 @@ struct RootView: View {
                 }
             }
         }
+        .tint(.pi2Accent)
         .environment(\.openRoute, OpenRoute { [navigator] route in navigator.open(route) })
         #if DEBUG
         .onChange(of: session.engine.projects, initial: true) { _, projects in
