@@ -310,7 +310,7 @@ struct ProjectSettingsTab: View {
     }
 
     private var schedulesSection: some View {
-        titled("Schedules", footer: "Each run starts a new conversation of the project with its agent, which works with no one watching, and is listed with the project’s other conversations. A run with the orchestrator is a conversation of its own, beside the one you have with it. An agent that may schedule its own work asks you before each schedule it sets.") {
+        titled("Schedules", footer: "Each run starts a new conversation of the project with its agent, which works with no one watching, and is listed with the project’s other conversations. A run with the orchestrator is a conversation of its own, beside the one you have with it: it has the orchestrator’s model and instructions, but cannot change the project, read reports or hand work to every agent. An agent that may schedule its own work asks you before each schedule it sets.") {
             ScheduleList(
                 model: model,
                 schedules: engine.schedules(ofProject: project.id),

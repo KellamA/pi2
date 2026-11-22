@@ -56,6 +56,23 @@ struct ProjectsSidebar: View {
 
             Section {
                 TemplateRows(model: model)
+                // What runs on this Mac apart from the agents' runs, and where the money went (#655).
+                HStack(spacing: 8) {
+                    Image(systemName: "waveform.path.ecg").foregroundStyle(Theme.tx2).frame(width: 20)
+                    Text("Activity").lineLimit(1).layoutPriority(1)
+                    Spacer(minLength: 4)
+                    ActivityRowBadge(engine: engine)
+                }
+                .tag(Selection.activity)
+                .help("Background commands left running and models running on this Mac")
+                HStack(spacing: 8) {
+                    Image(systemName: "chart.bar").foregroundStyle(Theme.tx2).frame(width: 20)
+                    Text("Usage").lineLimit(1).layoutPriority(1)
+                    Spacer(minLength: 4)
+                    UsageRowBadge(engine: engine)
+                }
+                .tag(Selection.usage)
+                .help("What was spent, by model, agent, project and day, and the daily budget")
                 HStack(spacing: 8) {
                     Image(systemName: "archivebox").foregroundStyle(Theme.tx2).frame(width: 20)
                     Text("Archive")
@@ -139,6 +156,17 @@ private struct DashboardRow: View {
     }
 }
 
+/// "over budget" on Usage's row, as the old sidebar's row says it.
+private struct UsageRowBadge: View {
+    let engine: EngineClient
+
+    var body: some View {
+        if engine.usage?.overBudget == true {
+            Tag("over budget", .bad).fixedSize()
+        }
+    }
+}
+
 private struct ArchiveCount: View {
     let engine: EngineClient
 
@@ -200,6 +228,11 @@ private struct ProjectBlock: View {
                 if let run = engine.projectStore.run(id) {
                     RunRow(engine: engine, id: id, run: run) { model.openAgent(id, in: project.id) }
                         .contextMenu(previewAs: run.title.isEmpty ? engine.agent(run.agentId)?.name ?? "New conversation" : run.title, String(id)) {
+                            // Another conversation with the same agent, in place of the board (#643).
+                            if let agent = engine.agent(run.agentId), let row = engine.project(project.id) {
+                                Button("New Conversation with \(agent.name)", systemImage: "plus.bubble") { model.startWith(agent, in: row) }
+                                Divider()
+                            }
                             ConversationActions(model: model, id: id)
                         }
                         .padding(.leading, 14)
@@ -322,6 +355,8 @@ private struct RunRow: View {
                     }
                     // The title has the room: the agent's name gives way first (#598).
                     Text(run.title.isEmpty ? agent?.name ?? "New conversation" : run.title).lineLimit(1).layoutPriority(1)
+                    // The warning that it asks about nothing, as a template's row has it (#643).
+                    if let agent, agent.allowEverything == true { AllowEverythingTag(name: agent.name, givesWay: true) }
                     Spacer(minLength: 4)
                     if let agent, !run.title.isEmpty { AgentNameGivingWay(agent: agent) }
                 }
@@ -526,7 +561,8 @@ private struct ProjectsPreviewFollowing: ViewModifier {
                         model.landOnProjects()
                     } else if case .conversation(let id) = model.selection {
                         model.openConversation(id)
-                    } else if model.selection == nil {
+                    } else if model.selection == nil || model.selection == .inbox || model.selection == .branches {
+                        // Neither the Inbox nor the page of every conversation's branches is offered with projects (#655).
                         model.landOnProjects()
                     }
                     return

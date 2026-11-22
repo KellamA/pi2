@@ -2906,7 +2906,12 @@ async function deliver(id: string): Promise<void> {
 	const pending = schedule?.pending;
 	if (schedule === undefined || schedule.holdReason !== undefined || pending == null) return;
 	const conv = await harness.conversation(pending.conversationId as unknown as ConversationId, context);
-	if (conv !== undefined) await takeSwitch(conv.id);
+	if (conv !== undefined) {
+		await takeSwitch(conv.id);
+		// Its tools as this conversation's, not as its agent's before it was made: a run made as a project's orchestrator
+		// is not its current conversation, and has none of the tools only that one has (docs/projects.md, 3.13).
+		await syncTools(conv).catch((error) => log("could not update the tools of conversation", conv.id, error instanceof Error ? error.message : ""));
+	}
 	const held = await harness.commit(async (tx) => {
 		const current = (await tx.doc(Schedules)).schedules[id];
 		if (current?.pending?.runAt !== pending.runAt || current.holdReason !== undefined) return false;

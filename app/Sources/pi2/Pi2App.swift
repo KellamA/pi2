@@ -122,6 +122,8 @@ final class AppModel {
     /// What the sidebar of projects keeps unfolded (ProjectsSidebar.swift).
     let projectsSidebar = ProjectsSidebarState()
     var showingPalette = false
+    /// ⌘N's picker of a project's agents, with the preview on (ProjectStart.swift).
+    var startPicker: StartPickerAsk?
     #if PI2_DEVELOPMENT
     /// Opens the Settings window and a background command's output window, for `scripts/test-copy show` while the copy
     /// runs (#553); set once the main window is up, so nil before that.
@@ -224,7 +226,13 @@ final class AppModel {
                 let result = try await engine.call("agents.duplicate", ["id": id])
                 if let copyID = result["id"]?.stringValue {
                     duplicatedAgentID = copyID
-                    selection = .agent(copyID)
+                    // A project agent's copy is in the same project, and its page opens in that project's Agents tab, as
+                    // New Agent's does, rather than at window level, which no row of the sidebar marks (#643).
+                    if let project = engine.agent(id)?.projectId, engine.project(project) != nil {
+                        showAgentPage(copyID, in: project)
+                    } else {
+                        selection = .agent(copyID)
+                    }
                 }
             } catch {
                 engine.lastError = error.localizedDescription
@@ -358,8 +366,7 @@ struct Pi2App: App {
             CommandGroup(after: .sidebar) {
                 ModeCommands(model: model)
                 Divider()
-                Button("Show Inbox") { model.selection = .inbox }
-                    .keyboardShortcut("i", modifiers: [.command, .shift])
+                InboxCommand(model: model)
                 Button("Show Activity") { model.selection = .activity }
                     .keyboardShortcut("a", modifiers: [.command, .shift])
                 Button("Show Usage") { model.selection = .usage }
@@ -439,6 +446,20 @@ struct MenuBarLabel: View {
     }
 }
 
+/// View › Show Inbox (⇧⌘I), offered only with the Projects preview off: with it on, Now, the Dashboard and the menu bar
+/// item show what waits, and the Dashboard the limit notices (#655). A view of its own, so that the switch changing draws
+/// the menu again and not every scene (#436).
+struct InboxCommand: View {
+    let model: AppModel
+
+    var body: some View {
+        if !model.engine.projectsPreview {
+            Button("Show Inbox") { model.selection = .inbox }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
+        }
+    }
+}
+
 /// The File menu's ways to start something new that depend on what changes while the app runs: ⌘N, which starts
 /// whatever the window is showing (a chat in chat mode), and a conversation with each agent. A view of its own, so that
 /// the mode or the agents changing draws the menu again and not every scene (#436).
@@ -449,13 +470,21 @@ struct NewItemCommands: View {
         if model.mode == .chat {
             Button("New Chat") { model.newChat() }
                 .keyboardShortcut("n")
+        } else if model.engine.projectsPreview {
+            // With projects, a conversation is started with one of a project's agents, chosen in a short picker (#643).
+            Button("New Conversation…") { model.askNewConversation() }
+                .keyboardShortcut("n")
         } else {
             Button("New Conversation") { model.newConversation() }
                 .keyboardShortcut("n")
         }
         Menu("New Conversation With") {
-            ForEach(model.engine.agents) { agent in
-                Button(agent.name) { model.newConversation(agentId: agent.id) }
+            if model.engine.projectsPreview {
+                ProjectAgentChoices(model: model)
+            } else {
+                ForEach(model.engine.agents) { agent in
+                    Button(agent.name) { model.newConversation(agentId: agent.id) }
+                }
             }
         }
     }
@@ -518,7 +547,8 @@ struct RootView: View {
                     case .inbox:
                         InboxView(model: model)
                     case .activity:
-                        ActivityView(model: model)
+                        // With projects, only what runs apart from the agents' runs (ActivityPage.swift, #655).
+                        if engine.projectsPreview { ActivityPage(model: model) } else { ActivityView(model: model) }
                     case .usage:
                         UsageView(model: model)
                     case .archive:
@@ -562,6 +592,7 @@ struct RootView: View {
         .projectsPreviewFollowing(model: model)
         .worktreeDialogs(engine: engine)
         .sheet(isPresented: $model.showingPalette) { PaletteView(model: model) }
+        .sheet(item: $model.startPicker) { ask in NewConversationPicker(model: model, ask: ask) }
         .stopAllConfirmation(model: model)
         .sheet(isPresented: Binding(get: { engine.onboarded == false }, set: { _ in })) {
             OnboardingView(model: model)
@@ -997,9 +1028,7 @@ struct AgentRow: View {
             AgentAvatar(agent: agent, size: 20)
             // With the red tag beside it, the name keeps its room and the model's name gives way first.
             Text(agent.name).lineLimit(1).layoutPriority(1)
-            if agent.allowEverything == true {
-                Tag(AllowEverything.tag, .bad).fixedSize().help("\(agent.name) asks you about nothing and may use any app")
-            }
+            if agent.allowEverything == true { AllowEverythingTag(name: agent.name) }
             Spacer(minLength: 4)
             if hovering {
                 Button("New conversation with \(agent.name)", systemImage: "plus.bubble") {
