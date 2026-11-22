@@ -30,6 +30,11 @@ jq -n '{
 			exclude: ["vectors"], resources: [], settings: [], packageAccess: true},
 		{name: "pi2-remote-fuzz", path: "Sources/pi2-remote-fuzz", type: "executable", dependencies: [{byName: ["RemoteKit", null]}],
 			exclude: [], resources: [], settings: [], packageAccess: true}
+	],
+	products: [
+		{name: "PiModels", settings: [], targets: ["PiModels"], type: {library: ["automatic"]}},
+		{name: "EngineKit", settings: [], targets: ["EngineKit"], type: {library: ["automatic"]}},
+		{name: "TranscriptKit", settings: [], targets: ["TranscriptKit"], type: {library: ["automatic"]}}
 	]}' >"$T/good.json"
 
 mkdir -p "$T/tree/app/Sources/RemoteKit" "$T/tree/app/Sources/pi2-remote-check" "$T/tree/app/Sources/pi2-remote-fuzz" "$T/tree/app/Sources/pi2"
@@ -92,6 +97,9 @@ expect_refused "RemoteKit twice" "there are 2 targets of that name" ".targets +=
 expect_refused "another target built from RemoteKit's folder" "it is built from Sources/RemoteKit, which is RemoteKit's" ".targets += [{name: \"Shadow\", path: \"Sources/RemoteKit\", type: \"regular\", dependencies: [], exclude: [], resources: [], settings: [{kind: {unsafeFlags: {_0: [\"-Onone\"]}}, tool: \"swift\"}]}]"
 expect_refused "another target built from inside the check's folder" "which is pi2-remote-check's" ".targets += [{name: \"Inside\", path: \"Sources/pi2-remote-check/vectors\", type: \"regular\", dependencies: [], exclude: [], resources: [], settings: []}]"
 expect_refused "another target named for a protected folder, with no path" "which is pi2-remote-fuzz's" ".targets += [{name: \"pi2-remote-fuzz/x\", type: \"regular\", dependencies: [], exclude: [], resources: [], settings: []}]"
+expect_refused "a library product for the check" "the product Vectors names one of RemoteKit's checks" ".products += [{name: \"Vectors\", settings: [], targets: [\"pi2-remote-check\"], type: {library: [\"automatic\"]}}]"
+expect_refused "a library product with RemoteKit and the fuzzer" "the product RemoteKitAndMore names one of RemoteKit's checks" ".products += [{name: \"RemoteKitAndMore\", settings: [], targets: [\"RemoteKit\", \"pi2-remote-fuzz\"], type: {library: [\"dynamic\"]}}]"
+expect_refused "an executable product for the fuzzer" "the product fuzz names one of RemoteKit's checks" ".products += [{name: \"fuzz\", settings: [], targets: [\"pi2-remote-fuzz\"], type: {executable: null}}]"
 expect_refused "a package that is not allowed" "a package dependency that is not allowed: https://example.com/evil" ".dependencies += [{sourceControl: [{identity: \"evil\", location: {remote: [{urlString: \"https://example.com/evil\"}]}, requirement: {exact: [\"1.0.0\"]}}]}]"
 expect_refused "Sparkle from another address" "not allowed: https://github.com/someone/Sparkle" ".dependencies[0].sourceControl[0].location.remote[0].urlString = \"https://github.com/someone/Sparkle\""
 expect_refused "a package from a folder on disk" "a package dependency that is not allowed: fileSystem" ".dependencies += [{fileSystem: [{identity: \"local\", path: \"/tmp/local\"}]}]"

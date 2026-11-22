@@ -38,6 +38,9 @@ TARGETS=(
 	'pi2-remote-check|executable|["vectors"]|["RemoteKit"]'
 	'pi2-remote-fuzz|executable|[]|["RemoteKit"]'
 )
+# The protected targets that are checks, not code: no product of the package may name them (a library or executable
+# product would hand the test-only entry points, or a stand-in for the checks, to whatever builds on the package).
+CHECKS_ONLY='["pi2-remote-check","pi2-remote-fuzz"]'
 # The packages app/Package.swift may depend on, by address. A new one is the owner's to allow.
 PACKAGES='["https://github.com/sparkle-project/Sparkle"]'
 # The fields a target's description may have, as `swift package dump-package` writes them. A field this list does not
@@ -99,6 +102,13 @@ while IFS=$'\t' read -r name path; do
 done < <(jq -r --argjson names "$(printf '%s\n' "${TARGETS[@]}" | cut -d'|' -f1 | jq -R . | jq -s .)" '
 	.targets[] | select(.name as $n | $names | index($n) | not) | [.name, (.path // ("Sources/" + .name))] | @tsv' "$dump")
 
+# Products: none may name a check. Products for other targets (PiModels, EngineKit, TranscriptKit for the iPhone app)
+# are not this script's to judge.
+while IFS= read -r product; do
+	fail "the product $product names one of RemoteKit's checks, which no product may"
+done < <(jq -r --argjson checks "$CHECKS_ONLY" '
+	(.products // [])[] | select([.targets[]?] | any(. as $t | $checks | index($t))) | .name' "$dump")
+
 # Packages: only those allowed, by address; none from a folder on disk.
 while IFS= read -r package; do
 	fail "a package dependency that is not allowed: $package"
@@ -122,4 +132,4 @@ if [[ $failures -gt 0 ]]; then
 	echo "check-protected-targets: $failures thing(s) wrong. The owner's targets must be built from the owner's folders as they are (.github/CODEOWNERS)." >&2
 	exit 1
 fi
-echo "check-protected-targets: ${#TARGETS[@]} protected targets as they should be, no other package, and @_spi(Vectors) only in RemoteKit's checks."
+echo "check-protected-targets: ${#TARGETS[@]} protected targets as they should be, no product naming a check, no other package, and @_spi(Vectors) only in RemoteKit's checks."
