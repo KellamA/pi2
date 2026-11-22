@@ -72,10 +72,14 @@ const offline = async (edit: (harness: Harness) => Promise<void>) => {
 	client = await Client.connect(engine, home);
 };
 const step = (text: string) => console.log(`ok  ${text}`);
-const value = (tool: { isError: boolean; text: string }) => {
+/** What an action answered (#636): a line saying what was done, never the item whole. */
+const answered = (tool: { isError: boolean; text: string }) => {
 	assert.equal(tool.isError, false, tool.text);
-	return JSON.parse(tool.text);
+	assert.ok(!tool.text.includes("{"), `no JSON: ${tool.text}`);
+	return tool.text as string;
 };
+/** The number of the item a `file` answer names. */
+const filedId = (tool: { isError: boolean; text: string }) => Number(/^Filed #(\d+) /.exec(answered(tool))![1]);
 const refusal = (tool: { isError: boolean; text: string }, why: RegExp) => {
 	assert.equal(tool.isError, true, tool.text);
 	assert.match(tool.text, why);
@@ -144,24 +148,28 @@ try {
 	await peer.until("saved work in the greeting", () => peer?.events.work?.projects[projectId]?.length === 1);
 	const [a, b] = await Promise.all([socket.tool(parent, "take", { id }), socket.tool(worker, "take", { id })]);
 	assert.notEqual(a.isError, b.isError, "exactly one gets the item");
-	const { takenBy: holder } = value(a.isError ? b : a);
+	assert.equal(answered(a.isError ? b : a), `Took #${id} “Race”: in progress, held by you.`);
+	const holder = (await show(id)).takenBy!;
 	const winner = a.isError ? worker : parent;
 	const loser = a.isError ? parent : worker;
 	assert.equal(holder.conversationId, winner);
 	assert.equal((a.isError ? a : b).text, `#${id} is taken by ${winner === parent ? "Orchestrator" : "Worker"}, in sub-chat ${winner}`);
 	await peer.until("the other app sees the winner", () => peer?.events.work?.projects[projectId]?.[0]?.takenBy?.conversationId === winner);
 	refusal(await socket.tool(loser, "wait", { id }), /Only the holder/);
-	assert.equal(value(await socket.tool(winner, "wait", { id, text: "Waiting for a response" })).state, "waiting");
+	assert.equal(answered(await socket.tool(winner, "wait", { id, text: "Waiting for a response" })), `Marked #${id} “Race” waiting, held by you, with your reason as a note (1 note).`);
+	assert.equal((await show(id)).state, "waiting");
 	// Taking what it holds is no error, and says how to go on (#604).
 	const mine = await socket.tool(winner, "take", { id });
 	assert.equal(mine.isError, false, mine.text);
-	assert.match(mine.text, new RegExp(`^#${id} is yours already, and waiting: use resume to go on\\.\\n\\n\\{`));
-	assert.equal(value(await socket.tool(winner, "block", { id, text: "Blocked on the response" })).state, "blocked");
+	assert.match(mine.text, new RegExp(`^#${id} is yours already, and waiting: use resume to go on\\.\\n#${id} waiting · local model · .+ · Race$`));
+	assert.equal(answered(await socket.tool(winner, "block", { id, text: "Blocked on the response" })), `Marked #${id} “Race” blocked, held by you, with your reason as a note (2 notes).`);
 	assert.equal((await act(id, "resume")).item.state, "in_progress");
 	assert.deepEqual((await show(id)).takenBy, holder);
-	assert.equal(value(await socket.tool(loser, "note", { id, text: "I can leave a note too" })).notes.length, 3);
+	assert.equal(answered(await socket.tool(loser, "note", { id, text: "I can leave a note too" })), `Noted on #${id} “Race” (3 notes).`);
+	assert.equal((await show(id)).notes.length, 3);
 	await assert.rejects(act(id, "finish", { text: "not the person" }), /person cannot use finish/);
-	const done = value(await socket.tool(winner, "finish", { id, text: "Checked the result" }));
+	assert.equal(answered(await socket.tool(winner, "finish", { id, text: "Checked the result" })), `Finished #${id} “Race”: done, with your summary.`);
+	const done = await show(id);
 	assert.deepEqual([done.state, done.takenBy, done.result], ["done", null, "Checked the result"]);
 	assert.equal(typeof done.closedAt, "number");
 	refusal(await socket.tool(loser, "take", { id }), /#1 is done\. Reopen it first\./);
@@ -178,23 +186,32 @@ try {
 	assert.match(shown.text, /Done: Checked the result/);
 	const reopened = (await act(id, "reopen")).item;
 	assert.deepEqual([reopened.state, reopened.result, reopened.closedAt], ["open", null, null]);
-	assert.equal(value(await socket.tool(worker, "take", { id })).state, "in_progress");
-	assert.equal(value(await socket.tool(parent, "release", { id })).takenBy, null);
+	assert.equal(answered(await socket.tool(worker, "take", { id })), `Took #${id} “Race”: in progress, held by you.`);
+	assert.equal(answered(await socket.tool(parent, "release", { id })), `Released #${id} “Race”: open, held by nobody.`);
+	assert.equal((await show(id)).takenBy, null);
 	assert.equal((await act(id, "edit", { title: "Edited", text: "New description" })).item.text, "New description");
 	assert.equal((await act(id, "classify", { class: "cloud" })).item.class, "cloud");
 	assert.equal((await act(id, "note", { text: "Person's note" })).item.notes.at(-1).by.kind, "person");
 	assert.equal((await act(id, "close", { as: "dropped" })).item.state, "dropped");
+	// The orchestrator's own actions answer in a line too (#636).
+	assert.equal(answered(await socket.tool(parent, "reopen", { id })), `Reopened #${id} “Edited”: open, held by nobody.`);
+	assert.equal(answered(await socket.tool(parent, "classify", { id, class: "local" })), `Classified #${id} “Edited”: local model.`);
+	assert.equal(answered(await socket.tool(parent, "edit", { id, text: "Edited again" })), `Edited #${id} “Edited”: its text.`);
+	assert.equal(answered(await socket.tool(parent, "edit", { id, title: "Race" })), `Edited #${id} “Race”: its title.`);
+	assert.equal(answered(await socket.tool(parent, "close", { id, as: "dropped" })), `Closed #${id} “Race” as dropped.`);
+	assert.deepEqual([(await show(id)).state, (await show(id)).class, (await show(id)).text], ["dropped", "local", "Edited again"]);
 	step("concurrent tools claim once, report the holder, and persist state, notes, classification and result");
 
 	// Only the orchestrator classifies: another agent's item is filed unclassed, and told so in a line (#604).
 	const unclassed = await socket.tool(worker, "file", { title: "With a class", class: "local" });
 	assert.equal(unclassed.isError, false, unclassed.text);
-	const [unclassedItem, unclassedLine] = unclassed.text.split("\n\n");
-	assert.equal(JSON.parse(unclassedItem).class, null);
-	assert.equal(unclassedLine, "Filed without a class: only the orchestrator classifies work, and it will.");
+	const unclassedId = filedId(unclassed);
+	assert.equal(unclassed.text, `Filed #${unclassedId} “With a class”, not classified.\nFiled without a class: only the orchestrator classifies work, and it will.`);
+	assert.equal((await show(unclassedId)).class, null);
 	const classed = await socket.tool(parent, "file", { title: "Classed by the orchestrator", class: "cloud" });
-	assert.equal(value(classed).class, "cloud", "the orchestrator's class is kept");
-	for (const item of [JSON.parse(unclassedItem).id, value(classed).id]) await act(item, "close", { as: "dropped" });
+	assert.equal(classed.text, `Filed #${filedId(classed)} “Classed by the orchestrator”, cloud model.`, "the orchestrator's class is kept");
+	assert.equal((await show(filedId(classed))).class, "cloud");
+	for (const item of [unclassedId, filedId(classed)]) await act(item, "close", { as: "dropped" });
 
 	const projectSettings = (withoutAsking: Record<string, boolean>) => socket.call("projects.set", { id: projectId, settings: { withoutAsking } });
 	await socket.call("conversation.configure", { id: worker, access: "none" });
@@ -214,8 +231,8 @@ try {
 	};
 	const pendingFile = socket.tool(worker, "file", { title: "Filed with approval" });
 	await decide("fileWork", "once");
-	const filed = value(await pendingFile);
-	assert.equal(filed.filedBy.agentId, "worker");
+	const filed = await show(filedId(await pendingFile));
+	assert.equal((filed.filedBy as { agentId: string }).agentId, "worker");
 	const pendingClose = socket.tool(parent, "close", { id: filed.id, as: "done" });
 	await decide("closeWork", "deny");
 	refusal(await pendingClose, /person declined/);
@@ -236,7 +253,7 @@ try {
 	// A different tool wins while the assignment waits on the person's approval: no child or second news is created.
 	const waiting = socket.tool(parent, "assign", { id: open, agent: "Worker" });
 	await socket.until("assignment is asking", () => socket.events.inbox?.items?.some((item: any) => item.projectSwitch === "startAgents"));
-	assert.equal(value(await socket.tool(worker, "take", { id: open })).state, "in_progress");
+	assert.equal(answered(await socket.tool(worker, "take", { id: open })), `Took #${open} “Assign this”: in progress, held by you.`);
 	await decide("startAgents", "once");
 	refusal(await waiting, /is taken by Worker/);
 	assert.equal(count(), children);
@@ -259,10 +276,11 @@ try {
 	const ownTake = await socket.tool(child, "take", { id: open });
 	assert.equal(ownTake.isError, false, ownTake.text);
 	assert.match(ownTake.text, new RegExp(`^#${open} is yours already: carry on\\.`));
-	assert.equal(value(await socket.tool(child, "note", { id: open, text: "From its own sub-chat" })).notes.length, 1);
+	assert.equal(answered(await socket.tool(child, "note", { id: open, text: "From its own sub-chat" })), `Noted on #${open} “Assign this” (1 note).`);
 	const finish = socket.tool(child, "finish", { id: open, text: "Assigned work complete" });
 	await decide("closeWork", "once");
-	assert.equal(value(await finish).result, "Assigned work complete");
+	assert.equal(answered(await finish), `Finished #${open} “Assign this”: done, with your summary.`);
+	assert.equal((await show(open)).result, "Assigned work complete");
 	await socket.call("projects.set", { id: projectId, settings: { wakeOnReports: true } });
 	const byPerson = await act(filed.id, "assign", { agentId: "worker" });
 	assert.equal(byPerson.item.takenBy.conversationId, byPerson.conversation);
@@ -292,6 +310,8 @@ try {
 	assert.match(noted.text, /Note 14\./, "the newest note first");
 	assert.ok(!noted.text.includes("Note 1\."), "not the oldest ones");
 	assert.match(noted.text, /\[2 more notes; the project's Work tab shows it\]/, "and how many more there are");
+	// A note added to that long item answers in one line, not with its text and every note again (#636).
+	assert.equal(answered(await socket.tool(worker, "note", { id: backlogId, text: "One line more" })), `Noted on #${backlogId} “Backlog 3” (15 notes).`);
 	// One note longer than a note's cut is cut itself, and says so.
 	const longNote = await create("A long note", {});
 	await act(longNote, "note", { text: "x".repeat(2_000) });

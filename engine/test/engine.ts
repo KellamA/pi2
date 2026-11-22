@@ -10,6 +10,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { crc32, deflateSync } from "node:zlib";
 import { newestOnly } from "../src/providers.ts";
 import { usageWords } from "../src/subchatusage.ts";
+import { ARCHIVED_PAGE, archivedPage } from "../src/subchats.ts";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-test-"));
@@ -389,6 +390,13 @@ try {
 	assert.equal(usageWords({ ...unused, cached: 950 }), "Used: read 950 tokens from the cache.");
 	assert.equal(usageWords({ requests: 212, ms: 38 * 60_000, fresh: 1_400_000, cached: 21_600_000, output: 96_100, largest: 148_200 }),
 		"Used: 212 requests over 38 min; read 1.4M tokens new and 21.6M from the cache, wrote 96.1K; largest prompt 148K.");
+	// The archived sub-chats a page at a time, newest archived first, whatever is archived meanwhile (#636).
+	const shelved = Array.from({ length: 45 }, (_, n) => n + 1);
+	const archivedAt = (id: number) => (id === 7 ? 100 : 1_000 + id);
+	const first = archivedPage(shelved, archivedAt, undefined)!;
+	assert.deepEqual([first.page.length, first.page[0], first.page.at(-1), first.shown, first.left, first.total], [ARCHIVED_PAGE, 45, 5, 0, 5, 45]);
+	assert.deepEqual(archivedPage([...shelved, 46], archivedAt, first.page.at(-1)), { page: [4, 3, 2, 1, 7], shown: 41, left: 0, total: 46 });
+	assert.equal(archivedPage(shelved, archivedAt, 99), undefined);
 	const { id: m } = await client.call("conversation.create", { agentId: "atlas" });
 	await client.call("conversation.open", { id: m });
 	await client.call("conversation.configure", { id: m, access: "full" });
@@ -532,8 +540,26 @@ try {
 		assert.match((await subChats({ action: "archive", chats: [forge] })).text, /already archived/);
 		const afterwards = await subChats({ action: "list" });
 		assert.match(afterwards.text, /Every sub-chat of this conversation is archived/);
-		assert.match(afterwards.text, new RegExp(`Archived: ${scout} .*${forge} `));
-		assert.match(afterwards.text, new RegExp(`\\n  ${scout}: Used: 1 request\\b`));
+		// The archived are counted, not listed, and what they used is not said: an orchestrator's archive only grows (#636).
+		assert.match(afterwards.text, /^2 archived; `archived: true` lists them, and `chats` looks one up by its number\. Continuing an archived one with delegate and its number restores it\.$/m);
+		assert.ok(!afterwards.text.includes("Scout: look around") && !afterwards.text.includes("Used:"), afterwards.text);
+		const shelf = await subChats({ action: "list", archived: true });
+		assert.equal(shelf.isError, false, shelf.text);
+		assert.match(shelf.text, /^Archived sub-chats of this conversation, newest first: 1 to 2 of 2\.$/m);
+		assert.match(shelf.text, new RegExp(`^- ${scout}: Scout, “Scout: look around”\\. Archived \\d{4}-\\d\\d-\\d\\d \\d\\d:\\d\\dZ; last used .+ ago\\.$`, "m"));
+		assert.match(shelf.text, new RegExp(`^- ${forge}: `, "m"));
+		assert.ok(!shelf.text.includes("Used:") && !shelf.text.includes("worktree"), "a line each, without what it used or where it worked");
+		assert.match((await subChats({ action: "list", archived: true, usage: true })).text, new RegExp(`^- ${scout}: .+\\n  Used: 1 request\\b`, "m"));
+		const [newer, older] = [...shelf.text.matchAll(/^- (\d+):/gm)].map((match) => Number(match[1]));
+		const after = await subChats({ action: "list", archived: true, cursor: newer });
+		assert.match(after.text, /^Archived sub-chats of this conversation, newest first: 2 to 2 of 2\.$/m);
+		assert.match(after.text, new RegExp(`^- ${older}: `, "m"));
+		assert.ok(!after.text.includes(`- ${newer}:`), after.text);
+		assert.match((await subChats({ action: "list", archived: true, cursor: older })).text, /^No more archived sub-chats: all 2 were listed\.$/);
+		assert.equal((await subChats({ action: "list", archived: true, cursor: lead })).isError, true, "a cursor that names no archived sub-chat");
+		const looked = await subChats({ action: "list", chats: [scout, lead] });
+		assert.match(looked.text, new RegExp(`^- ${scout}: Scout, “Scout: look around”\\. Archived `, "m"));
+		assert.match(looked.text, new RegExp(`^- ${lead}: there is no sub-chat ${lead} in this conversation\\.$`, "m"));
 
 		// Continuing an archived sub-chat restores it.
 		const again = await ask(`/continue ${scout}: one more thing`);

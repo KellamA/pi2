@@ -305,32 +305,18 @@ struct RecoveryNotice: View {
 }
 
 /// The restart notice as a banner over the Dashboard or a project's hub, while there is one (#645): folded to a line,
-/// with what it names opened where it lives in the projects.
+/// with what it names opened where it lives (#644).
 struct RecoveryBanner: View {
     let model: AppModel
     private var engine: EngineClient { model.engine }
 
     var body: some View {
         if let recovery = engine.recovery {
-            RecoveryNotice(engine: engine, recovery: recovery, open: { conversation, _ in OpenInProjects.open(conversation, model: model) }, foldable: true)
+            RecoveryNotice(engine: engine, recovery: recovery, open: { conversation, root in model.openConversation(conversation, from: root == conversation ? nil : root) }, foldable: true)
                 .padding(.horizontal, 12).padding(.vertical, 6)
                 .background(Theme.window)
                 .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
         }
     }
 
-}
-
-/// Where a conversation a notice names opens with the Projects preview on: an orchestrator's present conversation in its
-/// hub, any other conversation of a project in place of its board, anything else where the old pages showed it.
-enum OpenInProjects {
-    @MainActor
-    static func open(_ id: Int, model: AppModel) {
-        let engine = model.engine
-        if let project = engine.conversations.first(where: { $0.id == id })?.projectId {
-            if engine.project(project)?.conversation == id { model.showProject(project) } else { model.openAgent(id, in: project) }
-        } else {
-            model.selection = .conversation(id)
-        }
-    }
 }

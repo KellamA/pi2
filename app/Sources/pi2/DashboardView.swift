@@ -810,7 +810,7 @@ private struct DashboardLimitNotices: View {
                         ForEach(Array(notices.enumerated()), id: \.element.id) { index, notice in
                             LimitNoticeCard(
                                 engine: model.engine, notice: notice,
-                                open: { OpenInProjects.open($0, model: model) },
+                                open: { model.openConversation($0) },
                                 showUsage: { model.selection = .usage },
                                 foldable: true
                             )

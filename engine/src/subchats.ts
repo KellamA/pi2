@@ -160,9 +160,28 @@ async function limitsOf(host: Host, api: ToolExecutionApi, context: Context): Pr
 	return ["", ...limitsReport(views, users, Date.now(), remembered)];
 }
 
+/** How many archived sub-chats `list` with `archived: true` gives at a time (#636). */
+export const ARCHIVED_PAGE = 40;
+
+const when = (at: number) => `${new Date(at).toISOString().slice(0, 16).replace("T", " ")}Z`;
+
+/**
+ * A page of the archived sub-chats `ids`, newest archived first: those after `cursor`, the last one the page before gave,
+ * so that a page is the same however many are archived meanwhile. `shown`: how many came before it. Undefined when the
+ * cursor names none of them now (restored, or never one).
+ */
+export function archivedPage(ids: number[], archivedAt: (id: number) => number, cursor: number | undefined, size = ARCHIVED_PAGE): { page: number[]; shown: number; left: number; total: number } | undefined {
+	const later = (a: number, b: number) => archivedAt(b) - archivedAt(a) || b - a;
+	const newest = [...ids].sort(later);
+	if (cursor !== undefined && !ids.includes(cursor)) return undefined;
+	const rest = cursor === undefined ? newest : newest.filter((id) => later(cursor, id) < 0);
+	const page = rest.slice(0, size);
+	return { page, shown: newest.length - rest.length, left: rest.length - page.length, total: newest.length };
+}
+
 export const SUB_CHATS_DESCRIPTION =
 	"See the sub-chats this conversation opened with delegate, and archive the ones whose work is finished. Actions:\n" +
-	"- list: each sub-chat's number, agent and title; whether it is working, waiting for a provider's limit (and until when), waiting on the person or idle; the folder and branch it works in (for a worktree of its own, whether anything is uncommitted and whether its branch is merged); and the commands it left running in the background. Archived ones are named at the end. " +
+	"- list: each sub-chat that is not archived: its number, agent and title; whether it is working, waiting for a provider's limit (and until when), waiting on the person or idle; the folder and branch it works in (for a worktree of its own, whether anything is uncommitted and whether its branch is merged); and the commands it left running in the background. Archived ones are only counted: `archived: true` lists them, newest first, a page at a time (pass back `cursor` to continue; `usage: true` adds what each used), and `chats` looks up those numbered, archived or not. " +
 	"Then how much of each signed-in subscription's allowance is used and when each window resets, and which subscription you and each of your agents run on: list before starting more sub-chats when a window may be nearly used up.\n" +
 	"- archive: put away the sub-chats numbered in `chats`. Use it once you have what you needed from a sub-chat and will not continue it, or when the person asks you to tidy up. " +
 	"An archived sub-chat leaves the sidebar for the Archive, where the person can read and restore it; nothing is deleted. Commands it left running in the background are stopped, and the answer says which. " +
@@ -177,7 +196,10 @@ export function subChatsTool(host: Host) {
 		description: SUB_CHATS_DESCRIPTION,
 		parameters: obj({
 			action: str({ description: "list, archive or wait" }),
-			chats: opt(arr(int(), { description: "For archive: the numbers of the sub-chats to archive. For wait: the sub-chats to wait for, by default all" })),
+			chats: opt(arr(int(), { description: "For list: look up these sub-chats, archived or not. For archive: the numbers of the sub-chats to archive. For wait: the sub-chats to wait for, by default all" })),
+			archived: opt(bool({ description: "For list: list the archived sub-chats instead, newest first, a page at a time" })),
+			usage: opt(bool({ description: "For list with archived or chats: add what each archived one used" })),
+			cursor: opt(int({ description: "For list with archived: the cursor the previous page ended with, to continue" })),
 			remove_worktree: opt(bool({ description: "For archive: also remove each one's worktree of its own, if nothing would be lost (nothing uncommitted, no commits that are not on the branch it was made from). Its branch is kept." })),
 		}),
 		// Listing changes nothing, and archiving what is archived changes nothing.
@@ -197,35 +219,77 @@ export function subChatsTool(host: Host) {
 				return report.delivered === null ? " Its last report has not been read yet." : " Its last report was given to you.";
 			};
 			const parentWorktree = await worktreeOf(api, caller, context);
-			const titleOf = (id: number) => all[String(id)]?.title ?? "";
 			const agentOf = (id: number) => host.agentOf(id as unknown as ConversationId)?.name ?? "an agent that was deleted";
 			const action = args.action.trim().toLowerCase();
 
 			if (action === "list") {
 				// Those archived on their own; a sub-chat of an archived one goes with it.
 				const archived = mine.filter((id) => isArchived(all[String(id)]));
-				const listed = mine.filter((id) => !archived.includes(id) && !archived.includes(all[String(id)]?.parent ?? -1));
-				const limits = await limitsOf(host, api, context);
-				if (mine.length === 0) return { output: text(["This conversation has no sub-chats. delegate opens one.", ...limits].join("\n")), details: { action, count: 0 } };
-				const lines: string[] = [];
-				for (const id of listed) {
+				const goneWith = (id: number) => archived.includes(all[String(id)]?.parent ?? -1);
+				const listed = mine.filter((id) => !archived.includes(id) && !goneWith(id));
+				const under = (meta: Meta) => (meta.parent === caller ? "" : earlier.includes(meta.parent!) ? ` (from your earlier conversation ${meta.parent})` : ` (a sub-chat of ${meta.parent})`);
+				/** A sub-chat that is not archived: how it stands, where it works, what it left running, and what it used. */
+				const current = async (id: number): Promise<string[]> => {
 					const meta = all[String(id)]!;
 					const busy = subChatActivity(host, [id, ...subChatsOf(all, id)]);
 					const state = busy === undefined ? "idle" : watchedSubChats(caller).includes(id) ? `${busy}, and its answer will come to you as a message` : busy;
 					const where = whereWords(await whereOf(api, id, parentWorktree, context));
 					const commands = runningCommandsOf(id);
 					const running = commands.length === 0 ? "no background commands running" : `background commands running: ${commands.map((command) => `${command.id} \`${command.command}\``).join(", ")}`;
-					const under = meta.parent === caller ? "" : earlier.includes(meta.parent!) ? ` (from your earlier conversation ${meta.parent})` : ` (a sub-chat of ${meta.parent})`;
-					lines.push(`- ${id}${under}: ${agentOf(id)}, “${meta.title}”. ${state[0]!.toUpperCase()}${state.slice(1)}; last used ${elapsed(Date.now() - meta.updatedAt)} ago. It ${where}. ${running[0]!.toUpperCase()}${running.slice(1)}.${reported(id)}`);
+					const lines = [`- ${id}${under(meta)}: ${agentOf(id)}, “${meta.title}”. ${state[0]!.toUpperCase()}${state.slice(1)}; last used ${elapsed(Date.now() - meta.updatedAt)} ago. It ${where}. ${running[0]!.toUpperCase()}${running.slice(1)}.${reported(id)}`];
 					const usage = await host.subChatUsage(id, context);
 					if (usage !== "") lines.push(`  ${usage}`);
+					return lines;
+				};
+				/**
+				 * An archived sub-chat, or one put away with the sub-chat it belongs to: a line, without where it worked, and what it
+				 * used only when asked. An orchestrator's archive only grows, so its list must not (#636).
+				 */
+				const putAway = async (id: number): Promise<string[]> => {
+					const meta = all[String(id)]!;
+					const how = archived.includes(id) ? `Archived ${when(meta.archivedAt!)}` : `Archived with sub-chat ${meta.parent}`;
+					const lines = [`- ${id}${under(meta)}: ${agentOf(id)}, “${meta.title}”. ${how}; last used ${elapsed(Date.now() - meta.updatedAt)} ago.`];
+					if (args.usage === true) {
+						const usage = await host.subChatUsage(id, context);
+						if (usage !== "") lines.push(`  ${usage}`);
+					}
+					return lines;
+				};
+				const restores = "Continuing an archived one with delegate and its number restores it.";
+
+				if (args.chats !== undefined && args.chats.length > 0) {
+					const lines: string[] = [];
+					let found = 0;
+					for (const id of [...new Set(args.chats)]) {
+						if (all[String(id)] === undefined || !mine.includes(id)) {
+							lines.push(`- ${id}: there is no sub-chat ${id} in this conversation.`);
+							continue;
+						}
+						found += 1;
+						lines.push(...(listed.includes(id) ? await current(id) : await putAway(id)));
+					}
+					if (args.chats.some((id) => !listed.includes(id) && mine.includes(id))) lines.push(restores);
+					return { output: text(lines.join("\n")), details: { action, count: found }, ...(found === 0 ? { isError: true } : {}) };
 				}
+
+				if (args.archived === true) {
+					if (archived.length === 0) return { output: text("No sub-chat of this conversation is archived."), details: { action, count: 0, archived: 0 } };
+					const found = archivedPage(archived, (id) => all[String(id)]!.archivedAt!, args.cursor);
+					if (found === undefined) return { output: text("Invalid cursor: it names no archived sub-chat of this conversation now. Start again without it."), isError: true };
+					const { page, shown, left, total } = found;
+					const lines = [page.length === 0 ? `No more archived sub-chats: all ${total} were listed.` : `Archived sub-chats of this conversation, newest first: ${shown + 1} to ${shown + page.length} of ${total}.`];
+					for (const id of page) lines.push(...(await putAway(id)));
+					if (left > 0) lines.push(`${left} more: list again with archived: true and cursor: ${page.at(-1)}.`);
+					if (page.length > 0) lines.push(restores);
+					return { output: text(lines.join("\n")), details: { action, count: page.length, archived: total } };
+				}
+
+				const limits = await limitsOf(host, api, context);
+				if (mine.length === 0) return { output: text(["This conversation has no sub-chats. delegate opens one.", ...limits].join("\n")), details: { action, count: 0 } };
+				const lines: string[] = [];
+				for (const id of listed) lines.push(...(await current(id)));
 				const head = listed.length === 0 ? "Every sub-chat of this conversation is archived." : "Sub-chats of this conversation:";
-				const tail = archived.length === 0 ? [] : [`Archived: ${archived.map((id) => `${id} (“${titleOf(id)}”)`).join(", ")}. Continuing one with delegate restores it.`];
-				for (const id of archived) {
-					const usage = await host.subChatUsage(id, context);
-					if (usage !== "") tail.push(`  ${id}: ${usage}`);
-				}
+				const tail = archived.length === 0 ? [] : [`${archived.length} archived; \`archived: true\` lists them, and \`chats\` looks one up by its number. ${restores}`];
 				return { output: text([head, ...lines, ...tail, ...limits].join("\n")), details: { action, count: listed.length, archived: archived.length } };
 			}
 

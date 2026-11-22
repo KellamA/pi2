@@ -304,7 +304,7 @@ struct WorkspaceView: View {
         // The sidebar's list knows a sub-chat's parent; for a sub-chat of an archived conversation, its state does.
         let listed = engine.conversations.first(where: { $0.id == id })?.parent.flatMap { parent in engine.conversations.first { $0.id == parent }?.id }
         if let parentID = listed ?? state?.agent.parent {
-            Button("Parent Chat", systemImage: "arrow.turn.left.up") { engine.onNavigate(parentID) }
+            Button("Parent Chat", systemImage: "arrow.turn.left.up") { engine.onNavigate(parentID, nil) }
                 .labelStyle(.titleAndIcon)
                 .help("Go to the conversation whose agent opened this sub-chat")
         }
@@ -795,9 +795,10 @@ struct PaneCommands: View {
     private var workspace: Workspace { model.workspace }
 
     var body: some View {
-        // Panes are the agent view's; in chat mode they would change it out of sight.
+        // Panes are the agent view's; in chat mode they would change it out of sight. With the projects preview on they
+        // are not drawn at all (#644).
         Group { commands }
-            .disabled(model.mode == .chat)
+            .disabled(model.mode == .chat || model.engine.projectsPreview)
     }
 
     @ViewBuilder private var commands: some View {

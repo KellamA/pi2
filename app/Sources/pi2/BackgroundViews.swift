@@ -139,7 +139,7 @@ struct BackgroundOutputWindow: View {
             HStack(spacing: 6) {
                 if let conversationId, let root = rootConversationId {
                     Button(source(conversationId)) {
-                        model.selection = .conversation(root)
+                        model.openConversation(root)
                         model.showMainWindow()
                     }
                     .buttonStyle(.plain).foregroundStyle(Theme.acc)

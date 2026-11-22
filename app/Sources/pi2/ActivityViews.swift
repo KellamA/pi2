@@ -11,7 +11,7 @@ struct ActivityView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 if let recovery = engine.recovery {
-                    RecoveryNotice(engine: engine, recovery: recovery, open: { _, root in model.selection = .conversation(root) })
+                    RecoveryNotice(engine: engine, recovery: recovery, open: { _, root in model.openConversation(root) })
                 }
                 running
                 if !engine.localRunning.isEmpty { LocalModelsActivity(model: model) }
@@ -110,7 +110,7 @@ struct ActivityView: View {
                     .help(origin(schedule))
                     Spacer()
                     if let last = schedule.lastConversationId, engine.conversations.contains(where: { $0.id == last }) {
-                        Button("Last Run") { model.selection = .conversation(last) }.buttonStyle(.plain).foregroundStyle(Theme.acc)
+                        Button("Last Run") { model.openConversation(last) }.buttonStyle(.plain).foregroundStyle(Theme.acc)
                     }
                     Button("Run Now") { engine.perform("schedules.runNow", ["id": schedule.id]) }
                         .disabled(schedule.holdReason != nil)
@@ -176,7 +176,7 @@ private struct RunRow: View {
                 Text(elapsed(until: context.date)).font(.system(size: 12).monospacedDigit()).foregroundStyle(Theme.tx2)
                     .frame(minWidth: 52, alignment: .trailing)
             }
-            Button("Open") { model.selection = .conversation(run.rootConversationId) }
+            Button("Open") { model.openConversation(run.rootConversationId) }
                 .buttonStyle(PiButtonStyle(kind: .secondary, compact: true))
             Button("Stop", systemImage: "stop.fill") { engine.perform("abort", ["id": run.conversationId]) }
                 .labelStyle(.iconOnly)
@@ -242,7 +242,7 @@ private struct BackgroundCommandRow: View {
                 .buttonStyle(PiButtonStyle(kind: .secondary, compact: true))
                 .fixedSize()
                 .help("Show what it has printed, as it prints it")
-            Button("Open") { model.selection = .conversation(command.rootConversationId) }
+            Button("Open") { model.openConversation(command.rootConversationId) }
                 .buttonStyle(PiButtonStyle(kind: .secondary, compact: true))
                 .fixedSize()
                 .help("Open the conversation that started it")
