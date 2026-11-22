@@ -255,6 +255,31 @@ func run(folder: URL) async {
     for page in handed { page.close() }
 }
 
+/// The classes the page's root element has.
+@MainActor
+func marks(_ view: WKWebView) async -> String {
+    await js(view, "document.documentElement.className") as? String ?? "(no page)"
+}
+
+/// The page as the Mac draws it is not marked for a phone; marked, it is before its own scripts run, whatever its
+/// Content-Security-Policy says of scripts (the mark is the app's, not the page's).
+@MainActor
+func layouts(folder: URL) async {
+    await group("the Mac's page is not marked for a phone, and the phone's is, before its first drawing") {
+        let mac = TranscriptWebKitView(folder: folder)
+        let phone = TranscriptWebKitView(folder: folder, layout: .phone)
+        defer { mac.close(); phone.close() }
+        guard await until("both pages say they are ready", { mac.isReady && phone.isReady }) else { return }
+        let wide = await marks(mac)
+        check("the Mac's page has no mark", wide == "", "classes \(wide.debugDescription)")
+        let narrow = await marks(phone)
+        check("the phone's page is marked narrow and touch", narrow == "narrow touch", "classes \(narrow.debugDescription)")
+        // The page's own scripts ran after the mark was set: what they saw is what the page draws with.
+        let early = await js(phone, "document.documentElement.classList.contains('narrow') && typeof window.pi2?.receive === 'function'") as? Bool
+        check("and the page's scripts ran with it", early == true)
+    }
+}
+
 let app = NSApplication.shared
 // No Dock icon, no menu bar, and never made active: the person's focus stays where it is.
 app.setActivationPolicy(.prohibited)
@@ -264,6 +289,7 @@ Task { @MainActor in
     let url = URL(fileURLWithPath: folder, isDirectory: true)
     if FileManager.default.fileExists(atPath: url.appendingPathComponent("index.html").path) {
         await run(folder: url)
+        await layouts(folder: url)
     } else {
         check("the conversation page is found", false, "no index.html in \(url.path); run from app/ or pass --page <folder>")
     }
