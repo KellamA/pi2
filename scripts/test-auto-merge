@@ -173,5 +173,7 @@ out=$("$merge" 5 6 2>&1); status=$?
 report 2 "$status" "two numbers: exit status"
 check "two numbers: nothing asked of GitHub" test ! -s "$CASE/log"
 
+report 0 1 "a deliberate failure, for reproducing #637 against GitHub; removed in the next commit"
+
 echo "$pass passed, $fail failed"
 ((fail == 0))
