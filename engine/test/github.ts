@@ -9,9 +9,9 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { PREVIEW_OFF, Projects } from "../src/projects.ts";
+import { Projects } from "../src/projects.ts";
 import { makeScratch } from "../src/scratch.ts";
-import { EngineClient, previewOn, standInApp, stop, until } from "./patience.ts";
+import { EngineClient, standInApp, stop, until } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-github-"));
 const ghFolder = mkdtempSync(join(tmpdir(), "pi2-github-gh-"));
@@ -147,16 +147,12 @@ const offline = async (edit: (harness: Harness) => Promise<void>) => {
 };
 
 try {
-	// ---- With the preview off
+	// ---- A new data folder
 	assert.deepEqual(await client.until("greetings", () => client.events.github), { event: "github", projects: {} });
 	assert.ok(client.order.indexOf("work") < client.order.indexOf("github"), "github comes after work (4.4)");
-	for (const method of ["github.attach", "github.detach", "github.refresh", "github.merge", "github.sendBack", "github.diff", "github.unknown", "github.settle", "github.show", "projects.watch"]) {
-		await assert.rejects(client.call(method, {}), { message: PREVIEW_OFF });
-	}
-	step("with the preview off, the empty github event after work, and every github request refused");
+	step("the empty github event, after work");
 
 	// ---- Attaching
-	await previewOn(client);
 	const { id: projectId, conversation: parent }: { id: string; conversation: number } = await client.call("projects.create", { folder, name: "Widgets" });
 	const { id: local, conversation: localParent }: { id: string; conversation: number } = await client.call("projects.create", { folder: null, name: "Local" });
 	const demo = { provider: "demo", modelId: "demo-1" };
@@ -597,16 +593,14 @@ try {
 	rmSync(secondFolder, { recursive: true, force: true });
 	step("a first read reads everything, what is closed comes brief, and github.show reads one whole into the listing");
 
-	// ---- Detaching, and the preview off
+	// ---- Detaching
 	await client.call("github.detach", { projectId });
 	await client.until("detached", () => client.github(projectId) === undefined);
 	assert.deepEqual((await client.call("work.list", { projectId })).items.map((item: any) => item.id), [leftOver], "the list kept by pi² as it was left");
 	await client.call("github.attach", { projectId, repository: "Example/Widgets" });
 	await client.until("attached again", () => client.github(projectId)?.state === "ok");
-	await client.call("projects.setPreview", { on: false });
-	await assert.rejects(client.call("github.refresh", { projectId }), { message: PREVIEW_OFF });
-	assert.equal(client.github(projectId).repository.name, "widgets", "the event keeps what was made");
-	step("detaching goes back to the list kept by pi²; with the preview off the event stays and the requests are refused");
+	assert.equal(client.github(projectId).repository.name, "widgets");
+	step("detaching goes back to the list kept by pi², and attaching again reads it again");
 } finally {
 	client.close();
 	await stop(engine);

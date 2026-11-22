@@ -5,8 +5,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProjectRule } from "../src/projectrules.ts";
-import { PREVIEW_OFF, PROJECT_ARCHIVED } from "../src/projects.ts";
-import { EngineClient, previewOnLeavingOut, standInApp, stop } from "./patience.ts";
+import { PROJECT_ARCHIVED } from "../src/projects.ts";
+import { EngineClient, leaveOut, standInApp, stop } from "./patience.ts";
 // The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
 // for the app's, as the tests that answer for the person already do (#504).
 process.env.PI2_APP_BUNDLE = standInApp();
@@ -65,15 +65,13 @@ try {
 	await app.until("rules greeting", () => app.events.projectRules);
 	assert.deepEqual(app.order, ["projects", "projectRules"]);
 	assert.deepEqual(app.events.projectRules, { event: "projectRules", projects: {} });
-	for (const action of ["add", "edit", "move", "remove"]) {
-		await assert.rejects(app.call(`projects.rules.${action}`, {}), { message: PREVIEW_OFF });
-	}
+	// A conversation in no project: the project carrying over makes for it is deleted (#458, `leaveOut`).
 	const { id: plain } = await app.call("conversation.create", { agentId: "forge", model: demo });
+	await leaveOut(app);
 	await app.open(plain);
 	const plainBefore = await app.prompt(plain);
 	assert.equal(plainBefore.sections.has("project_rules"), false);
 
-	await previewOnLeavingOut(app);
 	const { id: projectId, conversation: orchestrator } = await app.call("projects.create", { folder: home });
 	const { id: otherProject, conversation: unrelated } = await app.call("projects.create", { folder: null });
 	const project = app.events.projects.projects.find((row: any) => row.id === projectId);
@@ -168,12 +166,9 @@ try {
 	assert.deepEqual(await add(shared, "everyone"), { id: "r51" });
 	for (const { id } of app.rules(projectId)) if (id !== "r51") await action("remove", { id });
 	const kept = app.events.projectRules;
-	await app.call("projects.setPreview", { on: false });
-	assert.equal((await app.prompt(orchestrator)).sections.has("project_rules"), false);
-	assert.equal((await app.prompt(worker)).sections.has("project_rules"), false);
-	assert.equal((await app.prompt(plain)).full, plainBefore.full);
+	assert.equal((await app.prompt(plain)).full, plainBefore.full, "a conversation in no project is told the same, byte for byte");
 	other = await Client.connect(engine, home);
-	assert.deepEqual(await other.until("rules greeting with preview off", () => other!.events.projectRules), kept);
+	assert.deepEqual(await other.until("rules greeting", () => other!.events.projectRules), kept);
 	other.close();
 	other = undefined;
 	app.close();
@@ -181,15 +176,13 @@ try {
 	engine = start();
 	const restarted = client = await Client.connect(engine, home);
 	assert.deepEqual(await restarted.until("rules after restart", () => restarted.events.projectRules), kept);
-	assert.equal(restarted.events.projects.preview, false);
-	await restarted.call("projects.setPreview", { on: true });
 	await restarted.open(orchestrator);
 	assert.equal((await restarted.prompt(orchestrator)).sections.get("project_rules"), section(all, `1. ${shared}`));
 	await restarted.call("projects.delete", { id: projectId });
 	await assert.rejects(restarted.call("projects.rules.remove", { projectId, id: "r51" }), { message: `Unknown project: ${projectId}` });
 	assert.equal((await restarted.prompt(orchestrator)).sections.has("project_rules"), false);
 	assert.equal(restarted.rules(otherProject).length, 0);
-	console.log("ok  lifecycle, limit, non-reused ids, and rules kept across preview switches and restart");
+	console.log("ok  lifecycle, limit, non-reused ids, and rules kept across a restart");
 } finally {
 	other?.close();
 	client?.close();

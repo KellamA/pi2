@@ -12,6 +12,10 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { backgroundMarker, backgroundMarkerDetails, commandLine, elapsed, MAX_WAIT_SECONDS } from "../src/background.ts";
 import { EngineClient, exited, PATIENT_MS, running, standInApp, stop, until } from "./patience.ts";
 
+// This test is about conversations in no project, made with the agents of no project: its engines carry nothing into
+// projects (`PI2_CARRY_NEVER`, carryover.ts), as the last version with the switch never on did (#715).
+process.env.PI2_CARRY_NEVER = "1";
+
 // Commits made here use a fixed identity and none of the person's own git settings.
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
 process.env.GIT_CONFIG_NOSYSTEM = "1";

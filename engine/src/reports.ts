@@ -12,7 +12,7 @@
 // batch's last run has ended, `failure` only at the batch's first run that failed or was stopped. A report that woke
 // nobody stays undelivered, with a line of news for the catch-up (#466), and its text comes with `reports` `read`.
 //
-// Outside a project, with the preview off, and in an archived or deleted project, nothing here changes anything: a run
+// Outside a project, and in an archived or deleted project, nothing here changes anything: a run
 // there has no report, or its report wakes as wakes.md says.
 //
 // What later issues fill in:
@@ -29,7 +29,7 @@ import { reportPastLimit } from "./projectlimits.ts";
 import type { Engine, Feature } from "./features.ts";
 import { waitForChat } from "./heed.ts";
 import { ownsSubChat } from "./orchestrator.ts";
-import { allProjects, inProject, type Project, PROJECT_ARCHIVED, Projects, projectsOn, requirePreview } from "./projects.ts";
+import { allProjects, inProject, type Project, PROJECT_ARCHIVED, Projects } from "./projects.ts";
 import { type Arrived, commitWakes, heard, reloadWakes, reportArrival, resultText, wakeUp, type Watch, watchedRuns, Wakes } from "./wakes.ts";
 import { type ChangeBy, inverseOf, type Op, record } from "./changes.ts";
 
@@ -100,8 +100,8 @@ const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 // ---- Which runs have a report
 
 /**
- * The project whose orchestrator's conversation `conversation` is, now or earlier, with the preview on and the project
- * neither archived nor deleted. Only a run started from such a conversation has a report.
+ * The project whose orchestrator's conversation `conversation` is, now or earlier, with the project neither archived
+ * nor deleted. Only a run started from such a conversation has a report.
  */
 export function orchestratorOf(conversation: number): Project | undefined {
 	const project = inProject(conversation);
@@ -131,7 +131,7 @@ export function reportOf(submissionId: number | undefined): Report | undefined {
 /**
  * When a watched run's report wakes the orchestrator, as it stands now: its watch's `wake`, or the project's switch
  * (on: `each`; off: `never`). Undefined for a run with no report, which wakes as wakes.md says; `each` for one whose
- * project is out of the preview now (switched off, archived or deleted), which does too.
+ * project is archived or deleted now, which does too.
  */
 export function wakeFor(watch: Pick<Watch, "conversationId" | "submissionId" | "wake">): ReportWake | undefined {
 	if (reportOf(watch.submissionId) === undefined) return undefined;
@@ -664,11 +664,11 @@ export const reports: Feature = (given, running) => {
 	engine = running;
 	return {
 		tools: [reportsTool()],
-		// The orchestrator's alone (5.1), with the preview on and its project neither archived nor deleted: in its current
+		// The orchestrator's alone (5.1), with its project neither archived nor deleted: in its current
 		// conversation, once that is known, and not in another conversation of the orchestrator agent, such as a schedule's
 		// run (3.13). A conversation not made yet is known by its agent; the tool checks the conversation itself too.
 		toolNames: (_access, agent, where) => {
-			if (where.subChat || agent?.role !== "orchestrator" || agent.projectId === undefined || !inProjectOn(agent.projectId)) return [];
+			if (where.subChat || agent?.role !== "orchestrator" || agent.projectId === undefined || !liveProject(agent.projectId)) return [];
 			if (where.conversationId !== undefined && allProjects()[agent.projectId]?.conversation !== where.conversationId) return [];
 			return ["reports"];
 		},
@@ -693,7 +693,6 @@ export const reports: Feature = (given, running) => {
 		handlers: {
 			/** `{ projectId, chats, when }`: the person's choice of waking for sub-chats' runs going now (4.2). */
 			"reports.wake": async (params) => {
-				requirePreview();
 				const projectId = params.projectId;
 				if (typeof projectId !== "string") throw new Error("projectId must be a project's id");
 				const project = allProjects()[projectId];
@@ -709,8 +708,8 @@ export const reports: Feature = (given, running) => {
 	};
 };
 
-/** Whether project `projectId` is in the preview now: on, and neither archived nor deleted. */
-function inProjectOn(projectId: string): boolean {
+/** Whether project `projectId` is neither archived nor deleted. */
+function liveProject(projectId: string): boolean {
 	const project = allProjects()[projectId];
-	return projectsOn() && project !== undefined && project.archivedAt === undefined && project.deletedAt === undefined;
+	return project !== undefined && project.archivedAt === undefined && project.deletedAt === undefined;
 }

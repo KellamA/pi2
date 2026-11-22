@@ -13,7 +13,7 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EngineClient, previewOnLeavingOut, standInApp, stop } from "./patience.ts";
+import { EngineClient, leaveOut, standInApp, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-agentdefault-"));
 const work = realpathSync(mkdtempSync(join(tmpdir(), "pi2-agentdefault-work-")));
@@ -134,7 +134,7 @@ try {
 	step("an agent made by hand, and its duplicate, start on the default; one with a model of its own, and its duplicate, keep it; a conversation already started keeps its model");
 
 	// A project: its default orchestrator, its New Agent, and the orchestrator's `make`.
-	await previewOnLeavingOut(client);
+	await leaveOut(client);
 	const project = await client.call("projects.create", { folder: work });
 	const O = project.conversation as number;
 	assert.deepEqual((await client.runsOn(O)).model, text);

@@ -21,6 +21,10 @@ import { usedUpUntil } from "../src/limits.ts";
 import { closedStream, failureOf, isNetworkError, retryNetwork, transportFailureOf } from "../src/networkwait.ts";
 import { CARRY_ON, plainProviderError } from "../src/providererror.ts";
 import { EngineClient, standInApp, stop, until } from "./patience.ts";
+
+// This test is about conversations in no project, made with the agents of no project: its engines carry nothing into
+// projects (`PI2_CARRY_NEVER`, carryover.ts), as the last version with the switch never on did (#715).
+process.env.PI2_CARRY_NEVER = "1";
 // The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
 // for the app's, as the tests that answer for the person already do (#504).
 process.env.PI2_APP_BUNDLE = standInApp();

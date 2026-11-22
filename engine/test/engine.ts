@@ -13,6 +13,10 @@ import { usageWords } from "../src/subchatusage.ts";
 import { ARCHIVED_PAGE, archivedPage } from "../src/subchats.ts";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
+// This test is about conversations in no project, made with the agents of no project: its engines carry nothing into
+// projects (`PI2_CARRY_NEVER`, carryover.ts), as the last version with the switch never on did (#715).
+process.env.PI2_CARRY_NEVER = "1";
+
 const home = mkdtempSync(join(tmpdir(), "pi2-test-"));
 const workdir = realpathSync(mkdtempSync(join(tmpdir(), "pi2-work-")));
 /** Folders a check makes in the temporary folder, removed at the end with the data folder whether the checks passed or not. */
@@ -810,7 +814,8 @@ try {
 		const copy = client.agents.find((a) => a.id === copyId) as any;
 		assert.notEqual(copyId, sourceId);
 		assert.equal(copy.name, "Template copy");
-		assert.deepEqual({ ...copy, id: source.id, name: source.name, createdAt: source.createdAt }, source, "every saved profile setting, including command rules, arrives in the copy");
+		// When each was saved (`updatedAt`, stamped by every save since #715) is its own.
+		assert.deepEqual({ ...copy, id: source.id, name: source.name, createdAt: source.createdAt, updatedAt: source.updatedAt }, source, "every saved profile setting, including command rules, arrives in the copy");
 		assert.ok(client.agents.every((a) => !a.delegates.includes(copyId)), "nobody gains permission to hand work to the copy");
 		await client.until("copy memory settings", () => (client.events.memory as any)?.agents?.[copyId]);
 		assert.deepEqual((client.events.memory as any).agents[copyId], { enabled: true, notes: [] }, "the memory switch is copied, never notes");

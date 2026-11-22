@@ -15,6 +15,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CHAT_MEMORY_TOOLS } from "../src/knowledge.ts";
 import { EngineClient, standInApp, stop } from "./patience.ts";
+
+// This test is about conversations in no project, made with the agents of no project: its engines carry nothing into
+// projects (`PI2_CARRY_NEVER`, carryover.ts), as the last version with the switch never on did (#715).
+process.env.PI2_CARRY_NEVER = "1";
 // The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
 // for the app's, as the tests that answer for the person already do (#504).
 process.env.PI2_APP_BUNDLE = standInApp();
@@ -195,12 +199,15 @@ try {
 	assert.equal(JSON.stringify(client.agentNotes(forge.id)), forgeBefore);
 	step("the app adds, edits and deletes chat mode's notes, apart from the agents'");
 
-	// ---- A chat continued as an agent's conversation (#289) takes none of chat mode's notes with it.
+	// ---- A chat continued as an agent's conversation (#289), in a project (#654), takes none of chat mode's notes with it.
 	const { id: secret } = await client.call("memory.add", { chat: true, text: "Zephyrine is the name of the person's cat." });
 	await client.until("the note to keep back", () => client.chatNotes().some((n) => n.id === secret));
 	// Asked in another chat: the demo model answers /system with the prompt, which would put the note in this chat's answers.
 	assert.match(await client.section(nextChat, "memory"), /Zephyrine/, "chats have it in their prompt");
-	const { id: continued } = await client.call("chat.continueWithAgent", { id: chat, agentId: forge.id, text: "Please carry on" });
+	const { id: projectId } = await client.call("projects.create", { folder: null, name: "Lighthouse" });
+	const { id: forgeCopy } = await client.call("projects.addAgent", { projectId, template: forge.id });
+	await client.call("memory.add", { projectId, text: "The project is called Lighthouse." });
+	const { id: continued } = await client.call("chat.continueWithAgent", { id: chat, projectId, agentId: forgeCopy, text: "Please carry on" });
 	await client.call("conversation.open", { id: continued });
 	await client.until("the continued conversation's first answer", () => {
 		const conv = client.conversations.get(continued);
@@ -209,7 +216,7 @@ try {
 	const continuedSeen = await client.offered(continued);
 	assert.ok(!continuedSeen.tools.includes("agent_notes"), `the agent's conversation has no agent_notes: ${continuedSeen.tools.join(" ")}`);
 	const continuedMemory = await client.section(continued, "memory");
-	assert.match(continuedMemory, /The project is called Lighthouse/, "the agent has its own notes");
+	assert.match(continuedMemory, /The project is called Lighthouse/, "the agent has its project's notes");
 	assert.ok(!/Zephyrine|Lives by the sea|c1|c3/.test(continuedMemory), "and none of chat mode's");
 	assert.ok((await client.call("search", { query: "Please carry on" })).results.some((result: any) => result.conversationId === continued), "the search reaches the handed-over chat");
 	assert.ok(!(await client.call("search", { query: "Zephyrine" })).results.some((result: any) => result.conversationId === continued), "no note of chat mode's is in what the agent was given");

@@ -1,16 +1,16 @@
-// Projects (#450): the project itself, its requests, and the preview switch that turns projects on (#456).
+// Projects (#450): the project itself and its requests (#456). Since #483 took the preview switch out, projects are the
+// only way: carrying over runs by itself when the engine starts (carryover.ts).
 //
 // docs/projects.md is the contract this file builds, and its names and shapes are the contract's. A project is a
 // document of its own (`pi2.projects`), with its orchestrator an ordinary agent in `pi2.agents` marked with the
 // project's id, and its conversations ordinary conversations in `pi2.library` marked the same way. Nothing that exists
-// is rewritten: with the preview off, every request that exists today works as today, and only the requests new in the
-// epic are refused (section 2).
+// is rewritten: carrying over only adds fields, so the last version with the switch can still read every document.
 //
 // Several later issues are built on this file side by side. What each fills in later has a place here, marked with the
 // issue that fills it, and does what the contract's 12.1 says until then:
 //
-// - `onPreviewOn(plan)`, `carryOverState()`: carrying over (#458), which carryover.ts wires in through `wireCarryOver`.
-//   Without it (a stand-in engine in a test), turning on carries nothing over, and `carryOver` is null.
+// - `carryOverState()`: carrying over (#458), which carryover.ts wires in through `wireCarryOver`. Without it (a
+//   stand-in engine in a test), `carryOver` is null.
 // - `lastWords(projectId)`: the orchestrator's last words, for the Dashboard: orchestrator.ts (#466) supplies them
 //   through `wireLastWords`, and marks a new project's conversation for its state block through `wireFresh`.
 // - `news`: stored by `addNews` (#463, #464, #465 and #467 add to it), delivered by orchestrator.ts (#466).
@@ -80,6 +80,12 @@ export type Project = {
 export type CarryRecord = {
 	ranAt: number | null;
 	backup: string | null;
+	/**
+	 * The copy of the data the update that took the switch out made at its first start, before changing anything (#715),
+	 * whatever `backup` holds. `path` null: there was nothing to copy (no conversation, no project), and nothing was made.
+	 * Absent until then, and in every document an older version wrote.
+	 */
+	removalBackup?: { path: string | null; at: number };
 	folders: Record<string, string>;
 	copies: Record<string, string>;
 	notes: Record<string, { projectId: string; noteId: string } | "left">;
@@ -117,8 +123,8 @@ const emptyProjects = (): ProjectsDoc => ({
 });
 
 /**
- * The projects, the carrying-over record and the news. Made by the first commit that writes it, never at start: with the
- * preview never turned on, nothing new is written (section 2).
+ * The projects, the carrying-over record and the news. Made by the first commit that writes it: on a data folder an
+ * older version left, the record of the update's copy of the data, at the first start (carryover.ts).
  */
 export const Projects = defineDoc<ProjectsDoc>({
 	kind: "pi2.projects",
@@ -141,6 +147,10 @@ export type ProjectRow = Project & {
 export type CarryOverState = {
 	ranAt: number | null;
 	backup: string | null;
+	/** The copy of the data the update made before carrying over (#715): the path as it is on disk. Null: none was made. */
+	removalBackup: { path: string; at: number } | null;
+	/** Why the update's copy of the data, or its carrying over, failed at this start; it is tried again at the next. */
+	removalFailed: string | null;
 	secretsPending: { copy: string; name: string; project: string; variables: string[]; error: string | null }[];
 };
 
@@ -159,6 +169,8 @@ export type CarryOverReport = {
 		conversations: number;
 		archivedConversations: number;
 		subChats: number;
+		/** Sub-chats in the project already that ran as the template, given the project's copy now (#715). */
+		subChatsPutRight: number;
 		notes: number;
 		/** Lines the person should read: a repository gone, a bare repository's worktrees each a project (9.2). */
 		notices: string[];
@@ -196,8 +208,6 @@ export type LimitReading = { id: string; limit: "planShare" | "dailySpend"; reas
 
 // ---- Words the person and agents read
 
-/** The refusal of every request new in the epic while the preview is off (section 2). */
-export const PREVIEW_OFF = "Projects are a preview. Turn them on in Settings › General first.";
 /** A request that would change an archived project, or start something in it (4.1, 3.6). */
 export const PROJECT_ARCHIVED = "This project is archived. Restore it first.";
 export const PROJECT_DELETED = "This agent’s project was deleted. Choose another agent.";
@@ -254,17 +264,10 @@ export function defaultProjectSettings(made: "new" | "carried"): ProjectSettings
 
 // ---- What every piece of the epic asks
 
-/** Whether the preview is on: `projects.preview` in settings.json, absent meaning off. */
-let preview = false;
 /** The `pi2.projects` document as last stored. Read again after every commit that changes it, by anyone. */
 let current: ProjectsDoc = emptyProjects();
 /** The engine's host, for the conversations and the Inbox. Set as the engine makes the feature. */
 let wired: Host | undefined;
-
-/** Whether the preview is on. Every piece of the epic asks this, and nothing else, whether projects are on. */
-export function projectsOn(): boolean {
-	return preview;
-}
 
 /** The projects as last stored, deleted ones included. A plain copy: change them only through a commit. */
 export function allProjects(): Record<string, Project> {
@@ -272,8 +275,7 @@ export function allProjects(): Record<string, Project> {
 }
 
 /**
- * The project conversation `conversation` belongs to, whatever the preview and whether the project is archived: for what
- * holds with the preview off too. If the project was deleted, only a conversation whose own agent belongs to it
+ * The project conversation `conversation` belongs to, whether the project is archived or not. If the project was deleted, only a conversation whose own agent belongs to it
  * still belongs to it. A carried conversation falls back to its template and is in no project (3.6).
  */
 export function projectOf(conversation: number): Project | undefined {
@@ -292,35 +294,27 @@ export function projectDeleted(projectId: string | undefined): boolean {
 }
 
 /**
- * The project conversation `conversation` is in, for what it is told and offered: only with the preview on, and only a
- * project neither archived nor deleted. Undefined for every other conversation, which is then told exactly what it is
- * told today.
+ * The project conversation `conversation` is in, for what it is told and offered: only a project neither archived nor
+ * deleted. Undefined for every other conversation (a chat, a deleted project's carried one), which is then told exactly
+ * what a conversation in no project is told.
  */
 export function inProject(conversation: number): Project | undefined {
 	const project = projectOf(conversation);
-	if (!preview || project === undefined || project.archivedAt !== undefined || project.deletedAt !== undefined) return undefined;
+	if (project === undefined || project.archivedAt !== undefined || project.deletedAt !== undefined) return undefined;
 	return project;
 }
 
-/** Refuses a request new in the epic while the preview is off, with the one message section 2 gives. */
-export function requirePreview(): void {
-	if (!preview) throw new Error(PREVIEW_OFF);
-}
-
-/**
- * Refuses a message to a conversation of an archived project, with the preview on (3.6). With it off, every conversation
- * works as today.
- */
+/** Refuses a message to a conversation of an archived project (3.6). */
 export function refuseInArchivedProject(conversation: number): void {
 	const project = projectOf(conversation);
-	if (preview && project !== undefined && project.deletedAt === undefined && project.archivedAt !== undefined) throw new Error(PROJECT_ARCHIVED);
+	if (project !== undefined && project.deletedAt === undefined && project.archivedAt !== undefined) throw new Error(PROJECT_ARCHIVED);
 }
 
-/** No starts with agents of deleted projects, or archived projects with the preview on (3.6). */
+/** No starts with agents of deleted projects, or archived projects (3.6). */
 export function startWithRefusal(agent: AgentProfile, projects = current.projects): string | undefined {
 	const project = agent.projectId === undefined ? undefined : projects[agent.projectId];
 	if (project?.deletedAt !== undefined) return PROJECT_DELETED;
-	if (preview && project?.archivedAt !== undefined) return PROJECT_ARCHIVED;
+	if (project?.archivedAt !== undefined) return PROJECT_ARCHIVED;
 	return undefined;
 }
 
@@ -345,8 +339,8 @@ export type SwitchAsk = {
  * The one helper every tool a switch governs calls (8.1), before it does what the switch is about. In a conversation of
  * a project whose switch `name` is off, it asks the person through the Inbox, as an approval that offers only Allow
  * Once and Deny and that Allow everything does not answer (`projectSwitch`, decision 17), and says `what` as the
- * question. Anywhere else, or with the switch on, it asks nothing. It holds with the preview off too: `startAgents`
- * still holds for a project's conversations then (section 2), and the other switches govern tools not offered then.
+ * question. Anywhere else, or with the switch on, it asks nothing. It holds in an archived project too, whose
+ * conversations cannot start anything anyway.
  */
 export async function requireSwitch(conversation: SwitchAsk, name: SwitchName, what: string): Promise<{ ok: true } | { ok: false; reason: string }> {
 	const project = projectOf(conversation.conversationId);
@@ -389,9 +383,8 @@ export async function addNews(tx: Tx, projectId: string, news: { kind: News["kin
 
 // ---- The places later issues fill in
 
-/** What carryover.ts (#458) gives this file: the run behind `setPreview`, and the event's `carryOver`. */
+/** What carryover.ts (#458) gives this file: the event's `carryOver`. */
 export type CarryOverParts = {
-	previewOn(plan: string | null): Promise<CarryOverReport>;
 	state(): CarryOverState | null;
 };
 let carrying: CarryOverParts | undefined;
@@ -405,20 +398,6 @@ export function wireCarryOver(parts: CarryOverParts): () => void {
 /** What carrying over has done, as last stored: a plain copy (carryover.ts). */
 export function carryRecord(): CarryRecord {
 	return structuredClone(current.carry);
-}
-
-/**
- * Carrying over, when the preview is turned on (9.8): carryover.ts works the plan out again, refuses when it is not
- * `plan` ("What would be carried over has changed since you looked. Look at it again."), runs it, and answers its
- * report. Without carryover.ts (a stand-in engine), nothing is carried over, and the report is empty.
- */
-export async function onPreviewOn(plan: string | null): Promise<CarryOverReport> {
-	return carrying === undefined ? emptyReport() : carrying.previewOn(plan);
-}
-
-/** The report of a run with nothing to do (9.8). */
-export function emptyReport(): CarryOverReport {
-	return { plan: null, projects: [], leftOut: { chats: 0, deleted: 0, deletedProject: 0, notesLeft: 0 }, already: 0, ranAt: current.carry.ranAt, backup: current.carry.backup, secretsPending: [] };
 }
 
 /** The `projects` event's `carryOver`: null while nothing was ever carried over (carryover.ts). */
@@ -589,7 +568,8 @@ export const projects: Feature = (host, engine) => {
 
 	const projectsEvent = () => ({
 		event: "projects" as const,
-		preview,
+		// Always true since the switch was taken out (#483): only the app built before then reads it, to show projects.
+		preview: true as const,
 		projects: Object.values(current.projects)
 			.sort((a, b) => a.createdAt - b.createdAt)
 			.map(
@@ -644,8 +624,6 @@ export const projects: Feature = (host, engine) => {
 
 	return {
 		start: async () => {
-			const stored = engine.setting("projects") as { preview?: unknown } | undefined;
-			preview = stored?.preview === true;
 			await reload();
 			// A commit by anyone that changes the document (news added in another feature's commit, say) is read back.
 			engine.harness().observeCommits({
@@ -656,7 +634,6 @@ export const projects: Feature = (host, engine) => {
 				end: () => {},
 			});
 		},
-		// Sent whether the preview is on or not, so that turning it on shows everything at once (4.4).
 		greeting: () => [projectsEvent()],
 		// The person deleted a conversation (3.6): if it was a project's orchestrator's current one, the project has none now,
 		// and an earlier one leaves `earlier`. Archiving one changes nothing in the project.
@@ -675,34 +652,16 @@ export const projects: Feature = (host, engine) => {
 			}).catch((error) => engine.log("could not note a deleted conversation in its project:", error instanceof Error ? error.message : error));
 		},
 		handlers: {
-			/** `{}`: exactly the `projects` event's content, for a script that does not read events. Allowed with the preview off. */
+			/** `{}`: exactly the `projects` event's content, for a script that does not read events. */
 			"projects.list": async () => {
 				const { event: _, ...content } = projectsEvent();
 				return content;
-			},
-			/**
-			 * `{ on, plan? }`: the preview on or off, counting for each conversation from its next message. On, carrying over
-			 * runs first (#458, through `onPreviewOn`), and turns nothing on if it refuses. Allowed with the preview off.
-			 */
-			"projects.setPreview": async (params) => {
-				if (typeof params.on !== "boolean") throw new Error("on must be true or false");
-				if (params.plan !== undefined && params.plan !== null && typeof params.plan !== "string") throw new Error("plan must be the plan of the report you were shown");
-				const on = params.on;
-				const carryOver = on ? await onPreviewOn((params.plan as string | null | undefined) ?? null) : null;
-				preview = on;
-				engine.saveSetting("projects", { preview: on });
-				engine.log(`projects preview ${on ? "on" : "off"}`);
-				announce();
-				// What other features send that depends on it, such as Needs you's list (#462), is sent again.
-				for (const feature of host.features) feature.previewChanged?.(on);
-				return { preview, carryOver };
 			},
 			/**
 			 * `{ folder, name?, template? }`: a project from a folder (or null) in one step, with its orchestrator and an empty
 			 * conversation with it, in one commit. The orchestrator is a copy of `template`, else of the default orchestrator.
 			 */
 			"projects.create": async (params) => {
-				requirePreview();
 				if (!("folder" in params)) throw new Error("folder must be a folder's path, or null");
 				const folder = checkFolder(params.folder);
 				const given = params.name === undefined || params.name === null ? undefined : checkName(params.name);
@@ -789,7 +748,6 @@ export const projects: Feature = (host, engine) => {
 			},
 			/** `{ id, name }`: refuses an empty name, one over 80 characters, or one taken. */
 			"projects.rename": async (params) => {
-				requirePreview();
 				const id = projectId(params);
 				const name = checkName(params.name);
 				await change((_doc, tx) => applyProjectChange(tx, id, { name }));
@@ -800,15 +758,13 @@ export const projects: Feature = (host, engine) => {
 			 * they are), and any part of the settings, each checked; what is not given is kept.
 			 */
 			"projects.set": async (params) => {
-				requirePreview();
 				const id = projectId(params);
 				const folder = params.folder === undefined ? undefined : checkFolder(params.folder);
 				const settings = await change((_doc, tx) => applyProjectChange(tx, id, { ...(folder === undefined ? {} : { folder }), ...(params.settings === undefined ? {} : { settings: params.settings }) }));
 				return { settings };
 			},
-			/** `{ id }`: out of the sidebar, with the preview on; no conversation's own state changes (3.6). */
+			/** `{ id }`: out of the sidebar; no conversation's own state changes (3.6). */
 			"projects.archive": async (params) => {
-				requirePreview();
 				const id = projectId(params);
 				live(current, id);
 				if (busy(id)) throw new Error(STOP_FIRST);
@@ -820,7 +776,6 @@ export const projects: Feature = (host, engine) => {
 				return {};
 			},
 			"projects.unarchive": async (params) => {
-				requirePreview();
 				const id = projectId(params);
 				await lifecycle(id, (project, now) => {
 					if (project.archivedAt === undefined) return;
@@ -829,9 +784,8 @@ export const projects: Feature = (host, engine) => {
 				});
 				return {};
 			},
-			/** `{ id }`: shown only in the Archive, with the preview on; its folder and name are free again (3.6). */
+			/** `{ id }`: shown only in the Archive; its folder and name are free again (3.6). */
 			"projects.delete": async (params) => {
-				requirePreview();
 				const id = projectId(params);
 				live(current, id);
 				if (busy(id)) throw new Error(STOP_FIRST);
