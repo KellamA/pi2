@@ -38,10 +38,10 @@ import { backgroundForSubChat, hasRunningCommands } from "./background.ts";
 import { bashForSubChat } from "./commands.ts";
 import { BrowserHost } from "./browser.ts";
 import { chatToolNames, toolsLeftOut } from "./builtins.ts";
-import { type ChatSettings, changeChatSettings, chatSettings, isChat } from "./chat.ts";
+import { type ChatSettings, chatSettings, isChat } from "./chat.ts";
 import { chatHandover, handoverAttachments } from "./handover.ts";
 import { codemodeExtension } from "./codemode.ts";
-import { automaticCompactionReady, compactionCheckpoint, earlyCompaction, RETENTION_INSTRUCTIONS, SUMMARY_TOKENS, summaryThinking, validateCompactionTokens } from "./compaction.ts";
+import { automaticCompactionReady, compactionCheckpoint, earlyCompaction, RETENTION_INSTRUCTIONS, SUMMARY_TOKENS, summaryThinking } from "./compaction.ts";
 import { holdingPlaces } from "./sections.ts";
 import { credentialStore } from "./credentials.ts";
 import { type Host, pi2Extension } from "./extensions.ts";
@@ -63,7 +63,8 @@ import { providerRequests, wireProviderRequests } from "./providerrequests.ts";
 import { addCommandRule, agentRequests, saveAgent, wireAgentRequests } from "./agentrequests.ts";
 import { conversationRequests, wireConversationEvents } from "./conversationevents.ts";
 import { activityEvent, agentsEvent, announceActivity, announceInbox, inboxEvent, libraryEvent, wireAppEvents } from "./appevents.ts";
-import { agentDefaultEvent, announceDefault, announceProviders, chatEvent, chatModel, defaultModel, defaultModelThinking, defaultNow, providersEvent, rememberModel, sameModel, usable, wireDefaultModel } from "./defaultmodel.ts";
+import { compactionSettingsEvent, settingsRequests, wireSettingsRequests } from "./settingsrequests.ts";
+import { agentDefaultEvent, announceProviders, chatEvent, chatModel, defaultModel, defaultModelThinking, defaultNow, providersEvent, rememberModel, sameModel, usable, wireDefaultModel } from "./defaultmodel.ts";
 import { armSchedules, scheduleRequests, schedulesEvent, scheduleTimer, setSchedules, tickSchedules, wireSchedules } from "./scheduleruns.ts";
 import { agents, busyConversations, chatOf, conversationsWithWork, isSubChat, library, refreshBusy, rootOf, setAgents, setLibrary, setVersions, setWorking, versions, working } from "./indexes.ts";
 import { McpServers } from "./mcp.ts";
@@ -78,7 +79,7 @@ import { LagMonitor } from "./lag.ts";
 import { adoptLoginPath } from "./shellpath.ts";
 import { runningCommands } from "./running.ts";
 import { sweepRuns, useRunFolder } from "./processes.ts";
-import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
+import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted } from "./archive.ts";
 import { versionRequests, Versions } from "./versions.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, agentOf, Agents, Inbox, Library, type Meta, type ModelRef, projectFrom, runsAs, starterAgents, takeAgentSwitch } from "./state.ts";
 import { allProjects, inProject, type Project, PROJECT_ARCHIVED, PROJECT_DELETED, projectDeleted, projectOf, refuseInArchivedProject, refuseStartWith } from "./projects.ts";
@@ -513,7 +514,6 @@ const settings: {
 	}
 })();
 const saveSettings = () => writeFileSync(settingsPath, JSON.stringify(settings, null, "\t"));
-const compactionSettingsEvent = () => ({ event: "compactionSettings", defaultCompactionTokens: settings.defaultCompactionTokens ?? null });
 // What the files moved out of this one use of it (#753), handed over as soon as it all exists.
 wireUsage({ harness, context, settings, providers, host, log, stopping: () => stopping });
 wireSchedules({ harness, context, log, host, takeSwitch, syncTools, agentChange });
@@ -522,6 +522,7 @@ wireAgentRequests({ harness, context, log, host });
 wireConversationEvents({ providers, host, context, log, conversation, followedModel, chatWeb });
 wireAppEvents({ settings, inbox, host });
 wireDefaultModel({ settings, saveSettings, providers, host, log, followersChanged });
+wireSettingsRequests({ settings, saveSettings, providers, sweepArchive });
 
 /** A random ID for this installation, made the first time a sign-in asks for one and the same ever after. */
 function deviceId(): string {
@@ -1020,14 +1021,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		await conv.reset(note, context);
 		return {};
 	},
-	"usage.setBudget": async (params) => {
-		const daily = params.daily;
-		if (daily !== null && !(typeof daily === "number" && Number.isFinite(daily) && daily > 0)) throw new Error("The budget must be an amount above zero, or off");
-		settings.dailyBudget = daily as number | null;
-		saveSettings();
-		await refreshUsage();
-		return {};
-	},
+	...settingsRequests,
 	...providerRequests,
 	/** The app offers to do computer actions for agents; only one app does at a time, the latest to ask. */
 	"computer.register": async (_params, client) => {
@@ -1089,12 +1083,6 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		await mcp.removeVariable(text(params, "id"), params.name);
 		return {};
 	},
-	"settings.finishOnboarding": async () => {
-		settings.onboarded = true;
-		saveSettings();
-		await announceProviders();
-		return {};
-	},
 	"backup.create": async (params) => ({ path: await createBackup(home, text(params, "directory")) }),
 	"conversation.archive": async (params) => {
 		if (typeof params.id !== "number") throw new Error(`Unknown conversation: ${String(params.id)}`);
@@ -1113,58 +1101,6 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		await conv.abort(context);
 		await editMeta(conv.id, (meta) => void (meta.deleted = true));
 		return {};
-	},
-	"settings.getCompaction": async () => ({ defaultCompactionTokens: settings.defaultCompactionTokens ?? null }),
-	"settings.setCompaction": async (params) => {
-		settings.defaultCompactionTokens = validateCompactionTokens(params.defaultCompactionTokens);
-		saveSettings();
-		const event = compactionSettingsEvent();
-		broadcast(event);
-		return { defaultCompactionTokens: event.defaultCompactionTokens };
-	},
-	/**
-	 * The default model for agents (#617): `{ model: { provider, modelId } | null, thinkingLevel?: string | null }`. Null
-	 * goes back to the model last picked in a conversation. Every agent with no model of its own starts its next
-	 * conversation on it; conversations already started keep theirs. Answers as the `agentDefault` event says.
-	 */
-	"settings.setAgentDefault": async (params) => {
-		if (!("model" in params)) throw new Error("model must be { provider, modelId }, or null for the model used last");
-		if (params.model === null) delete settings.agentDefault;
-		else {
-			const { provider, modelId } = (params.model ?? {}) as Partial<ModelRef>;
-			if (typeof provider !== "string" || typeof modelId !== "string") throw new Error("model must be { provider, modelId }, or null for the model used last");
-			if (providers.models.getModel(provider, modelId) === undefined) throw new Error(`Unknown model: ${provider}/${modelId}`);
-			const level = params.thinkingLevel ?? null;
-			if (level !== null) {
-				const levels = (await providers.listModels()).find((model) => model.provider === provider && model.id === modelId)?.thinkingLevels ?? [];
-				if (typeof level !== "string" || !levels.includes(level)) throw new Error(`${provider}/${modelId} has no thinking level ${String(level)}`);
-			}
-			settings.agentDefault = { model: { provider, modelId }, thinkingLevel: level as string | null };
-		}
-		saveSettings();
-		await announceDefault();
-		const { event: _, ...answer } = await agentDefaultEvent();
-		return answer;
-	},
-	"settings.setAutoArchive": async (params) => {
-		settings.autoArchiveDays = validateAutoArchive(params.days);
-		saveSettings();
-		broadcast(libraryEvent());
-		// Chosen now, so applied now: the person sees what the setting does without waiting for the next check.
-		await sweepArchive();
-		return {};
-	},
-	/** Chat mode's settings (chat.ts): any of `instructions`, `defaultModel`, `web`, `memory`. Answers with all four. */
-	"chat.set": async (params) => {
-		const after = changeChatSettings(chatSettings(settings.chat), params, (model) => providers.models.getModel(model.provider, model.modelId) !== undefined);
-		settings.chat = after;
-		// A default chosen now counts from the next chat, over the model used last.
-		if (params.defaultModel !== undefined) delete settings.lastChatModel;
-		saveSettings();
-		broadcast(chatEvent());
-		// The web setting is where a new chat's web switch starts; chats already made keep their own (#287). The memory
-		// switch changes what every chat is offered, from its next message (syncTools).
-		return after;
 	},
 	/** Continue with an Agent (#289): `{ id, agentId, cwd?, text? }`, answered with the new conversation's `{ id }`. */
 	"chat.continueWithAgent": continueChat,
