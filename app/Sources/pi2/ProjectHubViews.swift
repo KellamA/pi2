@@ -412,45 +412,6 @@ private struct BoardTabs: View {
     }
 }
 
-/// What a tab will show, until it does.
-private struct BoardTabEmpty: View {
-    let tab: HubTab
-
-    private var words: (icon: String, text: String) {
-        switch tab {
-        case .now: ("bolt.horizontal.circle", "What needs you, who is working now and what finished today.")
-        case .work: ("checklist", "The project's list of work: kept by pi², or the issues and pull requests of its GitHub repository.")
-        case .agents: ("person.2", "The project's agents, the orchestrator among them, and the templates to make more from.")
-        case .rules: ("text.badge.checkmark", "The project's rules, given word for word to the orchestrator or to every agent at each turn, and what they cost.")
-        case .notes: ("note.text", "What the project's agents keep for themselves about it, which a new orchestrator starts with.")
-        case .branches: ("arrow.triangle.branch", "The branches and worktrees the project's conversations work on.")
-        case .settings: ("gearshape", "What the orchestrator may do without asking, when reports wake it, and the project's limits.")
-        }
-    }
-
-    var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: words.icon)
-                .font(.system(size: 22))
-                .foregroundStyle(Theme.tx3)
-            Text(tab.title)
-                .font(.system(size: 13.5, weight: .semibold))
-                .foregroundStyle(Theme.tx)
-            Text(words.text)
-                .font(.system(size: 12.5))
-                .foregroundStyle(Theme.tx2)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-            Text("Coming in a later step of the projects preview.")
-                .font(.system(size: 11.5))
-                .foregroundStyle(Theme.tx3)
-        }
-        .frame(maxWidth: 360)
-        .padding(24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
 /// One of the project's agents in place of the board (#473): its conversation, which the person can read and write to
 /// as any other, under its avatar and name, the conversation's title and the way back to the board.
 private struct HubAgentPanel: View {
