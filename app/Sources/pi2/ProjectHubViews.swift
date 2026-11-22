@@ -55,6 +55,22 @@ struct ProjectHubView: View {
             .background(Theme.window)
             .navigationTitle(project.name)
             .navigationSubtitle("Project")
+            // The conversation with the keyboard, for the Conversation menu (#632): the agent's while it has it, else the
+            // orchestrator's, which the strip writes to when its panel is folded.
+            .onChange(of: keyed(shown: shown, agent: agent, agentActive: agentActive, project: project), initial: true) { _, keyed in
+                model.hubs.setKeyboard(keyed, for: projectID)
+            }
+            // A conversation the person opens takes the keyboard, whichever one had it.
+            .onChange(of: agent) { orchestratorTyping = false }
+            .alert("Start a fresh conversation with \(engine.agent(project.orchestratorId)?.name ?? "the orchestrator")?", isPresented: Binding(
+                get: { model.hubs.freshAsked == projectID },
+                set: { if !$0, model.hubs.freshAsked == projectID { model.hubs.freshAsked = nil } }
+            )) {
+                Button("Start Fresh") { model.hubs.startFresh(project, engine: engine) }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(Self.freshWords)
+            }
             // A project with no conversation yet gets one as its hub opens (docs/projects.md, 3.2).
             .task(id: project.conversation == nil) {
                 if project.conversation == nil { model.hubs.startConversation(project, engine: engine) }
@@ -63,8 +79,6 @@ struct ProjectHubView: View {
             .onChange(of: HubDrawn.Shown(project: project.id, tab: tab, fold: shown, narrow: narrow, conversation: shown == .conversationFolded ? nil : project.conversation, agent: shown == .boardFolded ? nil : agent), initial: true) { _, drawn in
                 HubDrawn.current = drawn
             }
-            // A conversation the person opens takes the keyboard, whichever one had it.
-            .onChange(of: agent) { orchestratorTyping = false }
             // The hub of the next project can appear before this one goes.
             .onDisappear { if HubDrawn.current?.project == projectID { HubDrawn.current = nil } }
             #endif
@@ -77,6 +91,38 @@ struct ProjectHubView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Theme.window)
             .navigationTitle("pi²")
+        }
+    }
+}
+
+extension AppModel {
+    /// How a link in one of a project's conversations shows another of them (#632): in place of the board, or, for the
+    /// orchestrator's current conversation, which has its own panel, by bringing the board back beside it.
+    func showInHub(_ project: ProjectRow) -> (Int) -> Void {
+        let id = project.id
+        let current = project.conversation
+        return { [weak self] conversation in
+            guard let self else { return }
+            if conversation == current {
+                self.hubs.setAgent(nil, for: id)
+                if self.hubs.fold(id) == .conversationFolded { self.hubs.setFold(.both, for: id) }
+            } else {
+                self.openAgent(conversation, in: id)
+            }
+        }
+    }
+}
+
+extension ProjectHubView {
+    /// What the new conversation begins with, and what becomes of this one (docs/projects.md, 6.5).
+    static let freshWords = "The new conversation begins with the project as it stands: who is working, what waits for you, the reports not yet read and the work. It has the project’s rules and notes, as every conversation in the project does, but not this conversation’s messages. Work handed out and not yet reported goes on, and reports to the new one.\n\nThis conversation is kept and can be read, linked from the new one, but takes no more messages."
+
+    /// Which of the hub's two conversations has the keyboard, as drawn.
+    fileprivate func keyed(shown: HubFold, agent: Int?, agentActive: Bool, project: ProjectRow) -> Int? {
+        switch shown {
+        case .boardFolded: project.conversation
+        case .conversationFolded: agent ?? project.conversation
+        case .both: agentActive ? agent : project.conversation
         }
     }
 }
@@ -205,6 +251,11 @@ struct OrchestratorModelMenu: View {
 
     private func choose(_ model: ModelInfo) {
         guard let agent else { return }
+        Self.choose(model, for: agent, engine: engine)
+    }
+
+    /// Here, and from the Conversation menu while the hub shows the orchestrator's conversation (#632).
+    static func choose(_ model: ModelInfo, for agent: AgentProfile, engine: EngineClient) {
         // The engine keeps every setting it is not sent, and the agent's project.
         engine.perform("agents.save", ["agent": ["id": agent.id, "name": agent.name, "model": ["provider": model.provider, "modelId": model.id]]])
     }
@@ -287,6 +338,9 @@ private struct HubConversationPanel: View {
                     .foregroundStyle(Theme.tx)
                     .lineLimit(1)
             } trailing: {
+                if let id = project.conversation {
+                    HubContextMeter(model: model, id: id, project: project, orchestrator: true)
+                }
                 if shown == .boardFolded {
                     // Folded by a narrow window, the board can only show in place of the conversation.
                     let narrow = model.hubs.fold(project.id) == .both
@@ -306,6 +360,7 @@ private struct HubConversationPanel: View {
                 }
             }
             .environment(\.inSplitPane, shown == .both)
+            .environment(\.showInHub, model.showInHub(project))
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
         }
     }
@@ -456,6 +511,7 @@ private struct HubAgentPanel: View {
                         .tint(Theme.tx2)
                     ChangeSize(status: status, size: 11)
                 }
+                HubContextMeter(model: model, id: conversation, project: project, orchestrator: false)
                 Button("Back to the Board") { model.hubs.setAgent(nil, for: project.id) }
                     .buttonStyle(.piGhost)
                     .fixedSize()
@@ -468,7 +524,38 @@ private struct HubAgentPanel: View {
             ChatView(engine: engine, id: conversation, active: active, onFocus: onFocus)
                 .id(conversation)
                 .environment(\.inSplitPane, shown == .both)
+                .environment(\.showInHub, model.showInHub(project))
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
+        }
+    }
+}
+
+/// The context meter of a conversation in the hub (#632), as the old screens' toolbar has it: how full the model's
+/// context is, the last request's read, the conversation's use and cost, and the ways to make room. For the
+/// orchestrator's conversation, Start Fresh is the project's; a fork of an agent's shows in place of the board.
+private struct HubContextMeter: View {
+    let model: AppModel
+    let id: Int
+    let project: ProjectRow
+    let orchestrator: Bool
+    private var engine: EngineClient { model.engine }
+
+    var body: some View {
+        // As in the toolbar, only once the conversation has come and its page has shown it, so that it does not read
+        // as empty meanwhile.
+        if let state = engine.open[id]?.state, engine.open[id]?.shown == true {
+            let projectID = project.id
+            ContextMeter(
+                engine: engine, id: id, state: state,
+                project: orchestrator ? ProjectFresh(refusal: engine.freshRefusal(project)) { model.hubs.freshAsked = projectID } : nil,
+                forked: orchestrator ? nil : { fork in model.openAgent(fork, in: projectID) }
+            )
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .font(.system(size: 11.5))
+            .foregroundStyle(Theme.tx2)
+            .tint(Theme.tx2)
+            .fixedSize()
         }
     }
 }
