@@ -520,16 +520,24 @@ struct NeedCard: View {
 
 // MARK: - Working now
 
-/// One agent working in the project: its avatar and name, its model, how long, its last line, and whether its report
-/// will wake the orchestrator. Clicking it opens its conversation in place of the board (#473). Shown in the board's
-/// Now tab, and in a Dashboard column with `compact`, which drops the conversation's title and the words about waking
-/// so that it fits a column's width (#481).
+/// One agent working in the project: its avatar and name, its model, how long, its last line, the shell command it waits
+/// on with its clock (#645), and whether its report will wake the orchestrator. Clicking it opens its conversation in
+/// place of the board (#473). Stop shows over its end while the pointer is on it or the keyboard is on it or its Stop,
+/// and is in its menu (#645). Shown in the board's Now tab, and in a Dashboard column with `compact`, which drops the
+/// conversation's title and the words about waking, and shortens the command's line, so that it fits a column's width
+/// (#481).
 struct WorkingRow: View {
     let engine: EngineClient
     let run: ActivityRun
     let waking: Bool
     var compact = false
     let open: () -> Void
+
+    @State private var hovering = false
+    /// Set when Stop was pressed: the row stays until the engine says the run has ended, which can take a moment.
+    @State private var stopping = false
+    @FocusState private var rowFocused: Bool
+    @FocusState private var stopFocused: Bool
 
     private var agent: AgentProfile? { engine.agent(run.runsAs ?? run.agentId ?? "") }
     private var watch: WakeItem? {
@@ -551,7 +559,47 @@ struct WorkingRow: View {
                 .contentShape(.rect)
         }
         .buttonStyle(.plain)
+        .focused($rowFocused)
         .help("Open \(agent?.name ?? "this agent")’s conversation in place of the board")
+        .accessibilityAction(named: "Stop", stop)
+        // Over the end of the row, so that the row does not move as it shows; it is a button of its own beside the
+        // row's, which Tab reaches after the row.
+        .overlay(alignment: .trailing) { stopButton }
+        .onHover { hovering = $0 }
+        .contextMenu(previewAs: "Working \(agent?.name ?? "An agent")") {
+            Button("Open", action: open)
+            Divider()
+            Button("Stop", action: stop)
+                .disabled(stopping)
+        }
+    }
+
+    /// Stop, over the end of the row while the pointer or the keyboard is on it.
+    private var stopButton: some View {
+        let shown = hovering || rowFocused || stopFocused || stopping
+        return Button(stopping ? "Stopping" : "Stop", systemImage: "stop.fill", action: stop)
+            .labelStyle(.titleAndIcon)
+            .buttonStyle(PiButtonStyle(kind: .danger, compact: true))
+            .background(Theme.panel, in: .rect(cornerRadius: 6))
+            .fixedSize()
+            .disabled(stopping)
+            .focused($stopFocused)
+            .help("Stop this run where it is, and the command it is running. Its conversation stays as it is and can be continued.")
+            .padding(.trailing, 8)
+            .opacity(shown ? 1 : 0)
+            .allowsHitTesting(shown)
+            // A run that has not ended a while after Stop can be stopped again.
+            .task(id: stopping) {
+                guard stopping else { return }
+                try? await Task.sleep(for: .seconds(10))
+                stopping = false
+            }
+    }
+
+    private func stop() {
+        guard !stopping else { return }
+        stopping = true
+        engine.perform("abort", ["id": run.conversationId])
     }
 
     private var row: some View {
@@ -588,6 +636,11 @@ struct WorkingRow: View {
                         Spacer(minLength: 0)
                         branch(status)
                     }
+                }
+                // The shell command it waits on, with how long it has run and how long it has printed nothing: what
+                // tells a stuck agent from a slow one (#645).
+                if let command = run.commands?.first {
+                    CommandClockLine(command: command, more: (run.commands?.count ?? 1) - 1, compact: compact)
                 }
                 if let waking = watchWords, !compact {
                     Text(waking).font(.system(size: 11)).foregroundStyle(Theme.tx3).lineLimit(2)

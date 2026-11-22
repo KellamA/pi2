@@ -213,6 +213,15 @@ private struct HubBar: View {
             .layoutPriority(1)
             OrchestratorModelMenu(engine: engine, agent: orchestrator)
                 .fixedSize()
+            // Beside the model, for the same agent (#642).
+            if let orchestrator, let levels = engine.modelInfo(of: orchestrator)?.thinkingLevels, !levels.isEmpty {
+                ThinkingChoices(engine: engine, agent: orchestrator, levels: levels)
+                    .menuStyle(.button)
+                    .controlSize(.small)
+                    .foregroundStyle(Theme.tx)
+                    .disabled(engine.status != .connected)
+                    .fixedSize()
+            }
             Spacer(minLength: 8)
             WeekUsed(engine: engine, provider: orchestrator?.model?.provider)
         }
@@ -272,7 +281,7 @@ struct OrchestratorModelMenu: View {
         .menuStyle(.button)
         .controlSize(.small)
         .disabled(agent == nil || engine.status != .connected)
-        .help("The orchestrator's model. Changing it changes the orchestrator's agent, from its next message.")
+        .help("The orchestrator’s model, for all of \(agent?.name ?? "the orchestrator")’s conversations, from its next message")
     }
 
     private func choose(_ model: ModelInfo) {
@@ -280,10 +289,10 @@ struct OrchestratorModelMenu: View {
         Self.choose(model, for: agent, engine: engine)
     }
 
-    /// Here, and from the Conversation menu while the hub shows the orchestrator's conversation (#632).
+    /// Here, and from the Conversation menu while the hub shows the orchestrator's conversation (#632). The agent's
+    /// conversations already going change with it (#642).
     static func choose(_ model: ModelInfo, for agent: AgentProfile, engine: EngineClient) {
-        // The engine keeps every setting it is not sent, and the agent's project.
-        engine.perform("agents.save", ["agent": ["id": agent.id, "name": agent.name, "model": ["provider": model.provider, "modelId": model.id]]])
+        engine.setModel(model, for: agent)
     }
 }
 
@@ -534,6 +543,8 @@ struct HubAgentPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
+                // A sub-chat's way up to the conversation that handed it its work (#642).
+                ParentButton(model: model, project: project, id: conversation)
                 // 14, as the conversation panel's header beside it (PanelHeader).
                 AgentAvatar(agent: agent, size: 14)
                 Text(agent?.name ?? "Agent")
@@ -560,6 +571,7 @@ struct HubAgentPanel: View {
                     ChangeSize(status: status, size: 11)
                 }
                 HubContextMeter(model: model, id: conversation, project: project, orchestrator: false)
+                AgentPanelMenu(model: model, id: conversation, agent: agent)
                 if !boardShown {
                     Button("Back to the Board", action: backToBoard)
                         .buttonStyle(.piGhost)
@@ -578,6 +590,33 @@ struct HubAgentPanel: View {
                 .environment(\.showInHub, model.showInHub(project))
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
         }
+    }
+}
+
+/// The menu in the header of an agent's conversation in place of the board (#642): what can be done to the conversation,
+/// as its row's context menu in the sidebar has it, then the agent's model and thinking, for all its conversations.
+private struct AgentPanelMenu: View {
+    let model: AppModel
+    let id: Int
+    let agent: AgentProfile?
+
+    var body: some View {
+        Menu {
+            ConversationActions(model: model, id: id)
+            if let agent {
+                Divider()
+                AgentModelItems(engine: model.engine, agent: agent)
+            }
+        } label: {
+            Label("Conversation Menu", systemImage: "ellipsis.circle")
+                .labelStyle(.iconOnly)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .font(.system(size: 12))
+        .tint(Theme.tx2)
+        .fixedSize()
+        .help(agent.map { "Rename, archive, delete or export this conversation; \($0.name)’s model and thinking" } ?? "Rename, archive, delete or export this conversation")
     }
 }
 
