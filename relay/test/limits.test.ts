@@ -395,17 +395,25 @@ describe("what a pairing costs in writes", () => {
 		vi.setSystemTime(start);
 		const writes = await countStorageWrites(mac.pairing);
 		let client = mac.client;
+		let closed = false;
 		let opened = 0;
 		for (let second = 0; second < 5; second++) {
 			vi.setSystemTime(start + second * 1000);
-			if (second > 0) client = (await macHello(mac)).client;
+			if (closed) client = (await macHello(mac)).client;
+			closed = false;
 			for (let index = 0; index < LIMITS.messagesPerSecond; index++) {
 				client.send(index % 2 === 0 ? { openJoin: { tokenHash: base64url(random(32)), expires: Date.now() + 60_000 } } : { closeJoin: {} });
 			}
-			for (;;) {
+			// Every message answered, or the socket held off.
+			for (let answered = 0; answered < LIMITS.messagesPerSecond; ) {
 				const message = await client.next();
+				if (typeof message === "object" && "closed" in message) {
+					closed = true;
+					break;
+				}
+				if (typeof message !== "string" || !message.startsWith('{"ok"')) continue;
+				answered += 1;
 				if (message === '{"ok":{"what":"openJoin"}}') opened += 1;
-				if (typeof message === "object" && "closed" in message) break;
 			}
 		}
 		expect(opened).toBe(10);
