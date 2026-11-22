@@ -143,7 +143,11 @@ final class AppModel {
         TestCopyPanels.install(engine: engine)
         #endif
         engine.onNavigate = { [weak self] id, from in self?.openConversation(id, from: from) }
-        engine.onOpenBeside = { [weak self] id, beside in self?.openBeside(id, beside: beside) }
+        // With the projects preview on there are no panes to open beside: it opens where it lives, as Open does (#644).
+        engine.onOpenBeside = { [weak self] id, beside in
+            guard let self else { return }
+            if engine.projectsPreview { openConversation(id, from: beside) } else { openBeside(id, beside: beside) }
+        }
     }
 
     /// The conversation whose rename prompt is showing.
