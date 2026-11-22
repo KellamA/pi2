@@ -5,7 +5,7 @@
 
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { connect, createServer, type Socket } from "node:net";
+import { connect, createServer } from "node:net";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -65,6 +65,7 @@ import { messageSent } from "./heed.ts";
 import { preparedTool } from "./stringargs.ts";
 import { WAKE_ENTRY } from "./wakes.ts";
 import { type AssistantLike, answeredNeeds, assistantParts, imagesOf, type Item, textOf, toItem, wakeLabel } from "./transcript.ts";
+import { broadcast, type Client, clients, coalesced, send, type Subscription } from "./clients.ts";
 import { McpServers } from "./mcp.ts";
 import { claim, storedNeeds } from "./needs.ts";
 import { linesOf } from "./changes.ts";
@@ -941,14 +942,6 @@ function stateOf(view: ConversationView, meta: Meta | undefined) {
 
 // ---- Clients
 
-/** `follow` watches the version a chat shows now, if that changed (versions.ts). */
-type Subscription = { push: () => void; stop: () => Promise<unknown>; follow: () => Promise<void>; older: () => Promise<{ more: boolean }> };
-/**
- * `shown`: the conversations this app has on screen, in its panes or as chat mode's chat (`conversations.shown`).
- * `testCopy`: this connection gave the key of the test copy this engine runs (`test-copy.answerer`), so it may act for the person.
- */
-type Client = { socket: Socket; subscriptions: Map<number, Subscription>; shown: Set<number>; testCopy?: true };
-const clients = new Set<Client>();
 /** Whether a connection is the app's, which alone may answer or make changes for the person (answers.ts, #504, #513). */
 const appCheck = new AppCheck(appBundle(engineMain, build, process.env), log);
 
@@ -968,38 +961,6 @@ const pendingPrompts = new Map<string, (answer: string) => void>();
 const logins = new Map<string, AbortController>();
 let nextLocalId = 1;
 
-function send(client: Client, message: unknown): void {
-	if (!client.socket.destroyed) client.socket.write(`${JSON.stringify(message)}\n`);
-}
-function broadcast(message: unknown): void {
-	if (clients.size === 0) return;
-	// Made into text once, however many apps are connected.
-	const line = `${JSON.stringify(message)}\n`;
-	for (const client of clients) if (!client.socket.destroyed) client.socket.write(line);
-}
-
-/**
- * Sends the event `make` makes to every app at most once every `ms`: at once when none went in the last `ms`, else once
- * at the end of it, made then, so the last state is always sent. Activity lists every run, and was sent again whole for
- * each change to any of them: with 20 runs working, 55 events a second, 360 KB, each of which the app decoded and laid
- * out (#344). The library and the Inbox, sent a few times a second at most, go at once: what is done next often reads
- * them (an approval answered must leave the Inbox before it could be answered again).
- */
-function coalesced(make: () => unknown, ms = 250): () => void {
-	let last = Number.NEGATIVE_INFINITY;
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	const now = () => {
-		timer = undefined;
-		last = performance.now();
-		broadcast(make());
-	};
-	return () => {
-		if (timer !== undefined) return;
-		const wait = last + ms - performance.now();
-		if (wait <= 0) now();
-		else timer = setTimeout(now, wait);
-	};
-}
 const announceActivity = coalesced(() => activityEvent());
 
 library = (await harness.snapshot(Library, context)) ?? { conversations: {} };
