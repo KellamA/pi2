@@ -593,6 +593,63 @@ try {
 	rmSync(secondFolder, { recursive: true, force: true });
 	step("a first read reads everything, what is closed comes brief, and github.show reads one whole into the listing");
 
+	// ---- The tool's list leaves merged and closed pull requests out unless asked for, then gives them a page at a time (#790)
+	const added: number[] = [];
+	changeStandIn((whole) => {
+		const repo = whole.repos["example/widgets"];
+		const at = new Date().toISOString();
+		for (let i = 0; i < 35; i++) {
+			const number = repo.next;
+			repo.next = number + 1;
+			added.push(number);
+			repo.pulls.push({
+				number, title: `Ended ${i}`, url: `https://github.com/example/widgets/pull/${number}`, headRefName: `ended-${i}`, headRepositoryOwner: { login: "example" }, isCrossRepository: false,
+				baseRefName: "main", author: { login: "stand-in" }, state: i === 0 ? "CLOSED" : "MERGED", isDraft: false, statusCheckRollup: [], mergeable: "UNKNOWN", body: "", comments: [],
+				createdAt: at, updatedAt: at, closedAt: at, mergedAt: i === 0 ? null : at,
+			});
+		}
+	});
+	await client.call("work.act", { projectId, id: 1, action: "note", text: "Read the ended pull requests" });
+	const listedPulls: any[] = await client.until("the ended pull requests listed", () => {
+		const pulls = client.github(projectId)?.pulls ?? [];
+		return added.every((number) => pulls.some((one: any) => one.number === number)) && pulls;
+	});
+	const openPulls = listedPulls.filter((one) => one.state === "open").map((one) => one.number).sort((a, b) => b - a);
+	const endedPulls = listedPulls.filter((one) => one.state !== "open").map((one) => one.number).sort((a, b) => b - a);
+	assert.ok(openPulls.length > 0 && endedPulls.length > 35, `${openPulls.length} open, ${endedPulls.length} ended`);
+	const pullRows = (text: string) => [...text.matchAll(/^#(\d+) pull request (open|merged|closed)\b/gm)].map((match) => ({ number: Number(match[1]), state: match[2] }));
+	const itemRows = (text: string) => [...text.matchAll(/^#(\d+) (?!pull request)/gm)].length;
+
+	const board = said(await client.work(reviewer, "list"));
+	assert.deepEqual(pullRows(board).map((row) => row.number), openPulls, "the open pull requests only, by default");
+	assert.ok(pullRows(board).every((row) => row.state === "open"));
+	assert.match(board, new RegExp(`^\\d+ items?: .* ${listedPulls.length} pull requests, ${openPulls.length} of them open\\.$`, "m"), "the count of them all, as before");
+	assert.match(board, new RegExp(`^${endedPulls.length} merged or closed in the last seven days are left out: list with states \\["merged", "closed"\\] for them\\.$`, "m"));
+	assert.equal(board.split("\n").length, itemRows(board) + openPulls.length + 3, "a line an item, a line an open pull request, the count, what is left out and when it was read");
+
+	const first = said(await client.work(reviewer, "list", { states: ["merged", "closed"] }));
+	assert.deepEqual(pullRows(first).map((row) => row.number), endedPulls.slice(0, 30), "the newest thirty, newest first");
+	assert.equal(itemRows(first), 0, "no items: none is merged or closed");
+	const more = new RegExp(`^${endedPulls.length - 30} more pull requests merged or closed: list again with the same states and cursor "${endedPulls[29]}"\\.$`, "m");
+	assert.match(first, more);
+	assert.doesNotMatch(first, /left out/);
+	const rest = said(await client.work(reviewer, "list", { states: ["merged", "closed"], cursor: String(endedPulls[29]) }));
+	assert.deepEqual(pullRows(rest).map((row) => row.number), endedPulls.slice(30), "the rest from the cursor");
+	assert.doesNotMatch(rest, / more pull requests /);
+	assert.match(rest, new RegExp(`^0 items\\. ${listedPulls.length} pull requests, ${openPulls.length} of them open\\.$`, "m"));
+	const mergedOnly = said(await client.work(reviewer, "list", { states: ["open", "merged"] }));
+	const mergedRows = pullRows(mergedOnly);
+	assert.deepEqual(mergedRows.filter((row) => row.state === "open").map((row) => row.number), openPulls, "open with the open ones");
+	assert.ok(mergedRows.some((row) => row.state === "merged") && !mergedRows.some((row) => row.state === "closed"), "merged without the closed one");
+	assert.ok(itemRows(mergedOnly) > 0, "and the open items");
+	assert.match(mergedOnly, /^1 merged or closed in the last seven days is left out: /m);
+	refusal(await client.work(reviewer, "list", { cursor: "5" }), /^cursor goes on through merged and closed pull requests/);
+	refusal(await client.work(reviewer, "list", { states: ["merged"], cursor: "#5" }), /^cursor must be the one a list gave/);
+	refusal(await client.work(reviewer, "list", { states: ["shipped"] }), /^states must be a list of work states \(.*\), or of pull requests' states, merged and closed$/);
+	await client.call("conversation.open", { id: localParent });
+	refusal(await client.work(localParent, "list", { states: ["merged"] }), /^merged and closed are states of pull requests, and this project's work is kept by pi², which has none\.$/);
+	step("the tool's list gives the open pull requests and the count of all; merged and closed ones when asked, thirty at a time, newest first, with a cursor");
+
 	// ---- Detaching
 	await client.call("github.detach", { projectId });
 	await client.until("detached", () => client.github(projectId) === undefined);
