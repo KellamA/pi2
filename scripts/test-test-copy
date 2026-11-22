@@ -73,7 +73,7 @@ expect "is too long" reopen test-7-with-a-suffix-much-too-long-for-a-socket
 expect "--show needs what to open on" reopen test-7 --show
 expect "--show takes one line" reopen test-7 --show $'one\ntwo'
 expect "unknown option --bogus" reopen test-7 --bogus
-for command in show size choose answer fill answer-of can-click; do
+for command in show size sidebar choose answer fill answer-of can-click; do
 	expect "a suffix is required" "$command"
 	expect "is not a suffix" "$command" ../pi2
 	expect "'dev' is the suffix every development build has" "$command" dev
@@ -91,6 +91,10 @@ expect "--appearance needs light or dark" reopen test-7 --appearance system
 expect "--hub needs both" reopen test-7 --hub
 expect "use: scripts/test-copy size" size test-7 820
 expect "use: scripts/test-copy size" size test-7 smallest 532
+expect "use: scripts/test-copy sidebar" sidebar test-7
+expect "use: scripts/test-copy sidebar" sidebar test-7 widest
+expect "use: scripts/test-copy sidebar" sidebar test-7 0
+expect "use: scripts/test-copy sidebar" sidebar test-7 250 300
 expect "use: scripts/test-copy answer" answer test-7 8 always
 expect "use: scripts/test-copy fill" fill test-7 600 extra
 expect "use: scripts/test-copy choose" choose test-7
@@ -174,10 +178,13 @@ PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" answe
 expect "no copy named test-7 was started from this checkout" reopen test-7
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" show test-7 8
 # Every page PI2_SHOW takes goes through the argument checks, not "conversation must be a positive integer" (#553).
-for page in activity usage archive 'settings:general' 'agent:atlas' 'palette:duplicate' 'project:Demo project#work'; do
+# A #<section> goes to the copy with the page, which takes it as at launch (#768).
+for page in activity usage archive 'settings:general' 'settings:chat#memory' 'agent:atlas' 'agent:atlas#computer' \
+	'palette:duplicate' 'project:Demo project#work'; do
 	PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" show test-7 "$page"
 done
 expect "no copy named test-7 was started from this checkout" size test-7 smallest
+expect "no copy named test-7 was started from this checkout" sidebar test-7 narrowest
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" choose test-7 cancel
 expect "no copy named test-7 was started from this checkout" answer test-7 8 allow
 expect "no copy named test-7 was started from this checkout" fill test-7 600
@@ -224,6 +231,30 @@ if ! grep -qxF 'MENU_FILE=context-menu.txt' "$script" ||
 	failures=$((failures + 1))
 else
 	echo "ok: test-copy start --menu reads the file the app writes"
+fi
+
+# A running copy's show refuses a section the page does not have, listing the ones it has from the app's own enums;
+# docs/development.md lists them for --show and show, and must name every one (#768, memory was missing after #731).
+agent_sections=$(sed -n 's/^    case \(profile, .*\)$/\1/p' "$sources/AgentViews.swift" | tr -d ' ' | tr ',' ' ')
+settings_sections=$(sed -n '/^enum SettingsSection/,/^}/p' "$sources/SettingsView.swift" | grep -E '^    case ' |
+	sed -E 's/^    case //; s/[a-zA-Z]+ = "([a-z-]+)"/\1/g' | tr -d ' ' | tr ',' ' ')
+docs="$(dirname -- "$script")/../docs/development.md"
+agent_line=$(grep -F 'so `agent:<id>#<section>` opens it' "$docs" || true)
+settings_line=$(grep -F 'so `settings:<tab>#<section>` opens it' "$docs" || true)
+missing=""
+for name in $agent_sections; do [[ $agent_line == *"\`$name\`"* ]] || missing+=" agent:$name"; done
+for name in $settings_sections; do [[ $settings_line == *"\`$name\`"* ]] || missing+=" settings:$name"; done
+if [[ -z $agent_sections || -z $settings_sections ]]; then
+	echo "FAIL: could not read AgentSection or SettingsSection from the app's sources"
+	failures=$((failures + 1))
+elif ! grep -qF 'AgentSection.refusal(page) ?? SettingsLaunch.refusal(page)' "$sources/TestCopyControl.swift"; then
+	echo "FAIL: a running copy's show no longer refuses a section the page does not have"
+	failures=$((failures + 1))
+elif [[ -n $missing ]]; then
+	echo "FAIL: docs/development.md does not name these sections a page can be shown at:$missing"
+	failures=$((failures + 1))
+else
+	echo "ok: every agent and Settings section is named in docs/development.md, and show refuses others"
 fi
 
 # Every context menu in the app can be listed by PI2_MENU only if it is made with .contextMenu(previewAs:), which
@@ -343,6 +374,7 @@ HOME="$T/home" expect "has no recorded engine running" fill test-7 600
 HOME="$T/home" expect "has no recorded engine running" answer-of test-7 8 42
 HOME="$T/home" expect "has no recorded app running" show test-7 8
 HOME="$T/home" expect "has no recorded app running" size test-7 smallest
+HOME="$T/home" expect "has no recorded app running" sidebar test-7 300
 HOME="$T/home" expect "has no recorded app running" choose test-7 cancel
 HOME="$T/home" expect "has no recorded app running" can-click test-7
 printf '%s\n' "engine_pid=$$" "engine_start=$(LC_ALL=en_US.UTF-8 ps -o lstart= -p $$)" \
@@ -422,6 +454,7 @@ HOME="$T/home" expect "refusing a symlink" answer-of test-7 8 42
 HOME="$T/home" expect "refusing a symlink" reopen test-7
 HOME="$T/home" expect "refusing a symlink" show test-7 8
 HOME="$T/home" expect "refusing a symlink" size test-7 820 532
+HOME="$T/home" expect "refusing a symlink" sidebar test-7 narrowest
 HOME="$T/home" expect "refusing a symlink" choose test-7 cancel
 HOME="$T/home" expect "refusing a symlink" answer test-7 8 allow
 HOME="$T/home" expect "refusing a symlink" fill test-7 600
@@ -547,6 +580,15 @@ rm -f -- "$T/reach-asked"
 respond '{"error":"the app does not give its main window to accessibility, even after raising it: it is not the app'\''s main or focused window, nor among its windows, so the computer tool would not find it"}'
 PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=yes HOME="$T/home" \
 	answers 1 "no, computer use cannot click in test-7: the app does not give its main window to accessibility" can-click test-7
+kill "$RESPONDER_PID" 2>/dev/null
+# And where the copy says the tool, having found the window, would turn it down for the window server's record (#748).
+respond '{"error":"the window server has the main window at 1120×740 at (2880, 1130) and accessibility gives it at 1120×700 at (1760, 1130), so the computer tool would not take it as the same window"}'
+PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=yes HOME="$T/home" \
+	answers 1 "no, computer use cannot click in test-7: the window server has the main window at 1120×740" can-click test-7
+kill "$RESPONDER_PID" 2>/dev/null
+respond '{"error":"the window server has no record of the main window, which accessibility gives at 1120×740 at (1760, 1130), so the computer tool would not take it"}'
+PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=yes HOME="$T/home" \
+	answers 1 "no, computer use cannot click in test-7: the window server has no record of the main window" can-click test-7
 kill "$RESPONDER_PID" 2>/dev/null
 # What #612 was: a copy's answer that is not that, such as the window list's "did not join", which the tool read
 # through regardless, is never a no.

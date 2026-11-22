@@ -52,6 +52,30 @@ package enum ParkedWindow {
         ([main, focused].compactMap { $0 } + windows + children).contains { ($0 as? NSWindow) === window }
     }
 
+    /// Why the computer tool would turn `window` down after finding it through accessibility, or nil when it would take
+    /// it. In a parked copy the tool takes a window it found only when the window server has it, at the frame
+    /// accessibility gives or at that size as the copy's parked window (`ServerWindow.backing`), so that a closed
+    /// window's stale frame is never read (#748). Asked of the window server as the tool asks it, so that
+    /// `scripts/test-copy can-click` says no where the tool would.
+    package static func refusal(_ window: NSWindow) -> String? {
+        let pid = ProcessInfo.processInfo.processIdentifier
+        // Accessibility gives a window's frame from the top-left corner of the main screen, as the window server does.
+        let top = NSScreen.screens.first?.frame.maxY ?? 0
+        let frame = CGRect(x: window.frame.minX, y: top - window.frame.maxY, width: window.frame.width, height: window.frame.height)
+        return refusal(id: CGWindowID(window.windowNumber), frame: frame, server: ServerWindow.all(of: pid), pid: pid)
+    }
+
+    /// The decision itself, from the window server's records, so that a check can give it records a live copy gave.
+    package static func refusal(id: CGWindowID, frame: CGRect, server: [ServerWindow], pid: pid_t) -> String? {
+        let parked = ServerWindow.parkedCopy(in: server, pid: pid)
+        if ServerWindow.backing(frame, in: server, pid: pid, parked: parked)?.id == id { return nil }
+        func place(_ rect: CGRect) -> String { "\(Int(rect.width))×\(Int(rect.height)) at (\(Int(rect.minX)), \(Int(rect.minY)))" }
+        guard let own = server.first(where: { $0.id == id && $0.pid == pid }) else {
+            return "the window server has no record of the main window, which accessibility gives at \(place(frame)), so the computer tool would not take it"
+        }
+        return "the window server has the main window at \(place(own.frame)) and accessibility gives it at \(place(frame)), so the computer tool would not take it as the same window"
+    }
+
     /// Join `window` to the app's accessibility window list, and put it back where it was: it rises only within its
     /// own level, where it stays behind every ordinary window, and a parked window's pixels do not change. The app is
     /// marked as wanting enhanced accessibility for the raise, as an assistive app's arrival does, so it has a scene

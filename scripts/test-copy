@@ -56,10 +56,12 @@ Usage: scripts/test-copy <command> [arguments]
                                    Keep its engine, data, environment and previous --show, --hub and --appearance unless
                                    replaced.
   show <suffix> <what>             Show what PI2_SHOW opens on while the copy runs: activity, usage, archive,
-                                   agent:<id> (a template's page), chat[:<number or title>], palette[:<query>],
-                                   settings[:<tab>], output:<id>, a conversation's number or title (where it lives), or
-                                   project:<name-or-id>[#<tab-or-agent>]. It answers once a conversation's page or a
-                                   hub has drawn it, and for any other page it says that it cannot wait for it to draw.
+                                   agent:<id>[#<section>] (a template's page), chat[:<number or title>],
+                                   palette[:<query>], settings[:<tab>[#<section>]], output:<id>, a conversation's
+                                   number or title (where it lives), or project:<name-or-id>[#<tab-or-agent>]. A
+                                   #<section> scrolls the page there as at launch; one the page lacks is refused. It
+                                   answers once a conversation's page or a hub has drawn it, and for any other page it
+                                   says that it cannot wait for it to draw.
   show <suffix> dashboard          Select the Dashboard's row in the sidebar of projects, and answer once it has
                                    drawn its columns, saying how many.
                                    --hub sets PI2_HUB at launch, or the fold for a live request:
@@ -67,11 +69,15 @@ Usage: scripts/test-copy <command> [arguments]
   conversations <suffix>          List the copy's Library and Archive as tab-separated id, title and agent id.
   size <suffix> <width> <height>   Set the main window's frame in points, including its title bar.
   size <suffix> smallest           Resize the main window to its smallest size.
+  sidebar <suffix> <points> | narrowest
+                                   Set the sidebar column's width in points, kept between its narrowest (210) and
+                                   widest (340), as dragging its divider does. reopen puts it back at 250.
   can-click <suffix>              Say whether computer use can read and click this copy's window now. Yes (exit 0):
                                    the copy raised its parked window and gives it to accessibility where the tool
                                    looks. No (exit 1), with its cause: the pi² app not running (only the person can
-                                   reopen it), no window in the window server after 30 seconds, or a window the copy
-                                   does not give to accessibility. Cannot tell from here (exit 2): the copy did not
+                                   reopen it), no window in the window server after 30 seconds, a window the copy
+                                   does not give to accessibility, or one the window server has at another size or
+                                   not at all, which the tool turns down. Cannot tell from here (exit 2): the copy did not
                                    say, or its build predates the request (rebuild and reopen it). pi²'s own
                                    Accessibility permission can never be told from here. Run this before planning
                                    checks that need clicks.
@@ -639,7 +645,7 @@ case $cmd in
 		launch_app
 		echo "Reopened $NAME from the latest development build (app pid $APP_PID); kept its data and engine (pid $ENGINE_PID)."
 		;;
-	show|size|choose)
+	show|size|sidebar|choose)
 		names "${1-}"; shift
 		if [[ $cmd == show ]]; then
 			if [[ $# == 3 && ${2-} == --hub && ${1-} == project:* ]]; then
@@ -650,6 +656,9 @@ case $cmd in
 		elif [[ $cmd == size ]]; then
 			{ [[ $# == 1 && $1 == smallest ]] || [[ $# == 2 && $1 != smallest ]]; } ||
 				die "use: scripts/test-copy size $SUFFIX <width> <height> | smallest"
+		elif [[ $cmd == sidebar ]]; then
+			[[ $# == 1 && ($1 == narrowest || $1 =~ ^[1-9][0-9]{0,4}$) ]] ||
+				die "use: scripts/test-copy sidebar $SUFFIX <points> | narrowest"
 		else
 			(($# > 0)) || die "use: scripts/test-copy choose $SUFFIX <path>... | cancel"
 		fi
@@ -691,12 +700,15 @@ case $cmd in
 			out=${out#test-copy: }
 			case $out in
 				*"does not give its main window to accessibility"*) no "$out" ;;
+				# The tool finds the window but turns it down when the window server has it elsewhere at another size,
+				# or not at all (#748).
+				*"so the computer tool would not take it"*) no "$out" ;;
 				*unknown\ test-copy\ window\ command*)
 					cannot_tell "the copy's build predates the request that raises its parked window and says whether the tool can find it; rebuild the app (./app/build.sh), run scripts/test-copy reopen $SUFFIX, and ask again" ;;
 				*) cannot_tell "the copy did not say whether the tool can find its window: $out" ;;
 			esac
 		fi
-		echo "Yes: computer use can read and click $SUFFIX now. The pi² app is running, the copy's window is in the window server, and the copy raised it within its own level and gives it to accessibility, where the computer tool looks for it."
+		echo "Yes: computer use can read and click $SUFFIX now. The pi² app is running, the copy's window is in the window server, and the copy raised it within its own level and gives it to accessibility, where the computer tool looks for it, at the size the window server has it."
 		echo "One thing cannot be told from here: whether pi² has the Accessibility permission, which no command can read without asking macOS or the pi² app. If the tool answers that pi² does not have it, only the person can grant it, in this agent's settings under Computer use."
 		;;
 	answer|fill)

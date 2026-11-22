@@ -23,11 +23,14 @@
 /docs/relay.md @KellamA
 
 # What decides who is the person: the relay, the channel and sealing, the helper, the devices in the engine, the
-# device lists (in answers.ts) and App Attest's verifier.
+# device lists (in answers.ts) and App Attest's verifier, with the test and the fixtures that hold it to Apple's samples
+# (a weakened test would let a weakened verifier pass).
 /relay/ @KellamA
 /app/Sources/RemoteKit/ @KellamA
 /app/Sources/pi2-remote/ @KellamA
 /engine/src/devices.ts @KellamA
 /engine/src/remote.ts @KellamA
 /engine/src/appattest.ts @KellamA
+/engine/test/appattest.ts @KellamA
+/engine/test/appattest.json @KellamA
 /engine/src/answers.ts @KellamA

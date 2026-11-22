@@ -62,6 +62,7 @@ struct TestCopyControl: NSViewRepresentable {
             let width: Int?
             let height: Int?
             let smallest: Bool?
+            let narrowest: Bool?
             let paths: [String]?
         }
 
@@ -115,6 +116,18 @@ struct TestCopyControl: NSViewRepresentable {
         func stop() {
             timer?.invalidate()
             timer = nil
+        }
+
+        /// The window's split view of the sidebar and the detail: the outermost one, found before any a page holds.
+        private static func sidebarSplit(in root: NSView?) -> NSSplitView? {
+            var level = root.map { [$0] } ?? []
+            while !level.isEmpty {
+                if let split = level.lazy.compactMap({ $0 as? NSSplitView }).first(where: { $0.isVertical && $0.arrangedSubviews.count > 1 }) {
+                    return split
+                }
+                level = level.flatMap(\.subviews)
+            }
+            return nil
         }
 
         private func isDirectory(_ url: URL) -> Bool {
@@ -308,7 +321,8 @@ struct TestCopyControl: NSViewRepresentable {
             if let asked = Selection(launch: page) {
                 model.selection = asked
                 if case .agent(let id) = asked {
-                    return ["result": "Showing the page of agent \(id); test-copy cannot wait for its page to be drawn"]
+                    let section = AgentSection.asked(in: page).map { " at #\($0.section.rawValue)" } ?? ""
+                    return ["result": "Showing the page of agent \(id)\(section); test-copy cannot wait for its page to be drawn"]
                 }
                 return ["result": "Showing \(page); test-copy cannot wait for its page to be drawn"]
             }
@@ -332,7 +346,8 @@ struct TestCopyControl: NSViewRepresentable {
                 }
                 model.settingsTabLive = asked.tab
                 open()
-                return ["result": "Opened Settings on \(asked.tab.rawValue.capitalized); test-copy cannot wait for it to be drawn"]
+                let section = asked.section.map { " at #\($0.rawValue)" } ?? ""
+                return ["result": "Opened Settings on \(asked.tab.rawValue.capitalized)\(section); test-copy cannot wait for it to be drawn"]
             }
             if page.hasPrefix("output:") {
                 let id = String(page.dropFirst("output:".count))
@@ -352,6 +367,13 @@ struct TestCopyControl: NSViewRepresentable {
                 guard let paths = request.paths else { return ["error": "missing panel answer"] }
                 return TestCopyPanels.choose(paths)
             case "show":
+                // A section the page does not have is refused, with those it has.
+                if let page = request.page, let refusal = AgentSection.refusal(page) ?? SettingsLaunch.refusal(page) {
+                    return ["error": refusal]
+                }
+                // What was last asked, where an agent's page, its Allow everything confirmation and Settings' tabs take
+                // their section from, as they take the launch's (#768).
+                if let value = request.page ?? request.show ?? request.id.map({ String($0) }) { ShowAsked.shared.ask(value) }
                 if request.show != nil || request.hub != nil {
                     do {
                         let view = try ProjectCopyView(show: request.show, hub: request.hub)
@@ -380,9 +402,13 @@ struct TestCopyControl: NSViewRepresentable {
                     return ["error": "the main window is not parked behind other windows, so it was not raised"]
                 }
                 _ = ParkedWindow.expose(window)
-                return ParkedWindow.isReachable(window)
-                    ? ["result": "Raised the parked main window within its own level, and the app gives it to accessibility, where the computer tool looks for it"]
-                    : ["error": "the app does not give its main window to accessibility, even after raising it: it is not the app's main or focused window, nor among its windows, so the computer tool would not find it"]
+                guard ParkedWindow.isReachable(window) else {
+                    return ["error": "the app does not give its main window to accessibility, even after raising it: it is not the app's main or focused window, nor among its windows, so the computer tool would not find it"]
+                }
+                // Found there, the window is still turned down by the tool where the window server's record of it
+                // disagrees, so the answer follows the tool's own rule for that too (#748).
+                if let refusal = ParkedWindow.refusal(window) { return ["error": refusal] }
+                return ["result": "Raised the parked main window within its own level, and the app gives it to accessibility, where the computer tool looks for it, at the size the window server has it"]
             case "size":
                 guard !window.styleMask.contains(.fullScreen) else { return ["error": "the main window is full screen"] }
                 let minimum = window.frameRect(forContentRect: NSRect(origin: .zero, size: window.contentMinSize)).size
@@ -401,6 +427,25 @@ struct TestCopyControl: NSViewRepresentable {
                     return ["error": "AppKit sized the main window to \(Int(actual.width))×\(Int(actual.height)) points instead"]
                 }
                 return ["result": "Sized the main window to \(width)×\(height) points"]
+            case "sidebar":
+                // The column's width as a person sets it, by its divider (#613). A width written to the copy's
+                // preferences before launch does not hold: the split view starts at the column's ideal width.
+                guard let split = Self.sidebarSplit(in: window.contentView), let sidebar = split.arrangedSubviews.first else {
+                    return ["error": "the main window has no sidebar column"]
+                }
+                guard !split.isSubviewCollapsed(sidebar), !sidebar.isHidden else {
+                    return ["error": "the sidebar is hidden; show it first (View > Show Sidebar)"]
+                }
+                let asked = request.narrowest == true ? SidebarColumn.narrowest : CGFloat(request.width ?? 0)
+                let width = min(max(asked, SidebarColumn.narrowest), SidebarColumn.widest)
+                split.setPosition(width, ofDividerAt: 0)
+                window.layoutIfNeeded()
+                let actual = sidebar.frame.width
+                guard abs(actual - width) < 0.5 else {
+                    return ["error": "AppKit made the sidebar \(Int(actual.rounded())) points wide instead of \(Int(width)); a wider window may hold it (scripts/test-copy size)"]
+                }
+                let clamped = asked < SidebarColumn.narrowest ? "its narrowest, " : asked > SidebarColumn.widest ? "its widest, " : ""
+                return ["result": "Set the sidebar's width to \(clamped)\(Int(width)) points"]
             default:
                 return ["error": "unknown test-copy window command"]
             }
