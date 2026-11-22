@@ -64,6 +64,9 @@ enum Flows {
 		Check.expect(request.params["claim"] == (try? JSON.parse(paired.claimLine))?["pair"], "and the claim as the phone wrote it")
 		engine.answer(request.id, .object([("claim", .string(claim))]))
 		let device = DeviceID.random()
+		// As the engine does once the digits match: the window closed first, then `paired` (devices.ts, pairConfirm).
+		engine.event("closeJoin")
+		Check.expect(phone.message(within: 1) == nil && !phone.closed, "closeJoin before paired leaves the claimed phone's channel open")
 		engine.event("paired", [
 			("claim", .string(claim)), ("device", keys.paired(id: device)),
 			("paired", .object([("device", .string(device.text)), ("pairing", .string(mac.pairing.text)), ("name", .string("Check Mac")), ("addresses", .array([.string("127.0.0.1:\(mac.port)")]))])),
@@ -74,7 +77,6 @@ enum Flows {
 		}
 		Check.expect(answer.device == device && answer.pairing == mac.pairing && answer.addresses == ["127.0.0.1:\(mac.port)"], "the phone is told its device id, the pairing and the Mac's addresses")
 		Check.expect(phone.event() == .bye && phone.closesWithin(), "then the pairing channel ends")
-		engine.event("closeJoin")
 		return device
 	}
 
@@ -153,7 +155,22 @@ enum Flows {
 		Check.expect(phone.pair(payload: wrong, keys: keys, team: team) == nil, "a phone with the wrong secret cannot read the Mac's answer")
 		phone.end()
 		Check.expect(engine.request("remote.pairWrong") != nil, "and when it gives up, pi² Remote counts a wrong try (remote.pairWrong)")
-		engine.event("closeJoin")
+		// A claimer that finished the handshake and sent no claim yet: closeJoin ends its channel.
+		let payload = try! PairingPayload(
+			pairing: mac.pairing, macName: "Check Mac", channelKey: mac.channel, identityKey: mac.identity, recordKey: mac.record, secret: secret,
+			relay: "ws://127.0.0.1:9/v1", addresses: [], expires: expires)
+		phone = Phone(port: mac.port)!
+		let early = try! ChannelHandshake.pairingInitiator(payload: payload, channelKey: keys.channel)
+		phone.send(try! early.writeMessage())
+		if let answer = phone.message(), (try? early.readMessage(answer)) != nil, let channel = try? early.channel() {
+			phone.channel = channel
+			Check.expect(phone.line() != nil, "a claimer with the right secret gets the Mac's proof")
+			engine.event("closeJoin")
+			Check.expect(phone.event() == .bye && phone.closesWithin(), "closeJoin ends a pairing channel that has sent no claim")
+		} else {
+			Check.expect(false, "a claimer with the right secret completes the handshake")
+		}
+		Check.expect(engine.request("remote.pairWrong", within: 2) == nil, "and that is no wrong try: its first message never came, but the window closed")
 
 		guard let device = pair(engine, mac: mac, keys: keys, claim: "claim_1") else { Check.stop("a phone paired") }
 		Check.expect(listed(home) == [device.text], "the device is on pi² Remote's own list once the engine paired it")

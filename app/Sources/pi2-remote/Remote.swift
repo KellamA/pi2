@@ -95,8 +95,9 @@ package final class Remote: @unchecked Sendable {
 			window = JoinWindow(secret: secret, expires: TimeInterval(expires) / 1000)
 			log("a pairing window is open until \(Date(timeIntervalSince1970: TimeInterval(expires) / 1000))")
 		case "closeJoin":
+			// Only channels with no claim yet: the engine says `closeJoin` before `paired` (devices.ts, pairConfirm).
 			window = nil
-			for connection in connections.values where connection.isPairingBeforeClaim { connection.end() }
+			for connection in connections.values where connection.isPairingBeforeClaim { connection.windowClosed() }
 			log("the pairing window closed")
 		case "paired": paired(event)
 		case "pairRefused":

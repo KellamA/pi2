@@ -70,11 +70,12 @@ final class PhoneConnection: @unchecked Sendable {
 		remote.queue.asyncAfter(deadline: .now() + remote.attachWithin, execute: deadline)
 	}
 
+	/// A pairing channel whose claimer has sent no claim yet: the one kind `closeJoin` ends. A claim passed to the engine
+	/// is the engine's to answer (`paired` or `pairRefused`, or its refusal of `remote.pairClaim`); the engine closes the
+	/// window before it says `paired`, so a claimed channel must outlive `closeJoin`.
 	var isPairingBeforeClaim: Bool {
-		switch phase {
-		case .pairing, .claiming: true
-		default: false
-		}
+		if case .pairing = phase { return true }
+		return false
 	}
 
 	private var channel: Channel? {
@@ -356,6 +357,12 @@ final class PhoneConnection: @unchecked Sendable {
 		}
 		// A phone that reads nothing does not make the Mac hold more: its session keeps what it needs for a resume.
 		if io.pending > 16 * 1024 * 1024 { end() }
+	}
+
+	/// The Mac closed the pairing window: the channel ends, and that is no wrong try of the claimer's.
+	func windowClosed() {
+		awaitingClaimerProof = false
+		end()
 	}
 
 	/// Ends the channel with `bye` and closes the connection.
