@@ -6,6 +6,32 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 What the next version will have is in [changelog.d](changelog.d/), a file for each entry, until a release gathers them here.
 
+## 0.8.9
+
+### Changed
+- Projects are now the only way to work in pi², and the Projects switch in Settings is gone. The first time this version starts, it moves everything you have into projects by itself, with nothing to approve first: each folder's conversations go into that folder's project, each running as the project's copy of its agent, and nothing is deleted. If you had already turned projects on, only what was made since with them off is moved.
+  Before it changes anything, it keeps a copy of your data in the `backups` folder of pi²'s data folder (`~/Library/Application Support/pi2/backups`), and says where. The copy holds every conversation, agent, project, note, rule and work item, and your settings files, but not the keys, sign-ins and variables' values kept in the Keychain, chat mode's documents, worktrees, or downloaded local models. If the copy cannot be made, nothing is moved, and pi² tries again the next time it starts.
+  This update cannot be switched back: to return to the old screens you would need the previous version and that copy of your data, which replaces everything done since.
+- pi² now works by projects only. The old agents and conversations screens and the Projects (preview) switch in Settings are gone, and the window opens on your project's hub, the Dashboard, or a page to make your first project. Where each thing went:
+  - A conversation opens where it lives: in its project's hub, in chat mode, or in the Archive's reader. ⌘N and File › New Conversation With start one with an agent of the shown project. Split panes are in each project's hub.
+  - What waits for you is on each project's Now tab, the Dashboard and the menu bar item, which replace the Inbox; limit notices are under the Dashboard's line.
+  - Activity, under Shared, lists background commands and models running on this Mac; the agents at work are on Now and the Dashboard, and schedules on each project's Settings tab. Usage, the Archive and your agents as templates are under Shared too.
+  - Branches are on each project's Branches tab, which now also lists the worktrees of deleted conversations in the project's repository.
+  - A conversation's tool access and folder, and its own Browser button, are its agent's settings now; the browser is in Window › Browser. An agent's own notes page is gone; a project's notes are on its Notes tab, and chat mode keeps its memory.
+- After the update, a notice says once where the copy of your data from before the move is, with Show in Finder, and that this cannot be switched back. If the move could not be done, a banner says why until it is.
+- In a project, every conversation now runs on its agent's model and thinking level, from its next message. Before, a conversation kept the model it was started with unless the change was made from the hub, so one carried over into a project, or one an agent started for a piece of work, could stay on an older model. An agent with no model of its own follows the default model for agents in Settings › General as it is at each message. A model chosen with **Carry on with…** in a limit banner holds until that run ends.
+- The Usage page's **By agent** list names each project agent's project beside it, in small grey, so that every project's “Orchestrator” can be told apart. A template's row is as before.
+
+### Fixed
+- After pi²'s engine crashed or was killed on a busy Mac, the next engine could leave running something a background command or a worktree's set-up command had started, and say it "may still be running", because it gave up after ten seconds on the check that proves a process is the command's. It now waits for the answer.
+- An agent's memory switch, "Remember things between conversations", had no control since the agents' own notes left their pages. It is back, under Memory on every agent's page: a project's agent's in the project's Agents tab, the orchestrator's included, where it says whether the agent reads and adds to the project's notes, and a template's, where it is what a project's copy of the template starts with.
+- The approval card for a schedule an agent wants to set said the schedule could be turned off or deleted in Activity, which no longer lists schedules. It now says where they are: on the project's Settings tab, or on the template's page for a template.
+- On a busy Mac, the app's own requests could be refused as not coming from the app ("Only the person can do this, in the pi² app"), when the check of its connection took more than ten seconds. The check is now made once more before anything is refused.
+- In an agent's settings, under Computer use, the Accessibility and Screen Recording rows were drawn on top of each other while either permission was missing, with only one Grant… button showing. Each now has a row of its own.
+
+### For contributors
+- A throwaway copy opens on projects with nothing to turn on. `scripts/test-copy show` and `--show` no longer take `inbox` or `branches`; `activity` is the Activity under Shared, and `agent:<id>` a template's page. A copy's own preference `removal-notice` (`backup` or `failed`) stands in for the notice of the update to projects. `pi2-layout-check` no longer checks the old window's saved layout, which went with the old screens.
+
 ## 0.8.8
 
 ### Added
