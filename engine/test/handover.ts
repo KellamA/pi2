@@ -6,15 +6,19 @@
 // memory among them) or of the chat's system prompt. Then a real engine on a throwaway data folder with the demo model:
 // a chat with a picture, a file, a document and an edited message is continued with an agent, in a folder chosen for it;
 // the new conversation is the agent's, with the version shown, linked to the chat both ways, and the chat is unchanged.
+// Then, with the projects preview on (#654), a chat continued in a project: refusals of a template, another project's
+// agent and a folder; with the orchestrator, into its present conversation as the person's message, with the state block
+// in front and no second conversation; with another agent, a new conversation of it in the project; with no conversation
+// with the orchestrator yet, one made as the hub makes it; and an archived project refused.
 
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import { chatFileName, chatHandover, handoverAttachments } from "../src/handover.ts";
-import { EngineClient, standInApp, stop } from "./patience.ts";
+import { EngineClient, previewOnLeavingOut, standInApp, stop } from "./patience.ts";
 // The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
 // for the app's, as the tests that answer for the person already do (#504).
 process.env.PI2_APP_BUNDLE = standInApp();
@@ -220,6 +224,75 @@ try {
 	await client.call("conversation.delete", { id: second2 });
 	await client.until("a deleted one unlinked", () => JSON.stringify(client.row(chat)?.continuedIn) === JSON.stringify([continued]));
 	step("an agent that cannot see pictures gets none, with nothing typed it is asked to wait, and a deleted conversation is unlinked");
+
+	// ---- With the projects preview on (#654): a project, and its orchestrator or another of its agents.
+	await assert.rejects(client.call("chat.continueWithAgent", { id: chat, projectId: "p1" }), /Projects are a preview/, "no project with the preview off");
+	await previewOnLeavingOut(client);
+	const folder = join(work, "project");
+	mkdirSync(folder);
+	const made = await client.call("projects.create", { folder });
+	const projectId = made.id as string;
+	const oc = made.conversation as number;
+	const project = () => client.events.projects?.projects.find((row: any) => row.id === projectId);
+	await client.until("the project", () => project());
+	const helper = (await client.call("projects.addAgent", { projectId, template: "forge" })).id as string;
+	await assert.rejects(client.call("chat.continueWithAgent", { id: chat, agentId: "forge" }), /Choose a project to continue in/, "a template is not continued with");
+	await assert.rejects(client.call("chat.continueWithAgent", { id: chat, projectId: "nowhere" }), /Unknown project/);
+	await assert.rejects(client.call("chat.continueWithAgent", { id: chat, projectId, agentId: "forge" }), /is not an agent of/);
+	await assert.rejects(client.call("chat.continueWithAgent", { id: chat, projectId, cwd: work }), /work in its folder/);
+	step("with the preview on, a chat continues in a project, with one of its agents, in its folder");
+
+	const orchestrators = () => (client.events.library?.conversations ?? []).filter((row: any) => row.projectId === projectId && row.orchestrator !== null).length;
+	const { id: toOrchestrator } = await client.call("chat.continueWithAgent", { id: chat, projectId, text: "Plan it with the team" });
+	assert.equal(toOrchestrator, oc, "into the orchestrator's present conversation");
+	await client.call("conversation.open", { id: oc });
+	const told = await client.answered(oc, 1);
+	const message = told.items.find((item: any) => item.kind === "user");
+	assert.equal(message.text, "Plan it with the team");
+	assert.deepEqual(
+		message.attachments.map((note: any) => `${note.kind}:${note.name}`),
+		[`text:${chatFileName(title)}`, "text:tides.txt", "image:beach.png (picture 1)"],
+		"the handover as it always was",
+	);
+	assert.ok(told.items.some((item: any) => item.kind === "marker" && item.text === "pi² told the orchestrator how the project stands"), "the state block in front, as for any oc input there");
+	assert.match(told.items.find((item: any) => item.kind === "assistant").text, /You said: "Plan it with the team"\. With it came 1 picture and 2 attached files\./);
+	await client.until("the chat linked to it", () => client.row(chat)?.continuedIn.includes(oc));
+	assert.equal(client.row(oc).continuedFrom, null, "the orchestrator's conversation was not begun from the chat");
+	assert.equal(project().conversation, oc);
+	assert.equal(orchestrators(), 1, "no second conversation with the orchestrator");
+	const again = await client.call("chat.continueWithAgent", { id: chat, projectId });
+	assert.equal(again.id, oc);
+	await client.answered(oc, 2);
+	assert.equal(client.row(chat).continuedIn.filter((id: number) => id === oc).length, 1, "linked once");
+	assert.equal(orchestrators(), 1);
+	step("continued with the orchestrator: the handover goes into its present conversation as the person's message, and the chat links to it");
+
+	const { id: withHelper } = await client.call("chat.continueWithAgent", { id: chat, projectId, agentId: helper });
+	await client.call("conversation.open", { id: withHelper });
+	const helped = await client.answered(withHelper, 1);
+	const helperRow = await client.until("the helper's conversation listed", () => client.row(withHelper));
+	assert.equal(helperRow.agentId, helper);
+	assert.equal(helperRow.projectId, projectId, "in the project");
+	assert.equal(helperRow.continuedFrom, chat);
+	assert.equal(helperRow.title, title);
+	assert.equal(helped.state.agent.cwd, realpathSync(folder), "in the project's folder");
+	assert.equal(helped.items[0].attachments[0].name, chatFileName(title));
+	step("continued with another agent of the project: a new conversation of that agent in the project, linked both ways");
+
+	await client.call("conversation.delete", { id: oc });
+	await client.until("the project with no conversation", () => project()?.conversation === null);
+	const { id: fresh } = await client.call("chat.continueWithAgent", { id: chat, projectId });
+	assert.notEqual(fresh, oc);
+	await client.until("the new one is the project's", () => project()?.conversation === fresh);
+	await client.call("conversation.open", { id: fresh });
+	const freshDone = await client.answered(fresh, 1);
+	assert.ok(freshDone.items.some((item: any) => item.kind === "marker" && item.text === "pi² told the orchestrator how the project stands"));
+	assert.equal(freshDone.items.find((item: any) => item.kind === "user").attachments[0].name, chatFileName(title));
+	step("a project with no conversation with its orchestrator has one made, as the hub makes it, and the handover goes there");
+
+	await client.call("projects.archive", { id: projectId });
+	await assert.rejects(client.call("chat.continueWithAgent", { id: chat, projectId }), /archived/);
+	step("an archived project takes no chat");
 } finally {
 	client.close();
 	await stop(engine);

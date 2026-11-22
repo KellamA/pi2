@@ -84,8 +84,8 @@ import { sweepRuns, useRunFolder } from "./processes.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
 import { type ChatVersions, chatIdOf, points, versionRequests, Versions, versionsAllowed } from "./versions.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, agentOf, Agents, Inbox, Library, type Meta, type ModelRef, projectFrom, runsAs, starterAgents, takeAgentSwitch } from "./state.ts";
-import { allProjects, PROJECT_DELETED, Projects, projectDeleted, projectOf, projectsOn, refuseInArchivedProject, refuseStartWith, requirePreview, type Start, startWithRefusal } from "./projects.ts";
-import { orchestratorRole, placeInput, projectItem, refuseEarlier, tellOrchestrator } from "./orchestrator.ts";
+import { allProjects, type Project, PROJECT_ARCHIVED, PROJECT_DELETED, Projects, projectDeleted, projectOf, projectsOn, refuseInArchivedProject, refuseStartWith, requirePreview, type Start, startWithRefusal } from "./projects.ts";
+import { orchestratorConversation, orchestratorRole, placeInput, projectItem, refuseEarlier, tellOrchestrator } from "./orchestrator.ts";
 import { githubItem } from "./github.ts";
 import { admit, confirmLimit, limitError, wireProjectSpend } from "./projectlimits.ts";
 import { type Amount, conversationSpend, dayKey, noSpend, noteConversationSpend, type SpendDoc } from "./projectspend.ts";
@@ -1432,10 +1432,13 @@ async function createChat(given: unknown, client: Client): Promise<{ id: Convers
 }
 
 /**
- * Continue with an Agent (#289, handover.ts): a new conversation of `agentId`, in `cwd` or the agent's own folder, whose
- * first message is chat `chatId` as it stands, with its pictures and files, and what the person typed. The chat is left
- * as it was; each is linked to the other on its record. The agent's access, approvals and Allow everything apply from
- * that first message, as in any conversation of its own.
+ * Continue with an Agent (#289, handover.ts): chat `chatId` as it stands, with its pictures and files, and what the
+ * person typed, handed to an agent as a message from the person. With the projects preview off, a new conversation of
+ * `agentId`, in `cwd` or the agent's own folder. With it on (#654), in project `projectId`: to its orchestrator, unless
+ * `agentId` names another of its agents, in the orchestrator's present conversation (the project's one conversation with
+ * it, made if it has none yet); to another agent, in a new conversation of that agent in the project. The chat is left as
+ * it was; it links to the conversation, and a new conversation links back to it. The agent's access, approvals and
+ * Allow everything apply from that message, as in any conversation of its own.
  */
 async function continueChat(params: Params, client: Client): Promise<{ id: ConversationId; note?: string }> {
 	const shown = await conversation(params.id);
@@ -1443,12 +1446,16 @@ async function continueChat(params: Params, client: Client): Promise<{ id: Conve
 	const meta = library.conversations[String(chatId)];
 	if (!isChat(meta)) throw new Error("Only a chat can be continued with an agent");
 	if (isDeleted(meta)) throw new Error("That chat was deleted");
-	const agent = agents[String(params.agentId ?? "")];
-	if (agent === undefined) throw new Error("Choose one of your agents to continue with");
 	if (params.text !== undefined && typeof params.text !== "string") throw new Error("text must be text");
 	const typed = typeof params.text === "string" ? params.text.trim() : "";
+	const project = projectToContinueIn(params);
+	const agent = project === undefined ? agents[String(params.agentId ?? "")] : agents[String(params.agentId ?? project.orchestratorId)];
+	if (agent === undefined || agent.removedAt !== undefined) throw new Error(project === undefined ? "Choose one of your agents to continue with" : "Choose one of the project's agents to continue with");
+	if (project !== undefined && agent.projectId !== project.id) throw new Error(`${agent.name} is not an agent of ${project.name}`);
 	let cwd = agent.cwd;
 	if (params.cwd !== undefined && params.cwd !== null) {
+		// A project's agents work in its folder (3.3).
+		if (project !== undefined) throw new Error("A project's agents work in its folder: leave cwd out");
 		cwd = text(params, "cwd");
 		if (!(existsSync(cwd) && statSync(cwd).isDirectory())) throw new Error(`Not a folder: ${cwd}`);
 	}
@@ -1468,6 +1475,7 @@ async function continueChat(params: Params, client: Client): Promise<{ id: Conve
 	}
 	if (!entries.some((entry) => (entry.model?.[0] as { role?: string } | undefined)?.role === "user")) throw new Error("This chat has nothing in it yet to continue from");
 
+	if (project !== undefined && agent.id === project.orchestratorId) return { id: await handOverToOrchestrator(project.id, agent, chatId, meta!.title, entries, typed) };
 	const change = { ...(await agentChange(agent, { subChat: false })), cwd };
 	// A template's conversation goes into its folder's project as it is made (9.9): that project's limits hold (8.3).
 	const carriedInto = await carriedProjectFor(agent, cwd);
@@ -1500,6 +1508,64 @@ async function continueChat(params: Params, client: Client): Promise<{ id: Conve
 	await conv.submit({ type: "input", content: userContent(typed, attachments), entry: { kind: USER_ENTRY_KIND, data: userEntryData(typed, attachments) }, whenBusy: "followUp" }, context);
 	for (const feature of host.features) feature.messageSent?.(created.id as unknown as number);
 	return { id: created.id, ...(note === undefined ? {} : { note }) };
+}
+
+/**
+ * The project a chat is continued in (#654): with the preview on, `projectId`, or the project of `agentId` when that
+ * names one of a project's agents; a template is refused, since a project's agents are what a chat goes to now. With
+ * the preview off, none, and `projectId` is refused, as every request new in the epic is.
+ */
+function projectToContinueIn(params: Params): Project | undefined {
+	if (!projectsOn()) {
+		if (params.projectId !== undefined && params.projectId !== null) requirePreview();
+		return undefined;
+	}
+	const id = params.projectId ?? agents[String(params.agentId ?? "")]?.projectId;
+	if (id === undefined || id === null) throw new Error("Choose a project to continue in");
+	if (typeof id !== "string") throw new Error("projectId must be a project's id");
+	const project = allProjects()[id];
+	if (project === undefined || project.deletedAt !== undefined) throw new Error(`Unknown project: ${id}`);
+	if (project.archivedAt !== undefined) throw new Error(PROJECT_ARCHIVED);
+	return project;
+}
+
+/**
+ * Continue with an Agent to a project's orchestrator (#654): the handover goes into its present conversation as a message
+ * from the person, taken as the hub's message field takes one (steering a turn under way), with the catch-up in front of
+ * it as for any input there (6.4). A project has one conversation with its orchestrator, so no second one is made; one is
+ * made only when the project has none yet, as the hub makes it. The chat links to it; it does not link back, since it
+ * was not begun from the chat.
+ */
+async function handOverToOrchestrator(projectId: string, agent: AgentProfile, chatId: number, title: string, entries: EntryRecord[], typed: string): Promise<ConversationId> {
+	const id = await orchestratorConversation(projectId);
+	const conv = await conversation(id);
+	refuseIfPutAway(id);
+	const ref = (await harness.snapshot(AgentDoc, conv.id, context))?.model;
+	const model = ref == null ? undefined : providers.models.getModel(ref.provider, ref.modelId);
+	const handover = chatHandover(entries, { title, agent: agent.name, typed: typed !== "", seesPictures: model === undefined || model.input.includes("image") });
+	const attachments = handoverAttachments(handover);
+	await takeSwitch(conv.id);
+	await syncTools(conv).catch((error) => log("could not update the tools of conversation", id, error instanceof Error ? error.message : ""));
+	await harness.commit(async (tx) => {
+		await conv.submit(tx, { type: "input", content: userContent(typed, attachments), entry: { kind: USER_ENTRY_KIND, data: userEntryData(typed, attachments) }, whenBusy: "steer" });
+		const conversations = (await tx.doc(Library)).conversations;
+		const chat = conversations[String(chatId)];
+		if (chat !== undefined && !(chat.continuedIn ?? []).includes(id)) chat.continuedIn = [...(chat.continuedIn ?? []), id];
+		const orchestrator = conversations[String(id)];
+		if (orchestrator !== undefined) {
+			orchestrator.updatedAt = Date.now();
+			// Titled as a message the person sends is, if nothing has titled it yet.
+			if (orchestrator.title === "") orchestrator.title = (typed.split("\n")[0] || attachments[0]?.name || "").slice(0, 60);
+		}
+	}, context);
+	try {
+		for (const feature of host.features) feature.messageSent?.(id);
+		// As a message sent to steer: calls that only wait end, so that it reaches the orchestrator now (heed.ts).
+		messageSent(id);
+	} catch (error) {
+		log("after a chat was handed to the orchestrator's conversation", id, "in project", projectId, error instanceof Error ? error.message : error);
+	}
+	return conv.id;
 }
 
 // ---- Requests

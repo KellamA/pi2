@@ -18,11 +18,13 @@ struct MenuBarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            TextField("Ask \(engine.agents.first?.name ?? "an agent")…", text: $draft, axis: .vertical)
+            // With the projects preview on, a question here starts a chat (#654): no agent, project or folder.
+            TextField(engine.projectsPreview ? "Ask in a new chat…" : "Ask \(engine.agents.first?.name ?? "an agent")…", text: $draft, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1...6)
                 .sendsOnReturn(ask)
                 .disabled(engine.status != .connected)
+                .help(engine.projectsPreview ? "Starts a chat with the chat model used last, and opens it in chat mode" : "Starts a conversation with \(engine.agents.first?.name ?? "an agent")")
 
             if engine.projectsPreview {
                 needsByProject
@@ -143,10 +145,16 @@ struct MenuBarView: View {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         draft = ""
+        let chat = engine.projectsPreview
         Task {
-            guard let id = await engine.createConversation() else { return }
+            guard let id = await (chat ? engine.createChat() : engine.createConversation()) else { return }
             await engine.submit(text, to: id, steer: false)
-            show(.conversation(id))
+            if chat {
+                model.showChat(id)
+                show(nil)
+            } else {
+                show(.conversation(id))
+            }
         }
     }
 }
@@ -268,6 +276,9 @@ struct QuickAskView: View {
     private var engine: EngineClient { model.engine }
 
     private var data: OpenConversation? { conversationID.flatMap { engine.open[$0] } }
+    /// With the projects preview on, a question starts a chat (#654): no agent, project or folder, on the chat model used
+    /// last; one already asked keeps what it was.
+    private var asksInChat: Bool { conversationID.map { engine.isChat($0) } ?? engine.projectsPreview }
     /// The newest answer, finished or still streaming.
     private var answer: String? {
         if let partial = data?.state?.partial?.text, !partial.isEmpty { return partial + " ▍" }
@@ -277,8 +288,16 @@ struct QuickAskView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                AgentAvatar(agent: engine.agents.first, size: 22)
-                TextField(conversationID == nil ? "Ask anything…" : "Follow up…", text: $draft, axis: .vertical)
+                if asksInChat {
+                    Image(systemName: "bubble.left.and.bubble.right")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.tx2)
+                        .frame(width: 22, height: 22)
+                        .help("A chat, with the chat model used last")
+                } else {
+                    AgentAvatar(agent: engine.agents.first, size: 22)
+                }
+                TextField(conversationID == nil ? (asksInChat ? "Ask anything in a new chat…" : "Ask anything…") : "Follow up…", text: $draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.title3)
                     .lineLimit(1...6)
@@ -302,7 +321,8 @@ struct QuickAskView: View {
                 .defaultScrollAnchor(.bottom)
                 HStack {
                     Button("Open in pi²") {
-                        model.selection = .conversation(conversationID)
+                        // A chat opens in chat mode.
+                        if engine.isChat(conversationID) { model.showChat(conversationID) } else { model.selection = .conversation(conversationID) }
                         model.showMainWindow()
                         NSApp.activate()
                         close()
@@ -333,8 +353,9 @@ struct QuickAskView: View {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, engine.status == .connected else { return }
         draft = ""
+        let chat = asksInChat
         Task {
-            if conversationID == nil { conversationID = await engine.createConversation() }
+            if conversationID == nil { conversationID = await (chat ? engine.createChat() : engine.createConversation()) }
             if let conversationID, await engine.submit(text, to: conversationID, steer: false) == .refused, draft.isEmpty { draft = text }
         }
     }
