@@ -35,6 +35,8 @@ pi² is two programs:
 ```
 app/      SwiftUI app: the window (projects and chat mode), the menu bar, Quick Ask, settings
           Sources/pi2           the app; its parts are under The app, below
+          Sources/PiModels      the engine's requests, events and state as Swift types, shared with the iPhone app (docs/iphone.md section 8)
+          Sources/pi2-client-check    checks that the client reads a recorded session of the engine as it did before its models moved; not part of the app
           Sources/PiStyle       pi²'s look: the palette and the small pieces (tags, buttons, the spinner) every screen is built from
           Sources/ComputerKit   seeing and working other apps' windows
           Sources/BrowserKit    pi²'s own browser: loading web pages, reading them and acting in them
@@ -67,6 +69,8 @@ The app is a view of the engine's committed state. It keeps no truth of its own:
 
 The app (`app/Sources/pi2`) is one file per area. `EngineClient.swift` is the connection to the engine and holds what it last said; `Projects.swift` reads the projects' and Needs you's events; `Pi2App.swift` has the app's scenes, its menus and `AppModel`, which holds what the window shows. What each part is for, as the person sees it, is [guide.md](guide.md); what the app reads and keeps for projects is [projects.md section 10](projects.md#10-the-app).
 
+What the engine sends, and what the app sends it, are Swift types in their own target, `app/Sources/PiModels`, so that the iPhone app can share them ([iphone.md section 8](iphone.md#8-the-shared-package)): `Models.swift` (conversations, their entries and state, agents, runs, usage, providers, `JSONValue`, `EngineError`), the projects' models (`Projects.swift`, `ProjectRow.swift`, and `ProjectRules.swift` with what waits under Needs you), and `TranscriptFeed.swift`, what the conversation page is sent. The app imports it. An open conversation's object, `OpenConversation`, stays in the app beside the message field's draft it holds (`ConversationDraft.swift`).
+
 The window has two sides, **Projects** and **Chat** (`ModeSwitch` in `ChatMode.swift`, ⌘1 and ⌘2), and remembers which it was on:
 
 - **The sidebar of projects** (`ProjectsSidebar.swift`): the Dashboard's row, a row for each project (the open one with its working agents and other conversations under it), and **Shared**: Templates, Activity, Usage and the Archive.
@@ -75,7 +79,7 @@ The window has two sides, **Projects** and **Chat** (`ModeSwitch` in `ChatMode.s
 - **Where a conversation opens** (`OpenConversation.swift`): every Open in the app goes through `AppModel.openConversation`, which opens it where it lives: its project's hub, chat mode, or the Archive's reader. The same file has the page that makes the first project.
 - **Under Shared**: a template's page (`AgentViews.swift`, with `AgentRebase.swift`), Activity (`ActivityPage.swift`), Usage (`UsageView.swift`, with the plan limits and their notices in `LimitsView.swift`) and the Archive (`ArchiveViews.swift`).
 - **Chat mode** (`ChatMode.swift`): its sidebar of chats and a chat; Continue with an Agent is `ChatContinue.swift` ([chat.md](chat.md)).
-- **A conversation**, wherever it shows, is `ChatView.swift`: the conversation page in a web view (`TranscriptWeb.swift`, `TranscriptFeed.swift`, TranscriptKit and `app/Web/transcript`, [transcript.md](transcript.md)), the message field, the strips above it (`PlanStrip.swift`, `WakeViews.swift`, `RunViews.swift`), and the cards of what waits for the person (`InboxViews.swift`).
+- **A conversation**, wherever it shows, is `ChatView.swift`: the conversation page in a web view (`TranscriptWeb.swift`, PiModels' `TranscriptFeed.swift`, TranscriptKit and `app/Web/transcript`, [transcript.md](transcript.md)), the message field, the strips above it (`PlanStrip.swift`, `WakeViews.swift`, `RunViews.swift`), and the cards of what waits for the person (`InboxViews.swift`).
 - **Over the window**: the notice of the update to projects (`RemovalNotice.swift`) and the engine that could not be started (`EngineTrouble.swift`).
 
 Outside the window: the menu bar item and Quick Ask (`MenuBar.swift`), notifications (`Notifier.swift`), Settings (`SettingsView.swift` and a file for each part, such as `StorageSettings.swift` and `ChatSettings.swift`), the Browser window (`BrowserUse.swift`, BrowserKit), a background command's output window (`BackgroundViews.swift`) and updates (`Updates.swift`). What only a development build does for throwaway copies is in `DevelopmentBuild.swift`, `LaunchPreviews.swift`, `LaunchWindows.swift` and `TestCopyControl.swift` ([development.md](development.md#choosing-what-a-copy-shows)).

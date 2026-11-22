@@ -1,3 +1,4 @@
+import PiModels
 import SwiftUI
 
 // What will wake a conversation's agent when it ends, above its message field: sub-chats handed work without waiting,

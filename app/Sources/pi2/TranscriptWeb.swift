@@ -2,6 +2,7 @@ import AppKit
 import BrowserKit
 import ComputerKit
 import FileLinkKit
+import PiModels
 import SwiftUI
 import TranscriptKit
 import WebKit

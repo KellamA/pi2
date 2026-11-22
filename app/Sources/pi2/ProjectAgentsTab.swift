@@ -1,4 +1,5 @@
 import MenuKit
+import PiModels
 import SwiftUI
 
 // The board's Agents tab (#475; docs/design/projects.md, Agents and templates): the orchestrator's card with what it

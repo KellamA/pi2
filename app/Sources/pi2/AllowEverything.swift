@@ -1,3 +1,4 @@
+import PiModels
 import SwiftUI
 
 /// Allow everything (#294): an agent that is asked about nothing and may use any app. The engine decides; this is the

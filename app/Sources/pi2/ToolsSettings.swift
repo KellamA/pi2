@@ -1,3 +1,4 @@
+import PiModels
 import SwiftUI
 
 /// MCP servers: tool providers the person connects and then gives to the agents they choose. And what agents are asked

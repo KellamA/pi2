@@ -11,7 +11,7 @@ Read only the sections that apply to your work. Before you build, run or test an
 | Allowed commands | [Allowed commands](allowed-commands.md), [Choosing what a copy shows](#choosing-what-a-copy-shows) |
 | Running engine checks | [Running the engine tests](#running-the-engine-tests), [Engine type-check](#engine-type-check), [Running several suites at once](#running-several-suites-at-once) if needed |
 | Adding or fixing an engine test | [Engine tests by file](#engine-tests-by-file), [The end-to-end test](#the-end-to-end-test) if it is `engine.ts`, [Keeping test runs apart](#keeping-test-runs-apart), [Waiting in tests](#waiting-in-tests) |
-| Checking app changes | The relevant check: [Browser](#browser-checks), [Panes](#pane-layout-checks), [Window sizes](#window-size-checks), [Message fields](#message-field-checks), [File links](#file-link-checks), [Who may answer](#peer-checks), [Login item](#login-item-checks), [Computer use](#computer-use-checks), [Conversation page](#conversation-page-tests) or [The page loaded ahead](#the-page-loaded-ahead) |
+| Checking app changes | The relevant check: [Browser](#browser-checks), [Panes](#pane-layout-checks), [Window sizes](#window-size-checks), [Message fields](#message-field-checks), [File links](#file-link-checks), [Who may answer](#peer-checks), [Login item](#login-item-checks), [Computer use](#computer-use-checks), [Conversation page](#conversation-page-tests), [The page loaded ahead](#the-page-loaded-ahead) or [What the client reads](#client-checks) for a change to the models in `app/Sources/PiModels` |
 | Trying an app change in a copy | [Trying changes in a throwaway copy](#trying-changes-in-a-throwaway-copy), [Choosing what a copy shows](#choosing-what-a-copy-shows), [The scripted demo model](#the-scripted-demo-model) |
 | A project's hub, the Dashboard, Needs you | [Choosing what a copy shows](#choosing-what-a-copy-shows) for `fill --project` and the `project:` and `dashboard` pages, [The scripted demo model](#the-scripted-demo-model) for `/tools`; [projects.md](projects.md) section 10 for what the app reads |
 | Retaking the README's pictures | [Retaking the README's pictures](#retaking-the-readmes-pictures) |
@@ -307,6 +307,16 @@ cd app && swift build --product pi2-transcript-check && .build/debug/pi2-transcr
 ```
 
 What it cannot check is the app's bridge feeding a pane's page, which needs the engine, nor how soon WebKit draws on a real screen: that is for the speed probe in a throwaway copy ([Measuring the app's speed](#measuring-the-apps-speed)).
+
+### Client checks
+
+What the app's client reads of the engine, through the models in `app/Sources/PiModels` (the engine's requests, events and state as Swift types, which the iPhone app is to share; [iphone.md section 8](iphone.md#8-the-shared-package), #669), is checked by a program of its own. A session a throwaway copy's engine sent while `scripts/test-copy fill --project 2` built two demo projects, with every conversation opened as it appeared, is recorded in `app/Sources/pi2-client-check/Fixture/session.jsonl`. The check reads each line as `EngineClient.handle` reads it, into the same models, keeps what the client keeps (and works out what it works out: the runs waiting for a limit, the proposed rules by project, the cards a conversation's page shows), feeds each open conversation's page through `TranscriptFeed`, and writes out what every view would read: each model's stored properties, found by reflection, and the computed ones the views read that depend on nothing but the model. It compares that with `Fixture/expected.txt`, which was made from the models as they were in the app before they moved, and fails at the first line that differs. The events whose models are still the app's (pictures, the computer's, the browser's, sign-in) are compared as the JSON they are. Run it from `app/`:
+
+```bash
+cd app && swift build --product pi2-client-check && .build/debug/pi2-client-check
+```
+
+A change that alters what a model reads or works out on purpose writes the file again with `--write`, and says so in its pull request; a move must not need it. CI builds the check with the app but does not run it yet.
 
 ### Trying changes in a throwaway copy
 

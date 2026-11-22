@@ -1,3 +1,4 @@
+import PiModels
 import SwiftUI
 
 // What a run is waiting on and how to stop it, and the engine's notice that it restarted: shown on a project's Now tab,

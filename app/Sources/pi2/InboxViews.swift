@@ -1,5 +1,6 @@
 import ComposeKit
 import ComputerKit
+import PiModels
 import SwiftUI
 
 /// One thing waiting on the person, with the controls to answer it. Used in the transcript, above the composer for a
