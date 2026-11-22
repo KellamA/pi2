@@ -32,7 +32,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { USER_ENTRY_KIND, userContent, userEntryData, validateAttachments } from "./attachments.ts";
-import { createBackup, restoreBackup } from "./backup.ts";
+import { backupStatus, createBackup, restoreBackup, tidyBackups } from "./backup.ts";
 import { appBundle, AppCheck, checkRequestClasses, personOnly } from "./answers.ts";
 import { backgroundForSubChat, hasRunningCommands } from "./background.ts";
 import { bashForSubChat } from "./commands.ts";
@@ -196,6 +196,7 @@ const pathReady = adoptLoginPath(log, process.env, undefined, undefined, stopLog
 const runningMarker = join(home, "engine.running");
 const stoppedUncleanly = existsSync(runningMarker);
 writeFileSync(runningMarker, String(Date.now()));
+tidyBackups(home, log); // copies an engine on this data folder stopped while making (#792)
 
 // ---- Models, tools, harness
 
@@ -1084,6 +1085,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		return {};
 	},
 	"backup.create": async (params) => ({ path: await createBackup(home, text(params, "directory")) }),
+	"backup.status": async () => backupStatus(home),
 	"conversation.archive": async (params) => {
 		if (typeof params.id !== "number") throw new Error(`Unknown conversation: ${String(params.id)}`);
 		await archiveConversation(params.id);
