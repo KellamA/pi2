@@ -290,7 +290,7 @@ struct OrchestratorModelMenu: View {
     }
 
     /// Here, and from the Conversation menu while the hub shows the orchestrator's conversation (#632). The agent's
-    /// conversations already going change with it (#642).
+    /// conversations already going follow it from their next message, as the engine decides (#726).
     static func choose(_ model: ModelInfo, for agent: AgentProfile, engine: EngineClient) {
         engine.setModel(model, for: agent)
     }
