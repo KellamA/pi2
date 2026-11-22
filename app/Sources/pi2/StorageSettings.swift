@@ -38,6 +38,8 @@ struct StorageSettings: View {
     @State private var failed = false
     @State private var working = false
     @State private var restoreFrom: URL?
+    /// What the engine says of the last backup when it did not finish (#792): cut off by the engine stopping, or failed.
+    @State private var unfinished: String?
 
     var body: some View {
         Form {
@@ -60,6 +62,8 @@ struct StorageSettings: View {
                 .disabled(working)
                 if let message {
                     Text(message).font(.callout).foregroundStyle(failed ? .red : .secondary).textSelection(.enabled)
+                } else if let unfinished {
+                    Text(unfinished).font(.callout).foregroundStyle(.orange).textSelection(.enabled)
                 }
             } header: {
                 Text("Backup")
@@ -70,6 +74,7 @@ struct StorageSettings: View {
         }
         .formStyle(.grouped)
         .settingsPage(.storage)
+        .task { await loadStatus() }
         .confirmationDialog("Replace everything with this backup?", isPresented: Binding(get: { restoreFrom != nil }, set: { if !$0 { restoreFrom = nil } })) {
             Button("Restore", role: .destructive) { if let folder = restoreFrom { restore(folder) } }
             Button("Cancel", role: .cancel) { restoreFrom = nil }
@@ -91,7 +96,23 @@ struct StorageSettings: View {
                 failed = true
                 message = error.localizedDescription
             }
+            await loadStatus()
         }
+    }
+
+    /// The line for a backup that did not finish, from `engine.info`'s `backup`; nothing when the last one finished.
+    private func loadStatus() async {
+        guard let result = try? await engine.call("engine.info"), let last = result["backup"]?["unfinished"], case .object = last else {
+            unfinished = nil
+            return
+        }
+        let why = last["reason"]?.stringValue.map { $0.replacingOccurrences(of: #"[.\s]+$"#, with: "", options: .regularExpression) } ?? "pi² stopped while making it"
+        var when = ""
+        if case .number(let ms)? = last["startedAt"] {
+            when = ", started \(Date(timeIntervalSince1970: ms / 1000).formatted(date: .abbreviated, time: .shortened))"
+        }
+        let folder = last["folder"]?.stringValue.map { " in \(URL(fileURLWithPath: $0).lastPathComponent)" } ?? ""
+        unfinished = "The last backup\(folder)\(when), did not finish: \(why). What it had copied is not a backup and is removed. Back up again to have one."
     }
 
     private func restore(_ folder: URL) {
