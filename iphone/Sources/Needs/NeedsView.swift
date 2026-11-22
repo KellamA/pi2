@@ -50,6 +50,11 @@ struct NeedsView: View {
     private var screen: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
+                if let projectName {
+                    Text("In \(projectName)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
                 NeedsConnectionLine(status: session.engine.status, connection: session.connection)
                 #if DEBUG
                 NeedsSamples.note
@@ -60,6 +65,9 @@ struct NeedsView: View {
             .padding(.vertical, 12)
         }
         .background(Color(.systemGroupedBackground))
+        #if DEBUG
+        .defaultScrollAnchor(NeedsSamples.bottom ? .bottom : .top)
+        #endif
         .overlay {
             if needs.isEmpty {
                 ContentUnavailableView {
@@ -71,17 +79,6 @@ struct NeedsView: View {
         }
         .navigationTitle("Needs you")
         .navigationBarTitleDisplayMode(.large)
-        .toolbar {
-            if let projectName {
-                ToolbarItem(placement: .principal) {
-                    VStack(spacing: 0) {
-                        Text("Needs you").font(.headline)
-                        Text(projectName).font(.caption).foregroundStyle(.secondary)
-                    }
-                    .accessibilityElement(children: .combine)
-                }
-            }
-        }
     }
 
     // MARK: - Inline, at the top of another screen
@@ -137,6 +134,9 @@ struct NeedOpenedCard: View {
                 }
             }
             .background(Color(.systemGroupedBackground))
+            #if DEBUG
+            .defaultScrollAnchor(NeedsSamples.bottom ? .bottom : .top)
+            #endif
             .navigationTitle("Needs you")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

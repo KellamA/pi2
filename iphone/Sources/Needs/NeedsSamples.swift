@@ -15,6 +15,7 @@ import SwiftUI
 /// - `PI2_NEEDS_OPEN=<need id>` opens that card on a screen of its own once it is shown.
 /// - `PI2_NEEDS_PRESS=<need id>` presses the card's first answer once it is shown (`<need id>:edit` starts editing a
 ///   proposed rule instead), so that the card's state after it can be pictured with no tap.
+/// - `PI2_NEEDS_SCROLL=bottom` opens the list scrolled to its end, for a picture of what is below the screen.
 struct NeedsSamples {
     let only: Bool
     let needs: [NeedItem]
@@ -31,6 +32,7 @@ struct NeedsSamples {
 
     static let open: String? = ProcessInfo.processInfo.environment["PI2_NEEDS_OPEN"]
     static let press: String? = ProcessInfo.processInfo.environment["PI2_NEEDS_PRESS"]
+    static let bottom = ProcessInfo.processInfo.environment["PI2_NEEDS_SCROLL"] == "bottom"
     /// Whether `press` was done, and `open`: each once a launch.
     @MainActor static var pressed = false
     @MainActor static var opened = false

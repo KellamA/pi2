@@ -20,6 +20,7 @@ struct NeedCard: View {
 
     @Environment(AppSession.self) private var session
     @Environment(\.openRoute) private var openRoute
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     /// The answer is on its way: a second press while it goes does nothing.
     @State private var sending = false
@@ -182,14 +183,15 @@ struct NeedCard: View {
 
     /// Part of the call was kept from the phone: say so plainly, and where it can be allowed.
     private var hiddenNotice: some View {
-        Label {
-            Text("Part of this call is hidden from your iPhone, so you cannot see all of it here. Allow it on your Mac, where it shows whole; from here you can only deny it.")
-                .font(.footnote)
-                .fixedSize(horizontal: false, vertical: true)
-        } icon: {
+        let layout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6)) : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
+        return layout {
             Image(systemName: "eye.slash")
                 .foregroundStyle(Color(.systemOrange))
+                .accessibilityHidden(true)
+            Text("Part of this call is hidden from your iPhone, so you cannot see all of it here. Allow it on your Mac, where it shows whole; from here you can only deny it.")
+                .fixedSize(horizontal: false, vertical: true)
         }
+        .font(.footnote)
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.systemOrange).opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
@@ -263,15 +265,11 @@ struct NeedCard: View {
     /// A field for an answer in words, with its Send.
     private func wordsField(placeholder: String, reply: @escaping (String) -> NeedReply) -> some View {
         let empty = words.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return ViewThatFits(in: .horizontal) {
-            HStack(alignment: .bottom, spacing: 8) {
-                field(placeholder)
-                sendButton(empty: empty, reply: reply)
-            }
-            VStack(alignment: .trailing, spacing: 8) {
-                field(placeholder)
-                sendButton(empty: empty, reply: reply)
-            }
+        // At the accessibility sizes the field takes the card's width, and Send goes under it.
+        let layout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .trailing, spacing: 8)) : AnyLayout(HStackLayout(alignment: .bottom, spacing: 8))
+        return layout {
+            field(placeholder)
+            sendButton(empty: empty, reply: reply)
         }
     }
 
@@ -317,7 +315,10 @@ struct NeedCard: View {
             TextField("The rule", text: $ruleText, axis: .vertical)
                 .lineLimit(2...8)
                 .textFieldStyle(.roundedBorder)
-            Picker("Binds", selection: $ruleBinds) {
+            Text("Would bind")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Picker("Would bind", selection: $ruleBinds) {
                 ForEach(ProjectRule.Binds.allCases) { binds in
                     Text(binds.title).tag(binds)
                 }
@@ -480,16 +481,25 @@ struct NeedCardHeader: View {
     let agent: AgentProfile?
     let openConversation: () -> Void
 
+    @Environment(\.dynamicTypeSize) private var typeSize
+
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            NeedAgentMark(name: need.agentName, color: agent?.color)
+            // At the accessibility sizes the mark gives its width to the words, which then never break inside a name.
+            if !typeSize.isAccessibilitySize {
+                NeedAgentMark(name: need.agentName, color: agent?.color)
+            }
             VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(need.agentName ?? "An agent")
-                        .font(.subheadline.weight(.semibold))
-                    Text(kind)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.tint)
+                let name = Text(need.agentName ?? "An agent").font(.subheadline.weight(.semibold))
+                let kind = Text(kind).font(.caption.weight(.medium)).foregroundStyle(.tint)
+                if typeSize.isAccessibilitySize {
+                    name
+                    kind
+                } else {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        name
+                        kind
+                    }
                 }
                 Button(action: openConversation) {
                     Text(placeLine)

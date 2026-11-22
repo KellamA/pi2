@@ -89,7 +89,7 @@ struct NeedHiddenText: View {
             case .hidden:
                 // Not the placeholder's own brackets, which a command could hold: a word set apart, in a type the call is
                 // never shown in, on a marked ground.
-                var hidden = AttributedString("\u{2009}key\u{00A0}hidden\u{2009}")
+                var hidden = AttributedString("\u{202F}key\u{00A0}hidden\u{202F}")
                 hidden.font = .footnote.italic().weight(.semibold)
                 hidden.foregroundColor = Color(.label)
                 hidden.backgroundColor = Color(.systemOrange).opacity(0.35)
