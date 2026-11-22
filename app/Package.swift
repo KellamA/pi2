@@ -3,7 +3,8 @@ import PackageDescription
 
 let package = Package(
     name: "pi2",
-    platforms: [.macOS(.v15)],
+    // iOS for the targets the iPhone app shares with the Mac app (docs/iphone.md section 8): PiModels and EngineKit so far.
+    platforms: [.macOS(.v15), .iOS(.v18)],
     dependencies: [
         // Updates for release builds. build.sh copies the framework into the app.
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
@@ -35,9 +36,16 @@ let package = Package(
         // Whether the process at the other end of a connection to the engine's socket is the app (#504). Its own module
         // so pi2-peer-check can check it.
         .target(name: "PeerKit", path: "Sources/PeerKit"),
+        // The engine's requests, events and state as Swift types, shared by the Mac app and the iPhone app (docs/iphone.md
+        // section 8, #669). Foundation and Observation alone, so that it builds for iOS too.
+        .target(name: "PiModels", path: "Sources/PiModels"),
+        // The engine's client without AppKit: requests and answers, the engine's events read into the models, open
+        // conversations and messages on their way, shared by the Mac app and the iPhone app (docs/iphone.md section 8,
+        // #670). Foundation, Observation, Network and CryptoKit alone, so that it builds for iOS too.
+        .target(name: "EngineKit", dependencies: ["PiModels"], path: "Sources/EngineKit"),
         .executableTarget(
             name: "pi2",
-            dependencies: ["ComputerKit", "BrowserKit", "PaneKit", "ComposeKit", "LoginItemKit", "PiStyle", "WindowKit", "MenuKit", "FileLinkKit", "TranscriptKit", .product(name: "Sparkle", package: "Sparkle")],
+            dependencies: ["ComputerKit", "BrowserKit", "PaneKit", "ComposeKit", "LoginItemKit", "PiStyle", "WindowKit", "MenuKit", "FileLinkKit", "TranscriptKit", "PiModels", "EngineKit", .product(name: "Sparkle", package: "Sparkle")],
             path: "Sources/pi2",
             // What only a development build has: PI2_SHOW, the window variables, PI2_DRAW_WHEN_HIDDEN and the web
             // inspector (docs/development.md). On in a debug build, and in an optimised development build, which
@@ -72,5 +80,9 @@ let package = Package(
         .executableTarget(name: "pi2-peer", dependencies: ["PeerKit"], path: "Sources/pi2-peer"),
         // Checks PeerKit and pi2-peer on connections of its own, from itself and from /usr/bin/nc.
         .executableTarget(name: "pi2-peer-check", dependencies: ["PeerKit"], path: "Sources/pi2-peer-check"),
+        // Checks that the client reads the engine as it did before its models moved into PiModels (#669) and the client
+        // into EngineKit (#670): a recorded session played to the client, and what the views read compared with what they
+        // read before.
+        .executableTarget(name: "pi2-client-check", dependencies: ["PiModels", "EngineKit"], path: "Sources/pi2-client-check", exclude: ["Fixture"]),
     ]
 )

@@ -1,3 +1,4 @@
+import PiModels
 import SwiftUI
 
 // Chat mode (#172, docs/chat.md): a place to ask pi²'s own assistant questions, beside the projects. The window shows
@@ -42,17 +43,6 @@ final class ChatModeState {
         mode = WindowMode(rawValue: UserDefaults.standard.string(forKey: Self.modeKey) ?? "") ?? .agents
         selection = UserDefaults.standard.object(forKey: Self.selectionKey) as? Int
     }
-}
-
-// MARK: - Which conversations are chats
-
-extension ConversationSummary {
-    var isChat: Bool { chat == true }
-    var isPinned: Bool { pinned == true }
-}
-
-extension ArchivedConversation {
-    var isChat: Bool { chat == true }
 }
 
 extension EngineClient {

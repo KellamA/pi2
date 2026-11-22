@@ -1,9 +1,10 @@
+import EngineKit
 import Observation
 
 /// Unsent input belongs to the conversation, not to a pane, and never enters the transcript or app preferences.
 @MainActor
 @Observable
-final class ConversationDraft {
+final class ConversationDraft: MessageDraft {
     var text = ""
     let attachments = ComposerAttachments()
     @ObservationIgnored private var generation = 0
@@ -30,3 +31,7 @@ final class ConversationDraft {
         }
     }
 }
+
+/// An open conversation as the engine last sent it, with its message field's draft: EngineKit's `OpenConversation`, which
+/// the session keeps and the views read.
+typealias OpenConversation = EngineKit.OpenConversation<ConversationDraft>

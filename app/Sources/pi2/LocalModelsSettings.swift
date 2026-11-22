@@ -1,5 +1,6 @@
 import AppKit
 import BrowserKit
+import PiModels
 import SwiftUI
 
 // Models on this Mac (#292 of #173), in Settings › Providers: getting the Strata engine and a model pack, with their
@@ -117,15 +118,6 @@ struct LocalStatus: Decodable {
     /// What each request at once beyond the first takes in memory with this context, in GB.
     func slotGB(context size: Int) -> Double {
         (requests?.slotGBPerToken ?? context.gbPerToken) * Double(size)
-    }
-}
-
-extension JSONValue {
-    /// This `local` event with one download's progress, from a `local.progress` event, in place of what it said.
-    func replacingDownload(_ download: JSONValue) -> JSONValue {
-        guard case .object(var status) = self, case .array(let downloads)? = status["downloads"], let id = download["id"] else { return self }
-        status["downloads"] = .array(downloads.map { $0["id"] == id ? download : $0 })
-        return .object(status)
     }
 }
 

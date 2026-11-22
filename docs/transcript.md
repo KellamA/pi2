@@ -17,9 +17,10 @@ app/Web/test/              node --test: the five modules above, with a small fak
 app/Sources/TranscriptKit/
   TranscriptWebKitView.swift  the web view: loading, navigation policy, menu, drops
   SparePage.swift          the page loaded ahead for the next pane, where it waits, and the pane it moves into
+app/Sources/PiModels/
+  TranscriptFeed.swift     what the page is sent, and only what changed since last time
 app/Sources/pi2/
   TranscriptPage.swift     where the page is in the bundle, the palette, and checking the page's messages
-  TranscriptFeed.swift     what the page is sent, and only what changed since last time
   TranscriptWeb.swift      the SwiftUI view, and the bridge to the engine
 ```
 

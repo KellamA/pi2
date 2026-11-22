@@ -1,4 +1,5 @@
 import BrowserKit
+import PiModels
 import SwiftUI
 
 // The sidebar of projects (#470; docs/design/projects.md, The sidebar): the Dashboard, the projects

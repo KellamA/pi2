@@ -5,134 +5,185 @@ import Foundation
 /// the names it shows and the palette whenever those differ from last time.
 ///
 /// It depends on the models alone, so it can be exercised outside the app.
-struct TranscriptFeed {
+public struct TranscriptFeed: Sendable {
     /// The run as the page shows it: the answer still arriving and the tools still running.
-    struct Live: Encodable, Equatable {
-        var busy: Bool
-        var partial: PartialAnswer?
-        var tools: [LiveTool]
+    public struct Live: Encodable, Equatable, Sendable {
+        public var busy: Bool
+        public var partial: PartialAnswer?
+        public var tools: [LiveTool]
         /// Retries are shown outside the transcript; the page only needs to know not to show "working" dots meanwhile.
-        var retrying: Bool
+        public var retrying: Bool
         /// A worktree set-up command still running, whose output the page shows in its row as it arrives.
-        var setup: LiveSetup?
+        public var setup: LiveSetup?
     }
 
     /// An agent a hand-off can name.
-    struct Agent: Encodable, Equatable {
-        var id: String
-        var name: String
+    public struct Agent: Encodable, Equatable, Sendable {
+        public var id: String
+        public var name: String
         /// The agent's colour as CSS, for its small square.
-        var color: String
-        var model: String
+        public var color: String
+        public var model: String
+
+        public init(id: String, name: String, color: String, model: String) {
+            self.id = id
+            self.name = name
+            self.color = color
+            self.model = model
+        }
     }
 
     /// What only the app knows: how to name MCP tools, agents and apps.
-    struct Names: Encodable, Equatable {
-        var conversationId: Int
+    public struct Names: Encodable, Equatable, Sendable {
+        public var conversationId: Int
         /// The conversation's agent, for VoiceOver's name for each answer.
-        var agentName: String
+        public var agentName: String
         /// Tool name to "Server: tool".
-        var mcp: [String: String]
-        var agents: [Agent]
+        public var mcp: [String: String]
+        public var agents: [Agent]
         /// Bundle ID to app name, for the apps computer-use calls in this transcript name.
-        var apps: [String: String]
+        public var apps: [String: String]
         /// Whether the conversation has a folder, in which a relative link in an answer names a file (#451).
-        var folder = false
+        public var folder = false
+
+        public init(conversationId: Int, agentName: String, mcp: [String: String], agents: [Agent], apps: [String: String], folder: Bool = false) {
+            self.conversationId = conversationId
+            self.agentName = agentName
+            self.mcp = mcp
+            self.agents = agents
+            self.apps = apps
+            self.folder = folder
+        }
     }
 
     /// A model Try Again can use, as the model selector lists it.
-    struct ModelChoice: Encodable, Equatable {
-        var provider: String
-        var id: String
-        var name: String
+    public struct ModelChoice: Encodable, Equatable, Sendable {
+        public var provider: String
+        public var id: String
+        public var name: String
         /// The provider's name, which the list is grouped by.
-        var group: String
+        public var group: String
+
+        public init(provider: String, id: String, name: String, group: String) {
+            self.provider = provider
+            self.id = id
+            self.name = name
+            self.group = group
+        }
     }
 
     /// What a chat adds to the page (#285): Try Again, Edit, the step between versions, and sources. `enabled` is
     /// false for an agent's conversation, and the page shows none of it.
-    struct Chat: Encodable, Equatable {
-        var enabled: Bool
-        var versions: [VersionPoint]
-        var models: [ModelChoice]
+    public struct Chat: Encodable, Equatable, Sendable {
+        public var enabled: Bool
+        public var versions: [VersionPoint]
+        public var models: [ModelChoice]
         /// The model in use, as "provider/id".
-        var model: String
+        public var model: String
 
-        static let none = Chat(enabled: false, versions: [], models: [], model: "")
+        public static let none = Chat(enabled: false, versions: [], models: [], model: "")
 
         /// Whether the page shows a chat's controls: only for a chat, as the engine says (#283).
-        static func shown(for state: ConversationState?) -> Bool {
+        public static func shown(for state: ConversationState?) -> Bool {
             state?.chat == true
+        }
+
+        public init(enabled: Bool, versions: [VersionPoint], models: [ModelChoice], model: String) {
+            self.enabled = enabled
+            self.versions = versions
+            self.models = models
+            self.model = model
         }
     }
 
     /// Whether the conversation has entries older than all the app has, which the page asks for when the reader nears
     /// its top, and whether they are being asked for (#440).
-    struct Older: Encodable, Equatable {
-        var more: Bool
-        var loading: Bool
+    public struct Older: Encodable, Equatable, Sendable {
+        public var more: Bool
+        public var loading: Bool
 
-        static let none = Older(more: false, loading: false)
+        public static let none = Older(more: false, loading: false)
+
+        public init(more: Bool, loading: Bool) {
+            self.more = more
+            self.loading = loading
+        }
     }
 
     /// One reach request or proposed rule waiting under Needs you, as the `needs` event sends it (docs/projects.md,
     /// 3.9) with the fields the conversation's card reads. Every kind shares the base fields, so the whole array
     /// decodes whatever kinds are in it, and a kind this app knows nothing of cannot take the list down.
-    struct Need: Codable, Equatable, Identifiable {
+    public struct Need: Codable, Equatable, Identifiable, Sendable {
         /// A reach request's change, as the person reads it (7.2): what it would let agents do.
-        struct ReachChange: Codable, Equatable {
-            let summary: String
+        public struct ReachChange: Codable, Equatable, Sendable {
+            public let summary: String
+
+            public init(summary: String) {
+                self.summary = summary
+            }
         }
 
-        let id: String
+        public let id: String
         /// "reach" or "rule".
-        let kind: String
-        let conversationId: Int
-        let agentName: String?
+        public let kind: String
+        public let conversationId: Int
+        public let agentName: String?
         /// Milliseconds since 1970.
-        let createdAt: Double
-        let change: ReachChange?
+        public let createdAt: Double
+        public let change: ReachChange?
         /// A proposed rule: its text and whom it would bind, and why the agent proposes it.
-        let text: String?
-        let binds: String?
-        let why: String?
+        public let text: String?
+        public let binds: String?
+        public let why: String?
+
+        public init(id: String, kind: String, conversationId: Int, agentName: String?, createdAt: Double, change: ReachChange?, text: String?, binds: String?, why: String?) {
+            self.id = id
+            self.kind = kind
+            self.conversationId = conversationId
+            self.agentName = agentName
+            self.createdAt = createdAt
+            self.change = change
+            self.text = text
+            self.binds = binds
+            self.why = why
+        }
     }
 
-    struct Message: Encodable {
-        var reset: Bool?
+    public struct Message: Encodable, Sendable {
+        public var reset: Bool?
         /// Entries to put before the first the page has, oldest first (#380).
-        var older: [Item]?
+        public var older: [Item]?
         /// How many entries older than those the page has are still to come.
-        var earlier: Int?
+        public var earlier: Int?
         /// Whether there are older entries still to ask for, and whether they are on their way (#440).
-        var history: Older?
-        var items: [Item]?
-        var live: Live?
-        var inbox: [InboxItem]?
+        public var history: Older?
+        public var items: [Item]?
+        public var live: Live?
+        public var inbox: [InboxItem]?
         /// The changes made in this conversation of a project (docs/projects.md, 3.12), each drawn where the tool call
         /// that made it is, with its Undo.
-        var changes: [ProjectChangeLine]?
+        public var changes: [ProjectChangeLine]?
         /// The reach requests and proposed rules waiting from this conversation (3.9), drawn as cards at the calls that
         /// asked for them and answered in place.
-        var needs: [Need]?
-        var names: Names?
-        var palette: [String: String]?
-        var chat: Chat?
+        public var needs: [Need]?
+        public var names: Names?
+        public var palette: [String: String]?
+        public var chat: Chat?
     }
 
     /// The page is sent a long conversation newest first, as the engine sends it to the app (#380, engine/src/opening.ts):
     /// at first the newest entries, as many as come to about `firstBytes` or number `firstCount`, then the older ones,
     /// about `olderBytes` at a time, each once the page has drawn the one before.
-    static let firstBytes = 64 * 1024
-    static let firstCount = 40
-    static let olderBytes = 256 * 1024
+    public static let firstBytes = 64 * 1024
+    public static let firstCount = 40
+    public static let olderBytes = 256 * 1024
 
     /// The entries sent: `sentCount` of them, from the one whose id is `firstSent` to `lastSent`.
     private var sentCount = 0
     private var firstSent: Int?
     private var lastSent: Item?
     /// How many entries the app has before those the page was sent, still to be sent.
-    private(set) var pending = 0
+    public private(set) var pending = 0
     private var earlier: Int?
     private var history: Older?
     private var live: Live?
@@ -146,7 +197,7 @@ struct TranscriptFeed {
 
     /// Forget what was sent and start the page's list over: for a page that has just loaded (or reloaded after its
     /// process ended), or a view now showing another conversation.
-    mutating func restart() {
+    public mutating func restart() {
         self = TranscriptFeed()
         startOver = true
     }
@@ -154,7 +205,7 @@ struct TranscriptFeed {
     /// The update that brings the page from what it was last sent to this, or nil when nothing changed.
     /// `earlier` is how many older entries the engine is still to send the app; with `withOlder` false, older entries the
     /// app has wait (the page has not yet drawn the part before them).
-    mutating func update(items: [Item], earlier: Int = 0, older: Older = .none, state: ConversationState?, inbox: [InboxItem], changes: [ProjectChangeLine] = [], needs: [Need] = [], names: Names, palette: [String: String], chat: Chat = .none, withOlder: Bool = true) -> Message? {
+    public mutating func update(items: [Item], earlier: Int = 0, older: Older = .none, state: ConversationState?, inbox: [InboxItem], changes: [ProjectChangeLine] = [], needs: [Need] = [], names: Names, palette: [String: String], chat: Chat = .none, withOlder: Bool = true) -> Message? {
         var message = Message()
         var changed = false
 
@@ -247,7 +298,7 @@ struct TranscriptFeed {
     /// Where the part of `items` that ends at `end` starts: entries are taken from `end` back until they come to about
     /// `bytes` or number `count`, always at least one, and reaching back over tool results to the answer whose calls
     /// they answer, as the engine cuts its parts (engine/src/opening.ts).
-    static func partStart(_ items: [Item], end: Int, bytes: Int, count: Int = .max) -> Int {
+    public static func partStart(_ items: [Item], end: Int, bytes: Int, count: Int = .max) -> Int {
         var start = end
         var total = 0
         while start > 0 && (start == end || (total < bytes && end - start < count)) {
@@ -259,12 +310,12 @@ struct TranscriptFeed {
     }
 
     /// About how large an entry is as JSON: its text, which is most of it, and a little for the rest.
-    static func size(of item: Item) -> Int {
+    public static func size(of item: Item) -> Int {
         item.text.utf8.count + (item.thinking?.utf8.count ?? 0) + (item.error?.utf8.count ?? 0) + 200 * (1 + (item.toolCalls?.count ?? 0))
     }
 
     /// The message as the JSON text the page parses. The page is handed it as a string argument, never as script.
-    static func json(_ message: Message) -> String? {
+    public static func json(_ message: Message) -> String? {
         let encoder = JSONEncoder()
         // Sorted, so a call's arguments are summarised in the same order every time.
         encoder.outputFormatting = [.withoutEscapingSlashes, .sortedKeys]
@@ -273,7 +324,7 @@ struct TranscriptFeed {
     }
 
     /// The bundle IDs computer-use calls name, in the transcript and in what is waiting on the person.
-    static func appsNamed(in items: [Item], partial: PartialAnswer?, inbox: [InboxItem]) -> Set<String> {
+    public static func appsNamed(in items: [Item], partial: PartialAnswer?, inbox: [InboxItem]) -> Set<String> {
         var apps = Set<String>()
         func add(_ name: String, _ arguments: JSONValue) {
             if name == "computer" || name == "browser", let app = arguments["app"]?.stringValue, !app.isEmpty { apps.insert(app) }
@@ -285,4 +336,6 @@ struct TranscriptFeed {
         for entry in inbox { add(entry.tool, entry.arguments) }
         return apps
     }
+
+    public init() {}
 }

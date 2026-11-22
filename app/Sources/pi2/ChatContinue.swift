@@ -1,3 +1,4 @@
+import PiModels
 import SwiftUI
 
 // Continue with an Agent (#289, #654, docs/chat.md): a chat that turns into real work is handed to a project: to its

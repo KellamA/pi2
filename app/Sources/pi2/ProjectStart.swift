@@ -1,3 +1,4 @@
+import PiModels
 import SwiftUI
 
 // Starting a conversation with one of a project's agents, and changing who orchestrates it (#643; docs/projects.md,

@@ -1,48 +1,11 @@
 import AppKit
+import EngineKit
+import PiModels
 import SwiftUI
 
 // Models run on this Mac (#291, part of #173): what the conversation, Activity and the menu bar show of them. The engine
 // starts and stops them (engine/src/localrun.ts); the app says which conversations it shows, sees what runs, and can stop
-// one. See docs/local-models-running.md.
-
-/// What a conversation whose model runs on this Mac is told of it: whether it is loading, loaded, stopped or failed.
-struct LocalModelState: Codable, Equatable {
-    let name: String
-    /// "starting", "ready", "stopping", "stopped" or "failed".
-    let status: String
-    /// Since when it is in that state (milliseconds since 1970), when known.
-    let since: Double?
-    /// How far loading has got, 0 to 1, when the engine says.
-    let progress: Double?
-    /// What the engine says it is doing while it loads, in its own words ("mapping the experts").
-    let stage: String?
-    /// Why it could not start, or why it stopped, when it failed.
-    let error: String?
-    /// The last lines of its log, when it failed.
-    let lines: [String]?
-    let log: String?
-}
-
-/// A model running on this Mac, as the engine's `local.running` event lists it.
-struct LocalServer: Codable, Equatable, Identifiable {
-    let id: String
-    let name: String
-    /// "starting", "ready" or "stopping".
-    let status: String
-    let startedAt: Double
-    let readyAt: Double?
-    let progress: Double?
-    let stage: String?
-    /// Bytes its processes hold in memory, at the engine's last look: its own and those it started.
-    let memory: Double?
-    /// The conversations using it.
-    let users: [Int]
-    /// When it stops for want of anyone using it, while that is counting down.
-    let stopsAt: Double?
-    let log: String
-}
-
-struct LocalRunningEvent: Decodable { let running: [LocalServer] }
+// one. See docs/local-models-running.md. The models themselves (`LocalServer`) are EngineKit's, which reads the event.
 
 enum LocalModels {
     /// "63.2 GB": memory as the person reads it.

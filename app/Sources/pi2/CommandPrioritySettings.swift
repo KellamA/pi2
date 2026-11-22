@@ -1,3 +1,4 @@
+import PiModels
 import SwiftUI
 
 /// Whether the commands agents run start at a lower priority than pi² itself (#344). The engine keeps the switch and

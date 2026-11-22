@@ -1,3 +1,4 @@
+import PiModels
 import SwiftUI
 
 /// The agent's task list for the conversation, pinned above the message field.
