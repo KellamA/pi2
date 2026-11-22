@@ -50,8 +50,11 @@ port=$(free_port) && inspector=$(free_port) || { echo "relay-protocol-test: no f
 
 # The settings are a test deployment's, none of them pi²'s: MIN_BUILD_MAC 100 and MIN_BUILD_DEVICE 1 are what
 # pi2-relay-check expects; the stand-in verifier takes no App Attest category, so `none`.
+# TMPDIR is this run's folder, so that isolated.mjs's throwaway home goes in it and is removed with it: its own clean-up
+# does not run when the process group is stopped.
+mkdir -p "$work/tmp"
 set -m
-node "$root/relay/scripts/isolated.mjs" wrangler dev \
+TMPDIR="$work/tmp" node "$root/relay/scripts/isolated.mjs" wrangler dev \
 	--config test/protocol/wrangler.jsonc --local --ip 127.0.0.1 --port "$port" --inspector-port "$inspector" \
 	--persist-to "$work/state" --show-interactive-dev-session=false --log-level warn \
 	--var APP_ATTEST_TEAM_ID:ABCDE12345 --var APP_ATTEST_BUNDLE_ID:dev.pi2.test \

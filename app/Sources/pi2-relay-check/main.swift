@@ -16,6 +16,7 @@ let arguments = Array(CommandLine.arguments.dropFirst()).filter { $0 != "--verbo
 if arguments.isEmpty {
 	Formats.run()
 	await Sessions.run()
+	await Hostile.run()
 } else if arguments.count == 2, arguments[0] == "--relay", let url = URL(string: arguments[1]),
 	url.scheme == "ws", ["127.0.0.1", "localhost", "[::1]", "::1"].contains(url.host ?? "")
 {

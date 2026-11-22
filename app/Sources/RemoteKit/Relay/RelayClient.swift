@@ -16,9 +16,15 @@ import Foundation
 //   alone (`ok { what }`), so two in flight could not be told apart. Channel bytes are not requests and go at once.
 // - A request whose socket drops before its answer throws `disconnected`: it may or may not have been carried out. A
 //   `put` sent again with the same id is answered `exists` if the first one was stored, which `put` reports as such.
-// - Items taken from the mailbox are checked against the ids taken in the last 25 hours (`RelayItemMemory`), and a
-//   repeat is dropped: the relay can deliver an item twice, and a Mac item that is not a state has no number to refuse
-//   it by. The memory is the user's to keep across launches (`itemMemory`, and the initialiser's).
+// - Items taken from the mailbox are checked against the ids its user remembered (`remember`) once it had opened,
+//   verified and kept them, for 25 hours (`RelayItemMemory`), and a repeat is dropped: the relay can deliver an item
+//   twice, and a Mac item that is not a state has no number to refuse it by. Only verified items are remembered, so
+//   that items the relay made up cannot fill the memory. The memory is the user's to keep across launches.
+// - Everything the relay says is its word, not a fact: a hint to show, never a reason to forget, revoke, wipe or
+//   register again (remotekit.md, "What a caller must and must not do").
+// - What it reports is bounded (`RelayOptions.eventBuffer`): a caller that does not read cannot be made to hold what a
+//   relay sends without end. Past the bound the socket is closed and opened again; repeated `mail` and presence
+//   notices are sent once.
 
 /// A key that proves an end at the relay: the Mac's relay key, or the phone's device key (iphone.md 3.2, 3.4). It signs
 /// only `RelayProof`'s labelled text over a challenge of exactly 32 bytes.
@@ -92,6 +98,9 @@ public struct RelayOptions: Sendable {
 	public var backoff = RelayBackoff()
 	/// A connection that stayed ready this long starts the backoff again from the beginning.
 	public var steadyAfter: Int64 = 60_000
+	/// The most events held for a caller that has not read them; past it the socket is closed and opened again
+	/// (`RelayDrop.overflow`). A data event holds at most 70 KB.
+	public var eventBuffer = 256
 	public var clock: any RelayClock = SystemRelayClock()
 	/// A number from 0 up to 1, for jitter.
 	public var random: @Sendable () -> Double = { Double.random(in: 0..<1) }
@@ -121,23 +130,31 @@ public struct RelayBackoff: Sendable, Equatable {
 public enum RelayEvent: Equatable, Sendable {
 	/// Opening a socket; `attempt` counts the attempts since the last steady connection.
 	case connecting(attempt: Int)
-	/// The Mac is connected and proved.
+	/// The Mac is connected and proved. What `ready` lists is the relay's word: a hint (remotekit.md).
 	case macReady(RelayMacReady)
-	/// The phone is connected and proved.
+	/// The phone is connected and proved. Whether the Mac is there, and the count of mail, are the relay's word.
 	case deviceReady(macOnline: Bool, mail: Int)
-	/// The channel's bytes: to the Mac, from the device named; to a phone, from the Mac.
+	/// The channel's bytes: to the Mac, under the device's id; to a phone, as from the Mac. The id is the relay's word:
+	/// only the channel of that device proves who sent them (its handshake's prologue names the device), so the bytes go
+	/// to that device's channel and nowhere else, and a failure there touches no other device.
 	case data(from: DeviceID?, Data)
+	/// The relay says a device connected: a hint it can forge.
 	case online(DeviceID)
+	/// The relay says a device went: a hint it can forge.
 	case offline(DeviceID)
+	/// The relay says a phone joined the window. Its key and App Attest key id are the relay's word: `addDevice` sends
+	/// the engine's, from the claim the engine verified, never these.
 	case phoneJoined(RelayJoinNotice)
+	/// The relay says a device left. Its word alone: nothing is revoked or forgotten on it without a proof.
 	case left(DeviceID)
-	/// Another copy of pi² Remote holding the relay key tried to connect as this Mac (3.4).
+	/// The relay says another copy of pi² Remote holding the relay key tried to connect as this Mac (3.4). A hostile
+	/// relay can say it too: shown as what the relay says.
 	case anotherMac
-	/// A phone was closed past a limit, until then (6.6).
+	/// The relay says it closed a phone past a limit, until then (6.6): a hint.
 	case held(DeviceID, until: Int64)
-	/// The Mac connected or went away, as a phone is told.
+	/// The relay says the Mac connected or went away, as a phone is told: a hint.
 	case macOnline(Bool)
-	/// Something arrived in this end's mailbox: `take` it.
+	/// The relay says something arrived in this end's mailbox: `take` it. Sent once until the next `take`.
 	case mail
 	/// The socket dropped; the client opens it again at `retryAt` (ms since 1970, by this end's clock).
 	case disconnected(RelayDrop, retryAt: Int64)
@@ -159,15 +176,20 @@ public enum RelayDrop: Equatable, Sendable {
 	case unreadable
 	/// Nothing heard for too long, or a handshake or request not answered.
 	case quiet
+	/// More events waited unread than `RelayOptions.eventBuffer`.
+	case overflow
 }
 
 /// Why the client stopped.
 public enum RelayStop: Equatable, Sendable {
 	/// Its user stopped it.
 	case stopped
-	/// A refusal that trying again cannot change: the pairing or the device is gone (`unknown-pairing`, `not-listed`,
-	/// `removed`, `left`, `deleted`), the key is not the one on record (`signature`), the build is too old
-	/// (`update-required`), another connection took this one's place (`replaced`), or a word this client does not know.
+	/// A refusal that trying again would not change, if the relay says true: that the pairing or the device is gone
+	/// (`unknown-pairing`, `not-listed`, `removed`, `left`, `deleted`), the key is not the one on record (`signature`),
+	/// the build is too old (`update-required`), another connection took this one's place (`replaced`), or a word this
+	/// client does not know. **Each is the relay's claim, which a hostile relay can make**: the client stops, and its
+	/// user shows it, but forgets no key or pairing, revokes nothing, wipes nothing and registers no new pairing on it;
+	/// it starts again on the person's word, or after a long wait, or at the next launch (remotekit.md).
 	case refused(RelayWhy)
 	/// The relay answered with an HTTP status trying again cannot change (400, 403, 404, 426).
 	case http(Int)
@@ -186,7 +208,7 @@ public enum RelayPutResult: Equatable, Sendable {
 public struct RelayTaken: Equatable, Sendable {
 	public let items: [RelayMailItem]
 	public let state: RelayStateItem?
-	/// Items dropped as repeats of ones taken in the last 25 hours.
+	/// Items dropped as repeats of ones remembered in the last 25 hours, or twice in this take.
 	public let repeats: Int
 }
 
@@ -249,11 +271,21 @@ public actor RelayClient {
 	private var requestQueue: [CheckedContinuation<Void, Never>] = []
 	private var endWaiters: [CheckedContinuation<RelayStop?, Never>] = []
 	private var memory: RelayItemMemory
+	private var overflowed = false
+	/// Whether `mail` was reported and no `take` came after.
+	private var mailReported = false
+	/// What was last reported of each device's presence, and of the Mac's, so that a repeat is not reported again.
+	private var presence: [DeviceID: Bool] = [:]
+	private var macPresence: Bool?
+	/// Why the client stopped, once it has: also for a caller whose events were past the bound when it stopped.
+	public private(set) var stopReason: RelayStop?
 
+	/// Throws `invalid` for a relay's address that is not `wss://`, or `ws://` to this computer (`RelayEndpoint`).
 	public init(
 		relay url: URL, role: Role, build: RelayBuild, signer: RelaySigner, connector: any RelayConnector = URLSessionRelayConnector(),
 		options: RelayOptions = RelayOptions(), itemMemory: RelayItemMemory = RelayItemMemory()
-	) {
+	) throws {
+		try Self.checkAddress(url)
 		self.url = url
 		self.role = role
 		self.build = build
@@ -261,7 +293,11 @@ public actor RelayClient {
 		self.connector = connector
 		self.options = options
 		memory = itemMemory
-		(events, emit) = AsyncStream.makeStream(of: RelayEvent.self, bufferingPolicy: .unbounded)
+		(events, emit) = AsyncStream.makeStream(of: RelayEvent.self, bufferingPolicy: .bufferingOldest(max(1, options.eventBuffer)))
+	}
+
+	static func checkAddress(_ url: URL) throws {
+		guard RelayEndpoint.isAllowed(url) else { throw RelayClientError.invalid(RemoteKitError("relay address", "not wss, or ws to this computer")) }
 	}
 
 	/// Starts connecting, and keeps connected until `stop` or a refusal that stops it.
@@ -275,8 +311,21 @@ public actor RelayClient {
 		finish(.stopped)
 	}
 
-	/// The ids of items taken in the last 25 hours, for its user to keep across launches and give back to the next client.
+	/// The ids of items remembered in the last 25 hours, for its user to keep across launches and give back to the next
+	/// client.
 	public var itemMemory: RelayItemMemory { memory }
+
+	/// Remembers items its user has opened, verified and kept, so that the relay handing one over again is dropped as a
+	/// repeat for 25 hours. **This is the caller's to do**, after `SealedItem.openRequest` or `openMacItem` took the item
+	/// and it is kept: an item the relay made up is never remembered, so it cannot push a real one out. Answers false if
+	/// the memory is full of ids younger than 25 hours and could not take them all.
+	@discardableResult
+	public func remember(_ items: [RelayMailItem]) -> Bool {
+		let now = options.clock.now()
+		var all = true
+		for item in items where !memory.remember(item, at: now) { all = false }
+		return all
+	}
 
 	/// Whether a socket is connected and proved just now.
 	public var isReady: Bool { ready }
@@ -351,11 +400,18 @@ public actor RelayClient {
 		guard !finished else { throw RelayClientError.stopped }
 		guard ready, let socket, let challenge else { throw RelayClientError.notConnected }
 		let signature = try signer.prove(.leave, pairing: pairing, device: device, challenge: challenge)
+		let sentOn = generation
 		do {
 			try await socket.send(.text(RelayOutgoing.leave(signature: signature).text))
 		} catch {
 			throw RelayClientError.disconnected
 		}
+		// The answer may have been handled while the leave was being sent: the client stopped, or a new socket opened.
+		if finished {
+			guard stopReason == .refused(.left) else { throw RelayClientError.disconnected }
+			return
+		}
+		guard sentOn == generation else { throw RelayClientError.disconnected }
 		let stop = await withCheckedContinuation { endWaiters.append($0) }
 		guard stop == .refused(.left) else { throw RelayClientError.disconnected }
 	}
@@ -377,11 +433,15 @@ public actor RelayClient {
 		}
 	}
 
-	/// Takes what waits in this end's mailbox. The relay deletes each item as it hands it over.
+	/// Takes what waits in this end's mailbox. The relay deletes each item as it hands it over. Items remembered in the
+	/// last 25 hours (`remember`), or given twice in this take, are dropped as repeats; the caller remembers the others
+	/// once it has opened, verified and kept them.
 	public func take() async throws -> RelayTaken {
+		mailReported = false
 		guard case let .taken(items, state) = try await request(.take, .take) else { throw RelayClientError.unreadable }
 		let now = options.clock.now()
-		let fresh = items.filter { memory.isNew($0, at: now) }
+		var seen = Set<String>()
+		let fresh = items.filter { !memory.contains($0, at: now) && seen.insert("\($0.from.text) \($0.id.text)").inserted }
 		return RelayTaken(items: fresh, state: state, repeats: items.count - fresh.count)
 	}
 
@@ -393,6 +453,7 @@ public actor RelayClient {
 		relay url: URL, build: RelayBuild, relayKey: RelaySigner, connector: any RelayConnector = URLSessionRelayConnector(),
 		options: RelayOptions = RelayOptions()
 	) async throws -> PairingID {
+		try checkAddress(url)
 		let socket = try await open(connector, url, pairing: nil)
 		let deadline = closing(socket, after: options.answerWithin, clock: options.clock)
 		defer {
@@ -416,6 +477,7 @@ public actor RelayClient {
 		attest: @Sendable (Data) async throws -> RelayAttestation, connector: any RelayConnector = URLSessionRelayConnector(),
 		options: RelayOptions = RelayOptions()
 	) async throws -> RelayJoinLink {
+		try checkAddress(url)
 		let socket = try await open(connector, url, pairing: pairing)
 		let deadline = closing(socket, after: options.answerWithin, clock: options.clock)
 		var handedOver = false
@@ -425,7 +487,7 @@ public actor RelayClient {
 		}
 		try await sendText(socket, .hello(pairing: pairing, device: nil, role: .device, build: build))
 		guard case let .challenge(challenge) = try await nextMessage(socket, .joining) else { throw RelayClientError.unreadable }
-		let attestation = try await attest(PairingSecrets.joinClientDataHash(challenge: challenge, deviceKey: deviceKey))
+		let attestation = try await attest(try PairingSecrets.joinClientDataHash(challenge: challenge, deviceKey: deviceKey))
 		try await sendText(socket, .join(pairing: pairing, deviceKey: deviceKey, attestation: attestation.attestation, keyId: attestation.keyId, token: token))
 		guard case let .joined(slot) = try await nextMessage(socket, .joining) else { throw RelayClientError.unreadable }
 		deadline.cancel()
@@ -438,7 +500,7 @@ public actor RelayClient {
 	private func run() async {
 		var attempt = 0
 		while !finished {
-			emit.yield(.connecting(attempt: attempt))
+			post(.connecting(attempt: attempt))
 			let (ending, readyAt) = await connectOnce()
 			guard !finished else { return }
 			switch ending {
@@ -451,7 +513,7 @@ public actor RelayClient {
 				if let readyAt, now - readyAt >= options.steadyAfter { attempt = 0 }
 				let wait = delay(for: drop, attempt: attempt, now: now)
 				attempt += 1
-				emit.yield(.disconnected(drop, retryAt: now + wait))
+				post(.disconnected(drop, retryAt: now + wait))
 				do {
 					try await options.clock.sleep(milliseconds: wait)
 				} catch {
@@ -476,6 +538,7 @@ public actor RelayClient {
 		unreadable = false
 		refusal = nil
 		busyUntil = nil
+		overflowed = false
 		var readyAt: Int64?
 
 		let opened: any RelaySocket
@@ -545,11 +608,15 @@ public actor RelayClient {
 					case let (.macReady(info), _?) where role.end == .mac:
 						ready = true
 						readyAt = options.clock.now()
-						emit.yield(.macReady(info))
+						resetReported()
+						for device in info.devices { presence[device.device] = device.online }
+						post(.macReady(info))
 					case let (.deviceReady(macOnline, mail), _?) where role.end == .device:
 						ready = true
 						readyAt = options.clock.now()
-						emit.yield(.deviceReady(macOnline: macOnline, mail: mail))
+						resetReported()
+						macPresence = macOnline
+						post(.deviceReady(macOnline: macOnline, mail: mail))
 					case (.pong, _):
 						break
 					default:
@@ -569,6 +636,7 @@ public actor RelayClient {
 		if finished { return (.stop(.stopped), readyAt) }
 		// A relay that broke the protocol is not taken at its word, whatever it said before.
 		if unreadable { return (.retry(.unreadable), readyAt) }
+		if overflowed { return (.retry(.overflow), readyAt) }
 		if let busyUntil { return (.retry(.busy(until: busyUntil)), readyAt) }
 		if let refusal { return (classify(refusal), readyAt) }
 		if quiet { return (.retry(.quiet), readyAt) }
@@ -592,7 +660,7 @@ public actor RelayClient {
 			pending = nil
 			request.finish(.success(.refused(why)))
 		case let .item(item):
-			guard let request = pending, request.kind == .take, request.state == nil, request.items.count < RelayLimits.maxTaken else { throw Unreadable() }
+			guard let request = pending, request.kind == .take, request.state == nil, request.items.count < RelayLimits.mailbox(for: role.end) else { throw Unreadable() }
 			request.items.append(item)
 		case let .state(state):
 			guard let request = pending, request.kind == .take, request.state == nil else { throw Unreadable() }
@@ -601,14 +669,26 @@ public actor RelayClient {
 			guard let request = pending, request.kind == .take, count == request.items.count + (request.state == nil ? 0 : 1) else { throw Unreadable() }
 			pending = nil
 			request.finish(.success(.taken(request.items, request.state)))
-		case .mail: emit.yield(.mail)
-		case let .online(device): emit.yield(.online(device))
-		case let .offline(device): emit.yield(.offline(device))
-		case let .phoneJoined(notice): emit.yield(.phoneJoined(notice))
-		case let .left(device): emit.yield(.left(device))
-		case .anotherMac: emit.yield(.anotherMac)
-		case let .held(device, until): emit.yield(.held(device, until: until))
-		case let .macOnline(online): emit.yield(.macOnline(online))
+		case .mail:
+			// Once until the next take: more say nothing more.
+			guard !mailReported else { return }
+			mailReported = true
+			post(.mail)
+		case let .online(device), let .offline(device):
+			let online = if case .online = message { true } else { false }
+			guard presence[device] != online else { return }
+			presence[device] = online
+			post(online ? .online(device) : .offline(device))
+		case let .phoneJoined(notice): post(.phoneJoined(notice))
+		case let .left(device):
+			presence[device] = nil
+			post(.left(device))
+		case .anotherMac: post(.anotherMac)
+		case let .held(device, until): post(.held(device, until: until))
+		case let .macOnline(online):
+			guard macPresence != online else { return }
+			macPresence = online
+			post(.macOnline(online))
 		case .challenge, .registered, .macReady, .deviceReady, .joined, .refused, .busy:
 			throw Unreadable()
 		}
@@ -619,10 +699,26 @@ public actor RelayClient {
 		guard !bytes.isEmpty, bytes.count <= RelayLimits.maxBinary else { throw Unreadable() }
 		if role.end == .mac {
 			guard bytes.count > 16, let device = DeviceID("dev_" + Base64URL.encode(bytes.prefix(16))) else { throw Unreadable() }
-			emit.yield(.data(from: device, Data(bytes.dropFirst(16))))
+			post(.data(from: device, Data(bytes.dropFirst(16))))
 		} else {
-			emit.yield(.data(from: nil, bytes))
+			post(.data(from: nil, bytes))
 		}
+	}
+
+	/// Reports an event; one that does not fit in what is held for the caller closes the socket, which is opened again
+	/// through the backoff, rather than holding more.
+	private func post(_ event: RelayEvent) {
+		if case .dropped = emit.yield(event) {
+			guard !overflowed, let socket else { return }
+			overflowed = true
+			socket.close()
+		}
+	}
+
+	private func resetReported() {
+		mailReported = false
+		presence = [:]
+		macPresence = nil
 	}
 
 	/// Pings while the socket is ready, and closes it once it has heard nothing for too long, or a handshake or a request
@@ -666,8 +762,10 @@ public actor RelayClient {
 		let backoff = options.backoff.delay(attempt: attempt, random: options.random())
 		switch drop {
 		case let .busy(until):
-			// The relay's own time to come back, and up to a second more, so that the ends it closed together spread out.
-			let wait = min(max(until - now, 0), 24 * 3_600_000)
+			// The relay's own time to come back, and never sooner than the backoff, so that a time already past (a clock
+			// that is fast, or a relay that says so) does not bring the client back at once for ever; and up to a second
+			// more, so that the ends it closed together spread out.
+			let wait = max(backoff, min(max(until - now, 0), 24 * 3_600_000))
 			return wait + Int64((options.random() * 1000).rounded(.down))
 		case .refused(.anotherMac):
 			// The relay takes a Mac socket gone quiet for gone after 90 seconds; asking sooner only tells it again.
@@ -694,6 +792,7 @@ public actor RelayClient {
 		pending = nil
 		for waiter in requestQueue { waiter.resume() }
 		requestQueue = []
+		stopReason = reason
 		resumeEndWaiters(reason)
 		emit.yield(.stopped(reason))
 		emit.finish()
@@ -869,10 +968,11 @@ public actor RelayClient {
 
 /// A joined phone's socket (3.3 step 2): it carries the channel's bytes to and from the Mac while the pairing exchange
 /// runs, and on under the engine's id once the Mac adds the phone. It is not opened again when it drops: a join is made
-/// once, with an App Attest key of its own.
+/// once, with an App Attest key of its own. It holds its socket, and the socket its session, for as long as it lives.
 public actor RelayJoinLink {
 	/// The slot the relay gave the joined phone, until the Mac adds it under the engine's id.
 	public nonisolated let slot: DeviceID
+	/// What the link reports, at most `RelayOptions.eventBuffer` unread: past it the link ends (`overflow`).
 	public nonisolated let events: AsyncStream<RelayLinkEvent>
 	private let emit: AsyncStream<RelayLinkEvent>.Continuation
 	private let socket: any RelaySocket
@@ -880,12 +980,18 @@ public actor RelayJoinLink {
 	private var reader: Task<Void, Never>?
 	private var pinger: Task<Void, Never>?
 	private var closed = false
+	private var lastHeard: Int64
+	private var mailReported = false
+	private var macPresence: Bool?
+	/// Why the link ended, once it has: also for a caller whose events were past the bound when it ended.
+	public private(set) var endReason: RelayLinkEnd?
 
 	init(socket: any RelaySocket, slot: DeviceID, options: RelayOptions) {
 		self.socket = socket
 		self.slot = slot
 		self.options = options
-		(events, emit) = AsyncStream.makeStream(of: RelayLinkEvent.self, bufferingPolicy: .unbounded)
+		lastHeard = options.clock.now()
+		(events, emit) = AsyncStream.makeStream(of: RelayLinkEvent.self, bufferingPolicy: .bufferingOldest(max(1, options.eventBuffer)))
 		Task { await self.begin() }
 	}
 
@@ -905,6 +1011,9 @@ public actor RelayJoinLink {
 			throw RelayClientError.disconnected
 		}
 	}
+
+	/// Says the mailbox notice was seen: the next `mail` is reported again.
+	public func tookMail() { mailReported = false }
 
 	/// Closes the socket.
 	public func close() {
@@ -927,19 +1036,27 @@ public actor RelayJoinLink {
 			} catch {
 				return end(.lost)
 			}
+			guard !closed else { return }
+			lastHeard = options.clock.now()
 			guard refusal == nil, busy == nil else { return end(.unreadable) }
 			switch frame {
 			case let .binary(bytes):
 				guard !bytes.isEmpty, bytes.count <= RelayLimits.maxBinary else { return end(.unreadable) }
-				emit.yield(.data(bytes))
+				post(.data(bytes))
 			case let .text(text):
 				// Once the Mac has added the phone, the socket is a listed phone's; it is sent what a joining one is.
 				guard let message = try? RelayIncoming.parse(text, for: .joining) else { return end(.unreadable) }
 				switch message {
 				case let .refused(why): refusal = why
 				case let .busy(until): busy = until
-				case let .macOnline(online): emit.yield(.macOnline(online))
-				case .mail: emit.yield(.mail)
+				case let .macOnline(online):
+					guard macPresence != online else { break }
+					macPresence = online
+					post(.macOnline(online))
+				case .mail:
+					guard !mailReported else { break }
+					mailReported = true
+					post(.mail)
 				case .pong: break
 				default: return end(.unreadable)
 				}
@@ -947,6 +1064,8 @@ public actor RelayJoinLink {
 		}
 	}
 
+	/// Pings, and ends the link once it has heard nothing, not even a pong, for `quietAfter`: a socket the network left
+	/// half open would otherwise wait for ever.
 	private func ping() async {
 		while !closed {
 			do {
@@ -955,13 +1074,19 @@ public actor RelayJoinLink {
 				return
 			}
 			guard !closed else { return }
+			if options.clock.now() - lastHeard >= options.quietAfter { return end(.quiet) }
 			try? await socket.send(.text(RelayOutgoing.ping.text))
 		}
+	}
+
+	private func post(_ event: RelayLinkEvent) {
+		if case .dropped = emit.yield(event) { end(.overflow) }
 	}
 
 	private func end(_ reason: RelayLinkEnd) {
 		guard !closed else { return }
 		closed = true
+		endReason = reason
 		socket.close()
 		reader?.cancel()
 		pinger?.cancel()
@@ -971,10 +1096,13 @@ public actor RelayJoinLink {
 }
 
 public enum RelayLinkEvent: Equatable, Sendable {
+	/// The channel's bytes from the Mac. Only the channel proves who sent them.
 	case data(Data)
+	/// The relay says the Mac connected or went: a hint it can forge.
 	case macOnline(Bool)
+	/// The relay says something arrived in the mailbox: once until `tookMail`.
 	case mail
-	/// The socket closed. Nothing follows.
+	/// The socket closed. Nothing follows. If the caller's events were past the bound, `endReason` says why.
 	case ended(RelayLinkEnd)
 }
 
@@ -983,8 +1111,13 @@ public enum RelayLinkEnd: Equatable, Sendable {
 	case closed
 	case lost
 	case busy(until: Int64)
-	/// Refused with this word: `window-ended` (the window closed before the Mac added it), `removed`, `replaced`.
+	/// Refused, as the relay says, with this word: `window-ended` (the window closed before the Mac added it),
+	/// `removed`, `replaced`.
 	case refused(RelayWhy)
 	case http(Int)
 	case unreadable
+	/// Nothing heard, not even a pong, for `RelayOptions.quietAfter`.
+	case quiet
+	/// More events waited unread than `RelayOptions.eventBuffer`.
+	case overflow
 }

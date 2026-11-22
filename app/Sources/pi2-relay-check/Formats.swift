@@ -12,7 +12,7 @@ enum Formats {
 	/// The key whose private scalar is 32 bytes of 0x07, the one `relay/test/join-hash.test.ts` names by its public half.
 	static let key = try! P256.Signing.PrivateKey(rawRepresentation: Data(repeating: 7, count: 32))
 	static let keyText = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEHhhTL9R1TALzBB2cdc6zO4P_2BrHzk_ogsyxyYvFiW6kbDEcTi_0DdlqNlPm5FRF0y3-SG7O11x6kMahiIHAow"
-	static let keyID = AttestKeyID(bytes: Data(repeating: 0xAB, count: 32))
+	static let keyID = AttestKeyID(bytes: Data(repeating: 0xAB, count: 32))!
 	/// A sealed item as the relay takes one: HPKE's encapsulated key, an uncompressed point, first.
 	static let sealed = Data([4]) + Data(repeating: 0x5A, count: 120)
 
@@ -145,7 +145,8 @@ enum Formats {
 			("a number written otherwise", .mac, #"{"taken":{"count":2.0}}"#),
 			("a number with an exponent", .mac, #"{"taken":{"count":2e0}}"#),
 			("a negative count", .mac, #"{"taken":{"count":-1}}"#),
-			("a count past what a take can bring", .mac, #"{"taken":{"count":1001}}"#),
+			("a count past what the Mac's mailbox holds", .mac, #"{"taken":{"count":201}}"#),
+			("a count past what a phone's mailbox and state hold", .device, #"{"taken":{"count":102}}"#),
 			("a time that is not one", .mac, #"{"busy":{"until":0}}"#),
 			("a time as text", .mac, #"{"busy":{"until":"1800000001000"}}"#),
 			("a challenge of 31 bytes", .mac, #"{"challenge":"\#(Base64URL.encode(Data(repeating: 9, count: 31)))"}"#),
@@ -217,9 +218,11 @@ enum Formats {
 
 		// The one value relay/test/join-hash.test.ts holds the relay's TypeScript to.
 		Check.equal(
-			PairingSecrets.joinClientDataHash(challenge: challenge, deviceKey: key.publicKey).hex,
+			try? PairingSecrets.joinClientDataHash(challenge: challenge, deviceKey: key.publicKey).hex,
 			"c3e46a7e9b3066c24a4353e2f51e841768431939a3bd82533722f63a2af57c1e", "the join's client data hash, as the relay's")
 		Check.equal(key.publicKey.derRepresentation.count, 91, "a device key's SPKI DER is 91 bytes")
+		Check.refuses("the join's client data hash over a challenge of 31 bytes") { _ = try PairingSecrets.joinClientDataHash(challenge: challenge.prefix(31), deviceKey: key.publicKey) }
+		Check.that(AttestKeyID(bytes: Data(count: 31)) == nil && AttestKeyID(bytes: Data(count: 33)) == nil, "an App Attest key id from bytes that are not 32 is refused, not a trap")
 	}
 
 	static func backoff() {
@@ -237,18 +240,27 @@ enum Formats {
 		let same = RelayMailItem(from: .mac, id: item, item: sealed + Data([1]), presence: true)
 		let fromDevice = RelayMailItem(from: .device(device), id: item, item: sealed, presence: false)
 		let now: Int64 = 1_800_000_000_000
-		Check.that(memory.isNew(one, at: now), "an item taken the first time")
-		Check.that(!memory.isNew(same, at: now + 1000), "the same id from the same writer, taken again, is a repeat")
-		Check.that(memory.isNew(fromDevice, at: now + 1000), "the same id from another writer is not")
-		Check.that(!memory.isNew(one, at: now + RelayItemMemory.keptFor - 1), "a repeat within 25 hours")
-		Check.that(memory.isNew(one, at: now + RelayItemMemory.keptFor + 1), "taken again after 25 hours, when the relay holds no copy")
+		Check.that(!memory.contains(one, at: now), "an item not remembered")
+		Check.that(memory.remember(one, at: now), "an item remembered once its reader verified it")
+		Check.that(memory.contains(same, at: now + 1000), "the same id from the same writer is a repeat")
+		Check.that(!memory.contains(fromDevice, at: now + 1000), "the same id from another writer is not")
+		Check.that(memory.contains(one, at: now + RelayItemMemory.keptFor - 1), "a repeat within 25 hours")
+		Check.that(!memory.contains(one, at: now + RelayItemMemory.keptFor + 1), "not after 25 hours, when the relay holds no copy")
 		let encoded = try? JSONEncoder().encode(memory)
 		Check.equal(encoded.flatMap { try? JSONDecoder().decode(RelayItemMemory.self, from: $0) }, memory, "the memory, kept and read back")
 		Check.that((try? JSONDecoder().decode(RelayItemMemory.self, from: Data(#"{"mac x":1}"#.utf8))) == nil, "a memory holding what is not an item's id is refused")
+
+		// Full of ids younger than 25 hours, it takes no more, and forgets none of them to make room.
 		var full = RelayItemMemory()
-		for index in 0..<(RelayItemMemory.most + 10) {
-			_ = full.isNew(RelayMailItem(from: .mac, id: ItemID(Base64URL.encode(Data(count: 12) + withUnsafeBytes(of: UInt32(index).bigEndian) { Data($0) }))!, item: sealed, presence: false), at: now + Int64(index))
+		func numbered(_ index: Int) -> RelayMailItem {
+			RelayMailItem(from: .mac, id: ItemID(Base64URL.encode(Data(count: 12) + withUnsafeBytes(of: UInt32(index).bigEndian) { Data($0) }))!, item: sealed, presence: false)
 		}
-		Check.equal(full.count, RelayItemMemory.most, "the memory keeps at most its number of ids")
+		let started = Date()
+		for index in 0..<RelayItemMemory.most { _ = full.remember(numbered(index), at: now + Int64(index)) }
+		Check.that(Date().timeIntervalSince(started) < 30, "filling the memory sorts nothing for each id")
+		Check.that(!full.remember(numbered(RelayItemMemory.most), at: now + 3_600_000), "a full memory takes no more")
+		Check.that(full.contains(numbered(0), at: now + 3_600_000), "and keeps its oldest, an hour old")
+		Check.that(full.remember(numbered(RelayItemMemory.most), at: now + RelayItemMemory.keptFor + 1), "it takes more once its oldest are 25 hours old")
+		Check.that(!full.contains(numbered(0), at: now + RelayItemMemory.keptFor + 1), "and those are gone")
 	}
 }

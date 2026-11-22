@@ -93,9 +93,13 @@ final class MemorySocket: RelaySocket {
 		self.pairing = pairing
 	}
 
+	/// Run on every frame the client sends, after it is queued: lets the check play a relay that answers at once.
+	let onSend = Locked<(@Sendable (RelayFrame) -> Void)?>(nil)
+
 	func send(_ frame: RelayFrame) async throws {
 		guard !closedByClient.withLock({ $0 }), !incoming.isEnded else { throw RelaySocketClosed() }
 		sent.put(frame)
+		onSend.withLock { $0 }?(frame)
 	}
 
 	func receive() async throws -> RelayFrame { try await incoming.take() }
