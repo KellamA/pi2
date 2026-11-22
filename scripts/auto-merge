@@ -15,9 +15,21 @@
 # - a conflict with main, or a required check that failed, was cancelled or timed out: names it at once with its link,
 #   even while others still run, and says what to do; and whether a check was only cancelled because no runner took
 #   it, which CI runs again by itself up to the run's fourth attempt (#637);
-# - gh failing to read the checks: says so, with gh's error, and does not take it for checks not reported yet.
+# - gh failing to read the checks: says so, with gh's error, and does not take it for checks not reported yet;
+# - a pull request that touches a path `.github/CODEOWNERS` gives an owner (the relay, RemoteKit, the device lists, this
+#   script and every workflow: docs/iphone.md 12.3, #668): refuses it before anything else, names the paths, says it
+#   waits for the owner's review, and turns auto-merge off if it was on. The owner reviews and merges it on GitHub.
 #
-# Exit status: 0 merged; 3 waiting for checks, with auto-merge on; 1 something needs you; 2 usage. Needs gh and jq.
+# Which paths are the owner's is read from GitHub, not from this checkout: `.github/CODEOWNERS` as it is on main, which
+# a pull request cannot change, and as it is at the pull request's newest commit, which can only add to it. A file is
+# the owner's if either copy gives it an owner, by the rule GitHub uses: the last line whose pattern matches it. The
+# files are GitHub's list of what the pull request changes, both names of a moved file. Anything that cannot be read
+# (CODEOWNERS, other than missing; the list of files, or a list shorter than GitHub's count) refuses too. This is a
+# courtesy, not the guard: an agent can call gh itself, and a push after auto-merge is on is not looked at until the
+# script is run again. The guard is branch protection on main requiring the code owner's review (docs/relay.md).
+#
+# Exit status: 0 merged; 3 waiting for checks, with auto-merge on; 4 waits for the owner's review; 1 something needs
+# you; 2 usage. Needs gh and jq.
 
 set -euo pipefail
 
@@ -28,7 +40,7 @@ RERUN_ATTEMPTS=4 # scripts/rerun-if-no-runner's MAX_ATTEMPTS: a run at this atte
 n=${1:-}
 [[ $n =~ ^[0-9]+$ && $# == 1 ]] || { echo "usage: scripts/auto-merge <pull request number>" >&2; exit 2; }
 
-view() { gh pr view "$n" --json state,mergeStateStatus,autoMergeRequest,url; }
+view() { gh pr view "$n" --json state,mergeStateStatus,autoMergeRequest,url,headRefOid,changedFiles; }
 pr=$(view)
 state() { jq -r .state <<<"$pr"; }
 echo "#$n $(jq -r .url <<<"$pr")"
@@ -37,6 +49,107 @@ case $(state) in
 MERGED) echo "Merged."; exit 0 ;;
 CLOSED) echo "Closed without merging."; exit 1 ;;
 esac
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# Stops without merging anything, after saying why: auto-merge, if on, is turned off, so that GitHub does not merge it
+# before what stopped it is settled.
+hold() {
+	if [[ $(jq -r .autoMergeRequest <<<"$pr") != null ]]; then
+		gh pr merge "$n" --disable-auto
+		echo "Auto-merge was on: turned it off, so that nothing merges it meanwhile."
+	fi
+	exit "$1"
+}
+
+# .github/CODEOWNERS at a commit, into $tmp/<name>: status 0 read, 4 not there, 1 not read (gh's error in $tmp/err).
+codeowners() {
+	if gh api "repos/{owner}/{repo}/contents/.github/CODEOWNERS?ref=$1" -H 'Accept: application/vnd.github.raw+json' \
+		>"$tmp/$2" 2>"$tmp/err"; then
+		return 0
+	fi
+	: >"$tmp/$2"
+	grep -q 'HTTP 404' "$tmp/err" && return 4
+	return 1
+}
+
+# The owner's paths (#668). Main's copy first: a pull request cannot change it. Missing, it is only the time before
+# #668 merged; once there, taking it out is itself a change to one of its paths.
+for copy in main:main "head:$(jq -r .headRefOid <<<"$pr")"; do
+	if codeowners "${copy#*:}" "${copy%%:*}"; then :; else
+		read_status=$?
+		if ((read_status != 4)); then
+			echo "Could not read .github/CODEOWNERS (${copy%%:*}), which says which paths wait for the owner's review. gh said:"
+			echo "  $(tr '\n' ' ' <"$tmp/err")"
+			echo "It is not merged until that can be checked. Run this again in a minute."
+			hold 1
+		fi
+	fi
+done
+
+# Every file the pull request changes, one a line: its name, a tab, and the name it had if it was moved. GitHub lists
+# at most 3,000; a list shorter than its count of changed files cannot say which are the owner's.
+if ! gh api "repos/{owner}/{repo}/pulls/$n/files?per_page=100" --paginate \
+	--jq '.[] | [.filename, (.previous_filename // "")] | @tsv' >"$tmp/files" 2>"$tmp/err"; then
+	echo "Could not list the files it changes, to see whether any waits for the owner's review. gh said:"
+	echo "  $(tr '\n' ' ' <"$tmp/err")"
+	echo "It is not merged until that can be checked. Run this again in a minute."
+	hold 1
+fi
+listed=$(grep -c . "$tmp/files" || true)
+changed=$(jq -r '.changedFiles // 0' <<<"$pr")
+if ((listed < changed)); then
+	echo "GitHub listed $listed of the $changed files it changes, so it cannot be told whether any waits for the owner's"
+	echo "review. A pull request that large waits for the owner: they review it and merge it on GitHub."
+	hold 4
+fi
+
+# Each file a copy gives an owner, with the copy and the pattern: "<file>\t<copy>\t<pattern>". A CODEOWNERS pattern is
+# read as gitignore reads one, which GitHub follows but for `!`, `[ ]` and an escaped `#`, none of which it supports:
+# anchored at the top by a leading `/` or a `/` inside it, matching a folder and everything in it, `*` and `?` within
+# one name, `**` across folders. The owners are the words after it, up to a comment; none means no owner. Where this
+# reading and GitHub's could differ it is the wider: `docs/*`, which GitHub's documentation says covers no file deeper
+# than docs/, covers them here too.
+# shellcheck disable=SC2016 # jq's variables, not the shell's
+owned=$(jq -rn --rawfile main "$tmp/main" --rawfile head "$tmp/head" --rawfile files "$tmp/files" '
+	def regex:
+		(startswith("/")) as $root
+		| (endswith("/")) as $folder
+		| (sub("^/"; "") | sub("/$"; "")) as $core
+		| ($root or ($core | test("/"))) as $anchored
+		| ($core
+			| gsub("(?<c>[.+(){}|^$\\\\\\[\\]])"; "\\\(.c)")
+			| gsub("\\*\\*"; "\u0001")
+			| gsub("\\*"; "[^/]*")
+			| gsub("\\?"; "[^/]")
+			| gsub("/\u0001/"; "/(.*/)?")
+			| gsub("^\u0001/"; "(.*/)?")
+			| gsub("/\u0001$"; "/.*")
+			| gsub("\u0001"; ".*")) as $body
+		| (if $anchored then "^" else "^(.*/)?" end) + $body + (if $folder then "/.*$" else "(/.*)?$" end);
+	def rules:
+		[split("\n")[] | sub("\r$"; "") | select(test("^\\s*(#|$)") | not)
+			| [splits("\\s+")] | map(select(. != ""))
+			| {pattern: .[0], regex: (.[0] | regex),
+				owners: (reduce .[1:][] as $w ({stop: false, list: []};
+					if .stop or ($w | startswith("#")) then .stop = true else .list += [$w] end) | .list)}];
+	[["main'\''s", ($main | rules)], ["this pull request'\''s", ($head | rules)]] as $copies
+	| $files | split("\n")[] | select(. != "") | split("\t")[] | select(. != "") as $file
+	| $copies[] | .[0] as $copy
+	| ([.[1][] | select(.regex as $r | $file | test($r))] | last) as $rule
+	| select($rule != null and ($rule.owners | length) > 0)
+	| [$file, $copy, $rule.pattern] | @tsv
+') || { echo "Could not read .github/CODEOWNERS's patterns: refusing until it can be."; hold 1; }
+if [[ -n $owned ]]; then
+	echo "It touches paths that wait for the owner's review, as .github/CODEOWNERS gives them (docs/iphone.md 12.3):"
+	while IFS=$'\t' read -r file copy pattern; do
+		echo "- $file ($pattern, in $copy CODEOWNERS)"
+	done < <(awk -F'\t' '!seen[$1]++' <<<"$owned")
+	echo "No agent merges it: the owner reviews it on GitHub and merges it. Leave it open, and mark its issue waiting on"
+	echo "the owner's review."
+	hold 4
+fi
 
 # A pull request whose required checks all passed is in clean status, and gh answers `pr merge --auto` for one with
 # "Pull request is in clean status" and fails: there is nothing left to wait for, so merge it now instead (#553).
@@ -63,8 +176,7 @@ fi
 
 # The required checks of the newest commit. gh leaves out one not reported yet, and answers none reported at all with an
 # error saying so, which is waited for. Any other error says nothing about the checks: it is not taken for that (#637).
-err=$(mktemp)
-trap 'rm -f "$err"' EXIT
+err=$tmp/err
 if ! checks=$(gh pr checks "$n" --required --json name,state,bucket,completedAt,link 2>"$err"); then
 	if grep -qE 'no (required )?checks reported' "$err"; then
 		echo "Auto-merge is on; no required check has reported yet."

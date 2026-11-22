@@ -8,6 +8,7 @@
 set -uo pipefail
 
 merge="$(cd -P -- "$(dirname -- "$0")" && pwd -P)/auto-merge"
+root="$(cd -P -- "$(dirname -- "$0")/.." && pwd -P)"
 command -v jq >/dev/null || { echo "test-auto-merge: needs jq" >&2; exit 1; }
 
 T=$(mktemp -d)
@@ -21,13 +22,37 @@ T=$(cd -P -- "$T" && pwd -P)
 # error of gh's own instead, such as GitHub not answering. `pr merge --merge` without `--auto` merges the pull request
 # in view.json, unless $CASE/stay-open says GitHub has not done it yet; `--auto` is refused for a clean status, which
 # is what gh does (#553). A run's attempt is $CASE/attempt.txt, or 1.
+#
+# The owner's paths (#668): `.github/CODEOWNERS` on main is $CASE/codeowners-main, and at the pull request's head
+# commit (headRefOid, abc123) $CASE/codeowners-head; a missing one is GitHub's 404, and $CASE/contents-error another
+# error. The files the pull request changes are $CASE/files.json, as GitHub's REST API lists them, given to the
+# script's own --jq; $CASE/files-error is an error instead. `pr view` counts them for changedFiles unless view.json
+# has its own.
 mkdir -p "$T/bin"
 cat >"$T/bin/gh" <<'EOF'
 #!/bin/bash
 { printf 'gh'; printf ' %q' "$@"; echo; } >>"$CASE/log"
 args=" $* "
+filter=
+prev=
+for a in "$@"; do [[ $prev == --jq ]] && filter=$a; prev=$a; done
 case "$1 $2" in
-"pr view") cat "$CASE/view.json" ;;
+"pr view") jq --slurpfile f "$CASE/files.json" '{changedFiles: ($f[0] | length)} + .' "$CASE/view.json" ;;
+"api repos/{owner}/{repo}/contents/.github/CODEOWNERS?ref="*)
+	if [[ -f $CASE/contents-error ]]; then cat "$CASE/contents-error" >&2; exit 1; fi
+	copy=$CASE/codeowners-head
+	[[ $2 == *'?ref=main' ]] && copy=$CASE/codeowners-main
+	if [[ ! -f $copy ]]; then
+		echo '{"message":"Not Found","status":"404"}'
+		echo 'gh: Not Found (HTTP 404)' >&2
+		exit 1
+	fi
+	cat "$copy"
+	;;
+"api repos/{owner}/{repo}/pulls/"*)
+	if [[ -f $CASE/files-error ]]; then cat "$CASE/files-error" >&2; exit 1; fi
+	jq -r "$filter" "$CASE/files.json"
+	;;
 "pr checks")
 	if [[ -f $CASE/checks-error ]]; then cat "$CASE/checks-error" >&2; exit 1; fi
 	listed=$(jq --arg required "$([[ $args == *" --required "* ]] && echo yes)" \
@@ -96,12 +121,28 @@ pr() {
 	mkdir -p "$CASE"
 	: >"$CASE/log"
 	jq -n --arg state "$2" --arg status "$3" --argjson auto "$4" \
-		'{state: $state, mergeStateStatus: $status, autoMergeRequest: $auto, url: "https://example.invalid/pull/5"}' \
+		'{state: $state, mergeStateStatus: $status, autoMergeRequest: $auto, url: "https://example.invalid/pull/5",
+			headRefOid: "abc123"}' \
 		>"$CASE/view.json"
+	# An ordinary change, with this checkout's CODEOWNERS on main and at the head alike.
+	files docs/notes.md
+	cp "$root/.github/CODEOWNERS" "$CASE/codeowners-main"
+	cp "$root/.github/CODEOWNERS" "$CASE/codeowners-head"
 	echo '[{"name": "Engine", "bucket": "pass", "completedAt": "2026-01-01T10:00:00Z", "link": "https://github.com/owner/repo/actions/runs/9/job/12"}]' \
 		>"$CASE/checks.json"
 }
 checks() { echo "$1" >"$CASE/checks.json"; }
+# files <name>...: the files the pull request changes; <new name>=<old name> for a moved one.
+files() {
+	local f
+	for f in "$@"; do
+		if [[ $f == *=* ]]; then
+			jq -nc --arg to "${f%%=*}" --arg from "${f#*=}" '{filename: $to, status: "renamed", previous_filename: $from}'
+		else
+			jq -nc --arg name "$f" '{filename: $name, status: "modified"}'
+		fi
+	done | jq -s . >"$CASE/files.json"
+}
 # check_run <name> <bucket> <state> [required: true or false]: one check as gh lists it, finished now unless pending,
 # in run 9; with checks_of, the list of them.
 check_run() {
@@ -301,6 +342,163 @@ pr closed CLOSED CLEAN null
 run closed
 report 1 "$status" "closed: exit status"
 check "closed: no merge asked for" not_logged "gh pr merge"
+
+# The owner's paths (#668). A pull request that touches one is refused before anything else: named, never merged, and
+# auto-merge turned off if it was on. One that is not goes on as before: here, waiting for a check still running.
+still_running() { checks "$(checks_of "$(check_run 'App (build)' pending IN_PROGRESS)")"; }
+
+# An ordinary change: the files and both copies of CODEOWNERS are read, and it goes on as before.
+pr ordinary OPEN BLOCKED null
+still_running
+run ordinary
+report 3 "$status" "an ordinary change: exit status"
+check "an ordinary change: CODEOWNERS read from main" logged "contents/.github/CODEOWNERS\?ref=main"
+check "an ordinary change: and from its head commit" logged "contents/.github/CODEOWNERS\?ref=abc123"
+check "an ordinary change: its files listed" logged "pulls/5/files"
+check "an ordinary change: not said to wait for the owner" not said "owner's review"
+check "an ordinary change: auto-merge turned on" logged "gh pr merge 5 --auto --merge"
+
+# A file under relay/: refused, by name and pattern, and nothing merged or turned on.
+pr relay OPEN BLOCKED null
+files docs/relay.md relay/src/index.ts
+run relay
+report 4 "$status" "a file under relay/: exit status"
+check "a file under relay/: named, with its pattern" said "- relay/src/index.ts (/relay/, in main's CODEOWNERS)"
+check "a file under relay/: the ordinary file not named" not said "- docs/relay.md"
+check "a file under relay/: waits for the owner" said "the owner reviews it on GitHub and merges it"
+check "a file under relay/: not merged" not_logged "gh pr merge"
+
+# Every required check passed already: still not merged.
+pr relay-clean OPEN CLEAN null
+files relay/wrangler.jsonc
+run relay-clean
+report 4 "$status" "a file under relay/, clean status: exit status"
+check "a file under relay/, clean status: not merged" not_logged "gh pr merge"
+
+# Auto-merge was on already: turned off, so that GitHub does not merge it either.
+pr relay-auto OPEN BLOCKED "$automerge_on"
+files app/Sources/RemoteKit/Noise.swift
+run relay-auto
+report 4 "$status" "auto-merge on: exit status"
+check "auto-merge on: turned off" logged "gh pr merge 5 --disable-auto"
+check "auto-merge on: says so" said "turned it off"
+check "auto-merge on: not turned on again" not_logged "--auto --merge"
+
+# Each path the issue names, and the guard's own files, are the owner's in this checkout's CODEOWNERS; a file beside
+# one of them is not.
+for f in relay/src/index.ts app/Sources/RemoteKit/Relay/Client.swift app/Sources/pi2-remote/main.swift \
+	engine/src/devices.ts engine/src/remote.ts engine/src/appattest.ts engine/src/answers.ts \
+	.github/workflows/relay.yml .github/workflows/iphone.yml .github/workflows/ci.yml \
+	.github/CODEOWNERS scripts/auto-merge scripts/test-auto-merge; do
+	pr owned OPEN BLOCKED null
+	files "$f"
+	run owned
+	report 4 "$status" "$f is the owner's: exit status"
+	check "$f is the owner's: named" said "- $f ("
+done
+for f in engine/src/answer.ts engine/src/answers.tsx engine/src/state.ts app/Sources/pi2/DevicesSettings.swift \
+	scripts/issue .github/PULL_REQUEST_TEMPLATE.md docs/relay.md x/relay/y.ts; do
+	pr not-owned OPEN BLOCKED null
+	files "$f"
+	still_running
+	run not-owned
+	report 3 "$status" "$f is not the owner's: exit status"
+done
+
+# A change to CODEOWNERS that takes relay/ out, with a change under relay/: main's copy still gives it the owner, and
+# CODEOWNERS is itself the owner's.
+pr unowning OPEN BLOCKED null
+files .github/CODEOWNERS relay/src/index.ts
+grep -v '^/relay/' "$root/.github/CODEOWNERS" >"$CASE/codeowners-head"
+run unowning
+report 4 "$status" "CODEOWNERS changed to take relay/ out: exit status"
+check "CODEOWNERS changed to take relay/ out: relay/ still named, from main's copy" \
+	said "- relay/src/index.ts (/relay/, in main's CODEOWNERS)"
+check "CODEOWNERS changed to take relay/ out: CODEOWNERS named" said "- .github/CODEOWNERS (/.github/CODEOWNERS,"
+check "CODEOWNERS changed to take relay/ out: not merged" not_logged "gh pr merge"
+
+# A line with no owner after relay/'s, added by the pull request, takes nothing out either.
+pr no-owner OPEN BLOCKED null
+files relay/src/index.ts
+printf '/relay/src/\n' >>"$CASE/codeowners-head"
+run no-owner
+report 4 "$status" "a line with no owner added: exit status"
+check "a line with no owner added: still the owner's on main" said "- relay/src/index.ts (/relay/, in main's CODEOWNERS)"
+
+# A change to scripts/auto-merge alone: the script that refuses is the owner's.
+pr script OPEN BLOCKED null
+files scripts/auto-merge
+run script
+report 4 "$status" "scripts/auto-merge changed: exit status"
+check "scripts/auto-merge changed: named" said "- scripts/auto-merge (/scripts/auto-merge, in main's CODEOWNERS)"
+
+# No CODEOWNERS on main yet (before #668 merged), and a pull request that adds one: its own copy counts.
+pr adding OPEN BLOCKED null
+files .github/CODEOWNERS scripts/auto-merge docs/relay.md
+rm "$CASE/codeowners-main"
+run adding
+report 4 "$status" "CODEOWNERS added: exit status"
+check "CODEOWNERS added: named, from its own copy" \
+	said "- .github/CODEOWNERS (/.github/CODEOWNERS, in this pull request's CODEOWNERS)"
+check "CODEOWNERS added: the script named" said "- scripts/auto-merge ("
+
+# No CODEOWNERS anywhere: nothing is the owner's, and it goes on as before.
+pr none OPEN BLOCKED null
+files relay/src/index.ts
+still_running
+rm "$CASE/codeowners-main" "$CASE/codeowners-head"
+run none
+report 3 "$status" "no CODEOWNERS: exit status"
+
+# A file moved out of relay/: its old name counts.
+pr moved OPEN BLOCKED null
+files 'docs/old-relay.ts=relay/src/old.ts'
+run moved
+report 4 "$status" "a file moved out of relay/: exit status"
+check "a file moved out of relay/: its old name named" said "- relay/src/old.ts ("
+
+# Patterns as GitHub reads them: the last line that matches decides, a line with no owner takes a file out, `*` stays
+# within one name and `**` crosses folders; and a comment after the owners is not an owner.
+pr patterns OPEN BLOCKED null
+printf '%s\n' '# owners' '/apps/ @o' '/apps/github' '**/logs @o' '*.js @o # a comment' '/only/ # no owner' \
+	>"$CASE/codeowners-main"
+cp "$CASE/codeowners-main" "$CASE/codeowners-head"
+files apps/x.txt apps/github/y.txt a/b/logs/z.txt src/w.js only/v.txt
+run patterns
+report 4 "$status" "patterns: exit status"
+check "patterns: a folder's file" said "- apps/x.txt (/apps/,"
+check "patterns: taken out by a later line with no owner" not said "apps/github/y.txt"
+check "patterns: ** across folders" said "- a/b/logs/z.txt (**/logs,"
+check "patterns: * in any folder" said "- src/w.js (*.js,"
+check "patterns: a comment is not an owner" not said "only/v.txt"
+
+# What cannot be read refuses: CODEOWNERS, the list of files, and a list shorter than GitHub's count.
+pr contents-error OPEN BLOCKED "$automerge_on"
+files relay/src/index.ts
+echo "gh: Server Error (HTTP 502)" >"$CASE/contents-error"
+run contents-error
+report 1 "$status" "CODEOWNERS not read: exit status"
+check "CODEOWNERS not read: gh's error shown" said "HTTP 502"
+check "CODEOWNERS not read: auto-merge turned off" logged "gh pr merge 5 --disable-auto"
+check "CODEOWNERS not read: not merged or turned on" not_logged "--auto --merge"
+pr files-error OPEN CLEAN null
+echo "gh: Server Error (HTTP 502)" >"$CASE/files-error"
+run files-error
+report 1 "$status" "files not listed: exit status"
+check "files not listed: says so" said "Could not list the files"
+check "files not listed: not merged" not_logged "gh pr merge"
+pr too-many OPEN CLEAN null
+jq '.changedFiles = 3001' "$CASE/view.json" >"$CASE/view.new" && mv "$CASE/view.new" "$CASE/view.json"
+run too-many
+report 4 "$status" "more files than GitHub lists: exit status"
+check "more files than GitHub lists: says so" said "GitHub listed 1 of the 3001 files"
+check "more files than GitHub lists: not merged" not_logged "gh pr merge"
+
+# A merged pull request that touched relay/ is only said to be merged.
+pr merged-relay MERGED CLEAN null
+files relay/src/index.ts
+run merged-relay
+report 0 "$status" "merged, touching relay/: exit status"
 
 # No number, or more than one: refused before anything is asked of GitHub.
 CASE=$T/usage; mkdir -p "$CASE"; : >"$CASE/log"

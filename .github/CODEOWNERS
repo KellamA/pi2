@@ -1,0 +1,28 @@
+# The paths that wait for the owner's review (docs/iphone.md 12.3, #668).
+#
+# With branch protection on main requiring the code owner's review, GitHub merges no pull request that touches one of
+# these until the owner has approved it. scripts/auto-merge refuses such a pull request too, reading this file as it is
+# on main and as it is in the pull request, so that a pull request cannot take a line out and be merged by an agent.
+#
+# An issue that adds a file to one of these paths, or a path of the same kind (the iPhone app's entitlements, signing
+# and upload configuration, P14), adds its line here in the same pull request, which the owner then reviews (12.1).
+# GitHub reads the last line that matches a file, so keep every line naming the owner: a line with no owner after
+# a broader one takes the file out.
+
+# The guard itself: this file, the script that refuses, its test, and every workflow (relay.yml and iphone.yml among
+# them), since any workflow can be changed to use a protected environment, and one run from main can use it once the
+# owner approves the run.
+/.github/CODEOWNERS @KellamA
+/.github/workflows/ @KellamA
+/scripts/auto-merge @KellamA
+/scripts/test-auto-merge @KellamA
+
+# What decides who is the person: the relay, the channel and sealing, the helper, the devices in the engine, the
+# device lists (in answers.ts) and App Attest's verifier.
+/relay/ @KellamA
+/app/Sources/RemoteKit/ @KellamA
+/app/Sources/pi2-remote/ @KellamA
+/engine/src/devices.ts @KellamA
+/engine/src/remote.ts @KellamA
+/engine/src/appattest.ts @KellamA
+/engine/src/answers.ts @KellamA
