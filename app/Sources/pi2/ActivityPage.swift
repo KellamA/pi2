@@ -1,3 +1,4 @@
+import PiModels
 import SwiftUI
 
 // Activity, under Shared in the sidebar (#655; docs/projects.md, 10.3): what keeps running on this Mac across every

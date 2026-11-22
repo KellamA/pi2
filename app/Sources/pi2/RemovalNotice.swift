@@ -1,4 +1,5 @@
 import AppKit
+import PiModels
 import SwiftUI
 
 // What the update to projects tells the person, over the Dashboard, a project's hub or the page that makes the first

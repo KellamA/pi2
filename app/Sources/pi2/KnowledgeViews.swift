@@ -1,4 +1,5 @@
 import ComposeKit
+import PiModels
 import SwiftUI
 
 /// One thing an agent, or chat mode, keeps in mind between conversations.

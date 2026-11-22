@@ -1,3 +1,4 @@
+import PiModels
 import SwiftUI
 
 /// First launch: what the app is, connecting a model, and the three things worth knowing.

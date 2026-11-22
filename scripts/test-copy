@@ -56,10 +56,12 @@ Usage: scripts/test-copy <command> [arguments]
                                    Keep its engine, data, environment and previous --show, --hub and --appearance unless
                                    replaced.
   show <suffix> <what>             Show what PI2_SHOW opens on while the copy runs: activity, usage, archive,
-                                   agent:<id> (a template's page), chat[:<number or title>], palette[:<query>],
-                                   settings[:<tab>], output:<id>, a conversation's number or title (where it lives), or
-                                   project:<name-or-id>[#<tab-or-agent>]. It answers once a conversation's page or a
-                                   hub has drawn it, and for any other page it says that it cannot wait for it to draw.
+                                   agent:<id>[#<section>] (a template's page), chat[:<number or title>],
+                                   palette[:<query>], settings[:<tab>[#<section>]], output:<id>, a conversation's
+                                   number or title (where it lives), or project:<name-or-id>[#<tab-or-agent>]. A
+                                   #<section> scrolls the page there as at launch; one the page lacks is refused. It
+                                   answers once a conversation's page or a hub has drawn it, and for any other page it
+                                   says that it cannot wait for it to draw.
   show <suffix> dashboard          Select the Dashboard's row in the sidebar of projects, and answer once it has
                                    drawn its columns, saying how many.
                                    --hub sets PI2_HUB at launch, or the fold for a live request:

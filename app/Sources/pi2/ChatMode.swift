@@ -1,3 +1,4 @@
+import PiModels
 import SwiftUI
 
 // Chat mode (#172, docs/chat.md): a place to ask pi²'s own assistant questions, beside the projects. The window shows

@@ -1,4 +1,5 @@
 import MenuKit
+import PiModels
 import SwiftUI
 
 /// The parts of the Work tab both kinds of list draw the same way (docs/projects.md, 3.11): the list's bar, its groups

@@ -1,3 +1,4 @@
+import PiModels
 import SwiftUI
 
 /// ⌘K: one box to start, switch and find things.
