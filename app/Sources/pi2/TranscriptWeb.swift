@@ -215,7 +215,7 @@ final class TranscriptBridge {
         // Told once the page has drawn what it was sent, in its next frame: what that sets off (the message field taking
         // the keyboard, the toolbar's controls for the conversation) then waits for the main thread after that frame,
         // rather than holding up the main thread before it (#502).
-        view?.callAsyncJavaScript(Self.nextFrame, arguments: [:], in: nil, in: .page) { [weak self] _ in
+        view?.callAsyncJavaScript(TranscriptMessages.nextFrame, arguments: [:], in: nil, in: .page) { [weak self] _ in
             MainActor.assumeIsolated { self?.onShown() }
         }
     }
@@ -268,20 +268,8 @@ final class TranscriptBridge {
     /// Whether a part of the older entries is on its way to the page, which sends the next once it has drawn it.
     private var olderOnTheWay = false
 
-    /// Waits for the page's next animation frame, and a turn after it. A window nobody can see has no animation frames,
-    /// and the page then draws on a timer of its own, so this does not wait longer than that.
-    private static let nextFrame = "await new Promise((done) => { requestAnimationFrame(() => setTimeout(done, 0)); setTimeout(done, 200); });"
-
     private func send(_ json: String, then done: (@MainActor () -> Void)? = nil) {
-        // The JSON goes in as an argument and is parsed by the page, so nothing in it is ever run as script.
-        guard let done else {
-            view?.callAsyncJavaScript("window.pi2.receive(message)", arguments: ["message": json], in: nil, in: .page, completionHandler: nil)
-            return
-        }
-        // The page draws in its next animation frame: wait for that, and a turn after it.
-        view?.callAsyncJavaScript("window.pi2.receive(message); " + Self.nextFrame, arguments: ["message": json], in: nil, in: .page) { _ in
-            MainActor.assumeIsolated { done() }
-        }
+        TranscriptMessages.send(json, to: view, then: done)
     }
 
     private func perform(_ action: TranscriptAction) {

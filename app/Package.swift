@@ -32,7 +32,8 @@ let package = Package(
         .target(name: "FileLinkKit", path: "Sources/FileLinkKit"),
         // The conversation page's web view, and the page loaded ahead for the next pane (#441). Its own module so
         // pi2-transcript-check can check them. PI2_DEVELOPMENT as for the app: the web inspector and drawing when hidden.
-        .target(name: "TranscriptKit", path: "Sources/TranscriptKit", swiftSettings: [.define("PI2_DEVELOPMENT", .when(configuration: .debug))]),
+        // Where the page is and its messages are shared with the iPhone app (docs/iphone.md section 8, #671).
+        .target(name: "TranscriptKit", dependencies: ["PiModels"], path: "Sources/TranscriptKit", swiftSettings: [.define("PI2_DEVELOPMENT", .when(configuration: .debug))]),
         // Whether the process at the other end of a connection to the engine's socket is the app (#504). Its own module
         // so pi2-peer-check can check it.
         .target(name: "PeerKit", path: "Sources/PeerKit"),
