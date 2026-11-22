@@ -4,6 +4,7 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
+import { testSwitch } from "./testswitches.ts";
 
 const SETTINGS_FILES = ["endpoints.json", "added-models.json", "mcp.json", "settings.json", "credentials.json"];
 const DATABASE = "session.sqlite";
@@ -16,10 +17,10 @@ export const PARTIAL = ".partial";
 
 /**
  * Tests hold a copy at a point, to stop the engine there as a crash would: while the file `PI2_BACKUP_GATE` names exists,
- * a copy waits once its folder is made, having written `<file>.started`.
+ * a copy waits once its folder is made, having written `<file>.started`. Only in a development engine (testswitches.ts).
  */
 async function gate(): Promise<void> {
-	const file = process.env.PI2_BACKUP_GATE;
+	const file = testSwitch("PI2_BACKUP_GATE");
 	if (file === undefined || !existsSync(file)) return;
 	writeFileSync(`${file}.started`, "");
 	while (existsSync(file)) await new Promise((resolve) => setTimeout(resolve, 50));

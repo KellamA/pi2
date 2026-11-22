@@ -28,6 +28,7 @@ import { isAttachmentBlock } from "./attachments.ts";
 import type { LocalSetup } from "./localengine.ts";
 import { FileModelsStore, type ListedModel, listerFor } from "./modellists.ts";
 import { placingPromptChanges } from "./promptchanges.ts";
+import { testSwitch } from "./testswitches.ts";
 import { THINKING_LEVELS } from "./thinkingretry.ts";
 
 export const DEMO_PROVIDER = "demo";
@@ -376,15 +377,16 @@ async function demoSummary(gate: string, prompt: string, options?: SimpleStreamO
 
 /** A scripted stand-in model so the app works before any provider is connected. `/bash` and `/read` make it call tools. */
 function demoProvider(): Provider {
-	// Tests add a second demo model that cannot see images, to check what such a model is given.
-	const textOnly = process.env.PI2_DEMO_TEXT_MODEL === "1" ? [{ id: "demo-text", name: "Demo model (text only)", input: ["text" as const] }] : [];
-	const gate = process.env.PI2_DEMO_COMPACTION_GATE;
+	// Tests add a second demo model that cannot see images, to check what such a model is given. Like the demo model's
+	// other test switches, honoured only in a development engine (testswitches.ts).
+	const textOnly = testSwitch("PI2_DEMO_TEXT_MODEL") === "1" ? [{ id: "demo-text", name: "Demo model (text only)", input: ["text" as const] }] : [];
+	const gate = testSwitch("PI2_DEMO_COMPACTION_GATE");
 	const models = [{ id: DEMO_MODEL, name: "Demo model (scripted)", ...(gate === undefined ? {} : { reasoning: true, maxTokens: 32_000 }) }, ...textOnly];
 	// It types at a readable pace. Tests set PI2_DEMO_TOKENS_PER_SECOND to speed it up, since most of their time would
 	// otherwise go to waiting on it; a message that starts with "/slow " is still answered at the readable pace, for the
 	// tests that need an answer to be on its way (to stop it, queue behind it or kill the engine in the middle of it).
 	const READABLE = 20;
-	const speed = Number(process.env.PI2_DEMO_TOKENS_PER_SECOND);
+	const speed = Number(testSwitch("PI2_DEMO_TOKENS_PER_SECOND"));
 	const slow = createFauxCore({ provider: DEMO_PROVIDER, models, tokensPerSecond: READABLE });
 	const fast = createFauxCore({ provider: DEMO_PROVIDER, models, tokensPerSecond: Number.isFinite(speed) && speed > 0 ? speed : READABLE });
 	const step = (request: { messages: readonly unknown[] }, options?: SimpleStreamOptions) => {
@@ -614,7 +616,7 @@ function demoProvider(): Provider {
 
 /** The stand-in picture server tests name in PI2_DEMO_PICTURES, if it is on 127.0.0.1; nothing else is ever used. */
 function demoPictureServer(): string | undefined {
-	const given = process.env.PI2_DEMO_PICTURES;
+	const given = testSwitch("PI2_DEMO_PICTURES");
 	if (given === undefined || given === "") return undefined;
 	try {
 		return new URL(given).hostname === "127.0.0.1" ? given : undefined;

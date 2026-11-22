@@ -92,6 +92,7 @@ import { type Amount, conversationSpend, dayKey, noSpend, noteConversationSpend,
 import { refusal, RequestError } from "./requesterror.ts";
 import { delegateTargets, projectAgentFolder } from "./projectagents.ts";
 import { syncWorkForInput } from "./work.ts";
+import { engineBuild, ignoredLine, ignoredTestSwitches, testSwitch } from "./testswitches.ts";
 
 // Every line of engine.log starts with the time it was written (log.ts). Not when restoring a backup: what that writes
 // goes to the app, which reads its output and shows its error to the person as it is.
@@ -108,13 +109,7 @@ useRunFolder(join(home, "runs"));
 /** Which build of the app this engine came with: the `BUILD` file a release build writes next to `src`. A development
  * engine has none. The app compares it with its own after an update and restarts an engine left over from before. */
 const engineMain = fileURLToPath(import.meta.url);
-const build = (() => {
-	try {
-		return readFileSync(join(dirname(engineMain), "..", "BUILD"), "utf8").trim() || null;
-	} catch {
-		return null;
-	}
-})();
+const build = engineBuild;
 
 function log(...parts: unknown[]): void {
 	console.error("[pi2-engine]", ...parts);
@@ -194,6 +189,9 @@ if (alreadyRunning) {
 }
 phase = "starting";
 writeFileSync(join(home, "engine.pid"), String(process.pid));
+// Once, at start: a release engine names the test-only switches it was given and ignores (testswitches.ts).
+const ignoredSwitches = ignoredTestSwitches();
+if (ignoredSwitches.length > 0) log(ignoredLine(ignoredSwitches));
 // Asked now, so the answer is there by the time anything is run; see shellpath.ts.
 const pathReady = adoptLoginPath(log, process.env, undefined, undefined, stopLoginShell.signal);
 
@@ -925,7 +923,7 @@ type UsageDocShape = { models?: Record<string, UsageJson>; tools?: Record<string
  * What a usage entry cost. Providers report this themselves; the scripted demo model is free, except that tests give
  * it a price (PI2_DEMO_COST, dollars per million tokens) so that spend and budgets have something to count.
  */
-const demoPrice = Number(process.env.PI2_DEMO_COST ?? 0);
+const demoPrice = Number(testSwitch("PI2_DEMO_COST") ?? 0);
 /**
  * Providers signed in with a subscription. pi-ai prices every answer at the model's list price, which is not what a
  * subscription costs, so their usage counts tokens only: no dollar figure, and nothing towards the daily budget.
@@ -3112,11 +3110,12 @@ schedulesWatch.start(async (call) => {
 });
 
 // Only test-copy starts an engine with this switch and the matching copy paths. The fixture implementation is
-// outside src, so an installed engine has neither the handler nor the module, even with the switch in its environment.
-const testSuffix = process.env.PI2_TEST_COPY;
+// outside src, so an installed engine has neither the handler nor the module, even with the switch in its environment;
+// and a release engine never reads the switch (testswitches.ts).
+const testSuffix = testSwitch("PI2_TEST_COPY");
 const checkout = dirname(dirname(dirname(engineMain)));
 const fixtureSource = new URL("../scripts/test-copy-fixture.ts", import.meta.url);
-if (build === null && testSuffix !== undefined && testSuffix !== "dev" && /^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/.test(testSuffix)
+if (testSuffix !== undefined && testSuffix !== "dev" && /^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/.test(testSuffix)
 	&& home === join(homedir(), "Library", "Application Support", `pi2-${testSuffix}`) && lstatSync(home).isDirectory()
 	&& process.env.PI2_KEYCHAIN_SERVICE === `dev.pi2.credentials.${testSuffix}`
 	&& existsSync(join(checkout, "app", "build", "test-copies", testSuffix, `pi² ${testSuffix}.app`, "Contents", "MacOS", "pi2"))
