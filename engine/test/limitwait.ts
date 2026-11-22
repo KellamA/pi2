@@ -609,6 +609,8 @@ class Client extends EngineClient {
 	activity: { conversationId: number; parent: number | null; status: string; limit: Shown | null }[] = [];
 	models: { provider: string; id: string }[] = [];
 	notices: { id: string; name: string; stage?: string; waiting?: number; until?: number; told?: boolean; runs: { conversationId: number; subChat: boolean }[] }[] = [];
+	/** Whether `notices` is the engine's yet: it sends them as a client connects, and an empty list before then says nothing. */
+	noticesSent = false;
 	networkSleeps = new Map<number, Set<number>>();
 	/** The sleeps of a run waiting for a stream the provider closed (#550), which are network sleeps too. */
 	closedSleeps = new Map<number, Set<number>>();
@@ -625,7 +627,10 @@ class Client extends EngineClient {
 			}
 		}
 		if (message.event === "activity") this.activity = message.runs;
-		else if (message.event === "limits") this.notices = message.notices;
+		else if (message.event === "limits") {
+			this.notices = message.notices;
+			this.noticesSent = true;
+		}
 		else if (message.event === "providers") this.models = message.models;
 		else super.receive(message);
 	}
@@ -759,7 +764,8 @@ try {
 	assert.equal(conv.state.limitWait, null);
 	await client.until("the stop logged", () => new RegExp(`conversation ${hour} stopped waiting for Stand-in's rate limit: the run ended \\(stopped\\)`).test(log));
 	await client.until("Activity no longer shows it", () => !client.activity.some((run) => run.conversationId === hour));
-	step("Stop ends a run that waits for a limit");
+	await client.until("its notice out of the Inbox", () => (client.noticesSent && client.notices.length === 0) || undefined);
+	step("Stop ends a run that waits for a limit, and takes its notice out of the Inbox");
 
 	// A provider's limit reached, for a sub-chat handed work without waiting: the Inbox has a notice, sub_chats' list says
 	// it waits and until when, and when the provider answers again the notice says work carries on. Five minutes made
@@ -769,6 +775,11 @@ try {
 	// window another conversation learned holds its conversations instead (#556).
 	engine = startEngine({ PI2_LIMIT_REACHED_MS: "0", PI2_LIMIT_REMEMBER_MS: "7200000" });
 	client = await Client.connect(engine, home);
+	// The engine was stopped at once after Stop took the notice out, well within the second limits.json waits before it
+	// is saved. A clean stop saves it then, so the notice stays out; before #638 the next engine brought back the notice
+	// as last saved, still at "reached" for that earlier run, which the checks below then took for the sub-chat's.
+	await client.until("the Inbox's notices as the engine starts", () => client.noticesSent || undefined);
+	assert.equal(client.notices.length, 0, `a notice taken out just before a clean stop stays out after it: ${JSON.stringify(client.notices)}`);
 	await client.until("stand-in offered again", () => client.models.some((m) => m.provider === provider));
 	const { id: parent } = await client.call("conversation.create", { agentId: "atlas", model: { provider: "demo", modelId: "demo-1" } });
 	await client.call("conversation.open", { id: parent });
@@ -952,7 +963,10 @@ try {
 	await client.call("submit", { id: failedParent, text: "/delegate Scout: network never" });
 	const failedDelegate = await client.until("delegate reports the original connection failure", () => client.conversations.get(failedParent)?.items.find((i) => i.kind === "tool"));
 	assert.match(failedDelegate.text, /Scout did not finish the task: the model's provider answered with an error: “Connection error\..*UND_ERR_SOCKET.*”\. The sub-chat is kept as it stopped: to carry on from there, call delegate again with chat: \d+/s);
-	assert.ok(requests["network never"]! > 4);
+	// It waited and asked again before giving up. How many times beyond that is how many requests fit in the scaled
+	// ten minutes (1.2 s of the engine's clock), which is the Mac's speed, not the engine's rule; the delays themselves are
+	// checked at the top of this file (#638).
+	assert.ok(requests["network never"]! >= 2, `asked ${requests["network never"]} times`);
 	step("giving up preserves the terminal provider error and delegation result");
 
 	// A deadline longer than test patience makes it impossible to pass because the sleep happened to end.

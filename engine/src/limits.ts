@@ -1333,16 +1333,28 @@ class LimitsTracker {
 
 	#saveSoon(): void {
 		if (this.#saveTimer !== undefined) return;
-		this.#saveTimer = setTimeout(() => {
-			this.#saveTimer = undefined;
-			const readings = Object.fromEntries([...this.#states].filter(([, state]) => state.reading !== undefined).map(([id, state]) => [id, state.reading]));
-			try {
-				writeFileSync(this.#path, JSON.stringify({ version: 1, readings, noticed: Object.fromEntries(this.#noticed), quiet: Object.fromEntries(this.#quiet), notices: this.#notices }, null, "\t"));
-			} catch (error) {
-				this.#engine.log("limits: could not save the last readings:", error instanceof Error ? error.message : String(error));
-			}
-		}, 1_000);
+		this.#saveTimer = setTimeout(() => this.#save(), 1_000);
 		this.#saveTimer.unref();
+	}
+
+	/**
+	 * The engine is stopping cleanly: a save still waiting for its timer is made now. Without it, a notice taken out of
+	 * the Inbox in the last second (a run that waited, stopped just before pi² quit) came back with the next engine, from
+	 * the file as it was saved before (#638).
+	 */
+	stopping(): void {
+		if (this.#saveTimer !== undefined) this.#save();
+	}
+
+	#save(): void {
+		clearTimeout(this.#saveTimer);
+		this.#saveTimer = undefined;
+		const readings = Object.fromEntries([...this.#states].filter(([, state]) => state.reading !== undefined).map(([id, state]) => [id, state.reading]));
+		try {
+			writeFileSync(this.#path, JSON.stringify({ version: 1, readings, noticed: Object.fromEntries(this.#noticed), quiet: Object.fromEntries(this.#quiet), notices: this.#notices }, null, "\t"));
+		} catch (error) {
+			this.#engine.log("limits: could not save the last readings:", error instanceof Error ? error.message : String(error));
+		}
 	}
 }
 
@@ -1355,5 +1367,6 @@ export const limits: Feature = (_host, engine) => {
 		limitEpisode: (change) => tracker.episode(change),
 		runsChanged: (working) => tracker.runsChanged(working),
 		providersChanged: () => void tracker.providersChanged().catch((error) => engine.log("limits: after a sign-in change:", error instanceof Error ? error.name : "error")),
+		stopping: async () => tracker.stopping(),
 	};
 };

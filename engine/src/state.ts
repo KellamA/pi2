@@ -174,6 +174,15 @@ export function runsAs(meta: Meta | undefined, agents: Record<string, AgentProfi
 }
 
 /**
+ * The agent a schedule runs as (docs/projects.md, 3.13): by `runsAs`'s rule, the project's copy it was carried to while
+ * the preview is on and that copy can still be used; else its own agent, as before projects.
+ */
+export function scheduleRunsAs(schedule: { agentId: string; projectAgentId?: string }, agents: Record<string, AgentProfile>): string {
+	const copy = schedule.projectAgentId === undefined ? undefined : agents[schedule.projectAgentId];
+	return runsAs({ agentId: schedule.agentId, projectAgentId: schedule.projectAgentId, projectId: copy?.projectId } as Meta, agents) ?? schedule.agentId;
+}
+
+/**
  * The agent conversation `meta` runs as (`runsAs`), or undefined when there is none: a chat, an agent deleted, or one
  * removed through a tool, whose conversations keep the setup they have, as those of a deleted agent do (3.4).
  */

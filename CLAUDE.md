@@ -17,7 +17,7 @@ Every task an agent does in this repository gets a GitHub issue, so there is a r
 | A decision or dead end worth keeping | `note` | `note N "…"` |
 | Ending a turn unfinished | `wait` (on the person) or `block`, saying why; `resume` to go on | `wait N "…"` or `block N "…"`; `take N` to go on |
 | A decision that is the person's | `needs_you` `ask`, and carry on (a sub-chat too, #507) | `wait N "…"` |
-| A pull request | `pull_request` with `id`, which adds `Fixes #N` | `gh pr create --body-file FILE` |
+| A pull request | `pull_request` with `id`, which adds `Fixes #N`; a body written to a file goes in `text_file`, never its path in `text` | `gh pr create --body-file FILE` |
 | Finished: what changed, what was and was not verified | `finish` once merged, on the issue the merge closed | `done N "…"`, even once a merge has closed it |
 | Abandoned | `release`, saying why in a `note` | `drop N "why"` |
 | An idea outside the task: file it, do not do it | `file` | `idea "Title" -b "…"` |

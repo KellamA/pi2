@@ -3,6 +3,10 @@
 import type { Context } from "@earendil-works/chord/context";
 import { AgentDoc, type AgentChange, configure, type ConversationId, defineDoc, type DocumentReader, defineTool, GenerationTask, LiveDoc, type ToolExecutionApi, type Tx, UserEntry } from "@earendil-works/pi-durable";
 import { arr, int, lit, obj, opt, str, union } from "@earendil-works/pi-schema";
+import { realpathSync, statSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { isAbsolute, resolve } from "node:path";
 import { isPutAway } from "./archive.ts";
 import { giveWorktree, startedWords, titleOf } from "./extensions.ts";
 import type { Engine, Feature } from "./features.ts";
@@ -10,7 +14,9 @@ import { addNews, allProjects, inProject, type LimitReading, type Project, PROJE
 import { admit, limitError, limitRefusal, rememberReading } from "./projectlimits.ts";
 import { onLimitAssignment } from "./projectlimitstarts.ts";
 import { recordWorkChange } from "./changes.ts";
+import { locate, rootOf } from "./look.ts";
 import { handOffWords, reportRun, stageReportRun } from "./reports.ts";
+import { conversationScratch, SCRATCH_VARIABLE } from "./scratch.ts";
 import { Agents, type Access, type AgentProfile, Library, type Meta, runsAs } from "./state.ts";
 import { Wakes, watch } from "./wakes.ts";
 import { branchSlug, removeWorktree, repoOf, subChatBranch, subChatFolder, worktreeOf } from "./worktrees.ts";
@@ -200,6 +206,67 @@ function workText(value: string | undefined): string | undefined {
 	if (value !== undefined && value.length > 20_000) throw new Error("text must be at most 20,000 characters");
 	return value;
 }
+/** The most a `text_file` may hold (#662): more than any text the work list or GitHub takes, so their own limits say no first. */
+const TEXT_FILE_MOST = 256 * 1024;
+
+/**
+ * Is `text` only the path of a file (#662), as `gh pr create --body-file` and `scripts/issue --body-file` take one? Then
+ * it was meant as `text_file`, and posting it would put the path where the words should be. One line, and either
+ * `$PI2_SCRATCH/…` or `@…` written as a path, or the path of a file that is there, relative to `root` or absolute.
+ */
+export function onlyAPath(text: unknown, root: string | undefined): boolean {
+	if (typeof text !== "string") return false;
+	const one = text.trim();
+	if (one === "" || one.length > 1_024 || /[\r\n]/.test(one)) return false;
+	if (/^\$(?:\{PI2_SCRATCH\}|PI2_SCRATCH)(?:\/|$)/.test(one) || /^@\S*[./]\S*$/.test(one)) return true;
+	if (root === undefined && !one.startsWith("/") && !one.startsWith("~/")) return false;
+	const path = one.startsWith("~/") ? resolve(homedir(), one.slice(2)) : resolve(root ?? "/", one);
+	try {
+		return statSync(path).isFile();
+	} catch {
+		return false;
+	}
+}
+
+export const PATH_AS_TEXT = "text is only the path of a file: give the path as text_file, which reads the file, or put the words themselves in text.";
+
+/**
+ * `args` with a `text_file` read into `text` (#662), or a `text` that is only a path refused. The file is found as the
+ * file tools find one (look.ts's `locate`): in the conversation's folder `root`, or its scratch folder for a path that
+ * begins with `$PI2_SCRATCH`, and nowhere else. What it holds is then the text, with the same limits and the same
+ * turning of the home folder into `~` on GitHub as a text given as `text`.
+ */
+export async function readTextFile(args: Record<string, unknown>, root: () => Promise<string>, scratchOf: () => string | undefined): Promise<void> {
+	const file = args.text_file;
+	if (file === undefined) {
+		// The conversation's folder is looked up only for a text of one line, which is all a path can be.
+		const one = typeof args.text === "string" && !/[\r\n]/.test(args.text.trim());
+		if (one && onlyAPath(args.text, await root().catch(() => undefined))) throw new Error(PATH_AS_TEXT);
+		return;
+	}
+	if (args.text !== undefined) throw new Error("Give text or text_file, not both.");
+	if (typeof file !== "string" || file.trim() === "") throw new Error("text_file must be the path of a file.");
+	// The scratch folder's real path, as `write` answers with it, is the folder `$PI2_SCRATCH` names, which `locate` takes.
+	const own = isAbsolute(file) ? scratchOf() : undefined;
+	const under = own === undefined ? undefined : [own, realpathSync(own)].find((folder) => file.startsWith(`${folder}/`));
+	const written = under === undefined ? file : `$${SCRATCH_VARIABLE}${file.slice(under.length)}`;
+	const there = await locate(await root(), written, scratchOf, "text_file reads a file");
+	if ("refused" in there) throw new Error(`text_file: ${there.refused}`);
+	const info = await stat(there.real);
+	if (!info.isFile()) throw new Error(`text_file: ${there.here} is a folder, not a file.`);
+	if (info.size > TEXT_FILE_MOST) throw new Error(`text_file: ${there.here} is larger than 256 KB, more than any text the work list or GitHub takes.`);
+	const bytes = await readFile(there.real);
+	let text: string;
+	try {
+		text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+	} catch {
+		throw new Error(`text_file: ${there.here} is not a text file.`);
+	}
+	if (text.includes("\0")) throw new Error(`text_file: ${there.here} is not a text file.`);
+	args.text = text;
+	delete args.text_file;
+}
+
 export const unknownItem = (id: number) => new Error(`Unknown work item: #${id}`);
 export const canWrite = (access: Access | undefined) => access === "ask" || access === "full";
 export const writeRefusal = "This agent's access does not let it change the work list.";
@@ -424,7 +491,9 @@ export function actedAnswer(action: Exclude<WorkAction, "assign">, item: WorkIte
 	const holder = item.takenBy === null ? "held by nobody" : sameHolder(item.takenBy, by) ? "held by you" : `held by ${holderWords(item, name)}`;
 	const standing = `${STATE_WORDS[item.state]}, ${holder}`;
 	const notes = count(item.notes.length, "note", "notes");
-	const noted = typeof args.text === "string" && args.text.trim() !== "";
+	// A call read again after a crash answers from its receipt, with its `text_file` not read into `text` again (#662).
+	const given = typeof args.text === "string" ? args.text : args.text_file;
+	const noted = typeof given === "string" && given.trim() !== "";
 	switch (action) {
 		case "file":
 			return [`Filed ${named}, ${classWords(item)}.`, ...(item.url === undefined ? [] : [`Its page: ${item.url}`])].join("\n");
@@ -446,7 +515,7 @@ export function actedAnswer(action: Exclude<WorkAction, "assign">, item: WorkIte
 		case "note":
 			return `Noted on ${named} (${notes}).`;
 		case "edit": {
-			const parts = [...(args.title === undefined ? [] : ["title"]), ...(args.text === undefined ? [] : ["text"])];
+			const parts = [...(args.title === undefined ? [] : ["title"]), ...(given === undefined ? [] : ["text"])];
 			return parts.length === 0 ? `Nothing to edit in ${named}: give a title or a text.` : `Edited ${named}: its ${parts.join(" and ")}.`;
 		}
 		case "classify":
@@ -863,11 +932,12 @@ export const work: Feature = (host, engine) => {
 
 	const tool = defineTool({
 		name: "work",
-		description: "Keep this project's work list. Use list or show to read it (list answers a line an item, show one item's text and notes); file, take, release, note, wait, block, resume or finish to keep it up to date. Only the orchestrator can assign, close, reopen, edit or classify work. When the work list is a GitHub repository's issues: pull_request opens a pull request from the branch this conversation's folder is on (with id, it fixes that issue), and review posts what you found on pull request id; only the orchestrator can merge a pull request or send_back one to the conversation that opened it.",
+		description: "Keep this project's work list. Use list or show to read it (list answers a line an item, show one item's text and notes); file, take, release, note, wait, block, resume or finish to keep it up to date. Only the orchestrator can assign, close, reopen, edit or classify work. When the work list is a GitHub repository's issues: pull_request opens a pull request from the branch this conversation's folder is on (with id, it fixes that issue), and review posts what you found on pull request id; only the orchestrator can merge a pull request or send_back one to the conversation that opened it. A long text, such as a pull request's body, can be written to a file and given as text_file; a path given as text is refused.",
 		parameters: obj({
 			action: str({ description: "list, show, file, take, assign, release, wait, block, resume, finish, close, reopen, note, edit, classify, pull_request, review, merge, or send_back" }),
 			id: opt(int({ description: "Work item number (on GitHub, the issue's); for review, merge and send_back, the pull request's" })),
-			text: opt(str({ description: "Note, reason for wait or block, result of finish, the work's text for file or edit, the finding for review, or the reason for send_back" })),
+			text: opt(str({ description: "Note, reason for wait or block, result of finish, the work's text for file or edit, the finding for review, the reason for send_back, or a pull request's body" })),
+			text_file: opt(str({ description: "In place of text: a file whose contents are the text, in the conversation's folder or beginning with `$PI2_SCRATCH` for its scratch folder, as the file tools take a path" })),
 			title: opt(str({ description: "Work title for file or edit; sub-chat title for assign; pull request title for pull_request" })),
 			states: opt(arr(str(), { description: "States to list; defaults to open, in_progress, waiting and blocked" })),
 			class: opt(str({ description: "local or cloud, for file or classify" })),
@@ -898,6 +968,8 @@ export const work: Feature = (host, engine) => {
 				if (item === null) {
 					requirePreview();
 					if (project === undefined || agentId === undefined || project.earlier.includes(number) || isPutAway(meta)) throw new Error("Use work from a current conversation in this project.");
+					// A long text from a file, read before anything else sees `text` (#662); a path given as `text` is refused.
+					await readTextFile(args as Record<string, unknown>, () => rootOf(api, host.scratchFolder(), context), () => conversationScratch(api.conversationId));
 					if (pullActions.includes(action)) {
 						if (project.repository === null) throw new Error("This project's work is kept by pi², which has no pull requests.");
 						if (github === undefined) throw new Error("GitHub work is not available yet.");
