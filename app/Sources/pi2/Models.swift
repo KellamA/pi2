@@ -749,6 +749,9 @@ struct Schedule: Codable, Equatable, Identifiable {
     var lastConversationId: Int?
     /// Set when an agent made it, with your approval; nil when you did. Only the engine sets it.
     var createdBy: Creator?
+    /// For a schedule on a template carried over: the project's copy of it, which it runs as while the preview is on
+    /// (docs/projects.md, 3.13; `EngineClient.runsAs`). Only the engine sets it.
+    var projectAgentId: String? = nil
 
     struct Creator: Codable, Equatable {
         let agentId: String

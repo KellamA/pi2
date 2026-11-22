@@ -4,7 +4,8 @@ import SwiftUI
 
 /// The board's Settings tab (#478): the project's own settings — its name and folder, the attached repository, the
 /// orchestrator's model, whether reports wake it, and the limits that hold back starts — each saved as it is changed,
-/// with archiving and deleting the project at the bottom, which are the person's alone (docs/projects.md, 3.6 and 8).
+/// with the project's schedules (3.13, #656), and archiving and deleting the project at the bottom, which are the
+/// person's alone (docs/projects.md, 3.6 and 8).
 /// What the orchestrator may do without asking (8.1) is on the Agents tab (#475).
 struct ProjectSettingsTab: View {
     let model: AppModel
@@ -52,6 +53,7 @@ struct ProjectSettingsTab: View {
                 orchestratorSection
                 reportsSection
                 limitsSection
+                schedulesSection
                 bottomSection
             }
             .padding(14)
@@ -289,6 +291,26 @@ struct ProjectSettingsTab: View {
     /// The project's cost today, as the `usage` event counts it.
     private var spentToday: Double {
         engine.usage?.projects?.first { $0.id == project.id }?.today.cost ?? 0
+    }
+
+    // MARK: Schedules
+
+    /// The project's agents a schedule may be given: the orchestrator first, chosen for a new one, then the rest as made.
+    private var scheduleAgents: [AgentProfile] {
+        engine.allAgents
+            .filter { $0.projectId == project.id && $0.removedAt == nil }
+            .sorted { ($0.id == project.orchestratorId ? 0 : 1, $0.createdAt) < ($1.id == project.orchestratorId ? 0 : 1, $1.createdAt) }
+    }
+
+    private var schedulesSection: some View {
+        titled("Schedules", footer: "Each run starts a new conversation of the project with its agent, which works with no one watching, and is listed with the project’s other conversations. A run with the orchestrator is a conversation of its own, beside the one you have with it. An agent that may schedule its own work asks you before each schedule it sets.") {
+            ScheduleList(
+                model: model,
+                schedules: engine.schedules(ofProject: project.id),
+                agents: scheduleAgents,
+                empty: "Have one of the project’s agents start a conversation on its own: every morning, every hour, or once at a set time."
+            )
+        }
     }
 
     // MARK: Archive and delete

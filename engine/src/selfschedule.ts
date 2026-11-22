@@ -10,7 +10,8 @@ import { type ConversationId, defineTool, section } from "@earendil-works/pi-dur
 import { int, obj, opt, str } from "@earendil-works/pi-schema";
 import type { Feature } from "./features.ts";
 import { nextRun, type Repeat, type Schedule, Schedules, validateRepeat } from "./schedules.ts";
-import type { AgentProfile } from "./state.ts";
+import { projectsOn } from "./projects.ts";
+import { type AgentProfile, scheduleRunsAs } from "./state.ts";
 
 export type ScheduleSettings = { enabled: boolean };
 
@@ -176,9 +177,14 @@ export function checkWords(title: string, prompt: string): { title: string; prom
 
 /** A one-off that has run has nothing left to do; it stays listed until removed, but does not count towards the cap. */
 const finished = (schedule: Schedule) => schedule.repeat.kind === "once" && schedule.nextRunAt === null;
+/** For this agent: the one it runs as, so a project's copy for one carried over (docs/projects.md, 3.13). */
+type Agents = Record<string, AgentProfile>;
+const forAgent = (schedule: Schedule, agentId: string, agents: Agents) => scheduleRunsAs(schedule, agents) === agentId;
 /** Set by this agent, for this agent. One the person moved to another agent is theirs now. */
-const ownBy = (schedule: Schedule, agentId: string) => schedule.agentId === agentId && schedule.createdBy?.agentId === agentId;
-const counted = (schedules: Record<string, Schedule>, agentId: string) => Object.values(schedules).filter((s) => ownBy(s, agentId) && !finished(s)).length;
+const ownBy = (schedule: Schedule, agentId: string, agents: Agents) => forAgent(schedule, agentId, agents) && schedule.createdBy?.agentId === schedule.agentId;
+const counted = (schedules: Record<string, Schedule>, agentId: string, agents: Agents) => Object.values(schedules).filter((s) => ownBy(s, agentId, agents) && !finished(s)).length;
+/** Where the person turns a schedule of this agent off or deletes it. */
+const placeFor = (agent: AgentProfile) => (projectsOn() && agent.projectId !== undefined ? "on the project's Settings tab" : "in Activity");
 
 /** The prompt section: how to use the tools, and the date and time zone, so "tomorrow at 9" can be worked out. */
 export function describeScheduling(now = Date.now()): string {
@@ -200,7 +206,7 @@ const OFF = "Scheduling is turned off for this agent. The person can turn it on 
 const DECLINED = "The person declined this schedule, so nothing was scheduled. Do not ask for it again unless they bring it up.";
 const FULL = `You already have ${MAX_AGENT_SCHEDULES} schedules that you set, the most there can be. Cancel one that is no longer needed (list_schedules shows them), then try again.`;
 
-export const selfSchedule: Feature = (host) => {
+export const selfSchedule: Feature = (host, engine) => {
 	/** The agent a conversation belongs to, when it may schedule. Read at every call, so turning it off counts at once. */
 	const scheduler = (conversationId: ConversationId): AgentProfile | undefined => {
 		const agent = host.agentOf(conversationId);
@@ -261,7 +267,7 @@ export const selfSchedule: Feature = (host) => {
 			}
 			const { id, repeat } = kept;
 			// Nothing is asked that could not be done.
-			if (counted(existing, agent.id) >= MAX_AGENT_SCHEDULES) return fail(FULL);
+			if (counted(existing, agent.id, engine.agents()) >= MAX_AGENT_SCHEDULES) return fail(FULL);
 			const first = nextRun(repeat, Date.now());
 			if (first === null) return fail(`${repeat.kind === "once" ? localStamp(repeat.at) : "That time"} has already passed: it is now ${localStamp(Date.now())}. Give a later time.`);
 
@@ -290,7 +296,7 @@ export const selfSchedule: Feature = (host) => {
 				const doc = await tx.doc(Schedules);
 				const already = doc.schedules[id];
 				if (already !== undefined) return { schedule: JSON.parse(JSON.stringify(already)) as Schedule };
-				if (counted(doc.schedules, agent.id) >= MAX_AGENT_SCHEDULES) return { refused: FULL };
+				if (counted(doc.schedules, agent.id, engine.agents()) >= MAX_AGENT_SCHEDULES) return { refused: FULL };
 				const at = Date.now();
 				// The first run the person was shown, unless the decision took so long that it went by.
 				const next = first > at ? first : nextRun(repeat, at);
@@ -326,7 +332,7 @@ export const selfSchedule: Feature = (host) => {
 			if (agent === undefined) return fail(OFF);
 			const all = (await api.snapshot(Schedules, context))?.schedules ?? {};
 			const mine = Object.values(all)
-				.filter((s) => s.agentId === agent.id)
+				.filter((s) => forAgent(s, agent.id, engine.agents()))
 				.sort((x, y) => x.createdAt - y.createdAt);
 			const now = Date.now();
 			const lines = [`It is now ${plainMoment(now, now)} (${localStamp(now)}, ${timeZone(now)}).`];
@@ -334,11 +340,11 @@ export const selfSchedule: Feature = (host) => {
 			else lines.push(`Your schedules (${mine.length}):`);
 			for (const s of mine) {
 				const state = finished(s) ? "finished" : !s.enabled || s.nextRunAt === null ? "turned off" : `next run ${localStamp(s.nextRunAt)} (${weekdayOf(s.nextRunAt)})`;
-				const who = ownBy(s, agent.id) ? "set by you" : s.createdBy === undefined ? "set by the person, so you cannot cancel it" : "not set by you, so you cannot cancel it";
+				const who = ownBy(s, agent.id, engine.agents()) ? "set by you" : s.createdBy === undefined ? "set by the person, so you cannot cancel it" : "not set by you, so you cannot cancel it";
 				const prompt = s.prompt.replace(/\s+/g, " ").trim();
 				lines.push(`- ${s.id}: “${s.title}”, ${describeRepeat(s.repeat, now)}; ${state}; ${who}.`, `  Prompt: ${prompt.length > 200 ? `${prompt.slice(0, 200)}…` : prompt}`);
 			}
-			lines.push(`You set ${counted(all, agent.id)} of the ${MAX_AGENT_SCHEDULES} schedules you may have; finished one-off schedules do not count.`);
+			lines.push(`You set ${counted(all, agent.id, engine.agents())} of the ${MAX_AGENT_SCHEDULES} schedules you may have; finished one-off schedules do not count.`);
 			return { output: text(lines.join("\n")), details: { count: mine.length } };
 		},
 	});
@@ -355,15 +361,15 @@ export const selfSchedule: Feature = (host) => {
 			const result = await api.commit(async (tx) => {
 				const doc = await tx.doc(Schedules);
 				const schedule = doc.schedules[id];
-				if (schedule === undefined || schedule.agentId !== agent.id) return { missing: true as const };
+				if (schedule === undefined || !forAgent(schedule, agent.id, engine.agents())) return { missing: true as const };
 				const title = schedule.title;
-				if (!ownBy(schedule, agent.id)) return { theirs: title };
+				if (!ownBy(schedule, agent.id, engine.agents())) return { theirs: title };
 				delete doc.schedules[id];
 				return { title };
 			}, context);
 			if ("missing" in result) return fail(`There is no schedule ${id} of yours. list_schedules shows your schedules and their ids.`);
 			if ("theirs" in result) {
-				return fail(`“${result.theirs}” was set by the person, not by you, so you cannot cancel it. If it should stop, tell the person: they can turn it off or delete it in Activity.`);
+				return fail(`“${result.theirs}” was set by the person, not by you, so you cannot cancel it. If it should stop, tell the person: they can turn it off or delete it ${placeFor(agent)}.`);
 			}
 			return { output: text(`Cancelled “${result.title}” (${id}). It will not run again.`), details: { id, title: result.title } };
 		},

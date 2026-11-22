@@ -49,7 +49,7 @@ import {
 	wireCarryOver,
 } from "./projects.ts";
 import { RequestError } from "./requesterror.ts";
-import { Schedules } from "./schedules.ts";
+import { type Schedule, Schedules } from "./schedules.ts";
 import { type AgentProfile, Agents, Library, type Meta } from "./state.ts";
 import { copyAgentValues } from "./variables.ts";
 import { madeWorktrees } from "./worktrees.ts";
@@ -879,6 +879,39 @@ export async function applyProject(tx: Tx, entry: PlannedProject, made: Made, gr
 	}
 }
 
+// ---- Schedules (3.13)
+
+/**
+ * The schedules on templates that carrying over gives a copy, each with that copy (3.13): the copy of its template in
+ * the project of the template's folder, the one recorded for that project and template, or else the oldest agent of the
+ * project made from it, neither removed nor deleted. No project or copy is made for a schedule: one with neither stays
+ * on its template, and its run is carried as it is made (9.9), which makes them. A held schedule is left alone.
+ */
+export function scheduleCopies(
+	schedules: Record<string, Schedule>,
+	agents: Record<string, AgentProfile>,
+	doc: ProjectsDoc,
+	grouping: Grouping,
+): { schedule: string; copy: string }[] {
+	const live = Object.values(doc.projects).filter((project) => project.deletedAt === undefined);
+	const keys = new Map(live.map((project) => [project.id, project.folder === null ? "none" : grouping.key(project.folder)]));
+	const usable = (agent: AgentProfile | undefined) => agent !== undefined && agent.removedAt === undefined;
+	const found: { schedule: string; copy: string }[] = [];
+	for (const schedule of Object.values(schedules).sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1))) {
+		const template = agents[schedule.agentId];
+		if (schedule.projectAgentId !== undefined || schedule.holdReason !== undefined || !isTemplate(template) || template.removedAt !== undefined) continue;
+		const project = lookUp(grouping.key(template.cwd ?? null), live, keys, doc.carry.folders)?.project;
+		if (project === undefined) continue;
+		const recorded = doc.carry.copies[`${project.id} ${template.id}`];
+		// A copy recorded and since deleted or removed stays that way (9.5, 3): the schedule stays on its template.
+		const copy = recorded !== undefined
+			? (usable(agents[recorded]) ? agents[recorded] : undefined)
+			: Object.values(agents).filter((agent) => agent.projectId === project.id && agent.template?.id === template.id && usable(agent)).sort(byMade)[0];
+		if (copy !== undefined) found.push({ schedule: schedule.id, copy: copy.id });
+	}
+	return found;
+}
+
 // ---- The feature
 
 /** Set as the feature is made: the project a new conversation in `cwd` would be carried into, for `admit` (8.3). */
@@ -1025,6 +1058,26 @@ export const carryOver: Feature = (host, engine) => {
 		return next;
 	};
 
+	/**
+	 * Give the schedules on templates their project's copy (3.13), in a commit of the schedules alone, found again inside
+	 * it; nothing is written when there is nothing to carry. Called inside `serially`, after a run or a carry, whose
+	 * callers check the preview: a run turning it on comes before the switch is set.
+	 */
+	const carrySchedules = async (): Promise<void> => {
+		const harness = engine.harness();
+		const context = engine.context();
+		const grouping = new Grouping(await madeWorktrees(harness, context));
+		const pending = scheduleCopies((await harness.snapshot(Schedules, context))?.schedules ?? {}, (await harness.snapshot(Agents, context))?.agents ?? {}, await storedProjects(), grouping);
+		if (pending.length === 0) return;
+		const carried = await harness.commit(async (tx) => {
+			const { schedules } = await tx.doc(Schedules);
+			const found = scheduleCopies(schedules, (await tx.doc(Agents)).agents, await tx.doc(Projects), grouping);
+			for (const { schedule, copy } of found) schedules[schedule]!.projectAgentId = copy;
+			return found;
+		}, context);
+		for (const { schedule, copy } of carried) engine.log("carried schedule", schedule, "to", copy);
+	};
+
 	/** Work the plan out again; refuse unless it is `given`; run it; answer its report (9.8). */
 	const run = (given: string | null) =>
 		serially(async () => {
@@ -1041,6 +1094,7 @@ export const carryOver: Feature = (host, engine) => {
 			}
 			await apply(plan, documents, { backup, left: plan.left });
 			engine.log(`carried over: ${plan.projects.length} project${plan.projects.length === 1 ? "" : "s"}, plan ${report.plan}`);
+			await carrySchedules().catch((error) => engine.log("could not carry the schedules:", error instanceof Error ? error.message : error));
 			await retrySecrets().catch(() => {});
 			const stored = (await engine.harness().snapshot(Projects, engine.context()))?.carry ?? carryRecord();
 			const agents = (await engine.harness().snapshot(Agents, engine.context()))?.agents ?? {};
@@ -1172,6 +1226,7 @@ export const carryOver: Feature = (host, engine) => {
 			const { plan, documents } = await look(id);
 			if (plan.projects.length === 0) return;
 			await apply(plan, documents, undefined);
+			await carrySchedules().catch((error) => engine.log("could not carry the schedules:", error instanceof Error ? error.message : error));
 			if (plan.projects.some((entry) => entry.copies.some((copy) => copy.existing === null && copy.variables.length > 0))) void retrySecrets().catch(() => {});
 		});
 
@@ -1191,6 +1246,7 @@ export const carryOver: Feature = (host, engine) => {
 		for (const id of left) {
 			await carryOne(id).catch((error) => engine.log("could not carry conversation", id, "into a project:", error instanceof Error ? error.message : error));
 		}
+		await serially(carrySchedules).catch((error) => engine.log("could not carry the schedules:", error instanceof Error ? error.message : error));
 	};
 
 	projectForFolder = async (cwd) => {
