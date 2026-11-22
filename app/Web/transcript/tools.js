@@ -858,8 +858,13 @@
 
 	/**
 	 * What an approval card shows for a schedule an agent wants to set: the heading ("Atlas wants to schedule “Morning
-	 * brief”"), when it would run in the engine's words, and the prompt each run would be given, in full.
+	 * brief”"), when it would run in the engine's words, the prompt each run would be given, in full, and where the
+	 * schedule is turned off afterwards. The approval does not say whether the agent is a project's or a template, so the
+	 * caption names both places (the same words as the app's card in `InboxViews.swift`).
 	 */
+	const SCHEDULE_CAPTION =
+		"Each run starts a new conversation with this agent and works with no one watching. You can turn the schedule off or delete it on the project's Settings tab, or on the template's page for a template.";
+
 	function scheduleApproval(pending) {
 		const item = isObject(pending) ? pending : {};
 		const args = isObject(item.arguments) ? item.arguments : {};
@@ -869,6 +874,7 @@
 			request: title ? `${who} wants to schedule ${QUOTE_OPEN}${title}${QUOTE_CLOSE}` : `${who} wants to schedule work`,
 			when: str(item.when) || str(item.question),
 			prompt: str(args.prompt).trim(),
+			caption: SCHEDULE_CAPTION,
 		};
 	}
 

@@ -253,7 +253,7 @@ struct LimitWait: Codable, Equatable {
         return "\(what)\(refused), and named no time. The run asks again at \(untilText) and carries on by itself. Stop ends it."
     }
 
-    /// The short form, for a row in Activity and the menu bar.
+    /// The short form, for a run's row in the menu bar.
     var tag: String {
         kind == "overloaded" ? "\(provider) overloaded · until \(untilText)" : "waiting for \(provider)’s limit · until \(untilText)"
     }
