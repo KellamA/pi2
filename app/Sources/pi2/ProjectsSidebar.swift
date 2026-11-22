@@ -201,6 +201,11 @@ private struct ProjectBlock: View {
                     RunRow(engine: engine, id: id, run: run) { model.openAgent(id, in: project.id) }
                         .contextMenu(previewAs: run.title.isEmpty ? engine.agent(run.agentId)?.name ?? "New conversation" : run.title, String(id)) {
                             OpenInNewPane(model: model, id: id, project: project.id)
+                            // Another conversation with the same agent, in place of the board (#643).
+                            if let agent = engine.agent(run.agentId), let row = engine.project(project.id) {
+                                Button("New Conversation with \(agent.name)", systemImage: "plus.bubble") { model.startWith(agent, in: row) }
+                                Divider()
+                            }
                             ConversationActions(model: model, id: id)
                         }
                         .padding(.leading, 14)
@@ -343,6 +348,8 @@ private struct RunRow: View {
                     }
                     // The title has the room: the agent's name gives way first (#598).
                     Text(run.title.isEmpty ? agent?.name ?? "New conversation" : run.title).lineLimit(1).layoutPriority(1)
+                    // The warning that it asks about nothing, as a template's row has it (#643).
+                    if let agent, agent.allowEverything == true { AllowEverythingTag(name: agent.name, givesWay: true) }
                     Spacer(minLength: 4)
                     if let agent, !run.title.isEmpty { AgentNameGivingWay(agent: agent) }
                 }

@@ -47,6 +47,7 @@ struct PaletteView: View {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { model.stoppingAll = StopAllRequest(projects: nil) }
                 })
             }
+            projectEntries(needle, into: &result)
         }
         for agent in engine.agents where matches("new conversation with \(agent.name)") {
             result.append(Entry(id: "new-\(agent.id)", icon: "plus.bubble", title: "New conversation with \(agent.name)", detail: "Agent") { model.newConversation(agentId: agent.id) })
@@ -80,11 +81,17 @@ struct PaletteView: View {
                 model.showChat(conversation.id)
             })
         }
-        for conversation in engine.conversations where !conversation.isChat && matches(conversation.title) {
-            let owner = engine.agent(conversation.agentId)
+        for conversation in engine.conversations where !conversation.isChat {
+            // A project's conversation is named by its project, "Demo project › Check the build", and found by either.
+            let project = conversation.projectId.flatMap(engine.project)
+            let title = conversation.title.isEmpty ? "New conversation" : conversation.title
+            let shown = project.map { "\($0.name) › \(title)" } ?? title
+            guard project == nil ? matches(conversation.title) : (matches(conversation.title) || Self.hasWords(needle, in: shown)) else { continue }
+            let owner = engine.agent(conversation.runsAs ?? conversation.agentId)
             let agent = (owner?.name ?? "") + (conversation.parent == nil ? "" : " · sub-chat")
+                + (project?.conversation == conversation.id ? " · orchestrator" : "")
                 + (AllowEverything.warning(conversation, agent: owner) == nil ? "" : " · \(AllowEverything.tag)")
-            result.append(Entry(id: "c-\(conversation.id)", icon: "bubble.left", title: conversation.title.isEmpty ? "New conversation" : conversation.title, detail: conversation.busy ? "\(agent) · working" : agent) {
+            result.append(Entry(id: "c-\(conversation.id)", icon: "bubble.left", title: shown, detail: conversation.busy ? "\(agent) · working" : agent) {
                 model.openConversation(conversation.id)
             })
         }
@@ -170,6 +177,50 @@ struct PaletteView: View {
                 guard !Task.isCancelled else { return }
                 let found = await engine.search(needle)
                 if !Task.isCancelled { messages = found }
+            }
+        }
+    }
+
+    /// Whether every word typed is in `text`, in any order: "demo work" finds "Demo project › Work".
+    private static func hasWords(_ needle: String, in text: String) -> Bool {
+        let words = needle.split(separator: " ")
+        let text = text.lowercased()
+        return !words.isEmpty && words.allSatisfy { text.contains($0) }
+    }
+
+    /// Each listed project's agents, a new conversation with each, and its board's tabs, named by the project ("Demo
+    /// project › Atlas", "Demo project › Work") and opened in its hub (#643). Only by typing, so that the list the palette
+    /// opens on stays short.
+    private func projectEntries(_ needle: String, into result: inout [Entry]) {
+        guard !needle.isEmpty else { return }
+        let has = { (text: String) in Self.hasWords(needle, in: text) }
+        for listed in engine.projectStore.listed {
+            guard let project = engine.project(listed.id) else { continue }
+            for agent in model.startableAgents(project) {
+                let orchestrator = agent.id == project.orchestratorId
+                if has("\(project.name) \(agent.name)") {
+                    result.append(Entry(id: "pa-\(agent.id)", icon: "person.crop.circle", title: "\(project.name) › \(agent.name)",
+                                        detail: orchestrator ? "Orchestrator · its page" : "Agent · its page") {
+                        model.showAgentPage(agent.id, in: project.id)
+                    })
+                }
+                let start = orchestrator ? "Start fresh with \(agent.name)…" : "New conversation with \(agent.name)"
+                if has("\(project.name) \(start)") {
+                    result.append(Entry(id: "pn-\(agent.id)", icon: "plus.bubble", title: "\(project.name) › \(start)", detail: orchestrator ? "Orchestrator" : "Agent") {
+                        // Start fresh's confirmation is the hub's alert, which waits for the palette to go first.
+                        if orchestrator {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { model.startWith(agent, in: project) }
+                        } else {
+                            model.startWith(agent, in: project)
+                        }
+                    })
+                }
+            }
+            for tab in HubTab.allCases where has("\(project.name) \(tab.title)") {
+                result.append(Entry(id: "pt-\(project.id)-\(tab.rawValue)", icon: "rectangle.split.2x1", title: "\(project.name) › \(tab.title)", detail: "Tab") {
+                    model.showProject(project.id, tab: tab)
+                    if model.hubs.fold(project.id) == .boardFolded { model.hubs.setFold(.both, for: project.id) }
+                })
             }
         }
     }

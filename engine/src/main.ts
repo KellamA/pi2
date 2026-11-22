@@ -83,7 +83,7 @@ import { runningCommands } from "./running.ts";
 import { sweepRuns, useRunFolder } from "./processes.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
 import { type ChatVersions, chatIdOf, points, versionRequests, Versions, versionsAllowed } from "./versions.ts";
-import { type Access, ACCESS_LEVELS, type AgentProfile, agentOf, Agents, Inbox, Library, type Meta, type ModelRef, projectFrom, runsAs, starterAgents, takeAgentSwitch } from "./state.ts";
+import { type Access, ACCESS_LEVELS, type AgentProfile, agentOf, Agents, Inbox, Library, type Meta, type ModelRef, projectFrom, runsAs, scheduleRunsAs, starterAgents, takeAgentSwitch } from "./state.ts";
 import { allProjects, type Project, PROJECT_ARCHIVED, PROJECT_DELETED, Projects, projectDeleted, projectOf, projectsOn, refuseInArchivedProject, refuseStartWith, requirePreview, type Start, startWithRefusal } from "./projects.ts";
 import { orchestratorConversation, orchestratorRole, placeInput, projectItem, refuseEarlier, tellOrchestrator } from "./orchestrator.ts";
 import { githubItem } from "./github.ts";
@@ -2317,6 +2317,9 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			createdAt: previous?.createdAt ?? now,
 			// Who made it is kept through the person's edits; the app cannot set it.
 			...(previous?.createdBy !== undefined ? { createdBy: previous.createdBy } : {}),
+			// The project's copy it was carried to stays while its agent does; another agent chosen is the person's choice
+			// (docs/projects.md, 3.13). The app cannot set it either.
+			...(previous?.projectAgentId !== undefined && previous.agentId === input.agentId ? { projectAgentId: previous.projectAgentId } : {}),
 		};
 		await harness.commit(async (tx) => {
 			const agent = (await tx.doc(Agents)).agents[schedule.agentId];
@@ -2923,6 +2926,17 @@ async function deliver(id: string): Promise<void> {
 	if (held) log("schedule", id, "held:", PROJECT_DELETED);
 }
 
+/**
+ * The agent a run of `schedule` is made with (docs/projects.md, 3.13): the one it runs as, but for a schedule carried to
+ * a copy in an archived project, its template, whose run is carried into that project and restores it, as a schedule's
+ * run did before it was carried (3.6, 9.9).
+ */
+function firesAs(schedule: Schedule): string {
+	const id = scheduleRunsAs(schedule, agents);
+	const copy = agents[id];
+	return id !== schedule.agentId && copy !== undefined && startWithRefusal(copy) === PROJECT_ARCHIVED ? schedule.agentId : id;
+}
+
 /** Start one run of a schedule: a new conversation with its agent, then its prompt. */
 async function fire(id: string, manual: boolean, confirm?: string): Promise<string | undefined> {
 	const schedule = schedules[id];
@@ -2933,7 +2947,7 @@ async function fire(id: string, manual: boolean, confirm?: string): Promise<stri
 	}
 	firing.add(id);
 	try {
-		const agent = agents[schedule.agentId] ?? Object.values(agents).sort((x, y) => x.createdAt - y.createdAt)[0];
+		const agent = agents[firesAs(schedule)] ?? Object.values(agents).sort((x, y) => x.createdAt - y.createdAt)[0];
 		if (agent === undefined) return;
 		if (agent.projectId !== undefined) refuseStartWith(agent);
 		const change = await agentChange(agent, { subChat: false });
@@ -2975,9 +2989,10 @@ async function fire(id: string, manual: boolean, confirm?: string): Promise<stri
 			if (manual) throw error;
 			return;
 		}
-		if (manual && error instanceof RequestError) throw error;
+		// Run Now tells the person why nothing started: a limit, or a project archived (docs/projects.md, 3.13).
+		if (manual && (error instanceof RequestError || (error instanceof Error && error.message === PROJECT_ARCHIVED))) throw error;
 		// An automatic run stays due until admitted; don't spin on a refusal with a past nextRunAt.
-		if (!manual && (agents[schedule.agentId]?.projectId !== undefined || error instanceof RequestError)) scheduleRecheck.set(id, Date.now() + 60_000);
+		if (!manual && (agents[firesAs(schedule)]?.projectId !== undefined || error instanceof RequestError)) scheduleRecheck.set(id, Date.now() + 60_000);
 		log("schedule", id, "did not start:", error instanceof Error ? error.message : error);
 	} finally {
 		firing.delete(id);

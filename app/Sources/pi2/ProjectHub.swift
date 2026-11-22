@@ -146,6 +146,8 @@ final class ProjectHubs {
     }
 
     func setTab(_ tab: HubTab, for id: String) {
+        // Another tab puts the Agents tab back on its list, as leaving it always has.
+        if tab != .agents { setAgentPage(nil, for: id) }
         guard tabs[id] != tab else { return }
         if tab == .work { PerfProbe.workTab("asked") }
         tabs[id] = tab
@@ -177,6 +179,17 @@ final class ProjectHubs {
     func toggle(_ panel: HubFold, for id: String) {
         let current = fold(id)
         setFold(current == panel ? .both : panel, for: id)
+    }
+
+    /// The agent whose own page shows in each project's Agents tab in place of its list (#475), kept here rather than in
+    /// the tab so that the palette, Duplicate and New Agent can open one there (#643). For the launch only.
+    private var agentPages: [String: String] = [:]
+
+    func agentPage(_ id: String) -> String? { agentPages[id] }
+
+    func setAgentPage(_ agent: String?, for id: String) {
+        guard agentPages[id] != agent else { return }
+        agentPages[id] = agent
     }
 
     /// The conversation of the focused pane beside the orchestrator's, if it shows one: the one in place of the board,
