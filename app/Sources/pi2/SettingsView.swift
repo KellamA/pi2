@@ -22,9 +22,22 @@ enum SettingsSection: String {
 }
 
 #if PI2_DEVELOPMENT
-/// The Settings window as `PI2_SHOW` asked a development build for it: "settings", "settings:<tab>" or
-/// "settings:<tab>#<section>". A tab it does not know is General, and a section the tab does not have leaves the tab
-/// at its top.
+extension SettingsSection: CaseIterable {
+    /// The tab the section is on, for a running copy's `show` to name the ones a tab has when refusing another.
+    var tab: SettingsTab {
+        switch self {
+        case .appearance, .notifications, .agents, .summaries, .awake, .background, .updates: .general
+        case .instructions, .newChats, .memory, .agentNotes: .chat
+        case .subscriptions, .endpoints, .local, .keys: .providers
+        case .servers, .commits, .priority: .tools
+        case .folder, .backup: .storage
+        }
+    }
+}
+
+/// The Settings window as a development build was last asked for it (`ShowAsked`: `PI2_SHOW` at launch, or a test
+/// copy's `show` while it runs): "settings", "settings:<tab>" or "settings:<tab>#<section>". A tab it does not know is
+/// General, and a section the tab does not have leaves the tab at its top.
 struct SettingsLaunch {
     var tab = SettingsTab.general
     var section: SettingsSection?
@@ -58,56 +71,68 @@ struct SettingsLaunch {
         }
     }
 
+    /// Each sheet asked for opens once per request: the request whose sheet was last taken, as `ShowAsked` counts them.
+    /// A request's sheet opens as its tab is drawn, so one asked for while that tab already shows waits until it is
+    /// drawn again.
+    @MainActor private static var sheetShown = -1
+    @MainActor private static var localShown = -1
+    @MainActor private static var variablesShown = -1
+    @MainActor private static var addingShown = -1
+
     /// The provider whose Models sheet was asked for, once.
-    @MainActor private static var sheetShown = false
     @MainActor static func takeModelsSheet() -> String? {
-        guard !sheetShown, let sheet = asked?.modelsSheet, asked?.tab == .providers else { return nil }
-        sheetShown = true
+        guard let sheet = asked?.modelsSheet, asked?.tab == .providers, ShowAsked.shared.take(&sheetShown) else { return nil }
         return sheet.provider
     }
 
     /// The sheet of the section for models on this Mac that was asked for, once.
-    @MainActor private static var localShown = false
     @MainActor static func takeLocalSheet() -> String? {
-        guard !localShown, let sheet = asked?.localSheet, asked?.tab == .providers else { return nil }
-        localShown = true
+        guard let sheet = asked?.localSheet, asked?.tab == .providers, ShowAsked.shared.take(&localShown) else { return nil }
         return sheet
     }
 
     /// The MCP server whose Variables sheet was asked for, once.
-    @MainActor private static var variablesShown = false
     @MainActor static func takeVariablesSheet() -> String? {
-        guard !variablesShown, let server = asked?.variablesSheet, asked?.tab == .tools else { return nil }
-        variablesShown = true
+        guard let server = asked?.variablesSheet, asked?.tab == .tools, ShowAsked.shared.take(&variablesShown) else { return nil }
         return server
     }
 
     /// The id to add to `provider` in its Models sheet, once: empty to open the form with none typed.
-    @MainActor private static var addingShown = false
     @MainActor static func takeAdding(_ provider: String) -> String? {
-        guard !addingShown, let sheet = asked?.modelsSheet, sheet.provider == provider, let adding = sheet.adding else { return nil }
-        addingShown = true
+        guard let sheet = asked?.modelsSheet, sheet.provider == provider, let adding = sheet.adding,
+              ShowAsked.shared.take(&addingShown) else { return nil }
         return adding
     }
 
-    @MainActor static let asked = SettingsLaunch(ProcessInfo.processInfo.environment["PI2_SHOW"])
-    /// Whether the window is still to be opened, and whether the tab is still to be scrolled: each happens once, so
-    /// opening Settings again later, or coming back to the tab, shows it as usual.
-    @MainActor private static var toOpen = asked != nil
-    @MainActor private static var toScroll = asked?.section != nil
+    /// What was last asked for, when it was Settings.
+    @MainActor static var asked: SettingsLaunch? { SettingsLaunch(ShowAsked.shared.value) }
+    /// The request that last opened the window, and the one whose section was last scrolled to: each happens once per
+    /// request, so opening Settings again later, or coming back to the tab, shows it as usual.
+    @MainActor private static var opened = -1
+    @MainActor private static var scrolled = -1
 
-    /// True the first time it is asked, when `PI2_SHOW` asked for Settings.
+    /// True the first time it is asked, when `PI2_SHOW` asked for Settings at launch. A test copy's `show` opens the
+    /// window itself.
     @MainActor static func takeWindow() -> Bool {
-        defer { toOpen = false }
-        return toOpen
+        asked != nil && ShowAsked.shared.take(&opened)
+    }
+
+    /// Why a running copy's `show` refuses a value: a section after "settings:<tab>#" that the tab does not have. The
+    /// forms that open a sheet are left to the tab, which opens it once it has what the sheet needs.
+    static func refusal(_ value: String) -> String? {
+        guard let asked = SettingsLaunch(value), let hash = value.firstIndex(of: "#") else { return nil }
+        let part = String(value[value.index(after: hash)...])
+        if ["models=", "local=", "add-model=", "variables="].contains(where: part.hasPrefix) { return nil }
+        if let section = asked.section, section.tab == asked.tab { return nil }
+        let sections = SettingsSection.allCases.filter { $0.tab == asked.tab }.map { "#\($0.rawValue)" }.joined(separator: ", ")
+        return "Settings' \(asked.tab.rawValue.capitalized) tab has no section #\(part); use \(sections)"
     }
 
     /// Brings the section asked for to the top of `tab`'s form, if `tab` is the one asked for. Parts of a tab fill in
     /// after it first appears (the providers, the MCP servers), which moves the sections below them, so it scrolls
     /// again while the tab settles.
     @MainActor static func scroll(_ tab: SettingsTab, with proxy: ScrollViewProxy) async {
-        guard toScroll, let asked, asked.tab == tab, let section = asked.section else { return }
-        toScroll = false
+        guard let asked, asked.tab == tab, let section = asked.section, ShowAsked.shared.take(&scrolled) else { return }
         for delay in [100, 400, 1000, 2000] {
             try? await Task.sleep(for: .milliseconds(delay))
             proxy.scrollTo(section, anchor: .top)
@@ -122,7 +147,9 @@ extension View {
     func settingsPage(_ tab: SettingsTab) -> some View {
         #if PI2_DEVELOPMENT
         ScrollViewReader { proxy in
-            task { await SettingsLaunch.scroll(tab, with: proxy) }
+            // Again for each request of a test copy's `show`, so a section asked for on the tab already shown is
+            // brought up too (#768).
+            task(id: ShowAsked.shared.count) { await SettingsLaunch.scroll(tab, with: proxy) }
         }
         #else
         self

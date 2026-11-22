@@ -49,29 +49,11 @@ struct AgentAvatar: View {
 }
 
 /// The sections of an agent's page, by the short names a development build can open the page at, with
-/// `PI2_SHOW=agent:<id>#<name>` (docs/development.md). In the order they appear.
+/// `PI2_SHOW=agent:<id>#<name>` at launch or a test copy's `show` while it runs (docs/development.md; `ShowAsked`,
+/// which also takes the section asked for). In the order they appear.
 enum AgentSection: String, CaseIterable {
     case profile, model, summaries, instructions, files, memory, tools, everything, builtins, rules, variables, extras, computer, browser, schedule, delegates
 }
-
-#if PI2_DEVELOPMENT
-extension AgentSection {
-    /// The agent and section `PI2_SHOW` asked for, until the page for that agent first opens and takes it: coming back
-    /// to the page later opens it at the top, as usual.
-    @MainActor private static var asked: (agent: String, section: AgentSection)? = {
-        guard let value = ProcessInfo.processInfo.environment["PI2_SHOW"], value.hasPrefix("agent:"),
-              let hash = value.firstIndex(of: "#"),
-              let section = AgentSection(rawValue: String(value[value.index(after: hash)...])) else { return nil }
-        return (String(value[value.index(value.startIndex, offsetBy: "agent:".count)..<hash]), section)
-    }()
-
-    @MainActor static func take(for agentID: String) -> AgentSection? {
-        guard let asked, asked.agent == agentID else { return nil }
-        self.asked = nil
-        return asked.section
-    }
-}
-#endif
 
 /// Edits one agent: what model it runs, what it is told, what it may do, and who it may hand work to.
 struct AgentEditor: View {
@@ -117,7 +99,9 @@ struct AgentEditor: View {
                 ScrollViewReader { proxy in
                     form(draft)
                         #if PI2_DEVELOPMENT
-                        .task { await scroll(to: AgentSection.take(for: agentID), with: proxy) }
+                        // Again for each request of a test copy's `show`, so a section asked for on this page while it
+                        // shows is brought up too (#768).
+                        .task(id: ShowAsked.shared.count) { await scroll(to: AgentSection.take(for: agentID), with: proxy) }
                         #endif
                 }
             } else {
@@ -183,7 +167,7 @@ struct AgentEditor: View {
     }
 
     #if PI2_DEVELOPMENT
-    /// Brings the section `PI2_SHOW` asked for to the top of the page. Parts of the page fill in after it first appears
+    /// Brings the section asked for (`ShowAsked`) to the top of the page. Parts of the page fill in after it first appears
     /// (models, memory, MCP servers), which moves the sections below them, so it scrolls again while the page settles.
     private func scroll(to section: AgentSection?, with proxy: ScrollViewProxy) async {
         guard let section else { return }
