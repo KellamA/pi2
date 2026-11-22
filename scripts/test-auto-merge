@@ -14,10 +14,13 @@ T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 T=$(cd -P -- "$T" && pwd -P)
 
-# The stand-in. $CASE holds view.json (what `pr view` answers), checks.json (what `pr checks` answers), and the log of
-# every call, one line each with its arguments quoted as the shell would. `pr merge --merge` without `--auto` merges the
-# pull request in view.json, unless $CASE/stay-open says GitHub has not done it yet; `--auto` is refused for a clean
-# status, which is what gh does (#553).
+# The stand-in. $CASE holds view.json (what `pr view` answers), checks.json (every check of the newest commit, each with
+# `required` false if it is not a required one), and the log of every call, one line each with its arguments quoted as
+# the shell would. `pr checks` answers as gh 2.x does (#637): with `--required`, only the required ones; with `--json`,
+# exit status 0 whatever the checks' states; and none to list fails, saying so. $CASE/checks-error, if there, is an
+# error of gh's own instead, such as GitHub not answering. `pr merge --merge` without `--auto` merges the pull request
+# in view.json, unless $CASE/stay-open says GitHub has not done it yet; `--auto` is refused for a clean status, which
+# is what gh does (#553). A run's attempt is $CASE/attempt.txt, or 1.
 mkdir -p "$T/bin"
 cat >"$T/bin/gh" <<'EOF'
 #!/bin/bash
@@ -25,7 +28,20 @@ cat >"$T/bin/gh" <<'EOF'
 args=" $* "
 case "$1 $2" in
 "pr view") cat "$CASE/view.json" ;;
-"pr checks") cat "$CASE/checks.json" ;;
+"pr checks")
+	if [[ -f $CASE/checks-error ]]; then cat "$CASE/checks-error" >&2; exit 1; fi
+	listed=$(jq --arg required "$([[ $args == *" --required "* ]] && echo yes)" \
+		'map(select($required == "" or .required != false) | del(.required))' "$CASE/checks.json")
+	if [[ $(jq length <<<"$listed") == 0 ]]; then
+		if [[ $args == *" --required "* ]]; then
+			echo "no required checks reported on the 'topic' branch" >&2
+		else
+			echo "no checks reported on the 'topic' branch" >&2
+		fi
+		exit 1
+	fi
+	echo "$listed"
+	;;
 "pr merge")
 	if [[ $args == *" --auto "* && $(jq -r .mergeStateStatus "$CASE/view.json") == CLEAN ]]; then
 		echo "Pull request is in clean status" >&2
@@ -36,7 +52,10 @@ case "$1 $2" in
 	fi
 	;;
 "api repos/{owner}/{repo}/check-runs/"*)
-	cat "$CASE/annotations.txt"
+	cat "$CASE/annotations.txt" 2>/dev/null
+	;;
+"api repos/{owner}/{repo}/actions/runs/"*)
+	cat "$CASE/attempt.txt" 2>/dev/null || echo 1
 	;;
 esac
 exit 0
@@ -60,6 +79,7 @@ check() {
 	if "$@"; then report yes yes "$what"; else report yes no "$what"; fi
 }
 
+not() { ! "$@"; }
 logged() { grep -qF -- "$1" "$CASE/log"; }
 not_logged() { ! grep -qF -- "$1" "$CASE/log"; }
 said() { grep -qF -- "$1" <<<"$out"; }
@@ -78,10 +98,43 @@ pr() {
 	jq -n --arg state "$2" --arg status "$3" --argjson auto "$4" \
 		'{state: $state, mergeStateStatus: $status, autoMergeRequest: $auto, url: "https://example.invalid/pull/5"}' \
 		>"$CASE/view.json"
-	echo '[{"name": "Engine", "bucket": "pass", "completedAt": "2026-01-01T10:00:00Z", "link": "https://example.invalid/runs/9/job/12"}]' \
+	echo '[{"name": "Engine", "bucket": "pass", "completedAt": "2026-01-01T10:00:00Z", "link": "https://github.com/owner/repo/actions/runs/9/job/12"}]' \
 		>"$CASE/checks.json"
 }
 checks() { echo "$1" >"$CASE/checks.json"; }
+# check_run <name> <bucket> <state> [required: true or false]: one check as gh lists it, finished now unless pending,
+# in run 9; with checks_of, the list of them.
+check_run() {
+	jq -nc --arg name "$1" --arg bucket "$2" --arg state "$3" --argjson required "${4:-true}" \
+		--arg done "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+		'{name: $name, bucket: $bucket, state: $state, required: $required,
+			completedAt: (if $bucket == "pending" then "0001-01-01T00:00:00Z" else $done end),
+			link: "https://github.com/owner/repo/actions/runs/9/job/\($name | length)"}'
+}
+checks_of() { printf '%s\n' "$@" | jq -s .; }
+# The five required checks (CONTRIBUTING.md, development.md's CI), all passed, and the one that is not required.
+green=(
+	"$(check_run 'Engine (type-check and tests)' pass SUCCESS)"
+	"$(check_run 'App (build)' pass SUCCESS)"
+	"$(check_run 'Engine (Linux tests)' pass SUCCESS)"
+	"$(check_run 'Transcript page (tests)' pass SUCCESS)"
+	"$(check_run 'Scripts (tests)' pass SUCCESS)"
+)
+changes_passed=$(check_run 'Which jobs the change needs' pass SUCCESS false)
+# green_but <name> <bucket> <state> [<name> <bucket> <state>...]: the five, with each one named in that state.
+green_but() {
+	local c name i
+	for c in "${green[@]}"; do
+		name=$(jq -r .name <<<"$c")
+		for ((i = 1; i <= $#; i += 3)); do
+			if [[ ${!i} == "$name" ]]; then
+				local b=$((i + 1)) s=$((i + 2))
+				c=$(check_run "$name" "${!b}" "${!s}")
+			fi
+		done
+		echo "$c"
+	done
+}
 # run <case name>: runs scripts/auto-merge on pull request 5 with that case's answers, into $out and $status.
 run() { CASE=$T/$1; out=$("$merge" 5 2>&1); status=$?; }
 
@@ -121,7 +174,7 @@ check "merged: no merge asked for" not_logged "gh pr merge"
 
 # Checks still running, auto-merge off: it is turned on, and the wait is named.
 pr pending OPEN BLOCKED null
-checks '[{"name": "Engine", "bucket": "pending", "completedAt": null, "link": "https://example.invalid/runs/9/job/12"}]'
+checks '[{"name": "Engine", "bucket": "pending", "completedAt": null, "link": "https://github.com/owner/repo/actions/runs/9/job/12"}]'
 run pending
 report 3 "$status" "checks pending: exit status"
 check "checks pending: auto-merge turned on with a merge commit" logged "gh pr merge 5 --auto --merge"
@@ -134,22 +187,107 @@ run unreported
 report 3 "$status" "no check reported: exit status"
 check "no check reported: says so" said "no required check has reported yet"
 
-# A required check that failed: what to do, and no merge.
-pr failed OPEN BLOCKED "$automerge_on"
-checks '[{"name": "Engine", "bucket": "fail", "completedAt": "2026-01-01T10:00:00Z", "link": "https://example.invalid/runs/9/job/12"}]'
-run failed
-report 1 "$status" "a failed check: exit status"
-check "a failed check: named, and the log" said "- Engine: fail. Read the log"
-check "a failed check: not merged" not_logged "gh pr merge"
+# Not one required check has reported, which gh says as an error: waited for.
+pr none-required OPEN BLOCKED "$automerge_on"
+checks "$(checks_of "$changes_passed")"
+run none-required
+report 3 "$status" "only a check that is not required reported: exit status"
+check "only a check that is not required reported: says none has" said "no required check has reported yet"
+
+# Any other error of gh's says nothing about the checks: it is not taken for checks not reported yet (#637).
+pr gh-error OPEN BLOCKED "$automerge_on"
+echo "GraphQL: Something went wrong while executing your query. (node.statusCheckRollup)" >"$CASE/checks-error"
+run gh-error
+report 1 "$status" "gh fails to read the checks: exit status"
+check "gh fails to read the checks: gh's error shown" said "Something went wrong while executing your query"
+check "gh fails to read the checks: not taken for none reported" not said "no required check has reported yet"
+check "gh fails to read the checks: what to do" said "Run this again in a minute"
+
+# The five cases of #637, with the five required checks and the one that is not required, as GitHub lists them.
+
+# All green, and GitHub has not caught up yet: it merges shortly.
+pr all-green OPEN BLOCKED "$automerge_on"
+checks "$(checks_of "$changes_passed" "${green[@]}")"
+run all-green
+report 3 "$status" "all green: exit status"
+check "all green: says they passed" said "the required checks have passed"
+check "all green: nothing named as failed" not said "failed"
+
+# One pending: waited for, by name.
+pr one-pending OPEN BLOCKED "$automerge_on"
+checks "$(checks_of "$changes_passed" "$(green_but 'App (build)' pending IN_PROGRESS)")"
+run one-pending
+report 3 "$status" "one pending: exit status"
+check "one pending: waited for, by name" said "waiting for: App (build)."
+
+# One failed: named at once with its link, what to do, and no merge.
+pr one-failed OPEN BLOCKED "$automerge_on"
+checks "$(checks_of "$changes_passed" "$(green_but 'Scripts (tests)' fail FAILURE)")"
+run one-failed
+report 1 "$status" "one failed: exit status"
+check "one failed: named, as failed" said "- Scripts (tests): failed."
+check "one failed: its link" said "https://github.com/owner/repo/actions/runs/9/job/15"
+check "one failed: read the log" said "gh run view 9 --log-failed"
+check "one failed: or run it again" said "gh run rerun 9 --failed"
+check "one failed: not merged" not_logged "gh pr merge"
+
+# One failed and one pending: the failure is named now, not after the other one finishes.
+pr failed-pending OPEN BLOCKED "$automerge_on"
+checks "$(checks_of "$changes_passed" "$(green_but 'Transcript page (tests)' fail FAILURE 'App (build)' pending QUEUED)")"
+run failed-pending
+report 1 "$status" "one failed and one pending: exit status"
+check "one failed and one pending: the failure named" said "- Transcript page (tests): failed."
+check "one failed and one pending: the other still running" said "Still running: App (build)."
+check "one failed and one pending: not waiting" not said "waiting for"
+
+# A check that is not required failed: it holds nothing up, and is not named.
+pr not-required-failed OPEN BLOCKED "$automerge_on"
+checks "$(checks_of "$(check_run 'Which jobs the change needs' fail FAILURE false)" "${green[@]}")"
+run not-required-failed
+report 3 "$status" "a check that is not required failed: exit status"
+check "a check that is not required failed: not named" not said "Which jobs the change needs"
+check "a check that is not required failed: the required ones passed" said "the required checks have passed"
+
+# Timed out, and a status (not a check run) in error: failures too, each with its link.
+pr timed-out OPEN BLOCKED "$automerge_on"
+checks "$(checks_of "$(green_but 'Engine (Linux tests)' fail TIMED_OUT)")"
+run timed-out
+report 1 "$status" "a check that timed out: exit status"
+check "a check that timed out: named as timed out" said "- Engine (Linux tests): timed out."
+pr status-error OPEN BLOCKED "$automerge_on"
+checks '[{"name": "deploy/preview", "bucket": "fail", "state": "ERROR", "completedAt": "0001-01-01T00:00:00Z", "link": "https://ci.example.invalid/build/77"}]'
+run status-error
+report 1 "$status" "a status in error: exit status"
+check "a status in error: named, with its link" said "- deploy/preview: failed (ERROR). https://ci.example.invalid/build/77"
+check "a status in error: no run to name" not said "gh run view  "
+
+# Cancelled for another reason than no runner: named, to run again.
+pr cancelled-other OPEN BLOCKED "$automerge_on"
+checks "$(checks_of "$(green_but 'App (build)' cancel CANCELLED)")"
+echo "The operation was canceled." >"$T/cancelled-other/annotations.txt"
+run cancelled-other
+report 1 "$status" "a check cancelled by someone: exit status"
+check "a check cancelled by someone: named, as cancelled" said "- App (build): cancelled."
+check "a check cancelled by someone: how to run it again" said "gh run rerun 9 --failed"
 
 # A check cancelled because no runner took it: CI runs it again, which is not a failure of the change.
 pr cancelled OPEN BLOCKED "$automerge_on"
-checks '[{"name": "App", "bucket": "cancel", "completedAt": "2026-01-01T10:00:00Z", "link": "https://example.invalid/runs/9/job/12"}]'
+checks '[{"name": "App", "bucket": "cancel", "state": "CANCELLED", "completedAt": "2026-01-01T10:00:00Z", "link": "https://github.com/owner/repo/actions/runs/9/job/12"}]'
 echo "The job was not acquired by Runner of type hosted even after multiple attempts" >"$T/cancelled/annotations.txt"
 run cancelled
 report 3 "$status" "a cancelled check: exit status"
 check "a cancelled check: said to run again by itself" said "CI runs it again by itself"
 check "a cancelled check: how to run it again" said "gh run rerun 9 --failed"
+
+# No runner took it at the run's fourth attempt, which CI does not run again by itself: it is left to you.
+pr cancelled-last OPEN BLOCKED "$automerge_on"
+checks "$(checks_of "$(green_but 'App (build)' cancel CANCELLED)")"
+echo "The job was not acquired by Runner of type hosted even after multiple attempts" >"$T/cancelled-last/annotations.txt"
+echo 4 >"$T/cancelled-last/attempt.txt"
+run cancelled-last
+report 1 "$status" "no runner at the last attempt: exit status"
+check "no runner at the last attempt: not said to run again by itself" not said "CI runs it again by itself"
+check "no runner at the last attempt: how to run it again" said "gh run rerun 9 --failed"
 
 # A conflict with main: what to do, and no merge.
 pr dirty OPEN DIRTY "$automerge_on"
@@ -172,8 +310,6 @@ check "no number: says what it takes" said "usage: scripts/auto-merge"
 out=$("$merge" 5 6 2>&1); status=$?
 report 2 "$status" "two numbers: exit status"
 check "two numbers: nothing asked of GitHub" test ! -s "$CASE/log"
-
-report 0 1 "a deliberate failure, for reproducing #637 against GitHub; removed in the next commit"
 
 echo "$pass passed, $fail failed"
 ((fail == 0))
