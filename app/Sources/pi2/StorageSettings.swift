@@ -100,9 +100,9 @@ struct StorageSettings: View {
         }
     }
 
-    /// The line for a backup that did not finish, from `backup.status`; nothing when the last one finished.
+    /// The line for a backup that did not finish, from `engine.info`'s `backup`; nothing when the last one finished.
     private func loadStatus() async {
-        guard let result = try? await engine.call("backup.status"), let last = result["unfinished"], case .object = last else {
+        guard let result = try? await engine.call("engine.info"), let last = result["backup"]?["unfinished"], case .object = last else {
             unfinished = nil
             return
         }

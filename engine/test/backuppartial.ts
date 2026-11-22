@@ -77,7 +77,7 @@ mkdirSync(join(chosen, theirs));
 writeFileSync(gate, "");
 let engine = start();
 let client = await EngineClient.connect(engine, home);
-assert.deepEqual(await client.call("backup.status"), { unfinished: null }, "nothing to say on a new data folder");
+assert.deepEqual((await client.call("engine.info")).backup, { unfinished: null }, "nothing to say on a new data folder");
 const killed = client.call("backup.create", { directory: chosen });
 killed.catch(() => {});
 await held();
@@ -103,7 +103,7 @@ assert.ok(readFileSync(join(home, "engine.log"), "utf8").includes(`backup: remov
 assert.ok(existsSync(join(chosen, othersLive)), "another live process's copy stays");
 assert.ok(existsSync(join(chosen, theirs)), "a folder without the mark stays");
 assert.deepEqual(listed(), [], "no backup to offer");
-const status = await client.call("backup.status");
+const status = (await client.call("engine.info")).backup;
 assert.equal(status.unfinished.folder, chosen);
 assert.equal(status.unfinished.reason, null, "the engine stopped while making it");
 assert.equal(typeof status.unfinished.startedAt, "number");
@@ -151,7 +151,7 @@ for (const path of made) {
 }
 assert.deepEqual(listed(), made.map((path) => path.slice(chosen.length + 1)).sort(), "both backups there");
 assert.deepEqual(partials(), [othersLive], "and no copy of this engine's left");
-assert.deepEqual(await client.call("backup.status"), { unfinished: null }, "the page's line gone once a backup is whole");
+assert.deepEqual((await client.call("engine.info")).backup, { unfinished: null }, "the page's line gone once a backup is whole");
 client.close();
 await stop(engine);
 step("two backups into one folder at once each leave the other's copy alone, and both finish");

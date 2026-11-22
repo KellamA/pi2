@@ -887,7 +887,8 @@ async function handOverToOrchestrator(projectId: string, agent: AgentProfile, ch
 // ---- Requests
 
 const handlers: Record<string, (params: Params, client: Client) => Promise<unknown>> = {
-	"engine.info": async () => ({ build, main: engineMain, pid: process.pid }),
+	// `backup`: whether the last backup did not finish, for Settings › Storage (backup.ts, #792).
+	"engine.info": async () => ({ build, main: engineMain, pid: process.pid, backup: backupStatus(home) }),
 	/** Whether this connection may act for the person (#504): the app asks once it has connected. */
 	"connection.mayAnswer": async (_params, client) => {
 		const { allowed, why } = await mayAnswer(client);
@@ -1085,7 +1086,6 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		return {};
 	},
 	"backup.create": async (params) => ({ path: await createBackup(home, text(params, "directory")) }),
-	"backup.status": async () => backupStatus(home),
 	"conversation.archive": async (params) => {
 		if (typeof params.id !== "number") throw new Error(`Unknown conversation: ${String(params.id)}`);
 		await archiveConversation(params.id);

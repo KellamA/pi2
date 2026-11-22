@@ -189,7 +189,6 @@ const OPEN_TO_ANY = new Set([
 	"providers.draftModel",
 	"providers.ask",
 	"settings.getCompaction",
-	"backup.status", // whether the last backup did not finish (#792)
 	"background.output",
 	"background.stop",
 	"changes.list",
