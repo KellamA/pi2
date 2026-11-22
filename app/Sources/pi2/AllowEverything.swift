@@ -66,10 +66,11 @@ struct AllowEverythingSection: View {
             Text(footer).formFooter()
         }
         #if PI2_DEVELOPMENT
-        // `PI2_SHOW=agent:<id>#everything` opens the page here, with the confirmation up while the switch is off, so a
-        // throwaway copy can show it without a click (docs/development.md).
-        .task {
-            if ProcessInfo.processInfo.environment["PI2_SHOW"] == "agent:\(agentID)#everything", !on { confirming = true }
+        // `PI2_SHOW=agent:<id>#everything`, or a test copy's `show` of it while it runs, opens the page here, with the
+        // confirmation up while the switch is off, so a throwaway copy can show it without a click (docs/development.md,
+        // `ShowAsked`, #768).
+        .task(id: ShowAsked.shared.count) {
+            if ShowAsked.shared.value == "agent:\(agentID)#everything", !on { confirming = true }
         }
         #endif
     }
