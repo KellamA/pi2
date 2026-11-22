@@ -344,7 +344,6 @@ private struct DashboardColumn: View {
     private var needs: [NeedItem] { engine.needs.filter { $0.projectId == project.id } }
     private var runs: [ActivityRun] { engine.activity.filter { $0.projectId == project.id && $0.chat != true } }
     private var waking: Bool { project.settings?.wakeOnReports ?? false }
-    private var live: ProjectLive { engine.projectStore.live(project.id) }
     private var reports: [ProjectReport] { ProjectReports(engine.extras["reports"]?["projects"]?[project.id]).items }
     /// The open pull requests of a project whose work is a GitHub repository, newest first.
     private var pulls: [GitHubPull] {

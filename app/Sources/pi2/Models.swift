@@ -908,12 +908,6 @@ struct VersionPoint: Codable, Equatable {
 
     private enum CodingKeys: String, CodingKey { case after, index, count }
 
-    init(after: Int?, index: Int, count: Int) {
-        self.after = after
-        self.index = index
-        self.count = count
-    }
-
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         after = try container.decodeIfPresent(Int.self, forKey: .after)

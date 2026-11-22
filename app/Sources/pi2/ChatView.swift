@@ -973,21 +973,6 @@ struct ToolCard: View {
         }
     }
 
-    private var icon: String {
-        switch call.name {
-        case "bash", "background": "terminal"
-        case "read": "doc.text"
-        case "write", "edit": "pencil"
-        case "write_document": "doc.richtext"
-        case "schedule_task", "list_schedules", "cancel_schedule": "clock"
-        case "delegate": "person.2"
-        case "ask_user": "questionmark.bubble"
-        case "codemode": "chevron.left.forwardslash.chevron.right"
-        case "browser": "globe"
-        default: call.name.hasPrefix("mcp__") ? "puzzlepiece.extension" : "hammer"
-        }
-    }
-
     /// The short name on the card's tag.
     private var tagText: String {
         switch call.name {

@@ -165,10 +165,6 @@ final class AppModel {
         return nil
     }
 
-    var selectedConversation: ConversationSummary? {
-        engine.conversations.first { $0.id == selectedConversationID }
-    }
-
     /// Starts a conversation with `agentId`, or with the agent used last when nil.
     func newConversation(agentId: String? = nil) {
         Task {
