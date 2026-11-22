@@ -51,7 +51,7 @@ struct AgentAvatar: View {
 /// The sections of an agent's page, by the short names a development build can open the page at, with
 /// `PI2_SHOW=agent:<id>#<name>` (docs/development.md). In the order they appear.
 enum AgentSection: String, CaseIterable {
-    case profile, model, summaries, instructions, files, memory, tools, everything, builtins, rules, variables, extras, computer, browser, schedule, delegates
+    case profile, model, summaries, instructions, files, tools, everything, builtins, rules, variables, extras, computer, browser, schedule, delegates
 }
 
 #if PI2_DEVELOPMENT
@@ -90,17 +90,15 @@ struct AgentEditor: View {
     private var engine: EngineClient { model.engine }
     private var saved: AgentProfile? { engine.agent(agentID) }
 
-    /// Where this agent's schedules are listed: Activity, with the preview off; with it on, its project's Settings tab
-    /// for an agent of a project, and this page for a template (docs/projects.md, 3.13).
+    /// Where this agent's schedules are listed: its project's Settings tab for an agent of a project, and this page for a
+    /// template (docs/projects.md, 3.13).
     private var schedulesShow: String {
-        guard engine.projectsPreview else { return "They show in Activity" }
         if let project = saved?.projectId { return "They show on the Settings tab of \(engine.project(project)?.name ?? "its project")" }
         return "They show above"
     }
 
     /// Where the person can schedule this agent themselves.
     private var scheduleHere: String {
-        guard engine.projectsPreview else { return "in Activity" }
         if let project = saved?.projectId { return "on the Settings tab of \(engine.project(project)?.name ?? "its project")" }
         return "above"
     }
@@ -127,9 +125,9 @@ struct AgentEditor: View {
             }
         }
         .background(Theme.window)
-        // With the projects preview on, an agent of no project is a template (docs/projects.md, 3.3), and is titled so.
+        // An agent of no project is a template (docs/projects.md, 3.3), and is titled so.
         .navigationTitle(saved?.name ?? "Agent")
-        .navigationSubtitle(engine.projectsPreview && saved?.projectId == nil ? "Template" : "Agent")
+        .navigationSubtitle(saved?.projectId == nil ? "Template" : "Agent")
         .toolbar {
             ToolbarItem {
                 // A project's agent starts one in place of its board; its orchestrator's is Start fresh, which asks first,
@@ -320,9 +318,6 @@ struct AgentEditor: View {
                 }
                 .id(AgentSection.files)
 
-                AgentMemorySection(engine: engine, agentID: agentID)
-                    .id(AgentSection.memory)
-
                 Section {
                     Picker("Tool access", selection: draft.access) {
                         ForEach(AccessLevel.all, id: \.id) { Text($0.title).tag($0.id) }
@@ -421,9 +416,9 @@ struct AgentEditor: View {
                         get: { agent.schedule?.enabled ?? false },
                         set: { draft.wrappedValue.schedule = ScheduleSettings(enabled: $0) }
                     ))
-                    // With the preview on, a template's schedules are listed here; a project's agent's, on its project's
-                    // Settings tab (docs/projects.md, 3.13).
-                    if engine.projectsPreview, saved?.projectId == nil, let saved {
+                    // A template's schedules are listed here; a project's agent's, on its project's Settings tab
+                    // (docs/projects.md, 3.13).
+                    if saved?.projectId == nil, let saved {
                         ScheduleList(
                             model: model,
                             schedules: engine.schedules(ofTemplate: saved.id),

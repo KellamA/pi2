@@ -115,8 +115,6 @@ struct TranscriptFeed {
         /// The reach requests and proposed rules waiting from this conversation (3.9), drawn as cards at the calls that
         /// asked for them and answered in place.
         var needs: [Need]?
-        /// Whether the projects preview is on: with it off the page draws none of a project's lines or cards (10.2).
-        var projects: Bool?
         var names: Names?
         var palette: [String: String]?
         var chat: Chat?
@@ -141,7 +139,6 @@ struct TranscriptFeed {
     private var inbox: [InboxItem]?
     private var changes: [ProjectChangeLine]?
     private var needs: [Need]?
-    private var projects: Bool?
     private var names: Names?
     private var palette: [String: String]?
     private var chat: Chat?
@@ -157,7 +154,7 @@ struct TranscriptFeed {
     /// The update that brings the page from what it was last sent to this, or nil when nothing changed.
     /// `earlier` is how many older entries the engine is still to send the app; with `withOlder` false, older entries the
     /// app has wait (the page has not yet drawn the part before them).
-    mutating func update(items: [Item], earlier: Int = 0, older: Older = .none, state: ConversationState?, inbox: [InboxItem], changes: [ProjectChangeLine] = [], needs: [Need] = [], projects: Bool = false, names: Names, palette: [String: String], chat: Chat = .none, withOlder: Bool = true) -> Message? {
+    mutating func update(items: [Item], earlier: Int = 0, older: Older = .none, state: ConversationState?, inbox: [InboxItem], changes: [ProjectChangeLine] = [], needs: [Need] = [], names: Names, palette: [String: String], chat: Chat = .none, withOlder: Bool = true) -> Message? {
         var message = Message()
         var changed = false
 
@@ -227,12 +224,6 @@ struct TranscriptFeed {
         if needs != self.needs {
             message.needs = needs
             self.needs = needs
-            changed = true
-        }
-        // The preview's own switch, so that with it off the page drops what it holds of a project (10.2).
-        if projects != self.projects {
-            message.projects = projects
-            self.projects = projects
             changed = true
         }
         if names != self.names {

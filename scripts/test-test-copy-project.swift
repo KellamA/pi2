@@ -16,8 +16,8 @@ struct CheckProjectCopyView {
         precondition(agent.agent == "Sample Agent" && agent.hub == .boardFolded && agent.tab == nil)
         let dashboard = try ProjectCopyView(show: "dashboard", hub: nil)
         precondition(dashboard.show == "dashboard" && dashboard.project == nil)
-        let inbox = try ProjectCopyView(show: "inbox", hub: nil)
-        precondition(inbox.show == nil)
+        let page = try ProjectCopyView(show: "activity", hub: nil)
+        precondition(page.show == nil)
         for value in ["project:", "project: #now", "project:p-123#", "project:p-123#bogus", "project:p-123#agent:"] {
             precondition((try? ProjectCopyView(show: value, hub: nil)) == nil)
         }

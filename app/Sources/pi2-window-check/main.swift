@@ -75,7 +75,7 @@ let unbroken = String(repeating: "x", count: 5000)
 final class Feed {
     var errors: [String] = []
     var cards: [String] = []
-    var rows: [String] = ["Inbox", "Activity", "Usage", "Archive"]
+    var rows: [String] = ["Dashboard", "Activity", "Usage", "Archive"]
     var sidebar = NavigationSplitViewVisibility.all
     var showLastRequest = false
     /// The fold of a project's hub, when the detail shows one (#471), and whether it said it was too narrow for both panels.

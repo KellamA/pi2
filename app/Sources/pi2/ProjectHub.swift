@@ -3,7 +3,7 @@ import SwiftUI
 import PaneKit
 import WindowKit
 
-// A project's hub (#471): what opens when a project is selected, with the preview on. The bar, the conversation with
+// A project's hub (#471): what opens when a project is selected. The bar, the conversation with
 // the orchestrator and the board side by side, each folding. docs/design/projects.md says what it is for, and
 // docs/projects.md (10.1, 10.3) what it reads and keeps. The views are in ProjectHubViews.swift.
 
@@ -69,7 +69,6 @@ struct ProjectRow: Decodable, Equatable, Identifiable {
 }
 
 struct ProjectsEvent: Decodable {
-    let preview: Bool
     let projects: [ProjectRow]
 }
 
@@ -197,8 +196,7 @@ final class ProjectHubs {
     func agent(_ id: String) -> Int? { layout(id).focusedConversation }
 
     /// The conversation of each project's hub that has the keyboard, as the hub last drew it: the focused pane's, unless
-    /// the person clicked in the orchestrator's field, else the orchestrator's. The Conversation menu acts on
-    /// it, as it acts on the focused pane in the old screens (#632).
+    /// the person clicked in the orchestrator's field, else the orchestrator's. The Conversation menu acts on it (#632).
     private(set) var keyboard: [String: Int] = [:]
 
     func setKeyboard(_ conversation: Int?, for id: String) {
@@ -248,23 +246,22 @@ final class ProjectHubs {
 }
 
 extension EngineClient {
-    /// A project the window can show: in the `projects` event, with the preview on, and not deleted.
+    /// A project the window can show: in the `projects` event, and not deleted.
     func project(_ id: String) -> ProjectRow? {
-        guard projectsPreview else { return nil }
-        return projects.first { $0.id == id && $0.deletedAt == nil }
+        projects.first { $0.id == id && $0.deletedAt == nil }
     }
 
     /// Why a conversation cannot be summarised or given a fresh context: an earlier conversation with a project's
-    /// orchestrator takes no messages with the preview on (docs/projects.md, 3.5), and the current one has those.
+    /// orchestrator takes no messages (docs/projects.md, 3.5), and the current one has those.
     func earlierRefusal(_ id: Int) -> String? {
-        guard projectsPreview, conversations.first(where: { $0.id == id })?.orchestrator == "earlier" else { return nil }
+        guard conversations.first(where: { $0.id == id })?.orchestrator == "earlier" else { return nil }
         return "This is an earlier conversation with the orchestrator. Write in the current one."
     }
 
     /// Why a conversation cannot be forked: one with a project's orchestrator, current or earlier, since a project has one
     /// conversation with its orchestrator, which Start fresh begins again (docs/projects.md, 6.5).
     func forkRefusal(_ id: Int) -> String? {
-        guard projectsPreview, conversations.first(where: { $0.id == id })?.orchestrator != nil else { return nil }
+        guard conversations.first(where: { $0.id == id })?.orchestrator != nil else { return nil }
         return "A project has one conversation with its orchestrator. To begin it again, use Start Fresh…"
     }
 
@@ -382,7 +379,7 @@ extension AppModel {
 
     /// The conversation the Conversation menu acts on (#632): with a hub shown, the one of its conversations that has the keyboard,
     /// the orchestrator's when the hub has not said (its conversation folded, say, which the strip still writes to); else
-    /// the focused pane's, or chat mode's chat.
+    /// chat mode's chat.
     var commandConversationID: Int? {
         if let id = shownProject {
             let orchestrator = engine.project(id)?.conversation
@@ -401,27 +398,25 @@ extension AppModel {
     }
 }
 
-/// The View menu's commands for the hub's two panels, with the preview on. A view of its own, so that what it reads
-/// draws this menu again and not every scene (#436). ⌘[ and ⌘] are taken by the panes, so the keys have ⌥ as well.
+/// The View menu's commands for the hub's two panels. A view of its own, so that what it reads draws this menu again
+/// and not every scene (#436). ⌘[ and ⌘] are taken by the panes, so the keys have ⌥ as well.
 struct HubCommands: View {
     let model: AppModel
 
     var body: some View {
-        if model.engine.projectsPreview {
-            let project = model.shownProject
-            let fold = project.map { model.hubs.fold($0) }
-            Divider()
-            Button(fold == .conversationFolded ? "Show Conversation" : "Fold Conversation") {
-                if let project { model.hubs.toggle(.conversationFolded, for: project) }
-            }
-            .keyboardShortcut("[", modifiers: [.command, .option])
-            .disabled(project == nil)
-            Button(fold == .boardFolded ? "Show Board" : "Fold Board") {
-                if let project { model.hubs.toggle(.boardFolded, for: project) }
-            }
-            .keyboardShortcut("]", modifiers: [.command, .option])
-            .disabled(project == nil)
+        let project = model.shownProject
+        let fold = project.map { model.hubs.fold($0) }
+        Divider()
+        Button(fold == .conversationFolded ? "Show Conversation" : "Fold Conversation") {
+            if let project { model.hubs.toggle(.conversationFolded, for: project) }
         }
+        .keyboardShortcut("[", modifiers: [.command, .option])
+        .disabled(project == nil)
+        Button(fold == .boardFolded ? "Show Board" : "Fold Board") {
+            if let project { model.hubs.toggle(.boardFolded, for: project) }
+        }
+        .keyboardShortcut("]", modifiers: [.command, .option])
+        .disabled(project == nil)
     }
 }
 

@@ -2,8 +2,7 @@ import Foundation
 import Observation
 
 // Projects (epic #450, docs/projects.md): what the app reads of the engine's `projects` and `needs` events, and the state
-// the sidebar and the hub share. The engine sends these events whether the preview is on or not; with it off the app shows
-// nothing of them but the switch in Settings (10.2).
+// the sidebar and the hub share.
 
 /// A project as the `projects` event sends it (docs/projects.md, 3.2 and 4.3): the parts the app reads. Fields the app
 /// does not read, such as `lastWords`, are left out, so that a change to them changes nothing here.
@@ -32,9 +31,20 @@ struct CarryOverState: Codable, Equatable {
         let variables: [String]
         let error: String?
     }
+    /// The copy of the data the update to projects made before it carried anything (docs/projects.md, 9.8): where, and
+    /// when, in milliseconds.
+    struct RemovalBackup: Codable, Equatable {
+        let path: String
+        let at: Double
+    }
     let ranAt: Double?
     let backup: String?
     let secretsPending: [Pending]
+    /// Set once the update to projects has made its copy of the data (#715). Nil from an engine that does not send it.
+    let removalBackup: RemovalBackup?
+    /// Why the update to projects could not make its copy or carry everything over, while it could not; it tries again
+    /// at the engine's next start. Nil from an engine that does not send it.
+    let removalFailed: String?
 }
 
 /// What carrying over would do, or did (docs/projects.md, 9.8).
@@ -69,19 +79,8 @@ struct CarryOverReport: Codable, Equatable {
         let notices: [String]
         var id: String { key }
     }
-    struct LeftOut: Codable, Equatable {
-        let chats: Int
-        let deleted: Int
-        let deletedProject: Int
-        let notesLeft: Int
-    }
     let plan: String?
     let projects: [Project]
-    let leftOut: LeftOut
-    let already: Int
-    let ranAt: Double?
-    let backup: String?
-    let secretsPending: [CarryOverState.Pending]
     // A single restore: the original agent whose copy the root will run as, and whether the destination comes back too.
     let rootAgent: String?
     let restoresProject: Bool?
@@ -153,7 +152,7 @@ final class RunLive {
     fileprivate(set) var parent: Int?
 }
 
-/// The projects, the preview switch and carrying over's state, from the engine's `projects`, `needs`, `activity` and
+/// The projects and carrying over's state, from the engine's `projects`, `needs`, `activity` and
 /// `library` events. Each property is set only when it changed.
 @MainActor
 @Observable

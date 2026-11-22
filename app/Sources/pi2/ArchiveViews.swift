@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// The Archive: conversations put out of the sidebar but kept. Each can be read, found by search, restored or deleted.
-/// With the Projects preview on, the conversations of deleted projects are listed under their project at the top,
-/// each with Restore to a Project… (docs/projects.md, 3.6); the preview off leaves the page as it was.
+/// The conversations of deleted projects are listed under their project at the top, each with Restore to a Project…
+/// (docs/projects.md, 3.6).
 struct ArchiveView: View {
     @Bindable var model: AppModel
     @State private var query = ""
@@ -11,7 +11,7 @@ struct ArchiveView: View {
     @State private var working = false
     @State private var error: String?
     private var engine: EngineClient { model.engine }
-    private var showsDeletedProjects: Bool { engine.projectsPreview && !engine.projectStore.deletedProjects.isEmpty }
+    private var showsDeletedProjects: Bool { !engine.projectStore.deletedProjects.isEmpty }
 
     /// What the filter leaves: every word typed has to be in the title or the agent's name.
     private var rows: [ArchivedConversation] {
@@ -26,19 +26,19 @@ struct ArchiveView: View {
     /// The Archive's own list: conversations of no project, or of one that was not deleted. A deleted project's are
     /// listed under the project at the top, so they are not shown twice.
     private var plain: [ArchivedConversation] {
-        engine.projectsPreview && engine.projectStore.loaded
+        engine.projectStore.loaded
             ? engine.archived.filter { deletedProject(of: $0.projectId) == nil }
             : engine.archived
     }
 
-    /// The deleted project a conversation belongs to, with the preview on (docs/projects.md, 3.6).
+    /// The deleted project a conversation belongs to (docs/projects.md, 3.6).
     private func deletedProject(of id: String?) -> ProjectInfo? {
-        guard engine.projectsPreview, let id else { return nil }
+        guard let id else { return nil }
         return engine.projectStore.deletedProjects.first { $0.id == id }
     }
 
     var body: some View {
-        // With the preview on, a conversation opened here reads in place of the list (OpenConversation.swift, #644).
+        // A conversation opened here reads in place of the list (OpenConversation.swift, #644).
         if let reading = model.archiveConversation {
             ArchiveReader(model: model, conversation: reading)
         } else {
@@ -140,7 +140,7 @@ struct ArchiveView: View {
 
     /// The restore's reply names the actual destination, including when the project was just made.
     private func openInProject(_ id: Int, project: String?) {
-        if let project, engine.projectsPreview {
+        if let project {
             model.openAgent(id, in: project)
         } else {
             model.openConversation(id)
@@ -262,7 +262,7 @@ struct ArchiveRow: View {
     }
 }
 
-/// Deleted projects, at the top of the Archive while the preview is on: each with its conversations, which are shown
+/// Deleted projects, at the top of the Archive: each with its conversations, which are shown
 /// nowhere else, and each with Restore to a Project… (docs/projects.md, 3.6). The project itself stays deleted.
 struct DeletedProjects: View {
     let model: AppModel
@@ -273,7 +273,7 @@ struct DeletedProjects: View {
 
     var body: some View {
         let projects = engine.projectStore.deletedProjects
-        if engine.projectsPreview, !projects.isEmpty {
+        if !projects.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Deleted projects").font(.headline)
                 ForEach(projects) { project in
@@ -392,7 +392,7 @@ private struct RestoreSheet: View {
     private var report: CarryOverReport { shown.report }
     private var project: CarryOverReport.Project? { report.projects.first }
 
-    /// Every copy that takes something a duplicate made by hand would not (9.5), as the carrying-over sheet lists them.
+    /// Every copy that takes something a duplicate made by hand would not (9.5).
     private var secretCopies: [CarryOverReport.Project.Copy] {
         (project?.copies ?? []).filter { $0.existing == nil && ($0.allowEverything || !$0.variables.isEmpty) }
     }
@@ -452,12 +452,84 @@ private struct RestoreSheet: View {
         VStack(alignment: .leading, spacing: 6) {
             Label("These copies take more than a duplicate would", systemImage: "exclamationmark.shield").font(.headline).foregroundStyle(Theme.bad)
             ForEach(secretCopies, id: \.template) { copy in
-                Text("\(copy.name): \(CarryOverSheet.takes(copy))").fixedSize(horizontal: false, vertical: true)
+                Text("\(copy.name): \(copy.takes)").fixedSize(horizontal: false, vertical: true)
             }
             Text("Each takes them from the agent it is a copy of, so the conversation goes on as before.").formFooter()
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.bad.opacity(0.08), in: .rect(cornerRadius: 8))
+    }
+}
+
+
+extension CarryOverReport.Project.Copy {
+    /// What a copy takes that is not copied when an agent is duplicated by hand (docs/projects.md, 9.5).
+    var takes: String {
+        var parts: [String] = []
+        if allowEverything { parts.append("Allow everything, so nothing it does is asked about") }
+        if !variables.isEmpty { parts.append("the values of \(variables.joined(separator: ", "))") }
+        return parts.joined(separator: "; and ")
+    }
+}
+
+/// One project in the report: where it comes from, what goes into it and what to know.
+struct ProjectPlanView: View {
+    let project: CarryOverReport.Project
+
+    private var status: String {
+        if project.existing == nil { return project.archived ? "New, archived: everything in it is archived" : "New" }
+        return project.adopted ? "Your project for this folder" : "Already made"
+    }
+
+    private var contents: String {
+        var parts: [String] = []
+        if project.conversations > 0 { parts.append(project.conversations == 1 ? "1 conversation" : "\(project.conversations) conversations") }
+        if project.archivedConversations > 0 { parts.append("\(project.archivedConversations) archived") }
+        if project.subChats > 0 { parts.append(project.subChats == 1 ? "1 sub-chat" : "\(project.subChats) sub-chats") }
+        if project.notes > 0 { parts.append(project.notes == 1 ? "1 note" : "\(project.notes) notes") }
+        return parts.isEmpty ? "Nothing new" : parts.joined(separator: ", ")
+    }
+
+    private var orchestrator: String? {
+        guard let orchestrator = project.orchestrator else { return nil }
+        if let title = orchestrator.title {
+            return "Orchestrator: the agent of “\(title.isEmpty ? "New conversation" : title)”, which goes on as its conversation"
+        }
+        return "Orchestrator: pi²’s default orchestrator, with a new conversation when you first open it"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(project.name).font(.headline)
+                Text(status).font(.caption).foregroundStyle(Theme.tx3)
+            }
+            Text(project.key == "none" ? "No folder" : (project.key as NSString).abbreviatingWithTildeInPath)
+                .font(Theme.mono).foregroundStyle(Theme.tx3).lineLimit(1).truncationMode(.middle)
+            Text(contents)
+            if let orchestrator { Text(orchestrator).foregroundStyle(Theme.tx2).fixedSize(horizontal: false, vertical: true) }
+            if !project.copies.isEmpty {
+                let made = project.copies.filter { $0.existing == nil }.map(\.name)
+                let kept = project.copies.filter { $0.existing != nil }.map(\.name)
+                if !made.isEmpty { Text("Copies of \(made.joined(separator: ", "))").foregroundStyle(Theme.tx2) }
+                if !kept.isEmpty { Text("Uses its copies of \(kept.joined(separator: ", "))").foregroundStyle(Theme.tx2) }
+            }
+            ForEach(project.copies.filter { $0.worktreeOff }) { copy in
+                warning("\(copy.name) makes a worktree for each conversation, but this folder is not a git repository, so its copy will not.")
+            }
+            ForEach(project.copies.filter { $0.folder != nil }) { copy in
+                warning("New sub-chats handed to \(copy.name) will start in this project’s folder, not in \((copy.folder! as NSString).abbreviatingWithTildeInPath). Conversations already working stay where they are.")
+            }
+            ForEach(project.notices, id: \.self) { warning($0) }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .panel()
+    }
+
+    private func warning(_ text: String) -> some View {
+        Label { Text(text).fixedSize(horizontal: false, vertical: true) } icon: { Image(systemName: "exclamationmark.triangle").foregroundStyle(Theme.warn) }
+            .font(.callout)
     }
 }

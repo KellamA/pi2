@@ -207,7 +207,6 @@ struct TestCopyControl: NSViewRepresentable {
         /// A project by its id, or by its name in any case, among those the copy shows.
         private func projectID(_ asked: String) -> String? {
             let engine = model.engine
-            guard engine.projectsPreview else { return nil }
             let live = engine.projects.filter { $0.deletedAt == nil }
             return (live.first { $0.id == asked } ?? live.first { $0.name.lowercased() == asked.lowercased() })?.id
         }
@@ -217,7 +216,6 @@ struct TestCopyControl: NSViewRepresentable {
         /// applies to the project shown. The Dashboard is answered once it has drawn its columns (#481).
         private func showProject(_ view: ProjectCopyView, dir: URL) -> [String: String]? {
             if view.show == "dashboard" {
-                guard model.engine.projectsPreview else { return ["error": "the copy has the projects preview off; fill it with --project first"] }
                 model.selection = .dashboard
                 // Answered once the Dashboard has drawn its columns, as a hub is once it has drawn what was asked.
                 if let drawn = DashboardDrawn.current {
@@ -231,7 +229,7 @@ struct TestCopyControl: NSViewRepresentable {
             let id: String
             if let project = view.project {
                 guard let found = projectID(project) else {
-                    return ["error": model.engine.projectsPreview ? "no project called \(project) in the copy" : "the copy has the projects preview off; fill it with --project first"]
+                    return ["error": "no project called \(project) in the copy"]
                 }
                 id = found
             } else if let shown = model.shownProject {
@@ -290,12 +288,10 @@ struct TestCopyControl: NSViewRepresentable {
             guard model.engine.conversations.contains(where: { $0.id == id }) || model.isArchived(id) else {
                 return ["error": "no conversation #\(id) in the copy's library"]
             }
-            // Moving focus to another visible pane does not redraw its transcript. A pane kept in the layout
-            // behind Inbox or Chat, on the other hand, needs to draw again when it comes back on screen.
-            // With the projects preview on, it opens where it lives (#644): a hub's panel, or the Archive's reader.
+            // It opens where it lives (#644): chat mode, a hub's panel or pane, or the Archive's reader. One already on
+            // screen there does not draw again.
             let alreadyShown = model.mode == .chat ? model.chats.selection == id
-                : model.engine.projectsPreview ? HubDrawn.current.map { $0.conversation == id || $0.shown.contains(id) } == true || model.archiveConversation == id
-                : model.showsWorkspace && model.workspace.panes.contains { $0.conversation == id }
+                : HubDrawn.current.map { $0.conversation == id || $0.shown.contains(id) } == true || model.archiveConversation == id
             let before = TranscriptDrawn.drawings[id]
             model.openConversation(id, beside: beside)
             if alreadyShown, before != nil { return ["result": "Showing conversation #\(id), drawn"] }
@@ -309,16 +305,15 @@ struct TestCopyControl: NSViewRepresentable {
             if ChatLaunch.apply(page, to: model) {
                 return ["result": "Showing chat mode from \(page); test-copy cannot wait for its page to be drawn"]
             }
-            if let asked = Selection(launch: page, conversations: model.engine.conversations, archived: model.engine.archived) {
-                switch asked {
-                case .conversation(let id): return showConversation(id, dir: dir)
-                case .agent(let id):
-                    model.selection = asked
+            if let asked = Selection(launch: page) {
+                model.selection = asked
+                if case .agent(let id) = asked {
                     return ["result": "Showing the page of agent \(id); test-copy cannot wait for its page to be drawn"]
-                default:
-                    model.selection = asked
-                    return ["result": "Showing \(page); test-copy cannot wait for its page to be drawn"]
                 }
+                return ["result": "Showing \(page); test-copy cannot wait for its page to be drawn"]
+            }
+            if let id = LaunchConversation.match(page, conversations: model.engine.conversations, archived: model.engine.archived) {
+                return showConversation(id, dir: dir)
             }
             // One of a project's conversations in a new pane of its hub, as ⌥ or a sub-chat card's Beside opens it (#657).
             if page.hasPrefix("beside:") {

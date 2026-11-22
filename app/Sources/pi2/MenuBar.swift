@@ -18,20 +18,15 @@ struct MenuBarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // With the projects preview on, a question here starts a chat (#654): no agent, project or folder.
-            TextField(engine.projectsPreview ? "Ask in a new chat…" : "Ask \(engine.agents.first?.name ?? "an agent")…", text: $draft, axis: .vertical)
+            // A question here starts a chat (#654): no agent, project or folder.
+            TextField("Ask in a new chat…", text: $draft, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1...6)
                 .sendsOnReturn(ask)
                 .disabled(engine.status != .connected)
-                .help(engine.projectsPreview ? "Starts a chat with the chat model used last, and opens it in chat mode" : "Starts a conversation with \(engine.agents.first?.name ?? "an agent")")
+                .help("Starts a chat with the chat model used last, and opens it in chat mode")
 
-            if engine.projectsPreview {
-                needsByProject
-            } else if !engine.inbox.isEmpty {
-                section("Needs you")
-                ForEach(engine.inbox) { InboxCard(engine: engine, item: $0, showsSource: true) }
-            }
+            needsByProject
 
             section("Running")
             if engine.activity.isEmpty && engine.backgroundCommands.isEmpty && engine.localRunning.isEmpty {
@@ -106,8 +101,7 @@ struct MenuBarView: View {
     }
 
     /// What waits, by project: each opens its project's hub on the Now tab, where its card is answered in place
-    /// (docs/projects.md, 10.3, #481); a need of a conversation in no project opens that conversation, as the Inbox's
-    /// own card does.
+    /// (docs/projects.md, 10.3, #481); a need of a conversation in no project opens that conversation.
     private var needsByProject: some View {
         let byProject = Dictionary(grouping: engine.needs, by: { $0.projectId })
         let projects = engine.projects.filter { byProject[$0.id] != nil }
@@ -152,9 +146,8 @@ struct MenuBarView: View {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         draft = ""
-        let chat = engine.projectsPreview
         Task {
-            guard let id = await (chat ? engine.createChat() : engine.createConversation()) else { return }
+            guard let id = await engine.createChat() else { return }
             await engine.submit(text, to: id, steer: false)
             // Where it lives: a chat in chat mode.
             show(conversation: id)
@@ -162,7 +155,7 @@ struct MenuBarView: View {
     }
 }
 
-/// One thing waiting under Needs you, as the menu bar item lists it with the projects preview on (#481): who asks,
+/// One thing waiting under Needs you, as the menu bar item lists it (#481): who asks,
 /// what it asks, and where it waits. Clicking it opens where the card is answered.
 struct MenuBarNeedRow: View {
     let engine: EngineClient
@@ -279,9 +272,6 @@ struct QuickAskView: View {
     private var engine: EngineClient { model.engine }
 
     private var data: OpenConversation? { conversationID.flatMap { engine.open[$0] } }
-    /// With the projects preview on, a question starts a chat (#654): no agent, project or folder, on the chat model used
-    /// last; one already asked keeps what it was.
-    private var asksInChat: Bool { conversationID.map { engine.isChat($0) } ?? engine.projectsPreview }
     /// The newest answer, finished or still streaming.
     private var answer: String? {
         if let partial = data?.state?.partial?.text, !partial.isEmpty { return partial + " ▍" }
@@ -291,16 +281,13 @@ struct QuickAskView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                if asksInChat {
-                    Image(systemName: "bubble.left.and.bubble.right")
-                        .font(.system(size: 13))
-                        .foregroundStyle(Theme.tx2)
-                        .frame(width: 22, height: 22)
-                        .help("A chat, with the chat model used last")
-                } else {
-                    AgentAvatar(agent: engine.agents.first, size: 22)
-                }
-                TextField(conversationID == nil ? (asksInChat ? "Ask anything in a new chat…" : "Ask anything…") : "Follow up…", text: $draft, axis: .vertical)
+                // A question starts a chat (#654): no agent, project or folder, on the chat model used last.
+                Image(systemName: "bubble.left.and.bubble.right")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Theme.tx2)
+                    .frame(width: 22, height: 22)
+                    .help("A chat, with the chat model used last")
+                TextField(conversationID == nil ? "Ask anything in a new chat…" : "Follow up…", text: $draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.title3)
                     .lineLimit(1...6)
@@ -356,9 +343,8 @@ struct QuickAskView: View {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, engine.status == .connected else { return }
         draft = ""
-        let chat = asksInChat
         Task {
-            if conversationID == nil { conversationID = await (chat ? engine.createChat() : engine.createConversation()) }
+            if conversationID == nil { conversationID = await engine.createChat() }
             if let conversationID, await engine.submit(text, to: conversationID, steer: false) == .refused, draft.isEmpty { draft = text }
         }
     }

@@ -1,6 +1,6 @@
 import SwiftUI
 
-// Chat mode (#172, docs/chat.md): a place to ask pi²'s own assistant questions, beside the agent view. The window shows
+// Chat mode (#172, docs/chat.md): a place to ask pi²'s own assistant questions, beside the projects. The window shows
 // one side or the other; each keeps what it showed while the other is on screen. A chat is a conversation whose library
 // record says `chat: true`, made with `conversation.create` and `chat: true`; everything else uses the requests every
 // conversation has. The conversation itself is `ChatView`, the same view (and page) as an agent's conversation, told it
@@ -12,14 +12,14 @@ enum WindowMode: String {
     case chat
 }
 
-/// Chat mode's own state, apart from the agent view's `AppModel.selection` and panes, so that switching keeps both.
+/// Chat mode's own state, apart from the projects' side's `AppModel.selection`, so that switching keeps both.
 @MainActor
 @Observable
 final class ChatModeState {
     private static let modeKey = "window.mode"
     private static let selectionKey = "chat.selection"
 
-    /// The side the window shows: the agent view on first launch, afterwards the one it was last on.
+    /// The side the window shows: the projects' side on first launch, afterwards the one it was last on.
     var mode: WindowMode {
         didSet { if mode != oldValue { UserDefaults.standard.set(mode.rawValue, forKey: Self.modeKey) } }
     }
@@ -34,11 +34,9 @@ final class ChatModeState {
     var creating = false
     /// The chat whose Continue with an Agent sheet is showing (ChatContinue.swift).
     var continuing: Int?
-    /// Set while the agent view's selection is changed for it (at launch, or when its conversation went away) rather than
-    /// by the person, so the window stays on the side it is on.
+    /// Set while the projects' side's selection is changed for it rather than by the person (where the window lands at
+    /// launch), so the window stays on the side it is on.
     @ObservationIgnored var holdingMode = false
-    /// Set while a chat chosen as the agent view's selection is handed over here.
-    @ObservationIgnored var redirecting = false
 
     init() {
         mode = WindowMode(rawValue: UserDefaults.standard.string(forKey: Self.modeKey) ?? "") ?? .agents
@@ -97,18 +95,10 @@ extension AppModel {
         set { chats.mode = newValue }
     }
 
-    /// The conversation the Conversation menu acts on: the chat on screen in chat mode, else the agent view's.
-    var activeConversationID: Int? { mode == .chat ? chats.selection : selectedConversationID }
-    var activeConversation: ConversationSummary? { engine.conversations.first { $0.id == activeConversationID } }
+    /// The conversation the Conversation menu acts on outside a hub: the chat on screen in chat mode.
+    var activeConversationID: Int? { mode == .chat ? chats.selection : nil }
 
-    /// Changes the agent view's selection without bringing the agent view on screen.
-    func restoreSelection(_ value: Selection?) {
-        chats.holdingMode = true
-        selection = value
-        chats.holdingMode = false
-    }
-
-    /// A chat chosen anywhere (the palette, Search, a fork) opens in chat mode, and the agent view keeps what it had.
+    /// A chat chosen anywhere (the palette, Search, a fork) opens in chat mode, and the projects' side keeps what it had.
     func showChat(_ id: Int) {
         engine.openConversation(id)
         chats.selection = id
@@ -151,19 +141,18 @@ extension AppModel {
 
 // MARK: - The switch
 
-/// Agents and Chat, at the top of the sidebar. Each side says when something is going on in the other.
+/// Projects and Chat, at the top of the sidebar. Each side says when something is going on in the other.
 struct ModeSwitch: View {
     let model: AppModel
     private var engine: EngineClient { model.engine }
 
     var body: some View {
         HStack(spacing: 2) {
-            // With the Projects preview on, this side lists projects (ProjectsSidebar.swift).
-            let projects = engine.projectsPreview
-            segment(.agents, projects ? "Projects" : "Agents", icon: projects ? "folder" : "person.2", shortcut: "⌘1") {
+            // This side lists projects (ProjectsSidebar.swift); with chat mode on, it says what waits there.
+            segment(.agents, "Projects", icon: "folder", shortcut: "⌘1") {
                 if model.mode == .chat {
-                    if !engine.inbox.isEmpty {
-                        Tag("\(engine.inbox.count)", .warn).accessibilityLabel("\(engine.inbox.count) waiting on you")
+                    if engine.waitingCount > 0 {
+                        Tag("\(engine.waitingCount)", .warn).accessibilityLabel("\(engine.waitingCount) waiting on you")
                     } else if engine.rootConversations.contains(where: \.busy) {
                         Spinner(size: 8)
                     }
@@ -179,7 +168,7 @@ struct ModeSwitch: View {
         .padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 6)
         .background(Theme.side)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(engine.projectsPreview ? "Projects or Chat" : "Agents or Chat")
+        .accessibilityLabel("Projects or Chat")
     }
 
     private func segment<Badge: View>(_ mode: WindowMode, _ title: String, icon: String, shortcut: String, @ViewBuilder badge: () -> Badge) -> some View {
@@ -204,12 +193,12 @@ struct ModeSwitch: View {
     }
 }
 
-/// The View menu's Agents and Chat, with a tick by the one showing.
+/// The View menu's Projects and Chat, with a tick by the one showing.
 struct ModeCommands: View {
     let model: AppModel
 
     var body: some View {
-        Toggle("Agents", isOn: Binding(get: { model.mode == .agents }, set: { if $0 { model.mode = .agents } }))
+        Toggle("Projects", isOn: Binding(get: { model.mode == .agents }, set: { if $0 { model.mode = .agents } }))
             .keyboardShortcut("1")
         Toggle("Chat", isOn: Binding(get: { model.mode == .chat }, set: { if $0 { model.mode = .chat } }))
             .keyboardShortcut("2")
@@ -454,7 +443,7 @@ enum ChatColumn {
     static let width: CGFloat = 816
 }
 
-/// Chat mode's side of the window: the chat on screen, with its model in the toolbar as an agent's conversation has it.
+/// Chat mode's side of the window: the chat on screen, with its model in the toolbar.
 struct ChatModeDetail: View {
     let model: AppModel
     private var engine: EngineClient { model.engine }
@@ -480,15 +469,15 @@ struct ChatModeDetail: View {
                 if let id {
                     Button("Continue with an Agent…", systemImage: "arrowshape.turn.up.right") { model.continueWithAgent(id) }
                         .disabled(!engine.canContinueWithAgent(id))
-                        .help(engine.projectsPreview ? "Continue with an Agent: hand this chat to a project’s orchestrator, or another of its agents" : "Continue with an Agent: hand this chat to one of your agents, in a folder you choose")
-                    // Left out until the chat has come from the engine and been shown, as in the agent view (#502).
+                        .help("Continue with an Agent: hand this chat to a project’s orchestrator, or another of its agents")
+                    // Left out until the chat has come from the engine and been shown (#502).
                     if let open = engine.open[id], open.shown, let agent = open.state?.agent { ModelMenu(engine: engine, id: id, agent: agent) }
                 }
             }
         }
         .sheet(isPresented: Binding(get: { model.chats.continuing != nil }, set: { if !$0 { model.chats.continuing = nil } })) {
             if let chat = model.chats.continuing {
-                if engine.projectsPreview { ContinueInProjectSheet(model: model, chat: chat) } else { ContinueWithAgentSheet(model: model, chat: chat) }
+                ContinueInProjectSheet(model: model, chat: chat)
             }
         }
         .task(id: needsChat) { if needsChat { model.newChat() } }

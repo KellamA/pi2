@@ -142,8 +142,8 @@ struct ChangeSize: View {
     }
 }
 
-/// The quiet second line of a conversation's row under a project in the sidebar (#598): the branch it works on, with the
-/// old sidebar's mark and help (`BranchIcon`, boxed for a worktree, faded for a sub-chat in its parent's checkout), and
+/// The quiet second line of a conversation's row under a project in the sidebar (#598): the branch it works on, with its
+/// mark and help (`BranchIcon`, boxed for a worktree, faded for a sub-chat in its parent's checkout), and
 /// the size of its change. A view of its own, so that the tracker's event draws this line again and not the row.
 /// `working`: a working agent's row, which says so, quietly, when the agent works in the main checkout on its default branch.
 struct BranchLine: View {
@@ -251,95 +251,6 @@ struct BranchIcon: View {
     }
 }
 
-/// The icon on a conversation's row in the sidebar; clicking it shows the details.
-struct BranchBadge: View {
-    let engine: EngineClient
-    let conversationID: Int
-    let status: BranchStatus
-    @State private var showing = false
-
-    var body: some View {
-        let sharing = engine.sharing(of: conversationID)
-        Button { showing.toggle() } label: {
-            BranchIcon(status: status, shared: sharing != nil).contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-        .help(status.help(sharing: sharing))
-        .popover(isPresented: $showing, arrowEdge: .trailing) {
-            BranchDetails(engine: engine, conversationID: conversationID, status: status) { showing = false }
-        }
-    }
-}
-
-/// What the tracker knows about one conversation's branch, and what can be done about it.
-struct BranchDetails: View {
-    let engine: EngineClient
-    let conversationID: Int
-    let status: BranchStatus
-    var done: () -> Void = {}
-
-    var body: some View {
-        let sharing = engine.sharing(of: conversationID)
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                BranchIcon(status: status, size: 13, shared: sharing != nil)
-                Text(status.name).font(.system(size: 13, weight: .semibold, design: .monospaced)).lineLimit(1).truncationMode(.middle)
-                Spacer(minLength: 8)
-                Tag(status.stateTitle, status.tone)
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(status.whereText(sharing: sharing)).foregroundStyle(Theme.tx2)
-                Text(status.root).font(Theme.mono).foregroundStyle(Theme.tx3).lineLimit(1).truncationMode(.head).textSelection(.enabled)
-            }
-            if !status.facts.isEmpty {
-                VStack(alignment: .leading, spacing: 3) {
-                    ForEach(status.facts, id: \.self) { fact in
-                        Label(fact, systemImage: "circle.fill").labelStyle(BulletLabel())
-                    }
-                }
-                .font(.callout)
-            }
-            Divider()
-            HStack(spacing: 6) {
-                Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: status.root)]) }
-                    .disabled(status.state == "missing")
-                if let branch = status.branch {
-                    Button("Copy Name") {
-                        AppCopy.write(branch, kind: .branchName, engine: engine, conversation: conversationID)
-                    }.help("Copy the branch name")
-                }
-                Spacer(minLength: 8)
-                if status.managed {
-                    Button("Remove Worktree…") {
-                        done()
-                        WorktreeDialogs.shared.remove(conversationID, status: status)
-                    }
-                    .buttonStyle(.piDanger)
-                } else {
-                    Button("New Worktree…") {
-                        done()
-                        WorktreeDialogs.shared.create(conversationID, engine: engine)
-                    }
-                    .help("Move this conversation into a checkout of its own on a new branch, so other agents can work in this repository at the same time")
-                }
-            }
-            .buttonStyle(.piSecondary)
-        }
-        .font(.system(size: 12.5))
-        .padding(14)
-        .frame(width: 400, alignment: .leading)
-    }
-}
-
-private struct BulletLabel: LabelStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            configuration.icon.font(.system(size: 4)).foregroundStyle(Theme.tx3).alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 3 }
-            configuration.title
-        }
-    }
-}
-
 /// The branch in a conversation's toolbar: its name, coloured by how it stands, with the details in its menu.
 struct BranchMenu: View {
     let engine: EngineClient
@@ -377,8 +288,8 @@ struct BranchMenu: View {
 
 // MARK: - Making and removing a worktree
 
-/// The questions asked before making or removing a worktree. Held here, not in a view, so the sidebar, the toolbar
-/// and the Branches page can all ask, and one place shows the dialog (see `worktreeDialogs`).
+/// The questions asked before making or removing a worktree. Held here, not in a view, so the hub's headers and a
+/// project's Branches tab can all ask, and one place shows the dialog (see `worktreeDialogs`).
 @MainActor
 @Observable
 final class WorktreeDialogs {
@@ -480,40 +391,13 @@ extension View {
     func worktreeDialogs(engine: EngineClient) -> some View { modifier(WorktreeDialogsModifier(engine: engine)) }
 }
 
-// MARK: - The Branches page
+// MARK: - A project's Branches tab
 
-/// Every conversation whose folder is in a git repository, by repository: which branch it is on, whether in a worktree
-/// of its own, and how the branch stands. The page shows every conversation's; the board's Branches tab (#478) shows
-/// only one project's, which is what `BranchTracker.project` picks.
-struct BranchesView: View {
-    @Bindable var model: AppModel
-    private var engine: EngineClient { model.engine }
-
-    var body: some View {
-        BranchTracker(model: model, project: nil)
-            .background(Theme.window)
-            .navigationTitle("Branches")
-            .navigationSubtitle(subtitle)
-            .toolbar {
-                ToolbarItem {
-                    Button("Refresh", systemImage: "arrow.clockwise") { engine.perform("branches.refresh") }
-                        .help("Look at every conversation’s branch again now")
-                }
-            }
-    }
-
-    private var subtitle: String {
-        let all = engine.branches.values
-        let worktrees = all.filter(\.managed).count
-        return "\(all.count) conversation\(all.count == 1 ? "" : "s") in git · \(worktrees) in worktrees of their own"
-    }
-}
-
-/// The branch tracker's list itself: the rows grouped by repository, the worktrees left behind, and the colour legend.
-/// `project` is nil for every conversation's branches, or a project's id for only its conversations' (#478).
+/// The branch tracker's list for a project's Branches tab (#478): its conversations' branches grouped by repository, the
+/// worktrees left behind, and the colour legend.
 struct BranchTracker: View {
     @Bindable var model: AppModel
-    let project: String?
+    let project: String
     private var engine: EngineClient { model.engine }
 
     private struct Row: Identifiable {
@@ -537,23 +421,23 @@ struct BranchTracker: View {
 
     private static let order = ["conflict", "changes", "missing", "unavailable", "ahead", "behind", "detached", "merged", "clean"]
 
-    /// The conversations whose branches show: every one's, or only the project's.
-    private var include: (ConversationSummary) -> Bool {
-        project == nil ? { _ in true } : { $0.projectId == project }
-    }
-
-    /// Worktrees whose conversations were archived or deleted. On a project's tab, only those of conversations
-    /// archived in that project: one whose conversation was deleted can no longer be told apart, and stays on the page.
+    /// Worktrees whose conversations were archived or deleted: those of conversations archived in this project, and
+    /// those of deleted conversations in a repository the project's conversations work in, or named as its folder is,
+    /// since a deleted conversation can no longer be told apart. A deleted one can so be listed on two projects' tabs,
+    /// which is better than on none: nothing else lists it.
     private var leftBehind: [LeftBehindWorktree] {
-        guard let project else { return engine.leftBehind }
+        var repos = Set(engine.conversations.filter { $0.projectId == project }.compactMap { engine.branches[$0.id]?.repo })
+        if let folder = engine.project(project)?.folder { repos.insert((folder as NSString).lastPathComponent) }
         return engine.leftBehind.filter { item in
-            item.reason == "archived" && engine.archived.first(where: { $0.id == item.id })?.projectId == project
+            item.reason == "archived"
+                ? engine.archived.first(where: { $0.id == item.id })?.projectId == project
+                : repos.contains(item.status.repo)
         }
     }
 
     private var groups: [(repo: String, rows: [Row])] {
         let rows: [Row] = engine.conversations.compactMap { conversation in
-            guard include(conversation), let status = engine.branches[conversation.id] else { return nil }
+            guard conversation.projectId == project, let status = engine.branches[conversation.id] else { return nil }
             return Row(conversation: conversation, status: status, sharing: engine.sharing(of: conversation.id))
         }
         return Dictionary(grouping: rows, by: \.status.repo)
@@ -582,9 +466,7 @@ struct BranchTracker: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 if groups.isEmpty && leftBehind.isEmpty {
-                    Text(project == nil
-                        ? "No conversation is working in a git repository. Choose a folder in one from a conversation’s tools menu, and its branch shows here and next to it in the sidebar."
-                        : "None of this project’s conversations is working in a git repository.")
+                    Text("None of this project’s conversations is working in a git repository.")
                         .foregroundStyle(.secondary)
                 }
                 ForEach(groups, id: \.repo) { group in

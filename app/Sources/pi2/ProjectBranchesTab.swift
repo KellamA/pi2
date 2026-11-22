@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The board's Branches tab (#478): the branch tracker for this project alone — the branches and worktrees its
-/// conversations work on, with the same rows and actions as the Branches page, which shows every conversation's.
+/// The board's Branches tab (#478): the branch tracker for this project — the branches and worktrees its conversations
+/// work on, and what they left behind.
 struct ProjectBranchesTab: View {
     let model: AppModel
     let project: ProjectRow
@@ -33,8 +33,7 @@ struct ProjectBranchesTab: View {
     }
 }
 
-/// The tab's bar: the project's folder and how many of its conversations are in worktrees, with Refresh, which the
-/// Branches page of every conversation had in its toolbar (#655).
+/// The tab's bar: the project's folder and how many of its conversations are in worktrees, with Refresh (#655).
 private struct BranchesBar: View {
     let engine: EngineClient
     let project: ProjectRow
@@ -57,8 +56,7 @@ private struct BranchesBar: View {
         }
     }
 
-    /// "3 conversations in git · 1 in a worktree of its own", as the Branches page's subtitle said; the hub's bar names
-    /// the folder.
+    /// "3 conversations in git · 1 in a worktree of its own"; the hub's bar names the folder.
     private var summary: String {
         let ids = Set(engine.conversations.filter { $0.projectId == project.id }.map(\.id))
         let rows = engine.branches.filter { ids.contains($0.key) }.values
