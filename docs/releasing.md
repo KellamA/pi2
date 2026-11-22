@@ -67,7 +67,7 @@ Keep a copy somewhere safe and delete the file once it is in GitHub. If the priv
 
 ### 4. GitHub
 
-In the repository's Settings › Environments, make an environment called `release`. Limit it to tags matching `v*`, and add yourself as a required reviewer if you want to approve each release run. Then add:
+In the repository's Settings › Environments, make an environment called `release`. Limit it to tags matching `v*`, and add yourself as a required reviewer, so that each release run waits for your approval. Once the agents have an account of their own, which can push tags, that approval is what keeps these secrets yours ([relay.md, step 3](relay.md#3-the-environments)). Then add:
 
 | Secret | Value |
 |---|---|

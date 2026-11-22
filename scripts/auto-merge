@@ -15,9 +15,25 @@
 # - a conflict with main, or a required check that failed, was cancelled or timed out: names it at once with its link,
 #   even while others still run, and says what to do; and whether a check was only cancelled because no runner took
 #   it, which CI runs again by itself up to the run's fourth attempt (#637);
-# - gh failing to read the checks: says so, with gh's error, and does not take it for checks not reported yet.
+# - gh failing to read the checks: says so, with gh's error, and does not take it for checks not reported yet;
+# - a pull request that touches a path `.github/CODEOWNERS` gives an owner (the relay, RemoteKit, the device lists, this
+#   script and every workflow: docs/iphone.md 12.3, #668): refuses it before anything else, names the paths, says it
+#   waits for the owner's review, and tries to turn auto-merge off. The owner reviews and merges it on GitHub.
 #
-# Exit status: 0 merged; 3 waiting for checks, with auto-merge on; 1 something needs you; 2 usage. Needs gh and jq.
+# Which paths are the owner's is read from GitHub, not from this checkout: `.github/CODEOWNERS` as it is on main, which
+# a pull request cannot change, and as it is at the pull request's newest commit, which can only add to it, each from
+# git's own trees and blob at that commit. Main's copy missing, empty, with no rule, not a regular file or over GitHub's
+# 3 MB limit refuses; so does a head commit this repository cannot read (a fork's). A line of either copy this script
+# cannot read exactly as GitHub does refuses too, naming the line. The files are GitHub's list of what the pull request
+# changes, as JSON, both names of a moved file; one that differs from an owned path only in letter case, or whose name
+# is not plain ASCII, refuses. Anything that cannot be read (the list of files, or a list shorter than GitHub's count)
+# refuses. Every merge and every turning on of auto-merge is bound to the commit checked (`--match-head-commit`), and the
+# head is read again after the files are listed. This is a courtesy, not the guard: an agent can call gh itself, and
+# whether GitHub keeps or drops auto-merge armed at one commit when another is pushed its documentation does not say.
+# The guard is branch protection on main requiring the code owner's review (docs/relay.md).
+#
+# Exit status: 0 merged; 3 waiting for checks, with auto-merge on; 4 waits for the owner's review; 1 something needs
+# you; 2 usage. Needs gh and jq.
 
 set -euo pipefail
 
@@ -28,7 +44,7 @@ RERUN_ATTEMPTS=4 # scripts/rerun-if-no-runner's MAX_ATTEMPTS: a run at this atte
 n=${1:-}
 [[ $n =~ ^[0-9]+$ && $# == 1 ]] || { echo "usage: scripts/auto-merge <pull request number>" >&2; exit 2; }
 
-view() { gh pr view "$n" --json state,mergeStateStatus,autoMergeRequest,url; }
+view() { gh pr view "$n" --json state,mergeStateStatus,autoMergeRequest,url,headRefOid,changedFiles; }
 pr=$(view)
 state() { jq -r .state <<<"$pr"; }
 echo "#$n $(jq -r .url <<<"$pr")"
@@ -38,11 +54,195 @@ MERGED) echo "Merged."; exit 0 ;;
 CLOSED) echo "Closed without merging."; exit 1 ;;
 esac
 
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# The revision checked, which every merge below is bound to (`--match-head-commit`): GitHub merges nothing else (#668).
+head=$(jq -r .headRefOid <<<"$pr")
+if ! [[ $head =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
+	echo "GitHub gave no commit for its head ($head), so what it would merge cannot be checked. Run this again in a minute."
+	exit 1
+fi
+
+# Stops without merging anything, after saying why. Auto-merge is turned off whatever the first answer said of it, so
+# that GitHub merges nothing meanwhile.
+hold() {
+	if gh pr merge "$n" --disable-auto >/dev/null 2>"$tmp/off"; then
+		echo "Auto-merge is off, so that nothing merges it meanwhile."
+	elif [[ $(jq -r .autoMergeRequest <<<"$pr") != null ]]; then
+		echo "Auto-merge is on and could not be turned off ($(tr '\n' ' ' <"$tmp/off")): turn it off on GitHub."
+	fi
+	exit "$1"
+}
+
+# gh's error from the last call, on one line.
+said() { tr '\n' ' ' <"$tmp/err"; }
+
+# policy <ref> <name>: `.github/CODEOWNERS` at <ref>, read from git's own objects (trees, then the blob), into
+# $tmp/<name>. Status 0 read; 4 not there, in a commit this repository has; 5 the commit is not one this repository
+# can read (a fork's head, say); 6 there but not a file GitHub would read (not a regular file, or over its 3 MB limit,
+# beyond which it does not load the file); 1 anything else. Why, in $tmp/why.
+policy() {
+	local ref=$1 name=$2 entry
+	: >"$tmp/$name"
+	if ! entry=$(gh api "repos/{owner}/{repo}/git/trees/$ref" --jq '[.tree[] | select(.path == ".github")] | first // empty' \
+		2>"$tmp/err"); then
+		echo "gh said: $(said)" >"$tmp/why"
+		grep -qE 'HTTP (404|422)' "$tmp/err" && return 5
+		return 1
+	fi
+	[[ -n $entry ]] || return 4
+	if [[ $(jq -r .type <<<"$entry") != tree ]]; then echo ".github is not a folder" >"$tmp/why"; return 6; fi
+	if ! entry=$(gh api "repos/{owner}/{repo}/git/trees/$(jq -r .sha <<<"$entry")" \
+		--jq '[.tree[] | select(.path == "CODEOWNERS")] | first // empty' 2>"$tmp/err"); then
+		echo "gh said: $(said)" >"$tmp/why"
+		return 1
+	fi
+	[[ -n $entry ]] || return 4
+	if ! [[ $(jq -r '.type + " " + .mode' <<<"$entry") =~ ^blob\ 1006[46]4$ ]]; then
+		echo "it is not a regular file ($(jq -r '.type + " " + .mode' <<<"$entry"))" >"$tmp/why"
+		return 6
+	fi
+	if (($(jq -r '.size // -1' <<<"$entry") > 3 * 1024 * 1024)) || (($(jq -r '.size // -1' <<<"$entry") < 0)); then
+		echo "it is $(jq -r '.size // "of no given"' <<<"$entry") bytes, and GitHub does not load one over 3 MB" >"$tmp/why"
+		return 6
+	fi
+	if ! gh api "repos/{owner}/{repo}/git/blobs/$(jq -r .sha <<<"$entry")" -H 'Accept: application/vnd.github.raw+json' \
+		>"$tmp/$name" 2>"$tmp/err"; then
+		echo "gh said: $(said)" >"$tmp/why"
+		return 1
+	fi
+	return 0
+}
+
+# The owner's paths (#668), from two copies of CODEOWNERS. Main's, which a pull request cannot change, must be there and
+# readable, with at least one rule: anything else is a refusal, not an absence. The head's can only add to it; plainly
+# absent at a commit this repository has, it adds nothing.
+for copy in main "$head"; do
+	if [[ $copy == main ]]; then label="main's"; else label="this pull request's"; fi
+	status=0
+	policy "$copy" "${copy/$head/head}" || status=$?
+	case $status/$copy in
+	0/* | 4/"$head") ;;
+	4/main)
+		echo "main has no .github/CODEOWNERS, which says which paths wait for the owner's review. Without it nothing can be"
+		echo "merged by an agent: the owner puts it back."
+		hold 4 ;;
+	5/main | 1/*)
+		echo "Could not read $label .github/CODEOWNERS, which says which paths wait for the owner's review. $(cat "$tmp/why")"
+		echo "It is not merged until that can be checked. Run this again in a minute."
+		hold 1 ;;
+	5/*)
+		echo "Its newest commit, $head, cannot be read in this repository ($(cat "$tmp/why")), so its CODEOWNERS cannot be"
+		echo "checked. It waits for the owner's review: they review it on GitHub and merge it."
+		hold 4 ;;
+	*)
+		echo "$label .github/CODEOWNERS cannot be read as GitHub reads it: $(cat "$tmp/why"). It waits for the owner, who"
+		echo "puts the file right."
+		hold 4 ;;
+	esac
+done
+
+# Every file the pull request changes, as GitHub's JSON gives it, one array a line: its name, and the name it had if it
+# was moved (null if not). GitHub lists at most 3,000, 100 a page; a list shorter than its count of changed files
+# cannot say which are the owner's.
+if ! gh api "repos/{owner}/{repo}/pulls/$n/files?per_page=100" --paginate --jq '.[] | [.filename, .previous_filename]' \
+	>"$tmp/files" 2>"$tmp/err"; then
+	echo "Could not list the files it changes, to see whether any waits for the owner's review. gh said: $(said)"
+	echo "It is not merged until that can be checked. Run this again in a minute."
+	hold 1
+fi
+listed=$(jq -s length "$tmp/files") || { echo "GitHub's list of its files could not be read."; hold 1; }
+changed=$(jq -r '.changedFiles // 0' <<<"$pr")
+if ((listed < changed)); then
+	echo "GitHub listed $listed of the $changed files it changes, so it cannot be told whether any waits for the owner's"
+	echo "review. A pull request that large waits for the owner: they review it and merge it on GitHub."
+	hold 4
+fi
+# The list is of the newest commit when it was asked for: it must still be the one checked.
+pr=$(view)
+if [[ $(jq -r .headRefOid <<<"$pr") != "$head" ]]; then
+	echo "It changed while it was being checked ($head, now $(jq -r .headRefOid <<<"$pr")). Run this again."
+	hold 3
+fi
+
+# What stops it, from both copies and the files, one JSON object a line: a line of either copy this script cannot read
+# exactly as GitHub does, which refuses everything; or a file a line gives an owner, or one that differs from such a file
+# only in letter case, or a name that is not plain ASCII, which cannot be compared as GitHub and a file system would.
+#
+# A line is read only if its pattern is plain: letters, digits, `.`, `_`, `-`, `/`, and `*` within a name or `**` as a
+# whole one, no `.` or `..` name; and it names at least one owner (`@user`, `@org/team` or an e-mail address), with
+# nothing after them but a comment. Escapes, `!`, `?`, `[ ]`, spaces in a name, other characters, and a line with no
+# owner are refused, naming the line: a later line that took a file out, or matched more widely than this reading,
+# could otherwise lift a refusal. Since every line read names an owner, a file is the owner's if any line matches it,
+# whichever matches last. Patterns match as gitignore's do: anchored at the top by a leading `/` or a `/` inside it, a
+# folder and everything in it, `*` within one name, `**` across folders. Where that could be wider than GitHub's
+# reading (`docs/*`, which GitHub's documentation says covers no file deeper than docs/), it is wider, never narrower.
+# shellcheck disable=SC2016 # jq's variables, not the shell's
+findings=$(jq -cn --rawfile main "$tmp/main" --rawfile head "$tmp/head" --slurpfile files "$tmp/files" '
+	def regex:
+		(startswith("/")) as $root
+		| (endswith("/")) as $folder
+		| (sub("^/"; "") | sub("/$"; "")) as $core
+		| ($root or ($core | test("/"))) as $anchored
+		| ($core
+			| gsub("\\."; "\\.")
+			| gsub("\\*\\*"; "\u0001")
+			| gsub("\\*"; "[^/]*")
+			| gsub("/\u0001/"; "/(.*/)?")
+			| gsub("^\u0001/"; "(.*/)?")
+			| gsub("/\u0001$"; "/.*")
+			| gsub("\u0001"; ".*")) as $body
+		| (if $anchored then "^" else "^(.*/)?" end) + $body + (if $folder then "/.*$" else "(/.*)?$" end);
+	def plain:
+		test("^/?[A-Za-z0-9._*-]+(/[A-Za-z0-9._*-]+)*/?$")
+		and (split("/") | map(select(. != "")) | all(. != "." and . != ".." and ((test("\\*\\*") | not) or . == "**")));
+	def owner: test("^@[A-Za-z0-9][A-Za-z0-9-]*(/[A-Za-z0-9._-]+)?$") or test("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]+$");
+	def lines($copy):
+		[split("\n") | to_entries[] | {copy: $copy, line: (.key + 1), text: (.value | sub("\r$"; ""))}
+			| select(.text | test("^[ \t]*(#|$)") | not)
+			| (.text | [splits("[ \t]+")] | map(select(. != ""))) as $words
+			| (reduce $words[1:][] as $w ({stop: false, list: []};
+				if .stop or ($w | startswith("#")) then .stop = true else .list += [$w] end) | .list) as $owners
+			| . + {pattern: $words[0], owners: $owners,
+				ok: (($words[0] | plain) and ($owners | length) > 0 and ($owners | all(owner))
+					and (.text | test("^[ -~\t]*$")))}];
+	(($main | lines("main'\''s")) + ($head | lines("this pull request'\''s"))) as $rules
+	| ($rules | map(select(.ok)) | map(. + {re: (.pattern | regex), fold: (.pattern | ascii_downcase | regex)})) as $read
+	| ($rules[] | select(.ok | not) | {kind: "line", copy, line, text}),
+	(if ($main | lines("main") | length) == 0 then {kind: "empty"} else empty end),
+	([$files[] | .[] | select(type == "string")] | unique[]) as $file
+	| (if ($file | test("^[ -~]*$") | not) then {kind: "name", file: $file} else empty end),
+	(first($read[] | select(.re as $r | $file | test($r))) | {kind: "owned", file: $file, copy, pattern}) //
+	(first($read[] | select(.fold as $r | $file | ascii_downcase | test($r)))
+		| {kind: "case", file: $file, copy, pattern}) // empty
+') || { echo "Could not read .github/CODEOWNERS's patterns: refusing until it can be."; hold 1; }
+if jq -e 'select(.kind == "line")' <<<"$findings" >/dev/null 2>&1 || jq -e 'select(.kind == "empty")' <<<"$findings" >/dev/null 2>&1; then
+	echo ".github/CODEOWNERS has lines this script cannot read exactly as GitHub does, so it cannot tell which paths are"
+	echo "the owner's:"
+	jq -r 'select(.kind == "line") | "- \(.copy) CODEOWNERS, line \(.line): \(.text)"' <<<"$findings"
+	jq -r 'select(.kind == "empty") | "- main'\''s CODEOWNERS has no rule in it."' <<<"$findings"
+	echo "It waits for the owner, who puts the file right or reviews this pull request and merges it on GitHub."
+	hold 4
+fi
+if [[ -n $findings ]]; then
+	echo "It touches paths that wait for the owner's review, as .github/CODEOWNERS gives them (docs/iphone.md 12.3):"
+	jq -r 'select(.kind == "owned") | "- \(.file) (\(.pattern), in \(.copy) CODEOWNERS)"' <<<"$findings"
+	jq -r 'select(.kind == "case") | "- \(.file): differs only in letter case from \(.pattern), in \(.copy) CODEOWNERS"' <<<"$findings"
+	jq -r 'select(.kind == "name") | "- \(.file): not a plain ASCII name, which cannot be compared with CODEOWNERS"' <<<"$findings"
+	echo "No agent merges it: the owner reviews it on GitHub and merges it. Leave it open, and mark its issue waiting on"
+	echo "the owner's review."
+	hold 4
+fi
+
 # A pull request whose required checks all passed is in clean status, and gh answers `pr merge --auto` for one with
 # "Pull request is in clean status" and fails: there is nothing left to wait for, so merge it now instead (#553).
 if [[ $(jq -r .mergeStateStatus <<<"$pr") == CLEAN ]]; then
 	echo "Every required check has passed and nothing is left to wait for: merging it now."
-	gh pr merge "$n" --merge
+	gh pr merge "$n" --merge --match-head-commit "$head" || {
+		echo "GitHub did not merge it at $head, the commit checked. If it has changed since, run this again."
+		exit 1
+	}
 	pr=$(view)
 	[[ $(state) != MERGED ]] || { echo "Merged."; exit 0; }
 	echo "GitHub has not merged it yet ($(jq -r .mergeStateStatus <<<"$pr")): run this again in a minute."
@@ -50,8 +250,11 @@ if [[ $(jq -r .mergeStateStatus <<<"$pr") == CLEAN ]]; then
 fi
 
 if [[ $(jq -r .autoMergeRequest <<<"$pr") == null ]]; then
-	echo "Auto-merge is off: turning it on."
-	gh pr merge "$n" --auto --merge
+	echo "Auto-merge is off: turning it on, at $head, the commit checked."
+	gh pr merge "$n" --auto --merge --match-head-commit "$head" || {
+		echo "GitHub did not turn auto-merge on at $head. If it has changed since, run this again."
+		exit 1
+	}
 	pr=$(view)
 	[[ $(state) != MERGED ]] || { echo "Merged."; exit 0; }
 fi
@@ -63,8 +266,7 @@ fi
 
 # The required checks of the newest commit. gh leaves out one not reported yet, and answers none reported at all with an
 # error saying so, which is waited for. Any other error says nothing about the checks: it is not taken for that (#637).
-err=$(mktemp)
-trap 'rm -f "$err"' EXIT
+err=$tmp/err
 if ! checks=$(gh pr checks "$n" --required --json name,state,bucket,completedAt,link 2>"$err"); then
 	if grep -qE 'no (required )?checks reported' "$err"; then
 		echo "Auto-merge is on; no required check has reported yet."
@@ -148,7 +350,7 @@ fi
 if [[ $status == UNSTABLE || $status == HAS_HOOKS ]] && ((since >= STALL_SECONDS)); then
 	echo "Every required check passed ${since}s ago and it has not merged: turning auto-merge off and on again."
 	gh pr merge "$n" --disable-auto
-	gh pr merge "$n" --auto --merge
+	gh pr merge "$n" --auto --merge --match-head-commit "$head"
 	pr=$(view)
 	[[ $(state) != MERGED ]] || { echo "Merged."; exit 0; }
 fi
