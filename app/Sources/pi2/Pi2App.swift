@@ -459,6 +459,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+/// The sidebar column's widths in points, which a test copy's `sidebar` request keeps to as well (#613).
+enum SidebarColumn {
+    static let narrowest: CGFloat = 210
+    static let ideal: CGFloat = 250
+    static let widest: CGFloat = 340
+}
+
 struct RootView: View {
     @Bindable var model: AppModel
     private var engine: EngineClient { model.engine }
@@ -473,7 +480,7 @@ struct RootView: View {
                 }
             }
             .safeAreaInset(edge: .top, spacing: 0) { ModeSwitch(model: model) }
-            .navigationSplitViewColumnWidth(min: 210, ideal: 250, max: 340)
+            .navigationSplitViewColumnWidth(min: SidebarColumn.narrowest, ideal: SidebarColumn.ideal, max: SidebarColumn.widest)
         } detail: {
             Group {
                 if model.mode == .chat {

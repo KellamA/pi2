@@ -363,9 +363,10 @@ public actor ComputerController {
             let accessible = WindowChoice.first(in: ordered, minimized: Self.isMinimized) { candidate in
                 guard let frame = AX.frame(candidate) else { return nil }
                 // A stale AXFocusedWindow can still have a frame after Settings closes. In a parked copy,
-                // prefer evidence from the window server over an AX frame that does not belong to a current window.
+                // prefer evidence from the window server over an AX frame that does not belong to a current window;
+                // the parked window itself counts by its size, since its place differs while it changes Space (#748).
                 if parked != nil, !["AXPopover", "AXDialog", "AXSheet"].contains(AX.role(candidate)),
-                   ServerWindow.matching(frame, in: server, pid: pid) == nil { return nil }
+                   ServerWindow.backing(frame, in: server, pid: pid, parked: parked) == nil { return nil }
                 return frame
             }
             return (ordered, accessible)
@@ -388,7 +389,7 @@ public actor ComputerController {
         } ?? false
         let fallback = !newAXWindow && popup != nil ? popup : accessible == nil ? parked : nil
         let frame = fallback?.frame ?? accessible?.1 ?? .zero
-        let matched = fallback ?? accessible.flatMap { ServerWindow.matching($0.1, in: server, pid: pid) }
+        let matched = fallback ?? accessible.flatMap { ServerWindow.backing($0.1, in: server, pid: pid, parked: parked) }
         // AX can omit a parked window or popup from the application's list but still answer a hit at its position.
         var window = fallback == nil ? accessible?.0 : nil
         if window == nil, let fallback {
@@ -547,6 +548,23 @@ public actor ComputerController {
         return (ownKind, ownLabel, nil, secure)
     }
 
+    /// What is at `point` in the window last read: what a hit test there finds, or, when that is nothing that can be
+    /// worked, the innermost listed control there. A hit test reads the screen, so it finds nothing where the window is
+    /// off the screen or behind another window, as all of a parked copy's window is but its corner, and every click at
+    /// a point in a copy then went as a real click, which an app in the background ignores (#748).
+    private static func element(at point: CGPoint, in view: View, usable: (AXUIElement) -> Bool) -> AXUIElement? {
+        let hit = AX.hitTest(view.app, point)
+        if let hit, usable(hit) { return hit }
+        let frames = view.controls.map { $0.statusItem ? CGRect.null : $0.frame }
+        return WindowChoice.innermost(containing: point, in: frames).map { view.controls[$0].element } ?? hit
+    }
+
+    /// What is at `point`, for clicking it or naming it, as `element(at:in:usable:)` finds it: usable when it can be
+    /// worked through accessibility.
+    private static func identify(at point: CGPoint, in view: View) -> (kind: String, label: String?, reach: Reach?, secure: Bool)? {
+        element(at: point, in: view) { identify(element: $0).reach != nil }.map(identify(element:))
+    }
+
     /// A cheap fingerprint of the window, to notice when an action changed nothing.
     private func signature(_ request: ComputerRequest, _ bundleID: String) -> String {
         guard let view = views[key(request, bundleID)] else { return "" }
@@ -601,7 +619,7 @@ public actor ComputerController {
             case .success(let found): point = found
             case .failure(let reply): return reply
             }
-            let found = AX.hitTest(view.app, point).map(Self.identify(element:))
+            let found = Self.identify(at: point, in: view)
             let named = found.map { thing in thing.label.map { "the “\($0.clipped(60))” \(thing.kind)" } ?? "the \(thing.kind)" } ?? "that point"
             what = found?.label.map { "“\($0.clipped(40))”" } ?? "(\(Int(request.x ?? 0)), \(Int(request.y ?? 0)))"
             var reached = false
@@ -683,7 +701,7 @@ public actor ComputerController {
             case .success(let found): point = found
             case .failure(let reply): return reply
             }
-            element = AX.hitTest(view.app, point)
+            element = Self.element(at: point, in: view) { Reaching.menuTarget(of: AXNode($0)) != nil }
             phrase = "what is at (\(Int(request.x ?? 0)), \(Int(request.y ?? 0)))"
             what = "(\(Int(request.x ?? 0)), \(Int(request.y ?? 0)))"
         }
@@ -888,7 +906,7 @@ public actor ComputerController {
             if let listed { return "\(verb) \(listed.phrase) in \(name)" }
             if let view, let x = request.x, let y = request.y {
                 let point = CGPoint(x: view.frame.minX + x / view.scale, y: view.frame.minY + y / view.scale)
-                if let found = AX.hitTest(view.app, point).map(Self.identify(element:)), let label = found.label {
+                if let found = Self.identify(at: point, in: view), let label = found.label {
                     return "\(verb) “\(label.clipped(60))”\(found.kind.isEmpty ? "" : " (\(found.kind))") in \(name)"
                 }
                 return "\(verb) at (\(Int(x)), \(Int(y))) in \(name)’s window"
@@ -909,7 +927,8 @@ public actor ComputerController {
             if let listed { return "Open the context menu of \(listed.phrase) in \(name)" }
             if let view, let x = request.x, let y = request.y {
                 let point = CGPoint(x: view.frame.minX + x / view.scale, y: view.frame.minY + y / view.scale)
-                if let found = AX.hitTest(view.app, point).map(Self.identify(element:)), let label = found.label {
+                if let found = Self.element(at: point, in: view, usable: { Reaching.menuTarget(of: AXNode($0)) != nil }).map(Self.identify(element:)),
+                   let label = found.label {
                     return "Open the context menu of “\(label.clipped(60))”\(found.kind.isEmpty ? "" : " (\(found.kind))") in \(name)"
                 }
                 return "Open the context menu at (\(Int(x)), \(Int(y))) in \(name)’s window"
