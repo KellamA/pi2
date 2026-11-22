@@ -19,11 +19,11 @@ enum ProtocolTest {
 		await Check.runs("the protocol, from registering to deleting") { try await whole(url) }
 	}
 
-	static func options(pingEvery: Int64 = 30_000) -> RelayOptions {
+	static func options(pingEvery: Int64 = 30_000, quietAfter: Int64 = 75_000) -> RelayOptions {
 		var options = RelayOptions()
 		options.backoff = RelayBackoff(first: 200, longest: 2_000)
 		options.pingEvery = pingEvery
-		options.quietAfter = pingEvery * 5 / 2
+		options.quietAfter = quietAfter
 		options.answerWithin = 10_000
 		return options
 	}
@@ -42,8 +42,10 @@ enum ProtocolTest {
 		let pairing = try await RelayClient.register(relay: url, build: mac, relayKey: RelaySigner(relayKey), connector: connector)
 		print("ok   registered a pairing")
 
-		// The Mac, pinging every second, so that a missing pong would show within the test.
-		let macClient = RelayClient(relay: url, role: .mac(pairing), build: mac, signer: RelaySigner(relayKey), connector: connector, options: options(pingEvery: 1_000))
+		// The Mac pings every second and takes its socket for dead after 8 seconds without a word, so that pongs that did
+		// not come would show within the test (below).
+		let macClient = RelayClient(
+			relay: url, role: .mac(pairing), build: mac, signer: RelaySigner(relayKey), connector: connector, options: options(pingEvery: 1_000, quietAfter: 8_000))
 		let macEvents = Inbox(macClient.events)
 		await macClient.start()
 		let ready = try await macEvents.next("the Mac's ready") { if case let .macReady(ready) = $0 { ready } else { nil } }
@@ -161,10 +163,11 @@ enum ProtocolTest {
 		let held = try await macEvents.next("held") { if case let .held(who, until) = $0 { (who, until) } else { nil } }
 		Check.that(held == (device, until), "the Mac is told the phone was held, and until when")
 		_ = try await phoneEvents.next("ready after busy", seconds: 20) { if case .deviceReady = $0 { true } else { nil } }
-		print("ok   busy after \(sent) messages, and back")
+		print("ok   busy after sending \(sent) messages, and back")
 
-		// Pings kept the Mac's socket: it never went quiet.
-		Check.that(!macEvents.all.contains { if case .disconnected = $0 { true } else { false } }, "the Mac, pinging every second, never dropped")
+		// Ten seconds of nothing but pings: the relay's pongs keep the Mac's socket, which would otherwise be taken for dead.
+		try await Task.sleep(for: .seconds(10))
+		Check.that(!macEvents.all.contains { if case .disconnected = $0 { true } else { false } }, "the Mac, pinging every second, was answered and never dropped")
 
 		// Leaving, and what is left after.
 		try await phoneClient.leave()

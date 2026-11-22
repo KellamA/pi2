@@ -11,14 +11,14 @@ Read only the sections that apply to your work. Before you build, run or test an
 | Allowed commands | [Allowed commands](allowed-commands.md), [Choosing what a copy shows](#choosing-what-a-copy-shows) |
 | Running engine checks | [Running the engine tests](#running-the-engine-tests), [Engine type-check](#engine-type-check), [Running several suites at once](#running-several-suites-at-once) if needed |
 | Adding or fixing an engine test | [Engine tests by file](#engine-tests-by-file), [The end-to-end test](#the-end-to-end-test) if it is `engine.ts`, [Keeping test runs apart](#keeping-test-runs-apart), [Waiting in tests](#waiting-in-tests) |
-| Checking app changes | The relevant check: [Browser](#browser-checks), [Panes](#pane-layout-checks), [Window sizes](#window-size-checks), [Message fields](#message-field-checks), [File links](#file-link-checks), [Who may answer](#peer-checks), [The remote channel](#remote-channel-checks), [Login item](#login-item-checks), [Computer use](#computer-use-checks), [Conversation page](#conversation-page-tests), [The page loaded ahead](#the-page-loaded-ahead) or [What the client reads](#client-checks) for a change to the models in `app/Sources/PiModels` |
+| Checking app changes | The relevant check: [Browser](#browser-checks), [Panes](#pane-layout-checks), [Window sizes](#window-size-checks), [Message fields](#message-field-checks), [File links](#file-link-checks), [Who may answer](#peer-checks), [The remote channel](#remote-channel-checks), [The relay's client](#the-relays-protocol-test), [Login item](#login-item-checks), [Computer use](#computer-use-checks), [Conversation page](#conversation-page-tests), [The page loaded ahead](#the-page-loaded-ahead) or [What the client reads](#client-checks) for a change to the models in `app/Sources/PiModels` |
 | Trying an app change in a copy | [Trying changes in a throwaway copy](#trying-changes-in-a-throwaway-copy), [Choosing what a copy shows](#choosing-what-a-copy-shows), [The scripted demo model](#the-scripted-demo-model) |
 | A project's hub, the Dashboard, Needs you | [Choosing what a copy shows](#choosing-what-a-copy-shows) for `fill --project` and the `project:` and `dashboard` pages, [The scripted demo model](#the-scripted-demo-model) for `/tools`; [projects.md](projects.md) section 10 for what the app reads |
 | Retaking the README's pictures | [Retaking the README's pictures](#retaking-the-readmes-pictures) |
 | Measuring speed | [Measuring under load](#measuring-under-load), [Measuring the app's speed](#measuring-the-apps-speed) |
 | The iPhone app | [Building the iPhone app](#building-the-iphone-app); the contract is [iphone.md](iphone.md) |
 | Repository scripts, checks and merging | [CI](#ci) |
-| The relay | [Relay tests](#relay-tests), and [relay/README.md](../relay/README.md) |
+| The relay | [Relay tests](#relay-tests), [The relay's protocol test](#the-relays-protocol-test), and [relay/README.md](../relay/README.md) |
 
 ## Requirements
 
@@ -344,6 +344,19 @@ The relay (`relay/`, [iphone.md 5.3](iphone.md#53-the-relay), #676) has a packag
 cd relay && npm ci && npm run check && npm test && npm run check-bundle
 ```
 
+### The relay's protocol test
+
+RemoteKit's relay client (`app/Sources/RemoteKit/Relay`, #678; [remotekit.md](remotekit.md#the-relays-client)) is checked twice by `pi2-relay-check`. With no argument, it checks the messages as the client writes and reads them (and what it refuses), the proof's text, the join's client data hash against the value `relay/test/join-hash.test.ts` holds the relay to, the backoff and the memory of items taken, then runs the client against a relay it plays itself, in memory, on a clock it moves: no network, nothing that depends on how fast the computer is. CI runs it in `App (build)`.
+
+The protocol test ([iphone.md 10](iphone.md#10-testing-with-no-phone-in-hand)) runs the same client, through the system's WebSocket, against the relay itself on this computer. `scripts/relay-protocol-test` starts the relay under Wrangler's local runtime on 127.0.0.1, on a free port, through `relay/scripts/isolated.mjs` (a throwaway home folder, Wrangler's usage events off, no Cloudflare credential), with `relay/test/protocol/wrangler.jsonc`: the relay's own code with a stand-in for App Attest's verifier that takes only the join's true client data hash. It runs `pi2-relay-check --relay`, which registers, connects a Mac, joins a phone and passes bytes, adds it, uses the mailbox both ways, drops and reopens a socket, floods past a limit to be held off with `busy` and come back, tries a second Mac, pings, leaves, refuses a connection that sends an `Origin`, and deletes the pairing; then it stops the relay by its process group and removes its folder. It needs no Cloudflare account and deploys nothing; never run Wrangler's `login`. CI runs it in its own job, `Relay (protocol test)`, on macOS, when the macOS jobs run or the relay changed; it is not a required check.
+
+```bash
+cd app && swift build --product pi2-relay-check && .build/debug/pi2-relay-check
+(cd relay && npm ci) && scripts/relay-protocol-test
+```
+
+The protocol test of section 10 as a whole, with pi² Remote in loopback mode and an engine, adds to this program as pi² Remote's relay end is built (the second part of #678).
+
 ### Trying changes in a throwaway copy
 
 A development build already runs on a data folder of its own, so trying a change in it does not touch your own data. To start again from an empty folder, give it another:
@@ -532,7 +545,7 @@ What a CI job for the phone would run (the workflow is #681's, and `.github/work
 
 ## CI
 
-Every pull request, and every push to `main`, runs `.github/workflows/ci.yml`. Five of its checks are required before a pull request can merge: `Engine (type-check and tests)` (`npm run check` and `npm run test:macos`) and `App (build)` (the builds and checks above, and `scripts/test-test-copy`), both on macOS, and on Linux `Engine (Linux tests)` (`npm run test:linux`), `Transcript page (tests)` (the conversation page's tests, the release notes' extraction and the changelog entries) and `Scripts (tests)` (`scripts/test-issue`, `scripts/test-issue-hook`, `scripts/test-auto-merge`, `scripts/test-docs-lists` and `scripts/test-check-protected-targets`). `Relay (tests)` runs on Linux too, on every pull request (the relay's type-check, tests and bundle check, [Relay tests](#relay-tests)); it is not one of the required checks. Linux runners start in seconds; GitHub has fewer macOS runners, and a plan can run only a few macOS jobs at once, so the macOS jobs are where a pull request waits.
+Every pull request, and every push to `main`, runs `.github/workflows/ci.yml`. Five of its checks are required before a pull request can merge: `Engine (type-check and tests)` (`npm run check` and `npm run test:macos`) and `App (build)` (the builds and checks above, and `scripts/test-test-copy`), both on macOS, and on Linux `Engine (Linux tests)` (`npm run test:linux`), `Transcript page (tests)` (the conversation page's tests, the release notes' extraction and the changelog entries) and `Scripts (tests)` (`scripts/test-issue`, `scripts/test-issue-hook`, `scripts/test-auto-merge`, `scripts/test-docs-lists` and `scripts/test-check-protected-targets`). `Relay (tests)` runs on Linux too, on every pull request (the relay's type-check, tests and bundle check, [Relay tests](#relay-tests)), and `Relay (protocol test)` on macOS, when the macOS jobs run or the relay changed ([The relay's protocol test](#the-relays-protocol-test)); neither is one of the required checks. Linux runners start in seconds; GitHub has fewer macOS runners, and a plan can run only a few macOS jobs at once, so the macOS jobs are where a pull request waits.
 
 The engine's CI partition is in `engine/scripts/test-platform.ts`. `npm test` still runs the whole suite on a Mac. Both take their list from `engine/scripts/test-files.ts`, and both check afterwards that every file in it reported. The partition discovers the same files automatically: only files verified unchanged on Linux are in its list; a new test stays on macOS until verified. Both halves together cover the whole suite. `credentialsplatform.ts` runs on both deliberately: on macOS it checks that the file store cannot be created, on Linux it checks persistence, permissions and read/modify/delete.
 
