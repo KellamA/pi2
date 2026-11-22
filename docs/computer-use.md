@@ -15,7 +15,7 @@ Start with something harmless, such as TextEdit.
 The engine decides what is allowed and asks for approval. The app does the seeing and clicking, because macOS gives the permissions for those to the app. So pi² has to be open.
 
 - **Controls first.** The agent is given a numbered list of the front window's buttons, fields, rows and menus, read through the accessibility API. It acts on a control by its number. That is exact, and it does not need the app in front.
-- **Pictures second.** If its model takes images, it also gets a screenshot, and can act on a point in it when something is not in the list. A model that cannot see images works from the list and the window's text, and needs no Screen Recording permission.
+- **Pictures second.** If its model takes images, it also gets a screenshot, and can act on a point in it when something is not in the list. The picture is of the window the controls are listed for and nothing else, at that window's size: a sheet or a dialog attached to a window is pictured by itself, not with the window it is over, so a point read off the picture is the point clicked (#798). A model that cannot see images works from the list and the window's text, and needs no Screen Recording permission.
 - **Every action answers with the window as it is afterwards**, so the agent checks each step before the next.
 - **Only the two newest pictures are sent to the model.** The conversation keeps them all; expand a computer step to see what the agent saw.
 
