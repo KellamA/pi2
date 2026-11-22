@@ -10,7 +10,6 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import {
 	type AgentChange,
 	AgentDoc,
@@ -65,6 +64,7 @@ import { type AssistantLike, answeredNeeds, assistantParts, imagesOf, type Item,
 import { broadcast, type Client, clients, coalesced, send, type Subscription } from "./clients.ts";
 import { dirtyUsage, overBudget, refreshUsage, repriceUsage, scheduleUsageRefresh, Spend, type UsageDocShape, usageById, type UsageJson, usageRowsChanged, usageSummary, usageTimer, usageTotals, wireUsage } from "./usage.ts";
 import { checkPersonStart, type Params, startConfirmation, text } from "./requests.ts";
+import { providerRequests, wireProviderRequests } from "./providerrequests.ts";
 import { armSchedules, scheduleRequests, schedulesEvent, scheduleTimer, setSchedules, tickSchedules, wireSchedules } from "./scheduleruns.ts";
 import { agents, busyConversations, chatOf, conversationsWithWork, isSubChat, library, refreshBusy, rootOf, setAgents, setLibrary, setVersions, setWorking, since, versions, working } from "./indexes.ts";
 import { McpServers } from "./mcp.ts";
@@ -73,7 +73,7 @@ import { linesOf } from "./changes.ts";
 import { ComputerHost, hasApps, validateComputer } from "./computer.ts";
 import { validateReferenceFiles } from "./reference.ts";
 import { plainProviderError } from "./providererror.ts";
-import { DEMO_MODEL, DEMO_PROVIDER, defaultThinking, LOCAL_PROVIDER, newestOnly, Providers } from "./providers.ts";
+import { DEMO_MODEL, DEMO_PROVIDER, defaultThinking, LOCAL_PROVIDER, Providers } from "./providers.ts";
 import { type CommandRule, ruleFolder, ruleRefusal, sameFolder, wordsOf } from "./rules.ts";
 import { Schedules } from "./schedules.ts";
 import { socketPathFor } from "./socket.ts";
@@ -528,6 +528,7 @@ const compactionSettingsEvent = () => ({ event: "compactionSettings", defaultCom
 // What the files moved out of this one use of it (#753), handed over as soon as it all exists.
 wireUsage({ harness, context, settings, providers, host, log, stopping: () => stopping });
 wireSchedules({ harness, context, log, host, takeSwitch, syncTools, agentChange });
+wireProviderRequests({ providers, settings, saveSettings, announceProviders, log });
 
 /** A random ID for this installation, made the first time a sign-in asks for one and the same ever after. */
 function deviceId(): string {
@@ -915,9 +916,6 @@ const computerHostOf = new WeakMap<Client, { send: (message: unknown) => void }>
 /** The same for the browser: the app holds the web views, and offers to work them for agents. */
 const browserClients = new Set<Client>();
 const browserHostOf = new WeakMap<Client, { send: (message: unknown) => void }>();
-const pendingPrompts = new Map<string, (answer: string) => void>();
-const logins = new Map<string, AbortController>();
-let nextLocalId = 1;
 
 const announceActivity = coalesced(() => activityEvent());
 
@@ -1656,42 +1654,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		await refreshUsage();
 		return {};
 	},
-	"providers.setHiddenModels": async (params) => {
-		const id = text(params, "id");
-		const available = (await providers.listModels()).filter((model) => model.provider === id).map((model) => model.id);
-		if (available.length === 0) throw new Error("That provider has no models to choose from yet");
-		const hidden = params.newest === true ? available.filter((model) => !newestOnly(available).has(model)) : params.hidden;
-		if (!Array.isArray(hidden) || hidden.some((model) => typeof model !== "string")) throw new Error("hidden must be a list of model ids");
-		settings.hiddenModels = { ...settings.hiddenModels, [id]: hidden as string[] };
-		if (hidden.length === 0) delete settings.hiddenModels[id];
-		saveSettings();
-		// Answer first: asking every provider about its sign-in takes a moment, and the sheet is waiting.
-		void announceProviders().catch((error) => log("announcing providers failed:", error));
-		return { hidden };
-	},
-	"providers.draftModel": async (params) =>
-		providers.draftModel(text(params, "provider"), text(params, "id"), {
-			...(typeof params.basedOn === "string" ? { basedOn: params.basedOn } : {}),
-			...(typeof params.api === "string" ? { api: params.api } : {}),
-		}),
-	"providers.addModel": async (params) => {
-		const model = await providers.addModel(params as never);
-		await announceProviders();
-		scheduleUsageRefresh();
-		return model;
-	},
-	"providers.ask": async (params) => {
-		const listing = await providers.askProvider(text(params, "id"));
-		// A refreshed catalog may hold new models, or ones that were added by hand.
-		if (listing.refreshed) await announceProviders();
-		return listing;
-	},
-	"providers.removeModel": async (params) => {
-		providers.removeModel(text(params, "provider"), text(params, "id"));
-		await announceProviders();
-		scheduleUsageRefresh();
-		return {};
-	},
+	...providerRequests,
 	/** The app offers to do computer actions for agents; only one app does at a time, the latest to ask. */
 	"computer.register": async (_params, client) => {
 		// The same connection offering twice is still one host.
@@ -2178,65 +2141,6 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 		const answer = text(params, "text");
 		if (answer.trim() === "") throw new Error("The answer is empty");
 		await claim(text(params, "id"), { kind: "question", text: answer });
-		return {};
-	},
-
-	"providers.setKey": async (params) => {
-		await providers.setKey(text(params, "id"), text(params, "key"));
-		await announceProviders();
-		return {};
-	},
-	"providers.logout": async (params) => {
-		await providers.logout(text(params, "id"));
-		await announceProviders();
-		return {};
-	},
-	"providers.login": async (params, client) => {
-		const loginId = `login-${nextLocalId++}`;
-		const abort = new AbortController();
-		logins.set(loginId, abort);
-		send(client, { event: "auth", loginId, kind: "started", providerId: params.id });
-		try {
-			await providers.login(text(params, "id"), {
-				signal: abort.signal,
-				notify: (event: AuthEvent) => send(client, { event: "auth", loginId, kind: "notify", notice: event }),
-				prompt: (prompt: AuthPrompt) =>
-					new Promise<string>((resolve, reject) => {
-						const promptId = `prompt-${nextLocalId++}`;
-						const { signal, ...shown } = prompt;
-						const done = () => pendingPrompts.delete(promptId);
-						pendingPrompts.set(promptId, (answer) => (done(), resolve(answer)));
-						const cancel = () => (done(), send(client, { event: "auth", loginId, kind: "promptClosed", promptId }), reject(new Error("Cancelled")));
-						signal?.addEventListener("abort", cancel, { once: true });
-						abort.signal.addEventListener("abort", cancel, { once: true });
-						send(client, { event: "auth", loginId, kind: "prompt", promptId, prompt: shown });
-					}),
-			});
-			await announceProviders();
-			return {};
-		} finally {
-			logins.delete(loginId);
-			send(client, { event: "auth", loginId, kind: "finished" });
-		}
-	},
-	"auth.answer": async (params) => {
-		pendingPrompts.get(text(params, "promptId"))?.(text(params, "value"));
-		return {};
-	},
-	"auth.cancel": async (params) => {
-		logins.get(text(params, "loginId"))?.abort();
-		return {};
-	},
-
-	"endpoints.probe": async (params) => ({ models: await providers.probeEndpoint(text(params, "baseUrl"), params.key as string | undefined) }),
-	"endpoints.save": async (params) => {
-		const saved = await providers.saveEndpoint(params as never);
-		await announceProviders();
-		return { id: saved.id };
-	},
-	"endpoints.remove": async (params) => {
-		await providers.removeEndpoint(text(params, "id"));
-		await announceProviders();
 		return {};
 	},
 };
