@@ -172,7 +172,7 @@ export function unfinished(name: string, chat: number, reason: string | undefine
 		const why = limit ? " The provider refused it for its limit, so carrying on works once the limit has reset." : "";
 		return `${name} did not finish the task: the model's provider answered with an error: “${said}”.${why}${resume}`;
 	}
-	if (reason === "aborted") return `${name} did not finish the task: its run was stopped, by the person or with this conversation.${resume}`;
+	if (reason === "aborted") return `${name} did not finish the task: its run was stopped (by the person, by you with sub_chats stop, or with this conversation).${resume}`;
 	const said = detail === undefined || detail === "" ? "" : `: ${plainProviderError(detail)}`;
 	return `${name} did not finish the task (${reason ?? "no answer"}${said}).${resume}`;
 }
