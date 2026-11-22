@@ -411,6 +411,49 @@ function showAnswer(item: WorkItem, name: (id: string) => string): string {
 	return lines.join("\n");
 }
 
+const classWords = (item: WorkItem) => (item.class === null ? "not classified" : `${item.class} model`);
+const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/**
+ * The tool's answer to an action that changed an item (#636): what was done and to what, in a line, with the page of one
+ * filed on GitHub. Never the item's text or notes: the model sent what it added, `show` reads the rest, and the answer is
+ * read again at every later turn.
+ */
+export function actedAnswer(action: Exclude<WorkAction, "assign">, item: WorkItem, by: Who, args: Record<string, unknown>, name: (id: string) => string): string {
+	const named = `#${item.id} “${oneLine(item.title)}”`;
+	const holder = item.takenBy === null ? "held by nobody" : sameHolder(item.takenBy, by) ? "held by you" : `held by ${holderWords(item, name)}`;
+	const standing = `${STATE_WORDS[item.state]}, ${holder}`;
+	const notes = count(item.notes.length, "note", "notes");
+	const noted = typeof args.text === "string" && args.text.trim() !== "";
+	switch (action) {
+		case "file":
+			return [`Filed ${named}, ${classWords(item)}.`, ...(item.url === undefined ? [] : [`Its page: ${item.url}`])].join("\n");
+		case "take":
+			return `Took ${named}: ${standing}.`;
+		case "release":
+			return `Released ${named}: ${standing}.`;
+		case "wait":
+		case "block":
+			return `Marked ${named} ${STATE_WORDS[item.state]}, ${holder}${noted ? `, with your reason as a note (${notes})` : ""}.`;
+		case "resume":
+			return `Resumed ${named}: ${standing}.`;
+		case "finish":
+			return `Finished ${named}: ${STATE_WORDS[item.state]}${item.result === null ? "" : ", with your summary"}.`;
+		case "close":
+			return `Closed ${named} as ${STATE_WORDS[item.state]}.`;
+		case "reopen":
+			return `Reopened ${named}: ${standing}.`;
+		case "note":
+			return `Noted on ${named} (${notes}).`;
+		case "edit": {
+			const parts = [...(args.title === undefined ? [] : ["title"]), ...(args.text === undefined ? [] : ["text"])];
+			return parts.length === 0 ? `Nothing to edit in ${named}: give a title or a text.` : `Edited ${named}: its ${parts.join(" and ")}.`;
+		}
+		case "classify":
+			return `Classified ${named}: ${classWords(item)}.`;
+	}
+}
+
 /**
  * Check, in the commit `tx`, that `by` may make `action` now (both backends): the project live and not archived, with the
  * kind of list expected; for an agent, its conversation current in the project, its access, its role, and the switch it
@@ -878,7 +921,7 @@ export const work: Feature = (host, engine) => {
 					if (action === "take") {
 						const now = await backendFor(engine, project).show(project, numberId(id));
 						const yours = yoursAlready(now, by);
-						if (yours !== undefined) return { output: toolText(`${yours}\n\n${JSON.stringify(now)}`) };
+						if (yours !== undefined) return { output: toolText(`${yours}\n${itemLine(now, names)}`) };
 					}
 					item = await mutate(project, by, actionOf(action), action === "file" ? null : numberId(id), args, { api, context });
 				}
@@ -886,9 +929,11 @@ export const work: Feature = (host, engine) => {
 				const change = (await api.snapshot(WorkCall, api.taskId, context))?.change;
 				const recorded: { change?: number } = change === undefined ? {} : { change };
 				if (action !== "assign") {
-					const unclassed = action === "file" && classGiven && project !== undefined && agentId !== undefined && !orchestrates(project, { kind: "agent", agentId, conversationId: number });
-					const said = unclassed ? "\n\nFiled without a class: only the orchestrator classifies work, and it will." : "";
-					return { output: toolText(`${JSON.stringify(item)}${said}`), ...(change === undefined ? {} : { details: { change } }) };
+					const by: Who = { kind: "agent", agentId: agentId ?? "", conversationId: number };
+					const unclassed = action === "file" && classGiven && project !== undefined && agentId !== undefined && !orchestrates(project, by);
+					const said = unclassed ? "\nFiled without a class: only the orchestrator classifies work, and it will." : "";
+					const answer = actedAnswer(actionOf(action) as Exclude<WorkAction, "assign">, item, by, args, (id) => host.agent(id)?.name ?? id);
+					return { output: toolText(`${answer}${said}`), details: { id: item.id, state: item.state, ...recorded } };
 				}
 				const holder = item.takenBy!;
 				await followAssignment(item);

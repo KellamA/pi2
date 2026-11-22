@@ -36,7 +36,6 @@ import {
 	type Project,
 	PROJECT_ARCHIVED,
 	projectDeleted,
-	projectOf,
 	Projects,
 	type ProjectsDoc,
 	type ProjectRow,
