@@ -108,6 +108,12 @@ try {
 			summary = await windowCommand(target, { pid: Number(pid), command, ...size });
 			break;
 		}
+		case 'sidebar': {
+			const [pid, width] = args;
+			const asked = width === 'narrowest' ? { narrowest: true } : { width: integer(width, 'width', 10_000) };
+			summary = await windowCommand(target, { pid: Number(pid), command, ...asked });
+			break;
+		}
 		case 'expose': {
 			const [pid] = args;
 			summary = await windowCommand(target, { pid: Number(pid), command });
