@@ -1,5 +1,4 @@
 #if DEBUG
-import CryptoKit
 import SwiftUI
 import UIKit
 
@@ -14,7 +13,7 @@ struct FaceIDCheckScreen: View {
                 Text("This makes a key in the Secure Enclave that only Face ID can use, asks Face ID once, signs \(FaceIDCheck.signatures) different messages under that one Face ID, then ends the Face ID and tries once more. It keeps nothing.")
                     .foregroundStyle(.secondary)
 
-                if SecureEnclave.isAvailable {
+                if KeyPlace.secureEnclave {
                     Button {
                         running = true
                         report = nil

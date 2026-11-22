@@ -1,10 +1,15 @@
-import CryptoKit
 import SwiftUI
 
 /// The screen a phone not yet paired with a Mac opens on (docs/design/iphone.md, "Pairing"; the drafts' figure 2):
 /// what pi² for iPhone is, how to pair, and the build's version. Pairing itself comes with the rest of #680, so for
 /// now the screen says so in a plain line rather than showing a button that does nothing.
 struct FirstScreen: View {
+    #if DEBUG
+    /// `PI2_SHOW=face-id-check` in a debug build's environment opens the check at launch, so that a picture of it can
+    /// be taken in the simulator without a tap (`SIMCTL_CHILD_PI2_SHOW` with `xcrun simctl launch`).
+    @State private var showsCheck = ProcessInfo.processInfo.environment["PI2_SHOW"] == "face-id-check"
+    #endif
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -33,7 +38,7 @@ struct FirstScreen: View {
                     .accessibilityElement(children: .combine)
 
                     #if DEBUG
-                    DebugSection()
+                    DebugSection(showsCheck: $showsCheck)
                     #endif
 
                     Text(BuildInfo.line)
@@ -46,6 +51,11 @@ struct FirstScreen: View {
                 .frame(maxWidth: 560)
                 .frame(maxWidth: .infinity)
             }
+            #if DEBUG
+            .navigationDestination(isPresented: $showsCheck) {
+                FaceIDCheckScreen()
+            }
+            #endif
         }
     }
 }
@@ -68,18 +78,20 @@ private struct Mark: View {
 /// What only a debug build shows: where its keys will be made (docs/iphone.md section 10) and the check of 4.3 for
 /// the owner's phone. None of it is compiled into a release build.
 private struct DebugSection: View {
+    @Binding var showsCheck: Bool
+
     var body: some View {
         VStack(spacing: 12) {
             Text("Debug build")
                 .font(.headline)
                 .accessibilityAddTraits(.isHeader)
-            if !SecureEnclave.isAvailable {
-                Text("No Secure Enclave here, as in the simulator: this build will make its keys in software.")
+            if !KeyPlace.secureEnclave {
+                Text("No Secure Enclave here (the simulator has none): this build makes its keys in software.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
-            NavigationLink("Check Face ID signing") {
-                FaceIDCheckScreen()
+            Button("Check Face ID signing") {
+                showsCheck = true
             }
             .buttonStyle(.bordered)
             .accessibilityHint("Signs twenty times under one Face ID, on this phone, and keeps nothing.")

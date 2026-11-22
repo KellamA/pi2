@@ -27,7 +27,7 @@ enum FaceIDCheck {
     nonisolated static func run() async -> Report {
         let version = ProcessInfo.processInfo.operatingSystemVersion
         let system = "iOS \(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
-        guard SecureEnclave.isAvailable else {
+        guard KeyPlace.secureEnclave else {
             return Report(
                 line: "Cannot run here: there is no Secure Enclave (the simulator has none). Run it on an iPhone.",
                 details: []
