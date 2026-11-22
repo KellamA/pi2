@@ -11,7 +11,7 @@ import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { PREVIEW_OFF, Projects } from "../src/projects.ts";
 import { makeScratch } from "../src/scratch.ts";
-import { EngineClient, previewOn, standInApp, stop } from "./patience.ts";
+import { EngineClient, previewOn, standInApp, stop, until } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-github-"));
 const ghFolder = mkdtempSync(join(tmpdir(), "pi2-github-gh-"));
@@ -19,7 +19,8 @@ const folder = realpathSync(mkdtempSync(join(tmpdir(), "pi2-github-repo-")));
 const service = `dev.pi2.credentials.test-github-${process.pid}`;
 const state = join(ghFolder, "state.json");
 const shim = join(ghFolder, "gh");
-writeFileSync(shim, `#!/bin/sh\nGH_STAND_IN_STATE='${state}' exec '${process.execPath}' '${join(import.meta.dirname, "gh-stand-in.mjs")}' "$@"\n`, { mode: 0o755 });
+// Each says its process id first, which `exec` keeps, so that the test can wait for the last of them to end (#707).
+writeFileSync(shim, `#!/bin/sh\necho $$ >> '${state}.started'\nGH_STAND_IN_STATE='${state}' exec '${process.execPath}' '${join(import.meta.dirname, "gh-stand-in.mjs")}' "$@"\n`, { mode: 0o755 });
 const empty = () => ({ defaultBranch: "main", issues: [], pulls: [], labels: [], next: 1 });
 writeFileSync(state, JSON.stringify({ repos: { "example/widgets": empty(), "example/other": empty() } }));
 
@@ -607,4 +608,17 @@ try {
 } finally {
 	client.close();
 	await stop(engine);
+	// A `gh` the engine started a moment before it stopped outlives it, as the real one would, and writes its line to
+	// the stand-in's log as it ends: into the folder the exit removes, which failed once in CI with "directory not empty"
+	// (#707). So the test ends once every one has; those it held were killed as it went.
+	const started = () => readFileSync(`${state}.started`, "utf8").trim().split("\n").map(Number);
+	const runs = (pid: number) => {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+	await until("every gh the engines started to have ended", () => started().every((pid) => !runs(pid)));
 }
