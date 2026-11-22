@@ -55,8 +55,9 @@ TARGETS=(
 # test-only entry points, or a stand-in for the checks, to whatever builds on the package) and pi² Remote, which runs
 # only as the engine's own child inside the app's bundle (a product would hand it to the iPhone app's project).
 NO_PRODUCT='["pi2-remote-check","pi2-remote-fuzz","pi2-remote","pi2-remote-helper","pi2-remote-helper-check"]'
-# The targets that may depend on pi² Remote's code: its program and its check, and nothing else.
-REMOTE_USERS='["pi2-remote-helper","pi2-remote-helper-check"]'
+# The targets that may depend on each of pi² Remote's three: its code on its program and its check, and nothing on
+# either of those, which carry its code with them.
+REMOTE_USERS='{"pi2-remote":["pi2-remote-helper","pi2-remote-helper-check"],"pi2-remote-helper":[],"pi2-remote-helper-check":[]}'
 # The Swift tools version the owner reviewed: a new one can change what a description means, and is the owner's.
 TOOLS_VERSION='6.0.0'
 # The packages app/Package.swift may depend on, by address. A new one is the owner's to allow.
@@ -128,12 +129,12 @@ while IFS= read -r product; do
 done < <(jq -r --argjson checks "$NO_PRODUCT" '
 	(.products // [])[] | select([.targets[]?] | any(. as $t | $checks | index($t))) | .name' "$dump")
 
-# pi² Remote's code: only its program and its check depend on it, in any way.
-while IFS= read -r name; do
-	fail "$name: it depends on pi2-remote, which only pi2-remote-helper and its check may"
+# pi² Remote's code: only its program and its check depend on it, and nothing on either of them, in any way.
+while IFS=$'\t' read -r name used; do
+	fail "$name: it depends on $used, $(jq -r --arg used "$used" '.[$used] | if length == 0 then "which no target may depend on" else "which only " + join(" and ") + " may" end' <<<"$REMOTE_USERS")"
 done < <(jq -r --argjson users "$REMOTE_USERS" '
-	.targets[] | select(.name as $n | $users | index($n) | not)
-	| select([(.dependencies // [])[] | (.byName // .target // .product // [])[0]] | index("pi2-remote")) | .name' "$dump")
+	.targets[] | .name as $n | [(.dependencies // [])[] | (.byName // .target // .product // [])[0]] as $deps
+	| $users | to_entries[] | select(.key as $k | $deps | index($k)) | select(.value | index($n) | not) | [$n, .key] | @tsv' "$dump")
 
 # The tools version, and no language mode for the whole package.
 [[ $(jq -r '.toolsVersion._version // ""' "$dump") == "$TOOLS_VERSION" ]] ||
@@ -161,10 +162,11 @@ while IFS= read -r file; do
 done < <(grep -rlE --include='*.swift' --exclude-dir=.build --exclude-dir=.git '_spi[[:space:]]*\([[:space:]]*Vectors' "$root" 2>/dev/null)
 
 # @testable import of RemoteKit or pi² Remote: nowhere. Their checks use what is public, or package-wide (`package`).
-# Read with line comments taken out and lines joined, so that an attribute on a line of its own counts.
+# Read with line comments taken out, lines joined and block comments taken out, so that an attribute on a line of its
+# own or a comment between the words counts; an import of one declaration (`import struct pi2_remote.Startup`) too.
 while IFS= read -r file; do
-	if sed -E 's#//.*$##' "$file" | tr '\n' ' ' |
-		grep -qE '@testable([[:space:]]+@[A-Za-z_]+(\([^)]*\))?)*[[:space:]]+import[[:space:]]+(RemoteKit|pi2_remote)([^A-Za-z0-9_]|$)'; then
+	if sed -E 's#//.*$##' "$file" | tr '\n' ' ' | sed -E 's#/\*([^*]|\*+[^*/])*\*+/# #g' |
+		grep -qE '@testable([[:space:]]+@[A-Za-z_]+(\([^)]*\))?)*[[:space:]]+import[[:space:]]+((typealias|struct|class|enum|protocol|let|var|func|actor|macro)[[:space:]]+)?(RemoteKit|pi2_remote)([^A-Za-z0-9_]|$)'; then
 		fail "${file#"$root"/} names @testable import of RemoteKit or pi² Remote, which nothing may"
 	fi
 done < <(grep -rlF --include='*.swift' --exclude-dir=.build --exclude-dir=.git '@testable' "$root" 2>/dev/null)

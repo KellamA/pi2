@@ -120,9 +120,12 @@ expect_refused "pi² Remote's program with a define" "pi2-remote-helper: it has 
 expect_refused "pi² Remote depending on more" "pi2-remote: it depends on other than" "$(target pi2-remote).dependencies += [{byName: [\"PiModels\", null]}]"
 expect_refused "pi² Remote's program built from another target" "pi2-remote-helper: it depends on other than" "$(target pi2-remote-helper).dependencies = [{byName: [\"PiModels\", null]}]"
 expect_refused "pi² Remote's check gone" "pi2-remote-helper-check: there are 0 targets of that name" "del(.targets[] | select(.name == \"pi2-remote-helper-check\"))"
-expect_refused "another target depending on pi² Remote's code" "pi2: it depends on pi2-remote, which only pi2-remote-helper and its check may" "$(target pi2).dependencies += [{byName: [\"pi2-remote\", null]}]"
+expect_refused "another target depending on pi² Remote's code" "pi2: it depends on pi2-remote, which only pi2-remote-helper and pi2-remote-helper-check may" "$(target pi2).dependencies += [{byName: [\"pi2-remote\", null]}]"
 expect_refused "another target depending on pi² Remote's code as a target" "Other: it depends on pi2-remote" ".targets += [{name: \"Other\", path: \"Sources/Other\", type: \"executable\", dependencies: [{target: [\"pi2-remote\", null]}], exclude: [], resources: [], settings: []}]"
 expect_refused "a target built from inside pi² Remote's folder" "which is pi2-remote's" ".targets += [{name: \"Relay\", path: \"Sources/pi2-remote/Relay\", type: \"regular\", dependencies: [], exclude: [], resources: [], settings: []}]"
+expect_refused "another target depending on pi² Remote's program, which carries its code" "Other: it depends on pi2-remote-helper, which no target may depend on" ".targets += [{name: \"Other\", path: \"Sources/Other\", type: \"regular\", dependencies: [{byName: [\"pi2-remote-helper\", null]}], exclude: [], resources: [], settings: []}]"
+expect_refused "a test target depending on pi² Remote's check" "Tests: it depends on pi2-remote-helper-check, which no target may depend on" ".targets += [{name: \"Tests\", path: \"Tests/Tests\", type: \"test\", dependencies: [{target: [\"pi2-remote-helper-check\", null]}], exclude: [], resources: [], settings: []}]"
+expect_refused "pi² Remote's check depending on its program" "pi2-remote-helper-check: it depends on" "$(target pi2-remote-helper-check).dependencies += [{byName: [\"pi2-remote-helper\", null]}]"
 expect_refused "a product for pi² Remote's code" "the product Remote names one of RemoteKit's checks or pi² Remote" ".products += [{name: \"Remote\", settings: [], targets: [\"pi2-remote\"], type: {library: [\"automatic\"]}}]"
 expect_refused "a product for pi² Remote's program" "the product helper names one of RemoteKit's checks or pi² Remote" ".products += [{name: \"helper\", settings: [], targets: [\"pi2-remote-helper\"], type: {executable: null}}]"
 # The package as a whole.
@@ -150,7 +153,10 @@ else passed=$((passed + 1)); fi
 # @testable import of RemoteKit or pi² Remote.
 for case in "pi2/Remote.swift|@testable import RemoteKit" "pi2-remote-helper-check/main.swift|@testable import pi2_remote" \
 	"pi2/Other.swift|@testable  @preconcurrency import RemoteKit" "pi2/Third.swift|  @testable import RemoteKit.Noise" \
-	"pi2/Fourth.swift|@testable\nimport RemoteKit"; do
+	"pi2/Fourth.swift|@testable\nimport RemoteKit" "pi2/Fifth.swift|@testable import struct pi2_remote.Startup" \
+	"pi2/Sixth.swift|@testable import enum pi2_remote.BuildKind" "pi2/Seventh.swift|@testable import class RemoteKit.Channel" \
+	"pi2/Eighth.swift|@testable import func pi2_remote.log" "pi2/Ninth.swift|@testable /* x */ import RemoteKit" \
+	"pi2/Tenth.swift|@testable /* a\n * b */\nimport pi2_remote"; do
 	IFS='|' read -r file line <<<"$case"
 	rm -rf "$T/testable"; cp -R "$T/tree" "$T/testable"
 	printf "$line\n" >"$T/testable/app/Sources/$file"
