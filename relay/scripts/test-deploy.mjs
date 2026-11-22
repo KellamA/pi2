@@ -94,6 +94,16 @@ function development(from, to) {
 	};
 }
 
+/** wrangler.jsonc with one more migration after v1, which every environment inherits. */
+function migration(entry) {
+	return (text) =>
+		replace(
+			text,
+			'"migrations": [{ "tag": "v1", "new_sqlite_classes": ["Pairing", "AttestKey", "Address"] }],',
+			`"migrations": [{ "tag": "v1", "new_sqlite_classes": ["Pairing", "AttestKey", "Address"] }, ${entry}],`,
+		);
+}
+
 const refusals = [
 	["Logpush on", (text) => replace(text, '"logpush": false,', '"logpush": true,'), /Logpush is not off/],
 	["traces on", (text) => replace(text, '"traces": { "enabled": false }', '"traces": { "enabled": true }'), /traces and Issues are not all off/],
@@ -104,6 +114,14 @@ const refusals = [
 	["a tail consumer", development('"tail_consumers": [],', '"tail_consumers": [{ "service": "elsewhere" }],'), /sets `tail_consumers`/],
 	["a fourth Durable Object", development('{ "name": "ADDRESSES", "class_name": "Address" }', '{ "name": "ADDRESSES", "class_name": "Address" },\n\t\t\t\t\t{ "name": "OTHER", "class_name": "Pairing" }'), /not exactly the relay's three/],
 	["a secret among the variables", development('"APP_ATTEST_ENVIRONMENTS": "development",', '"APP_ATTEST_ENVIRONMENTS": "development",\n\t\t\t\t"ADDRESS_KEY": "not a secret any more, being here",'), /not the relay's settings, or are its secrets: ADDRESS_KEY/],
+	["a class transferred from the production relay", migration('{ "tag": "v2", "transferred_classes": [{ "from": "Pairing", "from_script": "pi2-relay-production", "to": "Pairing" }] }'), /migrations are not the ones deploy.mjs expects/],
+	["a deleted class", migration('{ "tag": "v2", "deleted_classes": ["Pairing"] }'), /migrations are not the ones deploy.mjs expects/],
+	["a renamed class", migration('{ "tag": "v2", "renamed_classes": [{ "from": "Pairing", "to": "Pairings" }] }'), /migrations are not the ones deploy.mjs expects/],
+	["a new tag", migration('{ "tag": "v2", "new_sqlite_classes": ["Other"] }'), /migrations are not the ones deploy.mjs expects/],
+	["migrations of the development relay's own", development('"name": "pi2-relay-development",', '"name": "pi2-relay-development",\n\t\t\t"migrations": [{ "tag": "v1", "deleted_classes": ["Pairing"] }],'), /migrations are not the ones deploy.mjs expects/],
+	["Node's modules on", (text) => replace(text, '"compatibility_flags": ["no_nodejs_compat", "no_nodejs_compat_v2"],', '"compatibility_flags": ["nodejs_compat"],'), /compatibility flags are not exactly/],
+	["another compatibility flag", (text) => replace(text, '"compatibility_flags": ["no_nodejs_compat", "no_nodejs_compat_v2"],', '"compatibility_flags": ["no_nodejs_compat", "no_nodejs_compat_v2", "nodejs_compat"],'), /compatibility flags are not exactly/],
+	["another compatibility date", (text) => replace(text, '"compatibility_date": "2026-11-01",', '"compatibility_date": "2026-11-02",'), /compatibility date is not 2026-11-01/],
 	["a route on the development relay", development('"name": "pi2-relay-development",', '"name": "pi2-relay-development",\n\t\t\t"routes": [{ "pattern": "relay.example.com", "custom_domain": true }],'), /development relay has a route/],
 ];
 

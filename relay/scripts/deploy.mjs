@@ -6,8 +6,8 @@
 //
 // Before anything is built it checks what the deployment would be, as Wrangler reads wrangler.jsonc, against what it
 // may be: logs, traces, Issues, Logpush and tail consumers off; no preview or version addresses; no build command;
-// the three Durable Objects and the settings' variables as its only bindings, and no secret among them; for
-// production, a custom domain and no workers.dev address. Anything else refuses, a dry run included (so CI fails a pull
+// the three Durable Objects and the settings' variables as its only bindings, and no secret among them; the
+// migrations and the compatibility date and flags exactly as listed below; for production, a custom domain and no workers.dev address. Anything else refuses, a dry run included (so CI fails a pull
 // request that changes one), but for production's missing domain, which a dry run only reports.
 //
 // Then it runs `wrangler deploy` as scripts/isolated.mjs runs a tool: a throwaway home folder, Wrangler's usage events
@@ -40,6 +40,13 @@ const OBJECTS = [
 	{ name: "ATTEST_KEYS", class_name: "AttestKey" },
 	{ name: "ADDRESSES", class_name: "Address" },
 ];
+// The Durable Objects' migrations, whole. A deploy applies whatever wrangler.jsonc lists, and both relays are on one
+// account with one token: a class transferred from the other relay, deleted (every pairing with it) or renamed, or a
+// new tag, would act on stored pairings. So any change refuses until this list is changed too, in the same reviewed
+// pull request as the migration (docs/relay.md, "What the workflow does").
+const MIGRATIONS = [{ tag: "v1", new_sqlite_classes: ["Pairing", "AttestKey", "Address"] }];
+// The runtime: Node's modules off, and the date wrangler.jsonc names. A later date or another flag is changed here too.
+const COMPATIBILITY = { date: "2026-11-01", flags: ["no_nodejs_compat", "no_nodejs_compat_v2"] };
 // What Wrangler's resolved configuration may hold that is not empty. Anything else (a binding of any other kind,
 // assets, `unsafe`, a key a later Wrangler adds) refuses, so that nothing reaches a deployment unchecked.
 const ALLOWED = new Set([
@@ -159,6 +166,9 @@ function check(config) {
 	if (config.dependencies_instrumentation?.enabled !== false) refuse.push("Wrangler's report of the packages used is not off");
 	if (config.keep_vars !== false) refuse.push("`keep_vars` is on: variables added in the dashboard would outlive a deploy");
 	if (config.main !== join(relay, "src/index.ts")) refuse.push("the Worker's entry is not src/index.ts");
+	if (!same(config.migrations, MIGRATIONS)) refuse.push("the Durable Objects' migrations are not the ones deploy.mjs expects: change MIGRATIONS there in the same pull request");
+	if (config.compatibility_date !== COMPATIBILITY.date) refuse.push(`the compatibility date is not ${COMPATIBILITY.date}: change COMPATIBILITY in deploy.mjs in the same pull request`);
+	if (!same(config.compatibility_flags, COMPATIBILITY.flags)) refuse.push("the compatibility flags are not exactly Node's modules off");
 	// Wrangler runs a build command in a shell, which on a deploy would have the token in reach.
 	if (Object.keys(config.build ?? {}).some((key) => key !== "watch_dir")) refuse.push("wrangler.jsonc has a build step, which a deploy would run beside the token");
 	if (!same(config.durable_objects, { bindings: OBJECTS })) refuse.push("the Durable Objects are not exactly the relay's three");
