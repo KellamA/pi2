@@ -54,7 +54,7 @@ Download the disk image from the [latest release](https://github.com/KellamA/pi2
 
 On its second launch pi² asks whether to check for updates automatically. Updates are signed and installed in place, and running agents pick up where they were. **Settings › General** changes the answer, and **pi² › Check for Updates…** checks at any time.
 
-Coming from a version before 0.8.9? Its first start moves everything into projects by itself, after keeping a copy of your data. The move cannot be switched back. [What was moved, and where the copy is](docs/guide.md#your-data-from-before-projects).
+Coming from a version before 0.8.9? The first start of 0.8.9 or later moves everything into projects by itself, after keeping a copy of your data. The move cannot be switched back. [What was moved, and where the copy is](docs/guide.md#your-data-from-before-projects).
 
 To build it yourself, see [Building from source](#building-from-source).
 
