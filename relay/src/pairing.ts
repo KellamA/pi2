@@ -48,6 +48,13 @@ const WINDOW_FOR = 5 * 60 * 1000;
 const WINDOW_TRIES = 3;
 /** Phones that may join one window: the engine needs to see a second claim to close it (3.3 step 6). */
 const WINDOW_JOINS = 3;
+/**
+ * Join windows the Mac may open in any minute (6.6). Opening one is a write or two, and closing it another, so the Mac's
+ * whole allowance of messages spent on them would be hundreds of writes a second; a person pairing a phone, and trying
+ * again a few times, opens a handful in some minutes.
+ */
+const WINDOWS_A_MINUTE = 10;
+const MINUTE = 60 * 1000;
 /** Devices listed at most (3.5). */
 const MAX_DEVICES = 5;
 /** A Mac socket that has sent nothing, not even a ping, for this long is taken for gone (it pings every 30 seconds). */
@@ -144,6 +151,8 @@ export class Pairing extends DurableObject<Env> {
 	limits: Limits = LIMITS;
 	joinedLimits: Limits = JOINED_LIMITS;
 	pendingLimits: Limits = PENDING_LIMITS;
+	/** The join windows the Mac may open in any minute; tests change it. */
+	windowsAMinute = WINDOWS_A_MINUTE;
 
 	/** The object of an App Attest key's tie (claims.ts). Tests stand it in, to make its calls fail; nothing else does. */
 	keyObject(keyId: string): Pick<DurableObjectStub<import("./claims.ts").AttestKey>, "tie" | "retie" | "untie"> {
@@ -153,6 +162,11 @@ export class Pairing extends DurableObject<Env> {
 	private meta: Meta | null = null;
 	private devices: Record<string, Device> = {};
 	private counters = new Counters({});
+	/**
+	 * When the windows of the last minute were opened, in memory only: an object hibernates only after some seconds with
+	 * nothing to do, which leaves a Mac that waits that long between windows well inside the limit anyway.
+	 */
+	private opened: number[] = [];
 	private readonly mailbox: Mailbox;
 
 	constructor(ctx: DurableObjectState, env: Env) {
@@ -478,6 +492,10 @@ export class Pairing extends DurableObject<Env> {
 		switch (message.type) {
 			case "openJoin": {
 				if (message.expires <= now) return refused(ws, "openJoin", "malformed");
+				// Past the minute's windows, the Mac is held off as past any other limit, until the oldest is a minute old.
+				this.opened = this.opened.filter((time) => now - time < MINUTE);
+				if (this.opened.length >= this.windowsAMinute) return this.holdOff(ws, this.opened[0] + MINUTE);
+				this.opened.push(now);
 				if (meta.window !== null) await this.closeWindow();
 				meta.window = {
 					id: base64url(random(16)),

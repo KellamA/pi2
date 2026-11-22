@@ -1,0 +1,310 @@
+// What the relay counts by address (docs/iphone.md 6.6): the group an address is counted in (an IPv6 address by its
+// /64), registrations, and every connection to /v1, counted in memory with nothing written, refused with 429 and
+// `Retry-After`, and refused by the Worker itself while its address is held.
+
+import { env, runInDurableObject } from "cloudflare:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type Address, addressGroup, addressName, CONNECTIONS_A_MINUTE, CONNECTIONS_AN_HOUR } from "../src/addresses.ts";
+import type { Pairing } from "../src/pairing.ts";
+import { connect, pairingObject, register, worker } from "./helpers.ts";
+
+const NOON = Date.parse("2026-11-20T12:00:00Z");
+const MINUTE = 60 * 1000;
+const HOUR = 60 * MINUTE;
+
+beforeEach(() => {
+	vi.useFakeTimers({ toFake: ["Date"] });
+	vi.setSystemTime(NOON);
+});
+afterEach(() => {
+	vi.useRealTimers();
+});
+
+let prefixes = 0;
+/** A /64 of its own for each test, and an address in it. */
+function newPrefix(): (host: number) => string {
+	prefixes += 1;
+	const prefix = `2001:db8:${prefixes.toString(16)}:${(prefixes * 7).toString(16)}`;
+	return (host) => `${prefix}:${(host >> 16).toString(16)}:${(host & 0xffff).toString(16)}:1:${(host % 9).toString(16)}`;
+}
+
+let quads = 0;
+function newQuad(): string {
+	quads += 1;
+	return `203.0.${(quads >> 8) & 255}.${quads & 255}`;
+}
+
+/** The Address object an address is counted in, today. */
+async function addressObject(address: string): Promise<DurableObjectStub<Address>> {
+	const name = await addressName(env.ADDRESS_KEY!, addressGroup(address)!, Date.now());
+	return env.ADDRESSES.get(env.ADDRESSES.idFromName(name));
+}
+
+/** Counts the writes the address's object makes from here on, at its storage, and how often it is asked. */
+async function watchAddress(address: string): Promise<{ writes: number; asked: number }> {
+	const watched = { writes: 0, asked: 0 };
+	await runInDurableObject(await addressObject(address), (instance: Address, state) => {
+		const storage = state.storage as unknown as Record<string, (...args: unknown[]) => unknown>;
+		for (const name of ["put", "delete", "deleteAll", "setAlarm", "deleteAlarm"]) {
+			const real = storage[name].bind(storage);
+			storage[name] = (...args: unknown[]) => {
+				watched.writes += 1;
+				return real(...args);
+			};
+		}
+		// RPC calls only what the class has, not a property of the instance: so the class's method counts, for this one.
+		const prototype = Object.getPrototypeOf(instance) as Watchable;
+		if (prototype[WATCHED] !== true) {
+			const admit = prototype.admit;
+			prototype.admit = function (this: object, registering: boolean) {
+				const counts = askedOf.get(this);
+				if (counts !== undefined) counts.asked += 1;
+				return admit.call(this, registering);
+			};
+			prototype[WATCHED] = true;
+		}
+		askedOf.set(instance, watched);
+	});
+	return watched;
+}
+
+const WATCHED = Symbol("watched");
+type Watchable = { admit: (this: object, registering: boolean) => Promise<unknown>; [WATCHED]?: true };
+const askedOf = new WeakMap<object, { asked: number }>();
+
+/** One connection to the pairing from `address`, as the Worker answers it; a socket it opens is closed again. */
+async function knock(pairing: string | null, address: string | null): Promise<Response> {
+	const headers: Record<string, string> = { Upgrade: "websocket" };
+	if (pairing !== null) headers["Pi2-Pairing"] = pairing;
+	if (address !== null) headers["CF-Connecting-IP"] = address;
+	const response = await worker.fetch("https://relay.test/v1", { headers });
+	if (response.webSocket) {
+		response.webSocket.accept();
+		response.webSocket.close(1000);
+	}
+	return response;
+}
+
+describe("the group an address is counted in", () => {
+	it("takes an IPv4 address whole, written only as a dotted quad", () => {
+		expect(addressGroup("192.0.2.1")).toBe("192.0.2.1");
+		expect(addressGroup("0.0.0.0")).toBe("0.0.0.0");
+		expect(addressGroup("255.255.255.255")).toBe("255.255.255.255");
+		// Cloudflare's Pseudo IPv4 (class E) is an IPv4 address like another.
+		expect(addressGroup("240.16.0.1")).toBe("240.16.0.1");
+		for (const text of ["256.0.0.1", "01.2.3.4", "1.2.3.04", "1.2.3", "1.2.3.4.5", "1..2.3", " 1.2.3.4", "1.2.3.4 ", "1.2.3.4\n", "+1.2.3.4", "1.2.3.-4", "0x1.2.3.4", "1.2.3.4%en0", "1e2.2.3.4", "１.2.3.4"]) {
+			expect(addressGroup(text), text).toBeNull();
+		}
+	});
+
+	it("takes an IPv6 address by its /64, in every spelling: compressed, full, upper case, a dotted tail, a zone id", () => {
+		const same = [
+			"2001:db8:1:2::1",
+			"2001:db8:1:2::",
+			"2001:0db8:0001:0002:0000:0000:0000:0001",
+			"2001:DB8:1:2:FFFF:FFFF:FFFF:FFFF",
+			"2001:Db8:1:2:a:B:c:D",
+			"2001:db8:1:2:0:0:192.0.2.1",
+			"2001:db8:1:2::192.0.2.1",
+			"2001:db8:1:2:1:2:3::",
+			"2001:db8:1:2:0::1",
+			"2001:db8:0001:2:0000::0:1",
+			"2001:db8:1:2::1%en0",
+			"2001:db8:1:2::1%25",
+			"2001:db8:1:2::1%eth0.1_x~y-z",
+		];
+		for (const text of same) expect(addressGroup(text), text).toBe("2001:db8:1:2::/64");
+		// The /64 itself is compressed only where it is: zero groups stay, so no two /64s read alike.
+		expect(addressGroup("2001:db8::1")).toBe("2001:db8:0:0::/64");
+		expect(addressGroup("2001:db8:0:1::1")).toBe("2001:db8:0:1::/64");
+		expect(addressGroup("2001:db8:1:3::1")).toBe("2001:db8:1:3::/64");
+		expect(addressGroup("fe80::1%en0")).toBe("fe80:0:0:0::/64");
+		expect(addressGroup("::1")).toBe("0:0:0:0::/64");
+		expect(addressGroup("::")).toBe("0:0:0:0::/64");
+		expect(addressGroup("1:2:3:4:5:6:7:8")).toBe("1:2:3:4::/64");
+		expect(addressGroup("::2:3:4:5:6:7:8")).toBe("0:2:3:4::/64");
+	});
+
+	it("takes an IPv4-mapped IPv6 address as the IPv4 address it is, in either spelling", () => {
+		for (const text of ["::ffff:192.0.2.1", "::FFFF:192.0.2.1", "::ffff:c000:201", "::ffff:C000:0201", "0:0:0:0:0:ffff:192.0.2.1", "0000:0000:0000:0000:0000:ffff:c000:0201", "::ffff:192.0.2.1%en0"]) {
+			expect(addressGroup(text), text).toBe("192.0.2.1");
+		}
+		// Only ::ffff:0:0/96 is mapped: an IPv4-compatible or translated address is IPv6, by its /64.
+		expect(addressGroup("::192.0.2.1")).toBe("0:0:0:0::/64");
+		expect(addressGroup("::ffff:0:192.0.2.1")).toBe("0:0:0:0::/64");
+		expect(addressGroup("64:ff9b::192.0.2.1")).toBe("64:ff9b:0:0::/64");
+	});
+
+	it("takes nothing else: a missing header, a malformed address, an address with more around it", () => {
+		const refused = [
+			null,
+			"",
+			" ",
+			"2001:db8::1::2",
+			"2001:db8:::1",
+			":2001:db8::1",
+			"2001:db8::1:",
+			":::",
+			"1:2:3:4:5:6:7:8:9",
+			"1:2:3:4:5:6:7",
+			"1:2:3:4:5:6:7::8",
+			"1:2:3:4::5:6:7:8",
+			"12345::1",
+			"g::1",
+			"2001:db8::-1",
+			"2001:db8::+1",
+			"2001:db8:: 1",
+			" 2001:db8::1",
+			"2001:db8::1 ",
+			"::ffff:192.0.2.256",
+			"::ffff:192.0.2",
+			"::ffff:192.0.02.1",
+			"1.2.3.4::",
+			"::1.2.3.4:5",
+			"1:2:3:4:5:6:7:1.2.3.4",
+			"fe80::1%",
+			"fe80::1%en 0",
+			"fe80::1%en0%en1",
+			"fe80::1%en/0",
+			"[2001:db8::1]",
+			"2001:db8::1/64",
+			"2001:db8::1, 192.0.2.1",
+			"localhost",
+			`2001:db8::1%${"x".repeat(100)}`,
+		];
+		for (const text of refused) expect(addressGroup(text), String(text)).toBeNull();
+	});
+});
+
+describe("registrations by address", () => {
+	it("counts registrations from one /64 together, whatever address in it each comes from, and another /64 apart", async () => {
+		const host = newPrefix();
+		for (let index = 0; index < 5; index++) await register(host(index));
+		const sixth = await knock(null, host(1000));
+		expect(sixth.status).toBe(429);
+		expect(sixth.headers.get("Retry-After")).toBe(String(HOUR / 1000));
+		// The next /64 is another place.
+		await register(newPrefix()(0));
+		// An hour on, the first of the five has left the hour.
+		vi.setSystemTime(NOON + HOUR);
+		await register(host(2000));
+	});
+
+	it("counts an IPv4-mapped address with its IPv4 address", async () => {
+		const quad = newQuad();
+		for (let index = 0; index < 3; index++) await register(quad);
+		await register(`::ffff:${quad}`);
+		await register(`::FFFF:${quad}`);
+		expect((await knock(null, quad)).status).toBe(429);
+		expect((await knock(null, `::ffff:${quad}`)).status).toBe(429);
+	});
+
+	it("says when a registration may come again past the day's twenty", async () => {
+		const quad = newQuad();
+		for (let hour = 0; hour < 4; hour++) {
+			vi.setSystemTime(NOON + hour * HOUR);
+			for (let index = 0; index < 5; index++) await register(quad);
+		}
+		vi.setSystemTime(NOON + 4 * HOUR);
+		const refused = await knock(null, quad);
+		expect(refused.status).toBe(429);
+		// The first of the day's twenty is a day old at noon tomorrow (though the day's object is another by then).
+		expect(refused.headers.get("Retry-After")).toBe(String(20 * HOUR / 1000));
+	});
+
+	it("refuses a connection with no address, or one that does not read as one, before any object is woken", async () => {
+		const mac = await register();
+		const sockets = async () => runInDurableObject(pairingObject(mac.pairing), (_: Pairing, state) => state.getWebSockets().length);
+		const before = await sockets();
+		for (const address of [null, "", "unknown", "2001:db8::1::2", "198.51.100.1, 203.0.113.1", "01.2.3.4"]) {
+			expect((await knock(null, address)).status, String(address)).toBe(400);
+			expect((await knock(mac.pairing, address)).status, String(address)).toBe(400);
+		}
+		expect(await sockets()).toBe(before);
+	});
+});
+
+describe("connections by address", () => {
+	it(`takes ${CONNECTIONS_A_MINUTE} connections a minute from one /64 and writes nothing for them; refuses the next with 429 until the next minute`, async () => {
+		const mac = await register();
+		const host = newPrefix();
+		const watched = await watchAddress(host(0));
+		// Half a minute in, so that the refusal's time is the minute's end, thirty seconds on.
+		vi.setSystemTime(NOON + 30 * 1000);
+		for (let index = 0; index < CONNECTIONS_A_MINUTE; index++) expect((await knock(mac.pairing, host(index))).status).toBe(101);
+		const refused = await knock(mac.pairing, host(5000));
+		expect(refused.status).toBe(429);
+		expect(refused.headers.get("Retry-After")).toBe("30");
+		// A registration from the same place is a connection too.
+		expect((await knock(null, host(5001))).status).toBe(429);
+		expect(watched.writes).toBe(0);
+		// Another address is not held back by this one.
+		expect((await knock(mac.pairing, newPrefix()(0))).status).toBe(101);
+		expect((await knock(mac.pairing, newQuad())).status).toBe(101);
+		// The next minute, the address is taken again: refused connections were not counted.
+		vi.setSystemTime(NOON + MINUTE);
+		for (let index = 0; index < CONNECTIONS_A_MINUTE; index++) expect((await knock(mac.pairing, host(index))).status).toBe(101);
+		expect((await knock(mac.pairing, host(0))).status).toBe(429);
+		expect(watched.writes).toBe(0);
+	});
+
+	it("refuses a held address in the Worker itself, without asking its object, until the object's time", async () => {
+		const mac = await register();
+		const quad = newQuad();
+		for (let index = 0; index < CONNECTIONS_A_MINUTE; index++) expect((await knock(mac.pairing, quad)).status).toBe(101);
+		expect((await knock(mac.pairing, quad)).status).toBe(429);
+		const watched = await watchAddress(quad);
+		for (let index = 0; index < 50; index++) {
+			const refused = await knock(mac.pairing, quad);
+			expect(refused.status).toBe(429);
+			expect(refused.headers.get("Retry-After")).toBe("60");
+		}
+		expect(watched.asked).toBe(0);
+		vi.setSystemTime(NOON + MINUTE);
+		expect((await knock(mac.pairing, quad)).status).toBe(101);
+		expect(watched.asked).toBe(1);
+	});
+
+	it(`takes ${CONNECTIONS_AN_HOUR} in an hour, then as many as the oldest minutes give back as they leave it`, async () => {
+		const quad = newQuad();
+		const object = await addressObject(quad);
+		const watched = await watchAddress(quad);
+		// Ten minutes at the minute's limit.
+		for (let minute = 0; minute < CONNECTIONS_AN_HOUR / CONNECTIONS_A_MINUTE; minute++) {
+			vi.setSystemTime(NOON + minute * MINUTE);
+			for (let index = 0; index < CONNECTIONS_A_MINUTE; index++) expect(await object.admit(false)).toEqual({ pass: true });
+		}
+		vi.setSystemTime(NOON + 30 * MINUTE);
+		expect(await object.admit(false)).toEqual({ pass: false, until: NOON + HOUR, limit: "connections" });
+		// An hour after the first minute, its 120 are free again, and only those.
+		vi.setSystemTime(NOON + HOUR);
+		for (let index = 0; index < CONNECTIONS_A_MINUTE; index++) expect(await object.admit(false)).toEqual({ pass: true });
+		expect(await object.admit(false)).toEqual({ pass: false, until: NOON + HOUR + MINUTE, limit: "connections" });
+		vi.setSystemTime(NOON + HOUR + MINUTE);
+		expect(await object.admit(false)).toEqual({ pass: true });
+		expect(watched.writes).toBe(0);
+	});
+
+	it("counts a registration once against both of its limits, with one write of its times", async () => {
+		const quad = newQuad();
+		const watched = await watchAddress(quad);
+		await register(quad);
+		// The alarm that deletes the times after a day, and the times.
+		expect(watched.writes).toBe(2);
+		await register(quad);
+		expect(watched.writes).toBe(3);
+		expect(watched.asked).toBe(2);
+	});
+
+	it("leaves a household's worst minute far inside the limit: a Mac and five phones all reconnecting through a dropping network", async () => {
+		// Each end's backoff (RemoteKit's RelayBackoff: 1 s doubling to a minute, with jitter) brings it back at most
+		// about seven times in the first minute; six ends, with every try reaching the relay.
+		const mac = await register();
+		const host = newPrefix();
+		for (let attempt = 0; attempt < 7; attempt++) {
+			for (let end = 0; end < 6; end++) expect((await knock(mac.pairing, host(end))).status).toBe(101);
+		}
+		// And the Mac's own next connection is still taken.
+		(await connect(mac.pairing, host(0))).close();
+	});
+});
