@@ -2,7 +2,7 @@
 // model, and a stand-in gh (gh-stand-in.mjs) that keeps its repositories in a file and never reaches the network.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -81,7 +81,9 @@ function changeStandIn(edit: (whole: any) => void): void {
 	try {
 		const whole = JSON.parse(readFileSync(state, "utf8"));
 		edit(whole);
-		writeFileSync(state, JSON.stringify(whole, null, "\t"));
+		// Whole, as the stand-in writes it: one running now reads it without the lock.
+		writeFileSync(`${state}.test`, JSON.stringify(whole, null, "\t"));
+		renameSync(`${state}.test`, state);
 	} finally {
 		rmSync(lock, { recursive: true, force: true });
 	}
