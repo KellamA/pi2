@@ -80,8 +80,9 @@ let package = Package(
         .executableTarget(name: "pi2-peer", dependencies: ["PeerKit"], path: "Sources/pi2-peer"),
         // Checks PeerKit and pi2-peer on connections of its own, from itself and from /usr/bin/nc.
         .executableTarget(name: "pi2-peer-check", dependencies: ["PeerKit"], path: "Sources/pi2-peer-check"),
-        // Checks that the client reads the engine as it did before its models moved into PiModels (#669): a recorded
-        // session replayed through the models, and what the views read compared with what they read before.
-        .executableTarget(name: "pi2-client-check", dependencies: ["PiModels"], path: "Sources/pi2-client-check", exclude: ["Fixture"]),
+        // Checks that the client reads the engine as it did before its models moved into PiModels (#669) and the client
+        // into EngineKit (#670): a recorded session played to the client, and what the views read compared with what they
+        // read before.
+        .executableTarget(name: "pi2-client-check", dependencies: ["PiModels", "EngineKit"], path: "Sources/pi2-client-check", exclude: ["Fixture"]),
     ]
 )
