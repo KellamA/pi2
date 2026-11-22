@@ -414,6 +414,31 @@ function pullLine(pull: PullSummary): string {
 	return `#${pull.number} pull request ${state} · ${checks} · ${review} · ${oneLine(pull.title)}`;
 }
 
+/**
+ * What `list` was asked for (#790): the items' states, and the pull requests' (open with `open`, the others with `merged`
+ * or `closed`), and where the merged and closed ones go on from, `below` a number. With no `states`, the open items and
+ * the open pull requests: the merged ones, most of a busy repository's listing, are left out unless asked for.
+ */
+type ListAsked = { work: WorkState[]; pulls: PullSummary["state"][]; below?: number };
+const PULL_STATES: PullSummary["state"][] = ["merged", "closed"];
+/** How many merged and closed pull requests one `list` gives, newest first; a cursor goes on from the last. */
+const ENDED_PULLS_SHOWN = 30;
+
+function listAsked(project: Project, given: unknown, cursor: unknown): ListAsked {
+	if (given !== undefined && (!Array.isArray(given) || given.some((state) => !states.includes(state) && !PULL_STATES.includes(state)))) {
+		throw new Error(`states must be a list of work states (${states.join(", ")}), or of pull requests' states, merged and closed`);
+	}
+	const asked: string[] = (given as string[] | undefined) ?? openStates;
+	const pulls = asked.filter((state): state is PullSummary["state"] => PULL_STATES.includes(state as PullSummary["state"]));
+	if (pulls.length > 0 && project.repository === null) throw new Error("merged and closed are states of pull requests, and this project's work is kept by pi², which has none.");
+	const work = asked.filter((state): state is WorkState => states.includes(state as WorkState));
+	if (asked.includes("open")) pulls.unshift("open");
+	if (cursor === undefined) return { work, pulls };
+	if (typeof cursor !== "string" || !/^[1-9]\d{0,9}$/.test(cursor.trim())) throw new Error("cursor must be the one a list gave, a pull request's number");
+	if (!pulls.includes("merged") && !pulls.includes("closed")) throw new Error("cursor goes on through merged and closed pull requests: give it with the same states as the list that gave it");
+	return { work, pulls, below: Number(cursor.trim()) };
+}
+
 /** How many there are, by state, so that a list says how the backlog stands without any of its words. */
 function countWords(items: WorkItem[], pulls: PullSummary[]): string {
 	const order: WorkState[] = [...openStates, ...closedStates];
@@ -426,12 +451,26 @@ function countWords(items: WorkItem[], pulls: PullSummary[]): string {
 	return `${said} ${pulls.length} ${pulls.length === 1 ? "pull request" : "pull requests"}, ${open} of them open.`;
 }
 
-/** The tool's `list` answer: a line an item, a line a pull request, how many there are, and when GitHub was read. */
-function listAnswer(project: Project, items: WorkItem[], name: (id: string) => string): string {
+/**
+ * The tool's `list` answer: a line an item, a line a pull request asked for, how many there are, and when GitHub was read.
+ * The merged and closed pull requests come newest first, `ENDED_PULLS_SHOWN` at a time, with a cursor for the next ones;
+ * an answer that goes on from a cursor gives only those, since the rest was in the answer that gave it (#790).
+ */
+function listAnswer(project: Project, items: WorkItem[], name: (id: string) => string, asked: ListAsked): string {
 	const pulls = project.repository === null || github === undefined ? [] : github.pulls(project);
-	const lines = items.map((item) => itemLine(item, name));
-	if (pulls.length > 0) lines.push(...pulls.map(pullLine));
-	lines.push(countWords(items, pulls));
+	const newest = [...pulls].sort((one, other) => other.number - one.number);
+	const open = asked.below === undefined && asked.pulls.includes("open") ? newest.filter((pull) => pull.state === "open") : [];
+	const ended = newest.filter((pull) => pull.state !== "open" && asked.pulls.includes(pull.state) && (asked.below === undefined || pull.number < asked.below));
+	const shown = ended.slice(0, ENDED_PULLS_SHOWN);
+	const lines = (asked.below === undefined ? items : []).map((item) => itemLine(item, name));
+	lines.push(...open.map(pullLine), ...shown.map(pullLine));
+	if (ended.length > shown.length) {
+		const more = ended.length - shown.length;
+		lines.push(`${more} more ${more === 1 ? "pull request" : "pull requests"} ${asked.pulls.filter((state) => state !== "open").join(" or ")}: list again with the same states and cursor "${shown.at(-1)!.number}".`);
+	}
+	lines.push(countWords(asked.below === undefined ? items : [], pulls));
+	const leftOut = pulls.filter((pull) => pull.state !== "open" && !asked.pulls.includes(pull.state)).length;
+	if (leftOut > 0 && asked.below === undefined) lines.push(`${leftOut} merged or closed in the last seven days ${leftOut === 1 ? "is" : "are"} left out: list with states ["merged", "closed"] for them.`);
 	if (project.repository !== null && github !== undefined) lines.push(github.listingNote(project));
 	return lines.join("\n");
 }
@@ -931,14 +970,15 @@ export const work: Feature = (host, engine) => {
 
 	const tool = defineTool({
 		name: "work",
-		description: "Keep this project's work list. Use list or show to read it (list answers a line an item, show one item's text and notes); file, take, release, note, wait, block, resume or finish to keep it up to date. Only the orchestrator can assign, close, reopen, edit or classify work. When the work list is a GitHub repository's issues: pull_request opens a pull request from the branch this conversation's folder is on (with id, it fixes that issue), and review posts what you found on pull request id; only the orchestrator can merge a pull request or send_back one to the conversation that opened it. A long text, such as a pull request's body, can be written to a file and given as text_file; a path given as text is refused.",
+		description: "Keep this project's work list. Use list or show to read it (list answers a line an item, and on GitHub a line an open pull request, the merged and closed ones only when states asks for them; show one item's text and notes); file, take, release, note, wait, block, resume or finish to keep it up to date. Only the orchestrator can assign, close, reopen, edit or classify work. When the work list is a GitHub repository's issues: pull_request opens a pull request from the branch this conversation's folder is on (with id, it fixes that issue), and review posts what you found on pull request id; only the orchestrator can merge a pull request or send_back one to the conversation that opened it. A long text, such as a pull request's body, can be written to a file and given as text_file; a path given as text is refused.",
 		parameters: obj({
 			action: str({ description: "list, show, file, take, assign, release, wait, block, resume, finish, close, reopen, note, edit, classify, pull_request, review, merge, or send_back" }),
 			id: opt(int({ description: "Work item number (on GitHub, the issue's); for review, merge and send_back, the pull request's" })),
 			text: opt(str({ description: "Note, reason for wait or block, result of finish, the work's text for file or edit, the finding for review, the reason for send_back, or a pull request's body" })),
 			text_file: opt(str({ description: "In place of text: a file whose contents are the text, in the conversation's folder or beginning with `$PI2_SCRATCH` for its scratch folder, as the file tools take a path" })),
 			title: opt(str({ description: "Work title for file or edit; sub-chat title for assign; pull request title for pull_request" })),
-			states: opt(arr(str(), { description: "States to list; defaults to open, in_progress, waiting and blocked" })),
+			states: opt(arr(str(), { description: "States to list; defaults to open, in_progress, waiting and blocked. On GitHub, open also lists the open pull requests, and merged and closed list those pull requests, newest first, 30 at a time" })),
+			cursor: opt(str({ description: "list: where the merged and closed pull requests go on, from the previous list's answer; keep its states" })),
 			class: opt(str({ description: "local or cloud, for file or classify" })),
 			agent: opt(str({ description: "Project agent to assign the work to" })),
 			task: opt(str({ description: "What to tell the assigned agent beyond the work's own text" })),
@@ -979,8 +1019,9 @@ export const work: Feature = (host, engine) => {
 					}
 					const names = (id: string) => host.agent(id)?.name ?? id;
 					if (action === "list") {
-						const items = await backendFor(engine, project).list(project, { states: filtered(args.states) ?? openStates });
-						return { output: toolText(listAnswer(project, items, names)) };
+						const asked = listAsked(project, args.states, args.cursor);
+						const items = await backendFor(engine, project).list(project, { states: asked.work });
+						return { output: toolText(listAnswer(project, items, names, asked)) };
 					}
 					if (action === "show") return { output: toolText(showAnswer(await backendFor(engine, project).show(project, numberId(id)), names)) };
 					const by: Who = { kind: "agent", agentId, conversationId: number };
