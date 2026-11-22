@@ -22,7 +22,10 @@ let items, requests, response, keyFile = join(folder, 'no-key'), keyResponse = {
 const emptyLibrary = { event: 'library', conversations: [], archived: [] };
 let library = emptyLibrary;
 const server = createServer(socket => {
-	const send = message => socket.write(JSON.stringify(message) + '\n');
+	// The client under test may close its end before the stand-in has answered everything (#787): a write then fails
+	// with EPIPE, which must not end this process, and nothing more is written.
+	socket.on('error', () => {});
+	const send = message => { if (socket.writable && !socket.writableEnded) socket.write(JSON.stringify(message) + '\n'); };
 	send({ event: 'inbox', items });
 	send(library);
 	createInterface({ input: socket }).on('line', line => {
@@ -151,12 +154,33 @@ try {
 		assert.deepEqual(await pending, reply.error ? [1, '', `test-copy: ${reply.error}`] : [0, `${reply.result} in test-7.`, '']);
 		assert.deepEqual(readdirSync(control), []);
 	}
+	// The windows attached to one, for shot (#779): printed as the copy gives them, for the script to read.
+	for (const [reply, answer] of [[{ result: '17551 17552' }, [0, '17551 17552', '']], [{ result: '' }, [0, '', '']],
+		[{ error: 'the copy has no window 17550' }, [1, '', 'test-copy: the copy has no window 17550']]]) {
+		const pending = run('attached', control, '321', '17550');
+		const deadline = performance.now() + 3000;
+		let received;
+		while (performance.now() < deadline && !received) {
+			const [dir] = readdirSync(control);
+			try {
+				if (dir) {
+					assert.deepEqual(JSON.parse(readFileSync(join(control, dir, 'request.json'), 'utf8')), { pid: 321, command: 'attached', window: 17550 });
+					writeFileSync(join(control, dir, 'response.json'), JSON.stringify(reply));
+					received = true;
+				}
+			} catch (error) { if (error.code !== 'ENOENT') throw error; }
+			if (!received) await sleep(20);
+		}
+		assert.ok(received, 'no attached request reached the stand-in window');
+		assert.deepEqual(await pending, answer);
+	}
+	assert.deepEqual(await run('attached', control, '321', 'x'), [1, '', 'test-copy: window must be a positive integer']);
 	assert.deepEqual(await run('show', control, '321', '0'), [1, '', 'test-copy: conversation must be a positive integer']);
 	assert.deepEqual(await run('size', control, '321', '8.5', '532'), [1, '', 'test-copy: width must be a positive integer (up to 10000)']);
 	assert.deepEqual(await run('choose', control, '321', 'cancel', '/tmp/second'), [1, '', 'test-copy: choose takes one or more paths, or cancel on its own']);
 	assert.deepEqual(await run('choose', control, '321', ''), [1, '', 'test-copy: choose takes one or more paths, or cancel on its own']);
 	assert.deepEqual(readdirSync(control), []);
-	console.log('ok: show, size and choose send requests to the recorded app and report only after it replies');
+	console.log('ok: show, size, choose and attached send requests to the recorded app and report only after it replies');
 } finally {
 	server.close();
 	rmSync(folder, { recursive: true, force: true });

@@ -1,0 +1,135 @@
+#!/bin/bash
+# Checks that app/Package.swift still builds the owner's targets from the owner's folders, and nothing else (#674).
+#
+# app/Package.swift is not an owner's path: other pull requests add shared targets to it all the time, and each would
+# wait for the owner. But it decides what the targets in the owner's folders are built from, so a pull request that
+# changed a protected target's path, left files out, gave it a dependency, a setting, unsafe flags or a plugin, or
+# added a package, could get round CODEOWNERS and be merged by scripts/auto-merge. CI's App (build) job runs this on
+# every pull request, and fails it if any of that changed. This script is an owner's path itself (.github/CODEOWNERS);
+# the issue that adds a protected target adds its line to TARGETS below.
+#
+# It also fails if any Swift file outside RemoteKit and its two checks names @_spi(Vectors), the entry points that
+# take a fixed ephemeral key and the unverified steps of opening an item, which only the checks may use.
+#
+#   scripts/check-protected-targets                  reads `swift package dump-package` of app/
+#   scripts/check-protected-targets --dump FILE      reads FILE instead (scripts/test-check-protected-targets)
+#   scripts/check-protected-targets --root DIR       looks for @_spi(Vectors) under DIR instead of the checkout
+#
+# Exits 0 when everything holds, 1 naming each thing that does not, 2 for a wrong argument.
+
+set -uo pipefail
+
+root="$(cd -P -- "$(dirname -- "$0")/.." && pwd -P)"
+dump=""
+while [[ $# -gt 0 ]]; do
+	case $1 in
+		--dump) [[ $# -ge 2 ]] || { echo "check-protected-targets: --dump needs a file" >&2; exit 2; }; dump=$2; shift 2 ;;
+		--root) [[ $# -ge 2 ]] || { echo "check-protected-targets: --root needs a folder" >&2; exit 2; }; root=$2; shift 2 ;;
+		*) echo "check-protected-targets: unknown argument $1" >&2; exit 2 ;;
+	esac
+done
+command -v jq >/dev/null || { echo "check-protected-targets: needs jq" >&2; exit 2; }
+
+# Each protected target: its name, its type, what it may exclude (a JSON list) and the targets it may depend on (a JSON
+# list of names, in order). Its path must be Sources/<name>, with nothing else in its description: no sources list, no
+# resources, no settings (unsafe flags among them), no plugins, no dependency on a product.
+TARGETS=(
+	'RemoteKit|regular|[]|[]'
+	'pi2-remote-check|executable|["vectors"]|["RemoteKit"]'
+	'pi2-remote-fuzz|executable|[]|["RemoteKit"]'
+)
+# The protected targets that are checks, not code: no product of the package may name them (a library or executable
+# product would hand the test-only entry points, or a stand-in for the checks, to whatever builds on the package).
+CHECKS_ONLY='["pi2-remote-check","pi2-remote-fuzz"]'
+# The packages app/Package.swift may depend on, by address. A new one is the owner's to allow.
+PACKAGES='["https://github.com/sparkle-project/Sparkle"]'
+# The fields a target's description may have, as `swift package dump-package` writes them. A field this list does not
+# know (a new toolchain's) fails until it is read and added here.
+FIELDS='["dependencies","exclude","name","packageAccess","path","pluginUsages","resources","settings","sources","type"]'
+
+if [[ -z $dump ]]; then
+	dump=$(mktemp)
+	trap 'rm -f "$dump"' EXIT
+	if ! (cd "$root/app" && swift package dump-package) >"$dump"; then
+		echo "check-protected-targets: swift package dump-package failed" >&2
+		exit 1
+	fi
+fi
+jq -e 'type == "object" and (.targets | type == "array")' "$dump" >/dev/null 2>&1 || {
+	echo "check-protected-targets: $dump is not a package description" >&2
+	exit 1
+}
+
+failures=0
+fail() {
+	echo "check-protected-targets: $*" >&2
+	failures=$((failures + 1))
+}
+
+protected_paths=()
+for entry in "${TARGETS[@]}"; do
+	IFS='|' read -r name type exclude dependencies <<<"$entry"
+	protected_paths+=("Sources/$name")
+	count=$(jq --arg name "$name" '[.targets[] | select(.name == $name)] | length' "$dump")
+	if [[ $count != 1 ]]; then
+		fail "$name: there are $count targets of that name, not one"
+		continue
+	fi
+	target=$(jq -c --arg name "$name" '.targets[] | select(.name == $name)' "$dump")
+	unknown=$(jq -r --argjson fields "$FIELDS" 'keys - $fields | join(", ")' <<<"$target")
+	[[ -z $unknown ]] || fail "$name: fields this check does not know: $unknown"
+	[[ $(jq -r '.path // ""' <<<"$target") == "Sources/$name" ]] || fail "$name: its path is not Sources/$name"
+	[[ $(jq -r '.type' <<<"$target") == "$type" ]] || fail "$name: it is not a $type target"
+	jq -e --argjson want "$exclude" '(.exclude // []) == $want' <<<"$target" >/dev/null || fail "$name: it excludes other files than $exclude"
+	jq -e '.sources == null' <<<"$target" >/dev/null || fail "$name: it lists its sources, which can leave files out"
+	jq -e '(.resources // []) == []' <<<"$target" >/dev/null || fail "$name: it has resources"
+	jq -e '(.settings // []) == []' <<<"$target" >/dev/null || fail "$name: it has build settings (unsafe flags among them, or defines)"
+	jq -e '(.pluginUsages // []) == []' <<<"$target" >/dev/null || fail "$name: it uses a plugin"
+	jq -e --argjson want "$dependencies" '
+		(.dependencies // []) | length == ($want | length)
+		and all(.[]; has("byName") and (.byName | length == 2) and .byName[1] == null)
+		and ([.[].byName[0]] == $want)' <<<"$target" >/dev/null ||
+		fail "$name: it depends on other than $dependencies, or on a product, or on a condition"
+done
+
+# No other target may be built from a protected folder, or from inside one.
+while IFS=$'\t' read -r name path; do
+	for protected in "${protected_paths[@]}"; do
+		if [[ $path == "$protected" || $path == "$protected/"* ]]; then
+			fail "$name: it is built from $path, which is ${protected#Sources/}'s"
+		fi
+	done
+done < <(jq -r --argjson names "$(printf '%s\n' "${TARGETS[@]}" | cut -d'|' -f1 | jq -R . | jq -s .)" '
+	.targets[] | select(.name as $n | $names | index($n) | not) | [.name, (.path // ("Sources/" + .name))] | @tsv' "$dump")
+
+# Products: none may name a check. Products for other targets (PiModels, EngineKit, TranscriptKit for the iPhone app)
+# are not this script's to judge.
+while IFS= read -r product; do
+	fail "the product $product names one of RemoteKit's checks, which no product may"
+done < <(jq -r --argjson checks "$CHECKS_ONLY" '
+	(.products // [])[] | select([.targets[]?] | any(. as $t | $checks | index($t))) | .name' "$dump")
+
+# Packages: only those allowed, by address; none from a folder on disk.
+while IFS= read -r package; do
+	fail "a package dependency that is not allowed: $package"
+done < <(jq -r --argjson allowed "$PACKAGES" '
+	(.dependencies // [])[] |
+	if has("sourceControl") then
+		(.sourceControl[0].location.remote[0].urlString // "an unknown address") as $url
+		| select($allowed | index($url) | not) | $url
+	else (to_entries[0].key + " " + (tostring)) end' "$dump")
+
+# @_spi(Vectors): named in RemoteKit, which declares it, and its two checks, which use it; nowhere else.
+while IFS= read -r file; do
+	relative=${file#"$root"/}
+	case $relative in
+		app/Sources/RemoteKit/* | app/Sources/pi2-remote-check/* | app/Sources/pi2-remote-fuzz/*) ;;
+		*) fail "$relative names @_spi(Vectors), which only RemoteKit's checks may use" ;;
+	esac
+done < <(grep -rlE --include='*.swift' --exclude-dir=.build --exclude-dir=.git '_spi[[:space:]]*\([[:space:]]*Vectors' "$root" 2>/dev/null)
+
+if [[ $failures -gt 0 ]]; then
+	echo "check-protected-targets: $failures thing(s) wrong. The owner's targets must be built from the owner's folders as they are (.github/CODEOWNERS)." >&2
+	exit 1
+fi
+echo "check-protected-targets: ${#TARGETS[@]} protected targets as they should be, no product naming a check, no other package, and @_spi(Vectors) only in RemoteKit's checks."
