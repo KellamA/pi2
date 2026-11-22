@@ -505,7 +505,10 @@ struct AgentEditor: View {
     }
 
     private var note: some View {
-        Text("What it can do applies from the next message. Model, instructions and folder apply to new conversations.")
+        // In a project a conversation runs on its agent's model and thinking, read at each message (#726).
+        Text(engine.agent(agentID)?.projectId == nil
+            ? "What it can do applies from the next message. Model, instructions and folder apply to new conversations."
+            : "What it can do, its model and its thinking apply from the next message. Instructions apply to new conversations.")
             .font(.caption).foregroundStyle(.secondary)
     }
 

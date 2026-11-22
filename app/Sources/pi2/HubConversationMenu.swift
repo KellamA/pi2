@@ -59,30 +59,16 @@ extension EngineClient {
         conversations.first(where: { $0.id == id })?.busy == true || open[id]?.state?.busy == true || projectStore.run(id) != nil
     }
 
-    /// The conversations that run as `agent` and still take messages: every one in the sidebar's list, sub-chats
-    /// included, but an earlier conversation with a project's orchestrator (docs/projects.md, 3.5).
-    func liveConversations(of agent: String) -> [Int] {
-        conversations.filter { ($0.runsAs ?? $0.agentId) == agent && $0.orchestrator != "earlier" && !$0.isChat }.map(\.id)
-    }
-
-    /// Gives an agent another model, for all its conversations from their next message (#642). The agent keeps it for
-    /// the conversations it starts; each of its conversations already going is changed too, since in a project the model
-    /// is the agent's and not one conversation's.
+    /// Gives an agent another model, for all its conversations from their next message (#642). Only the agent is
+    /// changed: in a project a conversation runs on its agent's model, which the engine reads at each message (#726).
     func setModel(_ model: ModelInfo, for agent: AgentProfile) {
-        let ref: [String: Any] = ["provider": model.provider, "modelId": model.id]
         // The engine keeps every setting it is not sent, and the agent's project.
-        perform("agents.save", ["agent": ["id": agent.id, "name": agent.name, "model": ref]])
-        for id in liveConversations(of: agent.id) where open[id]?.state?.agent.model != model.ref {
-            perform("conversation.configure", ["id": id, "model": ref])
-        }
+        perform("agents.save", ["agent": ["id": agent.id, "name": agent.name, "model": ["provider": model.provider, "modelId": model.id]]])
     }
 
     /// Gives an agent another thinking level, for all its conversations from their next message, as `setModel` does.
     func setThinking(_ level: String, for agent: AgentProfile) {
         perform("agents.save", ["agent": ["id": agent.id, "name": agent.name, "thinkingLevel": level]])
-        for id in liveConversations(of: agent.id) where open[id]?.state?.agent.thinkingLevel != level {
-            perform("conversation.configure", ["id": id, "thinkingLevel": level])
-        }
     }
 
     /// The model an agent's next conversation starts on: its own, or the default for agents.
