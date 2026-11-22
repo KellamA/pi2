@@ -705,6 +705,24 @@ type Field = { name: string; before: unknown; after: unknown };
 - **In the conversation.** The tool call's result carries `details.change: id`, and the conversation's state has `projectChanges: [{ id, summary, undone, canUndo, noUndo }]` for the changes made in it (the last 100), so the page draws each line, with Undo where `canUndo`, and as undone once it is. A change with no inverse is drawn without Undo, saying why: `noUndo` is that reason ("on GitHub; it cannot be undone here"), null for a change that has an inverse. `canUndo` is false once the change is undone, and while its project is archived or deleted. A conversation in no project has no `projectChanges`. An export writes each as its summary, with "(undone)" when it was.
 - Kept: the last 500 per project.
 
+### 3.13 Schedules (`pi2.schedules`)
+
+A schedule names an agent, and starts a conversation with it and the schedule's prompt at its times ([schedules.md](schedules.md); `schedules.ts`, run from `main.ts`). In a project there is no other kind (#656):
+
+```ts
+// Added to Schedule (schedules.ts). Optional.
+/** For a schedule carried over: the project's copy of its agent, which it runs as while the preview is on (as 3.4). */
+projectAgentId?: string;
+```
+
+- **A schedule of a project** is one whose agent, as it runs, is an agent of that project. A schedule has no `projectId` of its own: its agent says its project, as an agent says a new conversation's (3.5). Which agent it runs as is `scheduleRunsAs(schedule, agents)` (`state.ts`), `runsAs`'s rule: its `projectAgentId` while the preview is on and that copy is neither removed nor deleted and its project not deleted; else its `agentId`. With the preview off, every schedule runs as its `agentId`, as before projects.
+- **The person makes one** on the project's Settings tab, with `schedules.save` naming one of the project's agents, the orchestrator by default (10.3). An agent makes one with `schedule_task` in a conversation of the project: the schedule is for the agent that conversation runs as (`agentOf`), so for the copy in a carried conversation. The person approves each, exactly as outside projects ([schedules.md](schedules.md#the-approval)).
+- **Its run** is a conversation of the project made as that agent, with `projectId` from it, in the project's folder: one of the project's other conversations, listed under the project and shown working on Now like any other, and checked against the project's limits as any start of its agents is ([8.3](#83-limits-and-the-one-admission-check)). With the orchestrator, too, the run is a conversation of its own made as the orchestrator, not its current conversation, so it hands work only to the agents its `delegates` name (3.3) and has no `reports`. The orchestrator is not told of a run: it is told of what the person writes to another agent with `submit` and of its own sub-chats' reports (6.4, 3.10), and a run's prompt, given by the engine, is neither. What the run does under Needs you, and what it is told, are any conversation's of the project.
+- **Archived and deleted.** A schedule of an archived project does not start while the project is archived ("This project is archived. Restore it first."): the run stays due and is tried again each minute. One carried over (`projectAgentId`) whose copy's project is archived runs as its `agentId` instead, the template, so its run is carried into that project and restores it, as a schedule's run did before (3.6, 9.9). Deleting a project holds the schedules whose own `agentId` is one of its agents (3.6); one carried over whose copy was in it runs as its template again.
+- **Editing** a schedule keeps its `projectAgentId` while its `agentId` stays the same, from either page; choosing another agent drops it, since the person chose that agent. The project's editor shows a carried schedule's copy as its agent and, while the person leaves it, sends its `agentId` unchanged.
+- **Carrying over** gives a schedule on a template its copy ([9.1](#91-what-becomes-what)): `carrySchedules` in `carryover.ts`. A schedule whose agent is a template not removed, with no `projectAgentId` and not held, is given the copy of that template in the project of the template's folder (its grouping key, [9.2](#92-grouping-by-folder), and the lookup of [9.4](#94-projects-lookup-and-adoption), 1 and 2), that copy being the one recorded for that project and template, or else the oldest agent of the project made from it ([9.5](#95-agents-copies-adoption-and-secrets), 1 and 2), and neither removed nor deleted. It never makes a project or a copy: a schedule whose folder has no project yet, or whose project has no copy of its template, stays on its template, and its run is carried as it is made (9.9), which makes them; the schedule is carried in the commit after. A schedule with no folder has the key `none`, as a conversation does, and so goes to the "No folder" project carrying over made, where its runs go. It is done after each run of carrying over, after each conversation carried later, and at engine start once a run is recorded, in a commit of the schedules alone, which writes nothing when there is nothing to carry. The report does not list schedules: the old way reads nothing this writes.
+- **Where they show.** With the preview on, a project's schedules are on its Settings tab; a template's, on the template's page, under Shared › Templates. The old Activity page lists every schedule, as before, until #483 takes it out.
+
 ## 4. Requests and events
 
 ### 4.1 Conventions
@@ -1478,7 +1496,7 @@ Carrying over puts what a person has today into projects, with nothing lost, not
 | Sub-chats handed over without waiting, still working | Their watches are left as they are: such a run has no report, so it wakes the agent that handed it over as it would have ([wakes.md](wakes.md)); runs started afterwards follow the project's `wakeOnReports`, which is on for a project carrying over makes | Unchanged |
 | Inbox notices of plans' limits | Stay in the `limits` event, shown as today | Unchanged |
 | Worktrees | Stay where they are, with their conversations | Unchanged |
-| Schedules | Stay on their agent (the template); the conversations they make are put in projects as they are made (9.9) | Unchanged |
+| Schedules | A schedule on a template: the copy of its template in the project of the template's folder, when that project and copy exist ([3.13](#313-schedules-pi2schedules)); otherwise it stays on its template, and its runs are put in projects as they are made (9.9) | `projectAgentId` added |
 
 ### 9.2 Grouping by folder
 
@@ -1606,6 +1624,8 @@ While the preview is on, when a top-level conversation that is not a chat is mad
 
 It is carried in a commit after the one that made it. If that fails, or the engine stops between the two, the conversation is not held up. With the preview on and a run already recorded (`carry.ranAt` is not null), the engine carries the top-level conversations that are not chats or deleted and have no `projectId`, one by one, at startup and again after a carry fails. If the preview is on but no run is recorded, there is no sweep: existing conversations without a project are left to the report and the first backed-up run (9.8). An archived conversation that is carried goes into its project without restoring that project. Conversations of a deleted project keep its `projectId` and are not swept; a fork of one whose own agent does not belong to the deleted project starts outside it and is carried (3.6).
 
+A schedule's run carried this way can make the project or the copy its schedule was waiting for: the schedules are carried after each conversation is ([3.13](#313-schedules-pi2schedules)), so the next run of that schedule is the copy's own, made in the project.
+
 ### 9.10 Running it again
 
 Every step looks first, by the rules of 9.4, 9.5 and 9.7, for what an earlier run made or the person made since, and does nothing it finds done. So a second run with nothing new has an empty plan, commits nothing and leaves every document exactly as it was, `ranAt` included. What is new since (a conversation made with the preview off, an agent made since, a note written since) is added as a first run would add it. Nothing the person chose since is changed: a project's name, folder, settings and orchestrator, a copy's settings, a copy or project they deleted, a note they removed or shared.
@@ -1614,7 +1634,7 @@ Every step looks first, by the rules of 9.4, 9.5 and 9.7, for what an earlier ru
 
 Nothing is undone: the projects and everything in them stay, and turning the preview on again shows them as they were left. Meanwhile:
 
-- every conversation runs as its `agentId`, exactly as before carrying over ([3.4](#34-which-agent-a-conversation-runs-as-runsas)), in its own folder, as it always did;
+- every conversation runs as its `agentId`, exactly as before carrying over ([3.4](#34-which-agent-a-conversation-runs-as-runsas)), in its own folder, as it always did, and so does every schedule ([3.13](#313-schedules-pi2schedules));
 - no project section, rule, note, catch-up or tool reaches any conversation from its next message ([6.6](#66-what-switching-the-preview-off-leaves-in-a-conversation)): a conversation carried over is told exactly what it was told before, byte for byte, whatever was changed in its project with the preview on;
 - what holds for a project's conversations whatever the preview still holds for those carried over: its `startAgents` switch asks before one of their agents starts another ([8.1](#81-what-the-orchestrator-may-do-without-asking)), and its limits hold for their starts ([8.3](#83-limits-and-the-one-admission-check)). So a carried project's settings, changed with the preview on, change how the person's old conversations start agents with it off;
 - a sub-chat made with the preview off in a conversation carried over takes its parent's `projectId` but no `projectAgentId`: with the preview on it runs as its agent, the template, not the project's copy;
@@ -1669,6 +1689,7 @@ Each thing the hub, the sidebar and the Dashboard show, where it comes from, and
 | Rules tab and their cost | `projectRules`; `projects` (`ruleTokens`) | #476 |
 | Notes tab | `memory` (`projects`) | #477 |
 | Settings tab, Branches tab | `projects`; `usage` (`projects`); `branches` by the project's conversations | #478 |
+| The Settings tab's Schedules: each schedule of the project, with its agent, what it repeats, its next run, whether it is off or held and who set it; New Schedule… (the orchestrator chosen), Edit…, Run Now, Last Run (the run in place of the board, or wherever it is), Delete. A template's schedules on its page | `schedules` by `scheduleRunsAs` (3.13), `agents`; `schedules.save`, `schedules.runNow`, `schedules.delete` | #656 |
 | Work tab | `work`, or `github` | #479, #480 |
 | Dashboard columns | `needs`, `activity`, `projects` (`lastWords`, `conversation`), `limits`, `local.running` (a model on this Mac answers one request at a time) | #481 |
 | A Dashboard column's vitals: needs, working and waiting on a limit, finished today and unread, spent today against the project's limit | `needs`; `activity` (`limit`); `reports`; `usage` (`projects`) and `projects` (`settings.limits.dailySpend`) | #618 |
@@ -1930,6 +1951,7 @@ What the design left open, or did not say exactly enough to build, and what this
 30. **How each hub was left, and the Dashboard's projects, are the app's preferences.**
 31. **A limit is checked at the moment of starting, not reserved**, and allowing a `startAgents` approval allows the start, not passing a limit.
 32. **A worker asks the person in its own name, and carries on** (#507; agreed by the owner on 2026-11-20, with the five answers suggested in #570). (1) A worker's question or decision goes under Needs you with `needs_you`, in its own name, and the worker carries on. (2) Once the worker's run has ended, the answer wakes the conversation that handed it the work at once, rather than waiting as a line in its next catch-up: the person has just acted. (3) The card names the agent, its sub-chat, and the piece of work when the run was assigned one. (4) It holds for a sub-chat of any project agent, not only of the orchestrator: the answer's route is the same. (5) `ask_user` stays offered to a worker in a project, for what cannot wait. The answer reaches the worker while its run is going, and the worker is never started again for it ([3.9](#39-needs-you-pi2needs-and-the-inbox), [5.5](#55-needs_you-the-orchestrators-and-agents-own-conversations)).
+33. **A schedule of a project is a schedule of one of its agents** (#656): no field says its project, and no new kind of run is made. Today's schedules gain the project's copy of their template beside it (`projectAgentId`), as conversations do (decision 3), and only where that project and copy exist; the run of one with neither is carried as it is made, as before. A run with the orchestrator is a conversation of its own, and the orchestrator is not told of it.
 
 ## 14. Questions for the owner
 
