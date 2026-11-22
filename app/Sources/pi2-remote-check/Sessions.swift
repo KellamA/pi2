@@ -556,7 +556,7 @@ enum Sessions {
 			let opened = try SealedItem.openRequest(
 				item, at: address, readerKey: mac.record, writer: device, writerRecordKey: phone.record.publicKey, deviceKey: phone.device.publicKey,
 				presenceKey: phone.presence.publicKey)
-			Check.that(opened.method == "needs.answer" && opened.nonce == id && opened.hasPresence, "the Mac opens the phone's item, signed by the device key, with presence")
+			Check.that(opened.method == "needs.answer" && opened.nonce == id, "the Mac opens the phone's item, signed by the device key and the presence key")
 			Check.refuses("openRequest refuses an item whose presence signature is another key's") {
 				_ = try SealedItem.openRequest(
 					item, at: address, readerKey: mac.record, writer: device, writerRecordKey: phone.record.publicKey, deviceKey: phone.device.publicKey,
@@ -583,12 +583,12 @@ enum Sessions {
 			changed[changed.startIndex + 70] ^= 0x01
 			Check.refuses("an item with one bit changed") { _ = try SealedItem.open(changed, at: address, readerKey: mac.record, writerKey: phone.record.publicKey) }
 			Check.refuses("an item from another device than the relay says") {
-				try opened.verify(deviceKey: phone.device.publicKey, presenceKey: nil, writer: DeviceID.random(), address: address)
+				try opened.verify(deviceKey: phone.device.publicKey, presenceKey: phone.presence.publicKey, writer: DeviceID.random(), address: address)
 			}
 			// Someone with the Mac's record key can seal as the phone, but cannot sign as it.
 			let forger = P256.Signing.PrivateKey()
 			let forged = try RequestItem.make(
-				method: "github.merge", params: .object([]), pairing: pairing, device: device, id: id, deviceKey: forger, presenceKey: nil)
+				method: "github.merge", params: .object([]), pairing: pairing, device: device, id: id, deviceKey: forger, presenceKey: forger)
 			let forgedItem = try SealedItem.seal(forged.plaintext, to: address, readerKey: mac.record.publicKey, writerKey: phone.record)
 			let forgedOpened = try RequestItem.read(try SealedItem.open(forgedItem, at: address, readerKey: mac.record, writerKey: phone.record.publicKey))
 			Check.refuses("a request sealed with the right keys but not signed by the device key") {
@@ -596,8 +596,21 @@ enum Sessions {
 					forgedItem, at: address, readerKey: mac.record, writer: device, writerRecordKey: phone.record.publicKey,
 					deviceKey: phone.device.publicKey, presenceKey: phone.presence.publicKey)
 			}
-			Check.refuses("a request whose presence signature is required and missing") {
+			Check.refuses("a request whose presence signature is not the presence key's") {
 				try forgedOpened.verify(deviceKey: forger.publicKey, presenceKey: phone.presence.publicKey, writer: device, address: address)
+			}
+			// Every request item for the Mac carries the presence signature (4.3): one without it is not read, even sealed
+			// with the right keys and signed by the device key.
+			var withoutPresence = try JSON.parse(request.plaintext)
+			if case let .object(members) = withoutPresence { withoutPresence = .object(members.filter { $0.0 != "presence" }) }
+			let bare = JSON.write(withoutPresence)
+			Check.that(bare.count < request.plaintext.count, "the check can take the presence signature out")
+			Check.refuses("a request item without its presence signature") { _ = try RequestItem.read(bare) }
+			Check.refuses("a sealed request item without its presence signature") {
+				let sealed = try SealedItem.seal(bare, to: address, readerKey: mac.record.publicKey, writerKey: phone.record)
+				_ = try SealedItem.openRequest(
+					sealed, at: address, readerKey: mac.record, writer: device, writerRecordKey: phone.record.publicKey, deviceKey: phone.device.publicKey,
+					presenceKey: phone.presence.publicKey)
 			}
 			// What request says must be what signed says.
 			let text = String(decoding: request.plaintext, as: UTF8.self).replacingOccurrences(of: #""request":{"method":"needs.answer""#, with: #""request":{"method":"github.merge""#)
@@ -639,7 +652,7 @@ enum Sessions {
 			Check.refuses("an item longer than the mailbox takes") {
 				let big = try RequestItem.make(
 					method: "submit", params: .object([("text", .string(String(repeating: "a", count: 15_000)))]), pairing: pairing, device: device,
-					id: id, deviceKey: phone.device, presenceKey: nil)
+					id: id, deviceKey: phone.device, presenceKey: phone.presence)
 				_ = try SealedItem.seal(big.plaintext, to: address, readerKey: mac.record.publicKey, writerKey: phone.record)
 			}
 			print("ok   sealed items both ways, each signed by its writer, and states that only rise")

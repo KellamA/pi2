@@ -95,14 +95,15 @@ public enum SealedItem {
 extension SealedItem {
 	/// Opens a request the phone left in the Mac's mailbox, reads it and checks it, in one call, so that nothing acts on
 	/// one that is not verified: sealed for this address by the device's record key, signed by its device key, for this
-	/// pairing, from the device the relay says wrote it, with the item's own id as its nonce; and a presence signature,
-	/// if it carries one, made by its presence key. How old it may be and whether its nonce was seen are the engine's.
+	/// pairing, from the device the relay says wrote it, with the item's own id as its nonce, and signed by its presence
+	/// key too, which every item for the Mac must be (4.3). How old it may be (an hour for a `"face"` request, a day for
+	/// any other) and whether its nonce was seen are the engine's.
 	public static func openRequest<Key: HPKEDiffieHellmanPrivateKey>(
 		_ item: Data, at address: ItemAddress, readerKey: Key, writer: DeviceID, writerRecordKey: P256.KeyAgreement.PublicKey,
 		deviceKey: P256.Signing.PublicKey, presenceKey: P256.Signing.PublicKey
 	) throws -> RequestItem where Key.PublicKey == P256.KeyAgreement.PublicKey {
 		let request = try RequestItem.read(try open(item, at: address, readerKey: readerKey, writerKey: writerRecordKey))
-		try request.verify(deviceKey: deviceKey, presenceKey: presenceKey, presenceRequired: false, writer: writer, address: address)
+		try request.verify(deviceKey: deviceKey, presenceKey: presenceKey, writer: writer, address: address)
 		return request
 	}
 
@@ -121,10 +122,11 @@ extension SealedItem {
 /// A request the phone leaves in the Mac's mailbox (4.3, 5.3): `{"v":2,"request":{"method":…,"params":…},"signed":…,
 /// "signature":…,"presence":…}`, `signed` being `{"v":2,"kind":"request","pairing":…,"device":…,"method":…,"params":…,
 /// "nonce":<the item's id>,"at":…}`, signed by the device key, and `presence` the presence key's signature over the same
-/// text. `request` must say what `signed` says.
+/// text. Every request item carries both signatures: one without `presence` can be neither written nor read (4.3).
+/// `request` must say what `signed` says.
 public struct RequestItem: Sendable {
 	public let statement: SignedStatement
-	public let presence: Data?
+	public let presence: Data
 	public let method: String
 	public let params: JSONValue
 	public let pairing: PairingID
@@ -135,7 +137,7 @@ public struct RequestItem: Sendable {
 
 	public static func make(
 		method: String, params: JSONValue, pairing: PairingID, device: DeviceID, id: ItemID, at date: Date = Date(),
-		deviceKey: some StatementSigner, presenceKey: (any StatementSigner)?
+		deviceKey: some StatementSigner, presenceKey: some StatementSigner
 	) throws -> RequestItem {
 		let signed = JSONValue.object([
 			("v", .integer(2)), ("kind", .string("request")), ("pairing", .string(pairing.text)), ("device", .string(device.text)),
@@ -143,18 +145,16 @@ public struct RequestItem: Sendable {
 			("at", .integer(Int64((date.timeIntervalSince1970 * 1000).rounded(.down)))),
 		])
 		let statement = try SignedStatement.make(signed, signer: deviceKey)
-		var presence: Data?
-		if let presenceKey {
-			do {
-				presence = try presenceKey.sign(Data(statement.text.utf8))
-			} catch {
-				throw RemoteKitError("request item", "the presence key could not sign")
-			}
+		let presence: Data
+		do {
+			presence = try presenceKey.sign(Data(statement.text.utf8))
+		} catch {
+			throw RemoteKitError("request item", "the presence key could not sign")
 		}
 		return try RequestItem(statement: statement, presence: presence)
 	}
 
-	private init(statement: SignedStatement, presence: Data?) throws {
+	private init(statement: SignedStatement, presence: Data) throws {
 		let part = "request item"
 		let fields = try Fields(statement.value, part: part, keys: ["v", "kind", "pairing", "device", "method", "params", "nonce", "at"])
 		try fields.version()
@@ -162,7 +162,7 @@ public struct RequestItem: Sendable {
 		guard let pairing = PairingID(try fields.string("pairing")) else { throw RemoteKitError(part, "pairing is not a pairing's id") }
 		guard let device = DeviceID(try fields.string("device")) else { throw RemoteKitError(part, "device is not a device's id") }
 		guard let nonce = ItemID(try fields.string("nonce")) else { throw RemoteKitError(part, "nonce is not an item's id") }
-		if let presence, presence.count != SignedStatement.signatureLength { throw RemoteKitError(part, "a presence signature of the wrong length") }
+		if presence.count != SignedStatement.signatureLength { throw RemoteKitError(part, "a presence signature of the wrong length") }
 		self.statement = statement
 		self.presence = presence
 		method = try fields.nonEmpty("method", maxLength: 128)
@@ -178,7 +178,7 @@ public struct RequestItem: Sendable {
 			("v", .integer(2)), ("request", .object([("method", .string(method)), ("params", params)])),
 			("signed", .string(statement.text)), ("signature", .string(statement.signatureText)),
 		]
-		if let presence { members.append(("presence", .string(Base64URL.encode(presence)))) }
+		members.append(("presence", .string(Base64URL.encode(presence))))
 		return JSON.write(.object(members))
 	}
 
@@ -191,10 +191,10 @@ public struct RequestItem: Sendable {
 		} catch {
 			throw RemoteKitError(part, "not JSON as RemoteKit reads it")
 		}
-		let fields = try Fields(value, part: part, keys: ["v", "request", "signed", "signature"], optional: ["presence"])
+		// `presence` is required: a request item without the presence signature is refused (4.3).
+		let fields = try Fields(value, part: part, keys: ["v", "request", "signed", "signature", "presence"])
 		try fields.version()
-		var presence: Data?
-		if fields.value("presence") != nil { presence = try fields.bytes("presence", count: SignedStatement.signatureLength) }
+		let presence = try fields.bytes("presence", count: SignedStatement.signatureLength)
 		let item = try RequestItem(
 			statement: try SignedStatement.read(text: fields.value("signed"), signature: fields.value("signature"), part: part), presence: presence)
 		let request = try Fields(fields.value("request")!, part: part, keys: ["method", "params"])
@@ -205,29 +205,17 @@ public struct RequestItem: Sendable {
 	}
 
 	/// The check whoever opens the item makes: the writer's device key signed it, for this pairing, as the device the
-	/// relay says wrote it, with the item's own id as its nonce; and, when given a presence key, that the presence
-	/// signature is good. How old `at` may be, and whether the nonce was seen, are the engine's (4.3).
+	/// relay says wrote it, with the item's own id as its nonce, and its presence key signed the same text. How old `at`
+	/// may be, and whether the nonce was seen, are the engine's (4.3).
 	@_spi(Vectors)
-	public func verify(deviceKey: P256.Signing.PublicKey, presenceKey: P256.Signing.PublicKey?, writer: DeviceID, address: ItemAddress) throws {
-		try verify(deviceKey: deviceKey, presenceKey: presenceKey, presenceRequired: presenceKey != nil, writer: writer, address: address)
-	}
-
-	/// Whether the phone signed it with its presence key too, which `SealedItem.openRequest` has checked (4.3, 5.3).
-	public var hasPresence: Bool { presence != nil }
-
-	func verify(
-		deviceKey: P256.Signing.PublicKey, presenceKey: P256.Signing.PublicKey?, presenceRequired: Bool, writer: DeviceID, address: ItemAddress
-	) throws {
+	public func verify(deviceKey: P256.Signing.PublicKey, presenceKey: P256.Signing.PublicKey, writer: DeviceID, address: ItemAddress) throws {
 		let part = "request item"
 		guard statement.isSigned(by: deviceKey) else { throw RemoteKitError(part, "not signed by the device key") }
 		guard pairing == address.pairing, address.reader == .mac else { throw RemoteKitError(part, "for another pairing or reader") }
 		guard device == writer else { throw RemoteKitError(part, "from another device") }
 		guard nonce == address.id else { throw RemoteKitError(part, "its nonce is not the item's id") }
-		if presenceRequired, presence == nil { throw RemoteKitError(part, "no valid presence signature") }
-		if let presence {
-			guard let presenceKey, SignedStatement.verify(presence, over: Data(statement.text.utf8), by: presenceKey) else {
-				throw RemoteKitError(part, "no valid presence signature")
-			}
+		guard SignedStatement.verify(presence, over: Data(statement.text.utf8), by: presenceKey) else {
+			throw RemoteKitError(part, "no valid presence signature")
 		}
 	}
 }

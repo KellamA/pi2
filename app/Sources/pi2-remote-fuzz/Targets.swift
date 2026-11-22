@@ -449,7 +449,7 @@ enum Targets {
 				device: world.device, id: address.id, deviceKey: world.deviceKey, presenceKey: world.presenceKey),
 			try RequestItem.make(
 				method: "submit", params: .object([("text", .string("hello \u{1F600}"))]), pairing: world.pairing, device: world.device, id: address.id,
-				deviceKey: world.deviceKey, presenceKey: nil),
+				deviceKey: world.deviceKey, presenceKey: world.presenceKey),
 		].map { Array($0.plaintext) }
 	}
 
@@ -464,13 +464,11 @@ enum Targets {
 			var again: RequestItem?
 			guard Fuzz.takes("request-item", input, { again = try RequestItem.read(item!.plaintext) }) else { Fuzz.violation("request-item", "could not read what it wrote", input) }
 			if again!.plaintext != item!.plaintext { Fuzz.violation("request-item", "wrote one item two ways", input) }
-			// A signature that verifies is over exactly what the device key signed: with and without the presence key.
-			for presenceKey in [world.presenceKey.publicKey, nil] {
-				if (try? item!.verify(deviceKey: world.deviceKey.publicKey, presenceKey: presenceKey, writer: world.device, address: address)) != nil,
-					!signed.contains(item!.statement.text)
-				{
-					Fuzz.violation("request-item", "verified a text the device key never signed", input)
-				}
+			// Signatures that verify are over exactly what the device key and the presence key signed.
+			if (try? item!.verify(deviceKey: world.deviceKey.publicKey, presenceKey: world.presenceKey.publicKey, writer: world.device, address: address)) != nil,
+				!signed.contains(item!.statement.text)
+			{
+				Fuzz.violation("request-item", "verified a text the device key never signed", input)
 			}
 			return true
 		}
