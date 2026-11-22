@@ -116,18 +116,31 @@ A development build measures this when asked: see [Measuring the app's speed](de
 | File | What it holds |
 |---|---|
 | `src/main.ts` | Startup, the socket server, request handlers, events |
+| `src/socket.ts` | Where the engine's socket is reached: `engine.sock` in the data folder, or through a short link under `/tmp` for a data folder whose path is too long for a socket. The app works out the same path in `EngineSocket.swift` |
+| `src/answers.ts` | Who may act for the person (#504, #513): the three lists every request is in (answering what waits for the person, changing what the person set, open to any connection), checked complete before the engine listens, and `AppCheck`, which asks the app's `pi2-peer` whether a connection is the app's own. See [Who may answer for the person](#who-may-answer-for-the-person) |
+| `src/requesterror.ts` | `RequestError`, a refused request that carries data for its caller beside the message (such as the new report when a plan is stale), and the refusal as it is sent |
+| `src/lag.ts` | How late the engine's one thread runs and how much of the time it is busy: `engine.lag`'s answer, and the line in `engine.log` for a wait of a second or more. See [Staying quick while agents work](#staying-quick-while-agents-work) |
+| `src/offthread.ts` | Short programs the engine runs for itself and reads whole (git, `security`, `ps`, `lsof`), started from a worker thread so that starting them never holds the engine's own (#344). See [Staying quick while agents work](#staying-quick-while-agents-work) |
 | `src/state.ts` | The app's own documents (conversation index, agents) and the Inbox |
 | `src/extensions.ts` | What pi² adds to every conversation: approvals, `ask_user`, `delegate`, `read_reference`, `computer`, `browser` |
+| `src/stringargs.ts` | A tool argument that should be an array or an object, sent as a JSON string of it (#572): read as the value it encodes before the arguments are checked, for every tool, by that tool's own schema |
+| `src/sections.ts` | A section of the system prompt with nothing to say keeps its place as an empty one, so a section that comes or goes later is sent alone. See [The system prompt's sections](#the-system-prompts-sections) |
+| `src/compaction.ts` | pi²'s side of pi durable's summaries of earlier messages (#418): when one is made early, the `compact` tool, the summary's thinking level, what it is told to keep, its checkpoint, and the marker in the transcript. See [compaction.md](compaction.md) |
+| `src/opening.ts` | Opening a long conversation newest first (#380): the first part and the older parts, each bounded by size and count, and the entries older than the engine's window, a part a request (#440). See [transcript.md](transcript.md#a-long-conversation-newest-first) |
 | `src/heed.ts` | A message from the person ends the waits of calls that only wait, and what a message would wait for. See [A message while an agent waits](#a-message-while-an-agent-waits) |
 | `src/versions.ts` | A chat's versions: Try Again, Edit and the step between them. See [A chat's versions](#a-chats-versions) |
 | `src/subchats.ts` | `sub_chats`: an agent lists the sub-chats it opened and archives the finished ones. See [archive.md](archive.md#sub-chats-an-agent-puts-away) |
+| `src/subchatusage.ts` | The line saying what a sub-chat used (its requests and the time it worked, the tokens it read new and from the cache, what it wrote, its largest prompt), which `delegate` and `sub_chats` give the agent that handed out the work |
 | `src/providers.ts` | Built-in providers, models added to them by hand (`added-models.json`), custom endpoints, the scripted demo model |
+| `src/thinkingretry.ts` | A thinking level the provider refuses, naming those it takes (#363): reading that list, trying the nearest level once, the line in the conversation that says so, and the corrected list for the menus. See [A thinking level refused by a provider](#a-thinking-level-refused-by-a-provider) |
+| `src/networkwait.ts` | A request that failed because the network was away or the provider closed the stream (#550), told apart from an error the provider answered with, and waited out in the run's own retry, its count kept across restarts. See [limits.md](limits.md#when-the-network-drops) |
 | `src/modellists.ts` | Asking a built-in provider which models a key or sign-in can use; the store of catalogs the library refreshes itself (`model-catalogs.json`) |
 | `src/localmodels.ts` | Models on this Mac: downloading the Strata engine and model packs (or taking a pack's files from a folder of the person's), preparing them with Strata's setup, and `local-models.json`, which the part that runs them reads. See [local-models.md](local-models.md) |
 | `src/localcatalog.ts` | What can be downloaded for models on this Mac: the pinned engine and the packs, with their checksums and memory figures |
 | `src/download.ts` | Downloading one large file that carries on where it stopped and is checked against a checksum known in advance |
 | `src/attachments.ts` | Pictures and files sent with a message: their limits, what the model is sent, what the transcript keeps. See [attachments.md](attachments.md) |
 | `src/credentials.ts` | Keys and sign-ins in the macOS Keychain |
+| `src/testcredentials.ts` | Stand-in credentials in a plain file, for the engine's tests on systems without a Keychain; never available on macOS. See [CI](development.md#ci) |
 | `src/computer.ts` | Computer use: what is allowed, the link to the app, trimming old screenshots |
 | `src/browser.ts` | The browser: which addresses and uploads are allowed, the link to the app, what the agent is told |
 | `src/reference.ts` | An agent's reference files |
@@ -135,6 +148,8 @@ A development build measures this when asked: see [Measuring the app's speed](de
 | `src/features.ts` | The list of features that live in one file each, and what such a file can add |
 | `src/builtins.ts` | The built-in tools an agent's settings list, and which of them an agent leaves out, and the chat assistant's fixed set. See [Built-in tools](#built-in-tools) |
 | `src/chat.ts` | Chat mode's built-in assistant: its settings, the folder its documents go in, and what it is told. See [chat.md](chat.md) |
+| `src/handover.ts` | Continue with an Agent (#289): what an agent is given of a chat, as a Markdown file with the chat's own pictures and files beside it, and what is left out. See [chat.md](chat.md#continue-with-an-agent) |
+| `src/documents.ts` | `write_document`: Markdown made into plain HTML, and into Word, RTF or OpenDocument by macOS's `textutil`, offered and approved as `write` is. See [documents.md](documents.md) |
 | `src/plan.ts` | The agent's task list |
 | `src/pictures.ts` | `make_picture`: a picture from one of the person's picture models, offered only while there is one. See [pictures.md](pictures.md) |
 | `src/picturelook.ts` | `look`: a picture looked at by a model that can see, for a conversation whose own model cannot and only once the person has chosen one. See [pictures.md](pictures.md#a-model-that-looks-at-pictures) |
@@ -144,6 +159,18 @@ A development build measures this when asked: see [Measuring the app's speed](de
 | `src/projects.ts` | Projects (#450): the `pi2.projects` document, the preview switch (`projectsOn`), which project a conversation is in (`inProject`), the project requests and the `projects` event, `requireSwitch`, `addNews`, and the places the later issues of the epic fill in. See [projects.md](projects.md) |
 | `src/reports.ts` | Projects (#463): the reports of a project orchestrator's sub-chats' runs (`pi2.reports`), `settle`, which decides whether each wakes the orchestrator, waits or is read, the `reports` tool and request, and the `reports` event. See [wakes.md](wakes.md#in-a-project) and [projects.md](projects.md#310-reports-and-waking-pi2reports-pi2wakes) |
 | `src/needs.ts` | Needs you (#462): everything that waits for the person as one list, the Inbox's approvals and questions and what is stored in `pi2.needs`; `claim`, the one way any answer is taken; the `needs` event and requests; the tool `needs_you`. See [projects.md](projects.md#39-needs-you-pi2needs-and-the-inbox) |
+| `src/orchestrator.ts` | Projects (#466): a project's one conversation with its orchestrator, the `project` section, the catch-up and the state block, Start fresh and `projects.setOrchestrator`, the sub-chats of earlier conversations, and what the person writes to another agent of the project. See [projects.md](projects.md#63-why-the-projects-state-is-not-a-section), 6.1 and 6.3 to 6.5 |
+| `src/projectrules.ts` | Projects (#459): a project's rules, `pi2.projectRules`, the `projects.rules.*` requests and the rules section. See [projects.md](projects.md#37-rules-pi2projectrules), 3.7 and 6.1 |
+| `src/projectnotes.ts` | Projects (#461): a project's notes in `pi2.memory`, beside the notebooks `knowledge.ts` keeps: whom each is for, a note added or removed by the person or a tool, and the change recorded for its Undo. See [projects.md](projects.md#38-notes-pi2memory), 3.8 |
+| `src/work.ts` | Projects: one work list per project, `pi2.work`, the one state machine both kinds of list follow, the list kept by pi² and the place GitHub's fills in, the `work` tool and the `work.*` requests. See [projects.md](projects.md#311-work-pi2work-pi2github-githubjson), 3.11 and 5.7 |
+| `src/github.ts` | Projects (#468): work from an attached GitHub repository, every look and write through `gh`, each write recorded as an intent so that a crash makes nothing twice, who holds an issue, pull requests, `pi2.github` and `github.json`. See [projects.md](projects.md#the-github-backend), 3.11 |
+| `src/reach.ts` | Projects (#465): reach, every setting of an agent and of a project classed as widening or not, a new agent's baseline, and how each setting reads to the person. See [projects.md](projects.md#7-reach-what-an-agent-can-only-ask-for), section 7 |
+| `src/changes.ts` | Projects (#465): the record of changes, `pi2.changes`, each change as an operation with its inverse, Undo, reach requests, and the `changes.*` requests. See [projects.md](projects.md#312-the-record-of-changes-pi2changes), 3.12 and 7.2 |
+| `src/projecttools.ts` | Projects (#465): the orchestrator's tools to change its project, `project_agents`, `project_settings` and `project_rules`. See [projects.md](projects.md#52-project_agents-the-orchestrator), 5.2 to 5.4 |
+| `src/projectlimits.ts` | Projects: a project's limits, the one admission check every start passes, the readings it keeps, and what a start past a limit is told. See [projects.md](projects.md#83-limits-and-the-one-admission-check), 8.3 |
+| `src/projectlimitstarts.ts` | Projects: a start past a limit allowed from its card, kept (`pi2.allowedStarts`) as the answer is taken and then made as `delegate` or an assignment would have made it. See [projects.md](projects.md#83-limits-and-the-one-admission-check), 8.3 |
+| `src/projectspend.ts` | Projects: what each conversation spent today, from the Usage ledger, so that a project's daily spending counts its sub-chats and its put-away work. See [projects.md](projects.md#83-limits-and-the-one-admission-check), 8.3 |
+| `src/carryover.ts` | Projects (#458): carrying over, one plan of what becomes what, worked out from the documents alone, its report, a run committed a project at a time, the variables' values copied to the Keychain after; and restoring one conversation of a deleted project (#531). See [projects.md](projects.md#9-carrying-over), section 9, and 3.6 |
 | `src/archive.ts` | Archiving and deleting conversations, and archiving what has gone unused. See [archive.md](archive.md) |
 | `src/knowledge.ts` | A project's instructions file, an agent's memory, and chat mode's |
 | `src/coauthor.ts` | The setting that asks agents to end their commit messages with a `Co-authored-by` line naming pi². See [commits.md](commits.md) |
@@ -157,6 +184,8 @@ A development build measures this when asked: see [Measuring the app's speed](de
 | `src/worktrees.ts` | A git worktree per conversation, its agent's set-up command, and the branch tracker. See [worktrees.md](worktrees.md) |
 | `src/selfschedule.ts` | Schedules an agent sets for itself, each approved by the person. See [schedules.md](schedules.md) |
 | `src/environment.ts` | The environment the engine gives what it starts for an agent: its own, without the `PI2_` variables that configure pi² |
+| `src/variables.ts` | An agent's own environment variables (#96) and an MCP server's (#273): names in its settings, values in the Keychain, the names refused, and what each command is given. See [An agent's own variables](#an-agents-own-variables) |
+| `src/priority.ts` | Agents' commands run under `nice -n 10`, and the setting that turns it off. See [Agents' commands at a lower priority](#agents-commands-at-a-lower-priority) |
 | `src/shellpath.ts` | The `PATH` the engine gives what it starts: asked of the person's login shell once, at start, and taken when it comes if the shell is slow |
 | `src/commands.ts` | The shell tool: how long a command may run, the default time limit, and what the model is told about it and about a long output |
 | `src/output.ts` | The whole output of a shell command whose result was shortened: the file it is kept in, and how long |
