@@ -28,7 +28,24 @@ final class DemoMode {
         session.macName = DemoTransport.macName
         DemoNotifications.shared.install()
         session.start(transport, as: .demo)
+        #if DEBUG
+        showNotificationsAtLaunch(session)
+        #endif
     }
+
+    #if DEBUG
+    /// `PI2_DEMO_NOTIFY=1` in a debug build's environment shows the demo's notifications as it starts, as the bell does,
+    /// so that they (and iOS's question before the first) can be pictured in the simulator without a tap. Not in a
+    /// release build.
+    private static func showNotificationsAtLaunch(_ session: AppSession) {
+        guard ProcessInfo.processInfo.environment["PI2_DEMO_NOTIFY"] == "1" else { return }
+        Task {
+            for _ in 0..<200 where session.engine.needs.isEmpty { try? await Task.sleep(for: .milliseconds(50)) }
+            let problem = await DemoNotifications.shared.showEveryKind(needs: session.engine.needs, projects: session.engine.projects)
+            if let problem { session.note(problem) }
+        }
+    }
+    #endif
 
     /// Leaves the demo: forgets what it showed and changed, and goes back to the first screen.
     static func leave(_ session: AppSession) {

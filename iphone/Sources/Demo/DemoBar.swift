@@ -15,10 +15,15 @@ struct DemoBar: View {
     var body: some View {
         if let session, session.connection == .demo {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text("**Demo** · nothing here is real")
-                    .font(.subheadline)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityLabel("Demo mode. Nothing here is real: no Mac, no network.")
+                // The whole line where it fits; at the largest text sizes, Demo alone, so the bar stays one line.
+                ViewThatFits(in: .horizontal) {
+                    Text("**Demo** · nothing here is real")
+                    Text("**Demo**")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Demo mode. Nothing here is real: no Mac, no network.")
+                .accessibilityAddTraits(.isHeader)
                 Button {
                     Task {
                         problem = await DemoNotifications.shared.showEveryKind(needs: session.engine.needs, projects: session.engine.projects)
@@ -33,11 +38,18 @@ struct DemoBar: View {
                     .accessibilityHint("Goes back to the first screen and forgets what you did in the demo.")
             }
             .font(.subheadline)
+            .lineLimit(1)
+            .dynamicTypeSize(...DynamicTypeSize.accessibility3)
             .foregroundStyle(.tint)
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
-            .background(.tint.opacity(0.14))
-            .background(.bar)
+            .background {
+                ZStack {
+                    Rectangle().fill(.bar)
+                    Rectangle().fill(.tint.opacity(0.14))
+                }
+                .ignoresSafeArea(edges: .top)
+            }
             .confirmationDialog("Leave the demo?", isPresented: $confirmsLeaving, titleVisibility: .visible) {
                 Button("Leave the Demo") { DemoMode.leave(session) }
             } message: {
@@ -58,9 +70,13 @@ struct DemoBar: View {
 }
 
 extension View {
-    /// Puts the Demo bar above this view, which it pushes down, while the demo is on.
+    /// Puts the Demo bar above this view, while the demo is on. The view goes below it, navigation bar and all, rather
+    /// than under it.
     func demoBar() -> some View {
-        safeAreaInset(edge: .top, spacing: 0) { DemoBar() }
+        VStack(spacing: 0) {
+            DemoBar()
+            self
+        }
     }
 }
 

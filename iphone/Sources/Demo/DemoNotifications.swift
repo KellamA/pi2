@@ -46,8 +46,17 @@ final class DemoNotifications: NSObject, UNUserNotificationCenterDelegate {
             return "Notifications are off for pi². To see the demo's, turn them on in the Settings app, under Notifications › pi²."
         }
         await clear()
-        for request in Self.requests(needs: needs, projects: projects) {
-            try? await center.add(request)
+        return await schedule(Self.requests(needs: needs, projects: projects))
+    }
+
+    /// Schedules the demo's notifications; returns a line to show the person when iOS refuses one.
+    func schedule(_ requests: [UNNotificationRequest]) async -> String? {
+        for request in requests {
+            do {
+                try await center.add(request)
+            } catch {
+                return "iOS did not take the demo's notifications: \(error.localizedDescription)"
+            }
         }
         return nil
     }

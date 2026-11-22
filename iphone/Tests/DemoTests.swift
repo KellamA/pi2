@@ -277,6 +277,9 @@ struct DemoTests {
         #expect(cut.categoryIdentifier == "pi2.approval.cut")
         #expect(cut.body.count == DemoNotifications.bodyLimit)
 
+        // Scheduling them is not tried here: iOS takes them only once the person has allowed notifications, which a
+        // test cannot answer for them.
+
         // A button opens the card's project's Needs you, or the orchestrator's conversation for a notice.
         #expect(DemoNotifications.route(kind: "approval", projectID: "p-1", conversationID: 3) == .needs(project: "p-1"))
         #expect(DemoNotifications.route(kind: "notice", projectID: "p-1", conversationID: 9) == .conversation(9))
