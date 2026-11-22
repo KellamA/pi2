@@ -1,7 +1,11 @@
-// A pairing's limits (docs/iphone.md 6.6). Only authenticated traffic is counted: a message counts once the socket that
-// sent it has proved itself as the pairing's Mac or one of its phones, so a stranger who learned a pairing's id cannot
-// spend its limits and get its sockets closed. Past a limit, the relay answers "busy" and passes nothing on; past twice
-// a limit, the pairing's sockets are closed for an hour.
+// A pairing's limits (docs/iphone.md 6.6), counted for each end of it separately: the Mac, each listed phone, and each
+// phone that has only joined a window. Only authenticated traffic counts: a message counts once the socket that sent it
+// has proved itself, so a stranger who learned a pairing's id cannot spend its limits. And one end's traffic never
+// counts against another, so no end can get another's socket closed, the Mac's least of all.
+//
+// Past a limit, the end's own socket is closed with `busy` and the time it may come back. A message is never dropped
+// from the middle of a channel, which would break the channel for good (Noise's nonces are implicit); a closed socket
+// reconnects and resumes (5.8). Past the day's limit, the end is refused for an hour at a time.
 
 export type Limits = {
 	messagesPerSecond: number;
@@ -10,7 +14,7 @@ export type Limits = {
 	bytesPerDay: number;
 };
 
-/** 6.6's table: 100 messages and 2 MB a second; 300,000 messages and 500 MB a day. */
+/** 6.6's table, for each end: 100 messages and 2 MB a second; 300,000 messages and 500 MB a day. */
 export const LIMITS: Limits = {
 	messagesPerSecond: 100,
 	bytesPerSecond: 2 * 1024 * 1024,
@@ -18,48 +22,68 @@ export const LIMITS: Limits = {
 	bytesPerDay: 500 * 1024 * 1024,
 };
 
+/**
+ * A phone that has only joined a window carries the pairing exchange and nothing else (3.3: two handshake messages, a
+ * few lines, an attestation of some kilobytes), so it is given much less.
+ */
+export const JOINED_LIMITS: Limits = {
+	messagesPerSecond: 20,
+	bytesPerSecond: 256 * 1024,
+	messagesPerDay: 2_000,
+	bytesPerDay: 16 * 1024 * 1024,
+};
+
 export type Day = { day: string; messages: number; bytes: number };
 
-export type Verdict = { pass: true } | { pass: false; until: number; block: boolean };
+/** Whether a message may pass; if not, until when its sender is held off, and whether for the day's limit. */
+export type Verdict = { pass: true } | { pass: false; until: number; day: boolean };
 
-/** The counters: a second's in memory, a day's kept in storage (as often as `due` says). */
+const HOUR = 60 * 60 * 1000;
+
+/** The counters of each end: a second's in memory, a day's kept in storage (as often as `due` says). */
 export class Counters {
-	private second = -1;
-	private messages = 0;
-	private bytes = 0;
+	private readonly seconds = new Map<string, { second: number; messages: number; bytes: number }>();
 	private unsaved = 0;
 
-	constructor(public day: Day) {}
+	constructor(public days: Record<string, Day>) {}
 
-	/** Counts one authenticated message of `size` bytes at `now`, and says whether it may pass. */
-	count(size: number, now: number, limits: Limits): Verdict {
+	/** Counts one authenticated message of `size` bytes from `sender` at `now`, and says whether it may pass. */
+	count(sender: string, size: number, now: number, limits: Limits): Verdict {
 		const second = Math.floor(now / 1000);
-		if (second !== this.second) {
-			this.second = second;
-			this.messages = 0;
-			this.bytes = 0;
+		let counts = this.seconds.get(sender);
+		if (counts === undefined || counts.second !== second) {
+			counts = { second, messages: 0, bytes: 0 };
+			this.seconds.set(sender, counts);
 		}
 		const today = dayOf(now);
-		if (today !== this.day.day) this.day = { day: today, messages: 0, bytes: 0 };
-		this.messages += 1;
-		this.bytes += size;
-		this.day.messages += 1;
-		this.day.bytes += size;
+		let day = this.days[sender];
+		if (day === undefined || day.day !== today) day = this.days[sender] = { day: today, messages: 0, bytes: 0 };
+		counts.messages += 1;
+		counts.bytes += size;
+		day.messages += 1;
+		day.bytes += size;
 		this.unsaved += 1;
 
-		const overDay = this.day.messages > limits.messagesPerDay || this.day.bytes > limits.bytesPerDay;
-		const overSecond = this.messages > limits.messagesPerSecond || this.bytes > limits.bytesPerSecond;
-		if (!overDay && !overSecond) return { pass: true };
-		const block =
-			this.day.messages > 2 * limits.messagesPerDay ||
-			this.day.bytes > 2 * limits.bytesPerDay ||
-			this.messages > 2 * limits.messagesPerSecond ||
-			this.bytes > 2 * limits.bytesPerSecond;
-		const until = overDay ? Date.parse(`${today}T00:00:00Z`) + 24 * 60 * 60 * 1000 : (second + 1) * 1000;
-		return { pass: false, until, block };
+		if (day.messages > limits.messagesPerDay || day.bytes > limits.bytesPerDay) return { pass: false, until: now + HOUR, day: true };
+		if (counts.messages > limits.messagesPerSecond || counts.bytes > limits.bytesPerSecond) {
+			return { pass: false, until: (second + 1) * 1000, day: false };
+		}
+		return { pass: true };
 	}
 
-	/** Whether the day's counts should be saved: every hundred messages, so a pairing's traffic is not a write each. */
+	/** Forgets an end that is gone: a removed device, a slot let go. */
+	forget(sender: string): void {
+		this.seconds.delete(sender);
+		delete this.days[sender];
+	}
+
+	/** Forgets the days that are over. */
+	forgetBefore(now: number): void {
+		const today = dayOf(now);
+		for (const [sender, day] of Object.entries(this.days)) if (day.day !== today) delete this.days[sender];
+	}
+
+	/** Whether the day's counts should be saved: every hundred messages, so traffic is not a write each. */
 	get due(): boolean {
 		return this.unsaved >= 100;
 	}

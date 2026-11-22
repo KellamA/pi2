@@ -28,6 +28,21 @@ describe("the Worker", () => {
 		expect(await response.text()).toBe("");
 	});
 
+	it("refuses any request a web page could make: one carrying an Origin", async () => {
+		const address = newAddress();
+		for (let index = 0; index < 6; index++) {
+			const response = await worker.fetch("https://relay.test/v1", {
+				headers: { Upgrade: "websocket", "CF-Connecting-IP": address, Origin: "https://example.com" },
+			});
+			expect(response.status).toBe(403);
+		}
+		// Nothing was counted against the address: its five registrations an hour are all still there.
+		for (let index = 0; index < 5; index++) await register(address);
+		const mac = await register();
+		const named = await worker.fetch("https://relay.test/v1", { headers: { Upgrade: "websocket", "Pi2-Pairing": mac.pairing, Origin: "null" } });
+		expect(named.status).toBe(403);
+	});
+
 	it("refuses a registration with no address to count it against", async () => {
 		expect((await worker.fetch("https://relay.test/v1", { headers: { Upgrade: "websocket" } })).status).toBe(400);
 	});
@@ -276,6 +291,11 @@ describe("what is refused as malformed", () => {
 		expect(readMessage(JSON.stringify({ take: {} }))).toEqual({ type: "take" });
 		expect(readMessage(JSON.stringify({ take: [] }))).toBeNull();
 		expect(readMessage("x".repeat(48 * 1024 + 1))).toBeNull();
+		// Sizes are in bytes: 17,000 characters of three bytes each are past the 48 KB, though fewer characters.
+		const wide = JSON.stringify({ hello: { ...hello.hello, ext: { note: "€".repeat(17_000) } } });
+		expect(wide.length).toBeLessThan(48 * 1024);
+		expect(readMessage(wide)).toBeNull();
+		expect(readMessage(JSON.stringify({ hello: { ...hello.hello, ext: { note: "€".repeat(100) } } }))).not.toBeNull();
 		// A base64url text with bits left over is not the one way of writing its bytes.
 		const signature = base64url(random(64));
 		const last = signature.at(-1)!;

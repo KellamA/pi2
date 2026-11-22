@@ -19,6 +19,10 @@ export { Address, AttestKey, Pairing };
 
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
+		// Only pi² Remote and the phone talk to the relay, and neither is a web page. A browser always says which page a
+		// WebSocket comes from, so a page that tried to make its visitors register pairings, or knock on one, is refused
+		// here, before anything is counted or any object woken.
+		if (request.headers.has("Origin")) return new Response(null, { status: 403 });
 		const url = new URL(request.url);
 		if (url.pathname !== "/v1" || url.search !== "" || request.method !== "GET") return new Response(null, { status: 404 });
 		if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") return new Response(null, { status: 426 });

@@ -5,10 +5,10 @@
 	"license": "UNLICENSED",
 	"type": "module",
 	"scripts": {
-		"check": "tsc --noEmit",
-		"test": "vitest run",
+		"check": "node scripts/isolated.mjs tsc --noEmit",
+		"test": "node scripts/isolated.mjs vitest run",
 		"check-bundle": "node scripts/check-bundle.mjs",
-		"dev": "wrangler dev --ip 127.0.0.1"
+		"dev": "node scripts/isolated.mjs wrangler dev --ip 127.0.0.1"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-plugin": "1.9.0",

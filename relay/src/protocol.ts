@@ -58,6 +58,7 @@ export type Why =
 	| "device-key" // addDevice names another device key than the slot joined with
 	| "not-joined" // addDevice names no phone that joined this pairing at the relay
 	| "mailbox-full"
+	| "busy" // past a limit: the socket is closed, and `busy { until }` says when it may come back
 	| "removed" // the device's slot was removed by the Mac
 	| "left" // the device left
 	| "deleted" // the Mac deleted the pairing
@@ -116,7 +117,8 @@ export function readMessage(text: string): Message | null {
 		return null;
 	}
 	// One way of writing each message: the text JavaScript writes for what it holds. This refuses white space, a key
-	// given twice, escapes that need not be, numbers written another way, and a lone surrogate.
+	// given twice, escapes that need not be, numbers written another way, and a lone surrogate outside `ext` (whose
+	// contents are ignored, so are not checked).
 	if (JSON.stringify(value) !== text || !isObject(value)) return null;
 	const names = Object.keys(value);
 	if (names.length !== 1) return null;

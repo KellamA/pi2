@@ -159,16 +159,22 @@ export async function macHello(mac: Mac): Promise<{ client: Client; ready: any }
 	return { client, ready };
 }
 
-export type Phone = { device: string; key: Key; attestKeyId: string };
+/** A listed phone: the engine's id for it, its device key, the App Attest key the Mac checked, and the relay's. */
+export type Phone = { device: string; key: Key; attestKeyId: string; relayKeyId: string };
+
+export function newDeviceId(): string {
+	return `dev_${base64url(random(16))}`;
+}
 
 export function newAttestKeyId(): string {
 	return base64(random(32));
 }
 
 /**
- * Pairs a phone as pi² Remote and the phone do over the relay: the Mac opens a window, the phone joins it (with the
- * stand-in verifier), the Mac adds it and closes the window, and the phone's socket closes, leaving it listed and away.
- * `client` is the Mac's connected socket.
+ * Pairs a phone as the contract has it (3.3): the Mac opens a window; the phone joins it with an App Attest key of its
+ * own for the relay (checked by the stand-in verifier); the Mac adds it under the engine's own id, with the device key
+ * and the id of the second App Attest key, the one the Mac checked; and closes the window. The phone's socket then
+ * closes, leaving it listed and away. `client` is the Mac's connected socket.
  */
 export async function addPhone(mac: Mac, client = mac.client): Promise<Phone> {
 	await standInVerifier(mac.pairing);
@@ -176,8 +182,8 @@ export async function addPhone(mac: Mac, client = mac.client): Promise<Phone> {
 	const joining = await joinHello(mac.pairing);
 	sendJoin(mac.pairing, joining, token);
 	const { joined } = await joining.client.json();
-	const phone = { device: joined.device as string, key: joining.key, attestKeyId: joining.keyId };
-	expect(await client.json()).toEqual({ joined: { device: phone.device, deviceKey: phone.key.publicKey, keyId: phone.attestKeyId } });
+	expect(await client.json()).toEqual({ joined: { device: joined.device, deviceKey: joining.key.publicKey, keyId: joining.keyId } });
+	const phone: Phone = { device: newDeviceId(), key: joining.key, attestKeyId: newAttestKeyId(), relayKeyId: joining.keyId };
 	client.send({ addDevice: { device: phone.device, deviceKey: phone.key.publicKey, attestKeyId: phone.attestKeyId } });
 	expect(await client.json()).toEqual({ ok: { what: "addDevice" } });
 	client.send({ closeJoin: {} });

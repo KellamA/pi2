@@ -6,7 +6,11 @@
 	"name": "pi2-relay",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-11-01",
-	// Wrangler sends Cloudflare no usage metrics from this project.
+	// Nothing here needs Node's modules, and this date turns them on by default: off, so the runtime is no wider than the
+	// code.
+	"compatibility_flags": ["no_nodejs_compat", "no_nodejs_compat_v2"],
+	// Wrangler's command events off for this project. Not every event of this Wrangler version heeds it, so every script
+	// also runs Wrangler with WRANGLER_SEND_METRICS=false and a throwaway home folder (scripts/isolated.mjs, README.md).
 	"send_metrics": false,
 
 	// Logs off (5.3): no Workers Logs, no invocation logs (which keep a request's URL), and the code writes nothing to the

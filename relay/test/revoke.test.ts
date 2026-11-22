@@ -77,8 +77,52 @@ describe("removeDevice: revocation", () => {
 		await again.refused("not-listed");
 		mac.client.sendBytes(concat(fromBase64url(phone.device.slice(4), 16)!, new Uint8Array([1])));
 		expect(await mac.client.json()).toEqual({ offline: { device: phone.device } });
+		// Asked again, it is done: the device is gone.
 		mac.client.send({ removeDevice: { device: phone.device } });
-		expect(await mac.client.json()).toEqual({ refused: { what: "removeDevice", why: "unknown-device" } });
+		expect(await mac.client.json()).toEqual({ ok: { what: "removeDevice" } });
+	});
+
+	it("cuts the device's socket even when untying its App Attest key fails, and passes nothing of it to the Mac", async () => {
+		const mac = await register();
+		const phone = await addPhone(mac);
+		const device = await phoneHello(mac.pairing, phone);
+		expect(await mac.client.json()).toEqual({ online: { device: phone.device } });
+		let release = () => {};
+		const held = new Promise<void>((resolve) => (release = resolve));
+		await runInDurableObject(pairingObject(mac.pairing), (instance: Pairing) => {
+			instance.keyObject = () => ({
+				tie: async () => true,
+				retie: async () => true,
+				untie: async () => {
+					await held;
+					throw new Error("the App Attest key's object is not answering");
+				},
+			});
+		});
+		mac.client.send({ removeDevice: { device: phone.device } });
+		// The phone sends while the relay waits on the key's object: none of it may reach the Mac.
+		device.client.sendBytes(new Uint8Array([1, 2, 3]));
+		device.client.send({ put: { to: "mac", id: itemId(), item: base64url(sealedItem()) } });
+		await device.client.refused("removed");
+		release();
+		expect(await mac.client.json()).toEqual({ ok: { what: "removeDevice" } });
+		expect(await mac.client.settle()).toEqual([]);
+		mac.client.send({ removeDevice: { device: phone.device } });
+		expect(await mac.client.json()).toEqual({ ok: { what: "removeDevice" } });
+	});
+
+	it("refuses a ready socket whose device is gone, as things stand when it sends", async () => {
+		const mac = await register();
+		const phone = await addPhone(mac);
+		const device = await phoneHello(mac.pairing, phone);
+		expect(await mac.client.json()).toEqual({ online: { device: phone.device } });
+		// As if the record went while the socket was still open (a removal the socket's closing has not reached yet).
+		await runInDurableObject(pairingObject(mac.pairing), (instance: Pairing) => {
+			delete (instance as unknown as { devices: Record<string, unknown> }).devices[phone.device];
+		});
+		device.client.sendBytes(new Uint8Array([1]));
+		await device.client.refused("removed");
+		expect(await mac.client.settle()).toEqual([]);
 	});
 
 	it("unties the device's App Attest key, which may then join elsewhere", async () => {
@@ -88,13 +132,13 @@ describe("removeDevice: revocation", () => {
 		await standInVerifier(elsewhere.pairing);
 		const token = await openWindow(elsewhere);
 		const before = await joinHello(elsewhere.pairing);
-		before.keyId = phone.attestKeyId;
+		before.keyId = phone.relayKeyId;
 		sendJoin(elsewhere.pairing, before, token);
 		await before.client.refused("attest-key-taken");
 		mac.client.send({ removeDevice: { device: phone.device } });
 		expect(await mac.client.json()).toEqual({ ok: { what: "removeDevice" } });
 		const after = await joinHello(elsewhere.pairing);
-		after.keyId = phone.attestKeyId;
+		after.keyId = phone.relayKeyId;
 		sendJoin(elsewhere.pairing, after, token);
 		expect(Object.keys(await after.client.json())).toEqual(["joined"]);
 	});
@@ -182,9 +226,45 @@ describe("deleting", () => {
 		await standInVerifier(elsewhere.pairing);
 		const token = await openWindow(elsewhere);
 		const joining = await joinHello(elsewhere.pairing);
-		joining.keyId = phone.attestKeyId;
+		joining.keyId = phone.relayKeyId;
 		sendJoin(elsewhere.pairing, joining, token);
 		expect(Object.keys(await joining.client.json())).toEqual(["joined"]);
+	});
+
+	it("deletes a pairing even when untying its keys fails, and such a tie goes by itself after a week", async () => {
+		const mac = await register();
+		const phone = await addPhone(mac);
+		const device = await phoneHello(mac.pairing, phone);
+		await mac.client.json();
+		await runInDurableObject(pairingObject(mac.pairing), (instance: Pairing) => {
+			instance.keyObject = () => ({
+				tie: async () => true,
+				retie: async () => true,
+				untie: async () => Promise.reject(new Error("not answering")),
+			});
+		});
+		mac.client.send({ deletePairing: {} });
+		expect(await mac.client.json()).toEqual({ ok: { what: "deletePairing" } });
+		await mac.client.refused("deleted");
+		await device.client.refused("deleted");
+		expect([...(await stored(mac.pairing)).keys()]).toEqual([]);
+
+		// The relay's key is still tied, so another pairing is refused it, until the tie expires.
+		const elsewhere = await register();
+		await standInVerifier(elsewhere.pairing);
+		const window = await openWindow(elsewhere);
+		const before = await joinHello(elsewhere.pairing);
+		before.keyId = phone.relayKeyId;
+		sendJoin(elsewhere.pairing, before, window);
+		await before.client.refused("attest-key-taken");
+		vi.setSystemTime(Date.now() + 7 * 24 * 60 * 60 * 1000);
+		const again = await register();
+		await standInVerifier(again.pairing);
+		const token = await openWindow(again);
+		const after = await joinHello(again.pairing);
+		after.keyId = phone.relayKeyId;
+		sendJoin(again.pairing, after, token);
+		expect(Object.keys(await after.client.json())).toEqual(["joined"]);
 	});
 
 	it("deletes a pending pairing that no device was added to after 15 minutes", async () => {
