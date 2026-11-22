@@ -1,10 +1,16 @@
-// An agent's own sub-chats: seeing how each stands, and archiving the finished ones (issue #150). See docs/archive.md.
+// An agent's own sub-chats: seeing how each stands, archiving the finished ones (issue #150; docs/archive.md), and
+// stopping a run that has been overtaken (#789).
 //
 // `delegate` leaves a sub-chat behind for every task. An agent that hands out a lot of work can list them and put the
 // finished ones away, within bounds: only sub-chats of its own conversation, never one that is working or waiting on
 // the person, and archived, never deleted, so the person can read and restore it from the Archive. Archiving stops the
 // commands a sub-chat left running in the background, and leaves a worktree of its own where it is, as archiving by
 // hand does. The calling conversation gets a line saying what was put away.
+//
+// Stopping is the person's Stop on that sub-chat, through the same two calls as the engine's `abort` request (main.ts):
+// pi durable's abort of the conversation, then each feature's `stopped`. So its run ends as "aborted", and the agent
+// that handed it the work gets the report a run the person stopped gives, once, by its usual way. Never a sub-chat that
+// waits on the person's approval or question, which Stop would take away unanswered.
 
 import { realpathSync } from "node:fs";
 import { basename, sep } from "node:path";
@@ -32,7 +38,16 @@ type Named = { id: number; title: string };
  * branch was deleted with them; `squashed`: those removed by name whose changes were on the default branch under other
  * commits, each branch kept (#778).
  */
-type MarkerData = { action: "archived" | "restored"; chats: Named[]; stopped?: number; removed?: string[]; deleted?: string[]; squashed?: string[] };
+type MarkerData = {
+	action: "archived" | "restored" | "stopped" | "stoppedBy";
+	chats: Named[];
+	stopped?: number;
+	removed?: string[];
+	deleted?: string[];
+	squashed?: string[];
+	/** For `stoppedBy`, the line in a stopped sub-chat: the name of the agent that stopped it; `chats` is its conversation. */
+	by?: string;
+};
 
 /** What the transcript shows for a `SUBCHATS_ENTRY`. */
 export function subChatsMarker(data: unknown): string {
@@ -41,6 +56,11 @@ export function subChatsMarker(data: unknown): string {
 	const named = chats.map((chat) => `${typeof chat.title === "string" && chat.title.trim() !== "" ? `“${chat.title.trim()}” ` : ""}(${chat.id})`).join(", ");
 	if (entry.action === "restored") return `The agent restored sub-chat ${named} from the Archive to continue it`;
 	const one = chats.length === 1;
+	if (entry.action === "stopped") return `The agent stopped the run of ${one ? "sub-chat" : `${chats.length} sub-chats:`} ${named}`;
+	if (entry.action === "stoppedBy") {
+		const by = typeof entry.by === "string" && entry.by.trim() !== "" ? entry.by.trim() : "The agent that handed it this work";
+		return `${by} stopped this run${named === "" ? "" : ` from conversation ${named}`}`;
+	}
 	const stopped = typeof entry.stopped === "number" && entry.stopped > 0 ? ` ${entry.stopped} background command${entry.stopped === 1 ? "" : "s"} ${one ? "it" : "they"} left running ${entry.stopped === 1 ? "was" : "were"} stopped.` : "";
 	const list = (value: unknown) => (Array.isArray(value) ? value.filter((branch): branch is string => typeof branch === "string") : []);
 	const branches = list(entry.removed);
@@ -227,8 +247,75 @@ export function archivedPage(ids: number[], archivedAt: (id: number) => number, 
 	return { page, shown: newest.length - rest.length, left: rest.length - page.length, total: newest.length };
 }
 
+/**
+ * `sub_chats` with `stop` (#789): the person's Stop on each of `asked` that is the caller's own sub-chat and working, as
+ * the engine's `abort` request does it (main.ts), with a line in the sub-chat naming who stopped it and one in the caller.
+ * The report of a run stopped so is the report of one the person stopped, given by its usual way (reports.ts, wakes.ts).
+ */
+async function stopSubChats(host: Host, api: ToolExecutionApi, caller: number, mine: number[], asked: number[], context: Context): Promise<ToolExecutionResult> {
+	const chats = [...new Set(asked)];
+	if (chats.length === 0) return { output: text("stop needs `chats`: the numbers of the sub-chats whose runs to stop, from list."), isError: true };
+	const all = host.conversations();
+	const by = host.agentOf(api.conversationId)?.name;
+	const lines: string[] = [];
+	const stopped: Named[] = [];
+	const idle: number[] = [];
+	const refused: number[] = [];
+	for (const id of chats) {
+		const meta = all[String(id)];
+		if (id === caller) {
+			lines.push(`- ${id}: that is this conversation, not one of its sub-chats, so nothing was stopped.`);
+			refused.push(id);
+			continue;
+		}
+		if (meta === undefined || !mine.includes(id)) {
+			lines.push(`- ${id}: there is no sub-chat ${id} in this conversation, so nothing was stopped.`);
+			refused.push(id);
+			continue;
+		}
+		// Stop takes away unanswered an approval or a question its run waits on, and one of a sub-chat of its own that it
+		// waits for, since stopping a call that waits for a sub-chat stops that too (heed.ts). Its own sub-chats are all
+		// counted, waited for or not: refusing one Stop would not harm is the safe side.
+		const below = subChatsOf(all, id);
+		const waiting = host.inbox.list().find((item) => item.conversationId === id || below.includes(item.conversationId));
+		if (waiting !== undefined) {
+			const whose = waiting.conversationId === id ? "it is" : `its sub-chat ${waiting.conversationId} is`;
+			lines.push(`- ${id}: not stopped, because ${whose} waiting on the person (${waiting.kind === "question" ? "a question" : "an approval"}), which stopping could take away unanswered. Stop it once they have answered.`);
+			refused.push(id);
+			continue;
+		}
+		if (!host.working(id)) {
+			const busy = below.filter((each) => host.working(each));
+			const one = busy.length === 1;
+			const note = busy.length === 0 ? "" : ` Its own sub-chat${one ? "" : "s"} ${busy.join(", ")} ${one ? "is" : "are"} working: name ${one ? "it" : "them"} to stop ${one ? "it" : "them"}.`;
+			lines.push(`- ${id}: was not working, so there was nothing to stop.${note}`);
+			idle.push(id);
+			continue;
+		}
+		const conv = await api.conversation(id as unknown as ConversationId, context);
+		if (conv === undefined) {
+			lines.push(`- ${id}: there is no sub-chat ${id} in this conversation, so nothing was stopped.`);
+			refused.push(id);
+			continue;
+		}
+		await conv.abort(context);
+		for (const feature of host.features) feature.stopped?.(id);
+		// Where the person sees who stopped it, after the run it ended. The request id writes it once after a crash.
+		const from: Named = { id: caller, title: all[String(caller)]?.title ?? "" };
+		await noteSubChats(api, id as unknown as ConversationId, { action: "stoppedBy", chats: [from], ...(by === undefined ? {} : { by }) }, `sub_chats:${String(api.taskId)}:${id}`, context);
+		stopped.push({ id, title: meta.title });
+		lines.push(`- ${id}: stopped (“${meta.title}”). If its answer was to come to you, its report comes instead, saying its run was stopped. To continue it, call delegate again with chat: ${id}.`);
+	}
+	if (stopped.length > 0) await noteSubChats(api, api.conversationId, { action: "stopped", chats: stopped }, `sub_chats:${String(api.taskId)}`, context);
+	return {
+		output: text(lines.join("\n")),
+		details: { action: "stop", stopped: stopped.map((chat) => chat.id), idle, refused },
+		...(stopped.length === 0 && idle.length === 0 ? { isError: true } : {}),
+	};
+}
+
 export const SUB_CHATS_DESCRIPTION =
-	"See the sub-chats this conversation opened with delegate, and archive the ones whose work is finished. Actions:\n" +
+	"See the sub-chats this conversation opened with delegate, stop one whose run was overtaken, and archive the ones whose work is finished. Actions:\n" +
 	"- list: each sub-chat that is not archived: its number, agent and title; whether it is working, waiting for a provider's limit (and until when), waiting on the person or idle; the folder and branch it works in (for a worktree of its own, whether anything is uncommitted and whether its branch is merged); and the commands it left running in the background. Archived ones are only counted: `archived: true` lists them, newest first, a page at a time (pass back `cursor` to continue; `usage: true` adds what each used; `with_worktree: true` lists only those that still have a worktree of their own), and `chats` looks up those numbered, archived or not. An archived one that still has a worktree of its own says so: its folder, its branch, and whether removing it would lose anything, and if so what. " +
 	"Then how much of each signed-in subscription's allowance is used and when each window resets, and which subscription you and each of your agents run on: list before starting more sub-chats when a window may be nearly used up.\n" +
 	"- archive: put away the sub-chats numbered in `chats`. Use it once you have what you needed from a sub-chat and will not continue it, or when the person asks you to tidy up. " +
@@ -236,6 +323,8 @@ export const SUB_CHATS_DESCRIPTION =
 	"A worktree of its own is left as it is, unless you pass `remove_worktree: true` and removing it loses nothing: nothing uncommitted, and every commit of its HEAD (on a branch or detached) on what it was made from or on the repository's default branch as last fetched (fetch first if it was merged elsewhere). Its branch is kept, unless you also pass `delete_branch: true`, which deletes the local branch too when every commit on it is on one of those and no other worktree has it checked out, as `git branch -d` would; never a remote branch. " +
 	"A branch merged by a rebase or a squash (its changes are on the default branch under other commits) is reported as such and kept; its worktree is removed only when you also name the sub-chat in `squash_merged`, and its branch is kept even then. " +
 	"A sub-chat that is working or waiting on the person is not archived. Continuing an archived sub-chat with delegate and its number restores it.\n" +
+	"- stop: stop the run of each sub-chat numbered in `chats`, as the person's Stop on it would: use it when its task was overtaken or it is plainly going the wrong way, rather than letting it spend on. The answer says of each whether it was stopped or was not working. " +
+	"One waiting on the person's approval or question is not stopped. Commands it left running in the background go on, as after the person's Stop (archiving it stops them); if its answer was to come to you, its report comes instead, saying it was stopped. Continue it with delegate and its number.\n" +
 	"- wait: wait for the next sub-chat you started with `wait: false` (or one of `chats`) to finish, and get its answer here instead of being woken for it; those already finished come at once.";
 
 /** The `sub_chats` tool. Offered with `delegate`, to conversations that can hand work on. */
@@ -244,8 +333,8 @@ export function subChatsTool(host: Host) {
 		name: "sub_chats",
 		description: SUB_CHATS_DESCRIPTION,
 		parameters: obj({
-			action: str({ description: "list, archive or wait" }),
-			chats: opt(arr(int(), { description: "For list: look up these sub-chats, archived or not. For archive: the numbers of the sub-chats to archive. For wait: the sub-chats to wait for, by default all" })),
+			action: str({ description: "list, archive, stop or wait" }),
+			chats: opt(arr(int(), { description: "For list: look up these sub-chats, archived or not. For archive: the numbers of the sub-chats to archive. For stop: the sub-chats whose runs to stop. For wait: the sub-chats to wait for, by default all" })),
 			archived: opt(bool({ description: "For list: list the archived sub-chats instead, newest first, a page at a time" })),
 			usage: opt(bool({ description: "For list with archived or chats: add what each archived one used" })),
 			cursor: opt(int({ description: "For list with archived: the cursor the previous page ended with, to continue" })),
@@ -254,7 +343,7 @@ export function subChatsTool(host: Host) {
 			delete_branch: opt(bool({ description: "For archive: remove each one's worktree as remove_worktree does, and delete its local branch too when every commit on it is merged there and no other worktree has it checked out. Never a remote branch." })),
 			squash_merged: opt(arr(int(), { description: "For archive with remove_worktree: sub-chats whose branch was reported as merged by a rebase or a squash (its changes on the default branch under other commits), whose worktrees you have decided to remove. Checked again; their branches are kept." })),
 		}),
-		// Listing changes nothing, and archiving what is archived changes nothing.
+		// Listing changes nothing, archiving what is archived changes nothing, and stopping what is stopped changes nothing.
 		replay: "safe",
 		execute: async (args, api, context): Promise<ToolExecutionResult> => {
 			const caller = api.conversationId as unknown as number;
@@ -376,7 +465,8 @@ export function subChatsTool(host: Host) {
 				}
 				return { output: text(came.map((each) => each.text).join("\n\n---\n\n")), details: { action, count: came.length } };
 			}
-			if (action !== "archive") return { output: text(`Unknown action "${args.action}". Use list, archive or wait.`), isError: true };
+			if (action === "stop") return await stopSubChats(host, api, caller, mine, args.chats ?? [], context);
+			if (action !== "archive") return { output: text(`Unknown action "${args.action}". Use list, archive, stop or wait.`), isError: true };
 			const asked = [...new Set(args.chats ?? [])];
 			if (asked.length === 0) return { output: text("archive needs `chats`: the numbers of the sub-chats to archive, from list."), isError: true };
 			const lines: string[] = [];
