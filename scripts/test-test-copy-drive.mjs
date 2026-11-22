@@ -22,7 +22,10 @@ let items, requests, response, keyFile = join(folder, 'no-key'), keyResponse = {
 const emptyLibrary = { event: 'library', conversations: [], archived: [] };
 let library = emptyLibrary;
 const server = createServer(socket => {
-	const send = message => socket.write(JSON.stringify(message) + '\n');
+	// The client under test may close its end before the stand-in has answered everything (#787): a write then fails
+	// with EPIPE, which must not end this process, and nothing more is written.
+	socket.on('error', () => {});
+	const send = message => { if (socket.writable && !socket.writableEnded) socket.write(JSON.stringify(message) + '\n'); };
 	send({ event: 'inbox', items });
 	send(library);
 	createInterface({ input: socket }).on('line', line => {
