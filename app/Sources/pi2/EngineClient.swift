@@ -3,6 +3,7 @@ import Foundation
 import LoginItemKit
 import Network
 import Observation
+import PiModels
 
 /// Talks to pi2-engine over its Unix socket, starts the engine when it is not running, and reconnects when it dies.
 /// Everything shown in the app is the engine's committed state, mirrored here; the app keeps no truth of its own.

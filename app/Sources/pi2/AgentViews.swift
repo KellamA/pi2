@@ -1,4 +1,5 @@
 import MenuKit
+import PiModels
 import SwiftUI
 
 enum AgentColor {

@@ -1,5 +1,6 @@
 
 import ComputerKit
+import PiModels
 import SwiftUI
 
 /// Chat mode's settings as the engine last sent them, in its `chat` event (docs/chat.md#settings).

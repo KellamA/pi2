@@ -1,3 +1,4 @@
+import PiModels
 import SwiftUI
 
 // Schedules (docs/schedules.md; in a project, docs/projects.md 3.13): which agent a schedule runs as, one schedule's

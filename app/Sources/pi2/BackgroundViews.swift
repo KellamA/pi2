@@ -1,4 +1,5 @@
 import AppKit
+import PiModels
 import SwiftUI
 
 // Commands agents left running in the background, as the person keeps an eye on them: a window with a command's output,

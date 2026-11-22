@@ -1,3 +1,4 @@
+import PiModels
 import SwiftUI
 
 /// The Archive: conversations put out of the sidebar but kept. Each can be read, found by search, restored or deleted.

@@ -1,6 +1,7 @@
 import AppKit
 import BrowserKit
 import ComputerKit
+import PiModels
 import SwiftUI
 import UniformTypeIdentifiers
 import WindowKit
