@@ -52,7 +52,7 @@ app/      SwiftUI app: the window (projects and chat mode), the menu bar, Quick 
           Sources/FileLinkKit   a file linked in a conversation: its path made whole, and what a click and its menu do with it
           Sources/pi2-file-link-check checks FileLinkKit, in a temporary folder of its own; not part of the app
           Sources/pi2-computer-check  checks how ComputerKit reaches SwiftUI controls, in windows of its own read in-process; not part of the app
-          Sources/TranscriptKit the web view the conversation page lives in, and the page loaded ahead for the next pane
+          Sources/TranscriptKit the conversation page's loading and messages, shared with the iPhone app; the Mac's web view and the page loaded ahead; the phone's web view
           Sources/pi2-transcript-check checks TranscriptKit, with real pages in windows that never come on screen; not part of the app
           Sources/PeerKit       whether the process at the other end of a connection to the engine's socket is the pi² app
           Sources/pi2-peer      the engine's helper that asks PeerKit of one connection; in the app's bundle
@@ -79,7 +79,7 @@ The window has two sides, **Projects** and **Chat** (`ModeSwitch` in `ChatMode.s
 - **Where a conversation opens** (`OpenConversation.swift`): every Open in the app goes through `AppModel.openConversation`, which opens it where it lives: its project's hub, chat mode, or the Archive's reader. The same file has the page that makes the first project.
 - **Under Shared**: a template's page (`AgentViews.swift`, with `AgentRebase.swift`), Activity (`ActivityPage.swift`), Usage (`UsageView.swift`, with the plan limits and their notices in `LimitsView.swift`) and the Archive (`ArchiveViews.swift`).
 - **Chat mode** (`ChatMode.swift`): its sidebar of chats and a chat; Continue with an Agent is `ChatContinue.swift` ([chat.md](chat.md)).
-- **A conversation**, wherever it shows, is `ChatView.swift`: the conversation page in a web view (`TranscriptWeb.swift`, PiModels' `TranscriptFeed.swift`, TranscriptKit and `app/Web/transcript`, [transcript.md](transcript.md)), the message field, the strips above it (`PlanStrip.swift`, `WakeViews.swift`, `RunViews.swift`), and the cards of what waits for the person (`InboxViews.swift`).
+- **A conversation**, wherever it shows, is `ChatView.swift`: the conversation page in a web view (`TranscriptWeb.swift`, PiModels' `TranscriptFeed.swift`, TranscriptKit, which the iPhone app shares, and `app/Web/transcript`, [transcript.md](transcript.md)), the message field, the strips above it (`PlanStrip.swift`, `WakeViews.swift`, `RunViews.swift`), and the cards of what waits for the person (`InboxViews.swift`).
 - **Over the window**: the notice of the update to projects (`RemovalNotice.swift`) and the engine that could not be started (`EngineTrouble.swift`).
 
 Outside the window: the menu bar item and Quick Ask (`MenuBar.swift`), notifications (`Notifier.swift`), Settings (`SettingsView.swift` and a file for each part, such as `StorageSettings.swift` and `ChatSettings.swift`), the Browser window (`BrowserUse.swift`, BrowserKit), a background command's output window (`BackgroundViews.swift`) and updates (`Updates.swift`). What only a development build does for throwaway copies is in `DevelopmentBuild.swift`, `LaunchPreviews.swift`, `LaunchWindows.swift` and `TestCopyControl.swift` ([development.md](development.md#choosing-what-a-copy-shows)).
