@@ -13,7 +13,7 @@ import { verifyAttestation } from "./attest.ts";
 import { base64url, concat, fromBase64url, random, same } from "./bytes.ts";
 import { publicKeyBytes, sha256, verifySignature } from "./crypto.ts";
 import { checkAttestation, joinClientDataHash, type Verifier } from "./join.ts";
-import { Counters, type Day, JOINED_LIMITS, LIMITS, type Limits } from "./limits.ts";
+import { Counters, type Day, JOINED_LIMITS, LIMITS, type Limits, PENDING_LIMITS } from "./limits.ts";
 import { DAY, HOUR, Mailbox } from "./mailbox.ts";
 import {
 	type AddDevice,
@@ -38,6 +38,8 @@ const PROVE_WITHIN = 10 * 1000;
 const MAX_WAITING = 16;
 /** A pending pairing, which no device was ever added to, is deleted after 15 minutes (6.6). */
 const PENDING_FOR = 15 * 60 * 1000;
+/** How often the time an end was last connected is written, at most. */
+const TOUCH_EVERY = 60 * 1000;
 /** A pairing with no connection for 60 days is deleted (5.3). */
 const IDLE_FOR = 60 * DAY;
 /** A join window lasts five minutes at most (5.3). */
@@ -141,6 +143,7 @@ export class Pairing extends DurableObject<Env> {
 	/** 6.6's limits for each end, and the smaller ones of a phone that has only joined; tests make them smaller. */
 	limits: Limits = LIMITS;
 	joinedLimits: Limits = JOINED_LIMITS;
+	pendingLimits: Limits = PENDING_LIMITS;
 
 	/** The object of an App Attest key's tie (claims.ts). Tests stand it in, to make its calls fail; nothing else does. */
 	keyObject(keyId: string): Pick<DurableObjectStub<import("./claims.ts").AttestKey>, "tie" | "retie" | "untie"> {
@@ -204,8 +207,12 @@ export class Pairing extends DurableObject<Env> {
 		// pairing's life. When there is nothing to take away they are counted like anything else, so that repeating them
 		// costs the relay nothing it does not count.
 		const read = typeof message === "string" ? readMessage(message) : null;
+		// A pending pairing (no phone added yet) has nothing to revoke, and its Mac needs no genuine app: everything it
+		// sends is counted, against the small allowance of PENDING_LIMITS, decided from the record before any write.
+		const pending = meta.pendingUntil !== null;
 		const control =
 			attachment.kind === "mac" &&
+			!pending &&
 			((read?.type === "removeDevice" && this.devices[read.device] !== undefined) ||
 				(read?.type === "closeJoin" && meta.window !== null) ||
 				read?.type === "deletePairing");
@@ -214,7 +221,8 @@ export class Pairing extends DurableObject<Env> {
 			const blocked = meta.blocked[sender];
 			if (blocked !== undefined && blocked > now) return this.holdOff(ws, blocked);
 			const size = typeof message === "string" ? new TextEncoder().encode(message).length : message.byteLength;
-			const verdict = this.counters.count(sender, size, now, attachment.kind === "joined" ? this.joinedLimits : this.limits);
+			const limits = attachment.kind === "joined" ? this.joinedLimits : attachment.kind === "mac" && pending ? this.pendingLimits : this.limits;
+			const verdict = this.counters.count(sender, size, now, limits);
 			if (this.counters.due) await this.saveDays();
 			if (!verdict.pass) {
 				if (verdict.day) {
@@ -258,14 +266,19 @@ export class Pairing extends DurableObject<Env> {
 			return;
 		}
 		if (meta.window !== null && meta.window.expires <= now) await this.closeWindow();
-		if ((meta.pendingUntil !== null && meta.pendingUntil <= now) || now - this.lastSeen(now) >= IDLE_FOR) {
+		// Only what changed is written: an alarm that finds nothing to do writes nothing but the next alarm.
+		let changed = this.sockets().some(([, attachment]) => isReady(attachment)) && this.touch(now);
+		if ((meta.pendingUntil !== null && meta.pendingUntil <= now) || now - meta.lastSeen >= IDLE_FOR) {
 			return this.deletePairing();
 		}
-		for (const [sender, until] of Object.entries(meta.blocked)) if (until <= now) delete meta.blocked[sender];
-		await this.save();
+		for (const [sender, until] of Object.entries(meta.blocked)) {
+			if (until > now) continue;
+			delete meta.blocked[sender];
+			changed = true;
+		}
+		if (changed) await this.save();
 		this.mailbox.expire(now);
-		this.counters.forgetBefore(now);
-		await this.saveDays();
+		if (this.counters.forgetBefore(now) || this.counters.dirty) await this.saveDays();
 		await this.schedule();
 	}
 
@@ -356,8 +369,7 @@ export class Pairing extends DurableObject<Env> {
 			const old = this.mac();
 			if (old !== null) this.refuse(old, "replaced");
 			ws.serializeAttachment({ ...attachment, kind: "mac", seen: now } satisfies Attachment);
-			meta.lastSeen = now;
-			await this.save();
+			if (this.touch(now)) await this.save();
 			send(ws, {
 				ready: {
 					devices: Object.entries(this.devices)
@@ -387,8 +399,7 @@ export class Pairing extends DurableObject<Env> {
 		const old = this.deviceSocket(id);
 		if (old !== null) this.refuse(old, "replaced");
 		ws.serializeAttachment({ ...attachment, kind: "device" } satisfies Attachment);
-		meta.lastSeen = now;
-		await this.save();
+		if (this.touch(now)) await this.save();
 		const mac = this.mac();
 		send(ws, { ready: { mac: mac !== null, mail: this.mailbox.count(id) } });
 		if (mac !== null) send(mac, { online: { device: id } });
@@ -794,10 +805,15 @@ export class Pairing extends DurableObject<Env> {
 		return window !== null && window !== undefined && window.expires > now && window.tries < WINDOW_TRIES;
 	}
 
-	private lastSeen(now: number): number {
+	/**
+	 * Notes that an end is connected, for the 60 days: at most once a minute, so that reconnecting does not make a write
+	 * each time. Says whether the record changed.
+	 */
+	private touch(now: number): boolean {
 		const meta = this.meta!;
-		if (this.sockets().some(([, attachment]) => isReady(attachment))) meta.lastSeen = now;
-		return meta.lastSeen;
+		if (now - meta.lastSeen < TOUCH_EVERY) return false;
+		meta.lastSeen = now;
+		return true;
 	}
 
 	// Storage.

@@ -33,6 +33,20 @@ export const JOINED_LIMITS: Limits = {
 	bytesPerDay: 16 * 1024 * 1024,
 };
 
+/**
+ * A pending pairing's Mac, before its first phone is added (6.6): anyone with a key of their own can register one, so
+ * it is given little, enough for the first pairing with room (a window opened and closed a few times, a join, the
+ * pairing exchange, `addDevice`), and every message counts. Its pairing is deleted after 15 minutes if no phone is
+ * added, and past this day's allowance its Mac is held off for an hour, so a registration costs a few hundred writes
+ * at most.
+ */
+export const PENDING_LIMITS: Limits = {
+	messagesPerSecond: 10,
+	bytesPerSecond: 64 * 1024,
+	messagesPerDay: 200,
+	bytesPerDay: 2 * 1024 * 1024,
+};
+
 export type Day = { day: string; messages: number; bytes: number };
 
 /** Whether a message may pass; if not, until when its sender is held off, and whether for the day's limit. */
@@ -77,10 +91,21 @@ export class Counters {
 		delete this.days[sender];
 	}
 
-	/** Forgets the days that are over. */
-	forgetBefore(now: number): void {
+	/** Forgets the days that are over; says whether there were any. */
+	forgetBefore(now: number): boolean {
 		const today = dayOf(now);
-		for (const [sender, day] of Object.entries(this.days)) if (day.day !== today) delete this.days[sender];
+		let forgot = false;
+		for (const [sender, day] of Object.entries(this.days)) {
+			if (day.day === today) continue;
+			delete this.days[sender];
+			forgot = true;
+		}
+		return forgot;
+	}
+
+	/** Whether any count has not been saved. */
+	get dirty(): boolean {
+		return this.unsaved > 0;
 	}
 
 	/** Whether the day's counts should be saved: every hundred messages, so traffic is not a write each. */
