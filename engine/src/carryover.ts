@@ -34,8 +34,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { AgentDoc, type ConversationId, type Tx } from "@earendil-works/pi-durable";
-import { createBackup } from "./backup.ts";
+import { createBackup, removePartialBackups } from "./backup.ts";
 import type { Feature } from "./features.ts";
 import { Memory, type MemoryDoc } from "./knowledge.ts";
 import { projectNotebook } from "./projectnotes.ts";
@@ -727,10 +728,24 @@ async function gate(name: "PI2_CARRY_SECRETS_GATE" | "PI2_CARRY_COMMIT_GATE" | "
 }
 
 /**
+ * Whether this is a release engine: one with a `BUILD` file next to `src`, as main.ts reads it (a development engine has
+ * none). Test switches that would leave a person's data as the last version left it are not honoured in one.
+ */
+const releaseBuild = (() => {
+	try {
+		return readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "BUILD"), "utf8").trim() !== "";
+	} catch {
+		return false;
+	}
+})();
+
+/**
  * Tests make a data folder as the last version with the switch left it, the switch never turned on, with this engine:
  * with `PI2_CARRY_NEVER=1` nothing is carried, at start or as conversations are made, and the update records nothing.
+ * Only in a development engine (as `PI2_TEST_COPY`, main.ts): a release engine ignores it, and says so at start.
  */
-const carriesNothing = () => process.env.PI2_CARRY_NEVER === "1";
+const carryNeverAsked = () => process.env.PI2_CARRY_NEVER === "1";
+const carriesNothing = () => carryNeverAsked() && !releaseBuild;
 
 /** An agent's id as made for a project: its name's slug and a UUID, never reused, whatever is deleted later. */
 const agentIdFor = (name: string) => `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "agent"}-${randomUUID()}`;
@@ -1146,6 +1161,15 @@ export const carryOver: Feature = (host, engine) => {
 			if (carriesNothing()) return false;
 			const harness = engine.harness();
 			const context = engine.context();
+			const folder = join(engine.home, "backups");
+			// Copies an engine killed while making them left unfinished: never taken for a backup, so removed (#715).
+			let unfinished = 0;
+			try {
+				unfinished = removePartialBackups(folder);
+			} catch (error) {
+				engine.log("carrying over at the update: could not remove an unfinished copy of the data:", message(error));
+			}
+			if (unfinished > 0) engine.log(`carrying over at the update: removed ${unfinished} unfinished cop${unfinished === 1 ? "y" : "ies"} of the data left by an engine that stopped while making ${unfinished === 1 ? "it" : "them"}`);
 			const stored = await harness.snapshot(Projects, context);
 			let removal = stored?.carry.removalBackup;
 			if (removal === undefined) {
@@ -1156,7 +1180,6 @@ export const carryOver: Feature = (host, engine) => {
 				let path: string | null = null;
 				if (anything) {
 					try {
-						const folder = join(engine.home, "backups");
 						mkdirSync(folder, { recursive: true });
 						path = await createBackup(engine.home, folder);
 					} catch (error) {
@@ -1172,6 +1195,9 @@ export const carryOver: Feature = (host, engine) => {
 					return { ...doc.carry.removalBackup };
 				}, context);
 			}
+			// The Keychain step for variables' values still pending, only once the copy exists: before it nothing is written.
+			// Not waited for: the engine need not wait for the Keychain.
+			void retrySecrets().catch(() => {});
 			try {
 				const { plan, report, documents } = await look();
 				if (report.plan !== null) {
@@ -1364,8 +1390,9 @@ export const carryOver: Feature = (host, engine) => {
 
 	return {
 		start: async () => {
-			// Not waited for: the engine need not wait for the Keychain to start.
-			void retrySecrets().catch(() => {});
+			if (carryNeverAsked()) {
+				engine.log(releaseBuild ? "PI2_CARRY_NEVER is set and ignored: a release engine always carries over" : "PI2_CARRY_NEVER is set: this development engine carries nothing into projects");
+			}
 			// Once every feature has started: the update's run (#715), then any conversation left in no project.
 			void host.ready
 				.then(update)

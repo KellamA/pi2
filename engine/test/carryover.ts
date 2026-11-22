@@ -13,15 +13,17 @@
 // start finishes; `settings.json`'s switch written for the versions before; what the last version reads (the library,
 // the agents and the notes) as it was, but for the fields it does not read and the project agents. A second start writes
 // nothing. Then conversations made later, a fork, a deleted project's, and one left in no project carried at the next
-// start. Last, the owner's case, a folder where the switch was on and carrying over ran long ago: a fresh copy is made,
-// and nothing changes but a stray and a sub-chat made with the switch off, which is given its project's copy.
+// start. Then the owner's case, a folder where the switch was turned on and off again and carrying over ran long ago: a
+// fresh copy is made, settings.json's switch written, and nothing changes but a stray and a sub-chat made with the switch
+// off, which is given its project's copy. A copy that fails once its folder is made, and one an engine is killed in the
+// middle of (`PI2_BACKUP_GATE`), leave nothing behind. Last, a release engine (a `BUILD` file) ignores `PI2_CARRY_NEVER`.
 // carryplan.ts checks the plan alone on a larger library.
 //
 // `PI2_CARRY_KEEP=<folder>` copies the data folder there at the end, for a look at it with an older engine.
 
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -315,6 +317,46 @@ try {
 	rmSync(backups);
 	step("a copy of the data that cannot be made: nothing is carried, and the log and the projects event say why");
 
+	// ---- A copy that fails part way, once its folder is made: nothing is left in backups/, nothing is carried, even a
+	// conversation made meanwhile
+
+	// A settings file the copy cannot take (a folder where `added-models.json` goes, which the engine reads as none).
+	const unreadable = join(home, "added-models.json");
+	mkdirSync(unreadable);
+	engine = start();
+	client = await Client.connect(engine, home);
+	await ready(client);
+	const failedInside = await client.until("the failure told", () => client.events.projects.carryOver?.removalFailed);
+	assert.match(failedInside, /^The copy of your data could not be made/);
+	assert.deepEqual(readdirSync(backups), [], "no copy and no unfinished one left");
+	const during = (await client.call("conversation.create", { agentId: "scout" })).id as number;
+	assert.equal((await client.until("its row", () => client.row(during))).projectId, null, "made while no copy is recorded: not carried");
+	await client.call("conversation.delete", { id: during });
+	assert.deepEqual(client.projects, []);
+	assert.equal(settingsFile().projects, undefined);
+	client.close();
+	await stop(engine);
+	rmdirSync(unreadable);
+	step("a copy that fails once its folder is made leaves nothing in backups/, carries nothing, and says why; a conversation made meanwhile is not carried");
+
+	// ---- An engine killed while it makes the copy leaves it unfinished; the next start removes it, and only it
+
+	const backupGate = join(work, "backup-gate");
+	writeFileSync(backupGate, "");
+	engine = start({ PI2_BACKUP_GATE: backupGate });
+	await until("held in the copy", () => existsSync(`${backupGate}.started`), { over: () => (engine!.exitCode !== null ? "the engine stopped" : undefined) });
+	engine.kill("SIGKILL");
+	await stop(engine);
+	rmSync(backupGate, { force: true });
+	const unfinished = readdirSync(backups);
+	assert.equal(unfinished.length, 1);
+	assert.match(unfinished[0]!, /^pi2-backup-\d{8}-\d{6}\.partial$/);
+	assert.equal(await offline(async (harness) => (await harness.snapshot(Projects, context))?.carry.removalBackup), undefined, "not recorded");
+	// A folder of the person's own there, without the mark, is never removed.
+	const theirs = join(backups, "pi2-backup-kept-by-hand");
+	mkdirSync(theirs);
+	step("an engine killed while it makes the copy leaves it marked unfinished, and records nothing");
+
 	// ---- The update, cut off between its first two projects' commits, as by a crash
 
 	assert.equal(report.projects[0].key, other);
@@ -326,7 +368,10 @@ try {
 	rmSync(commitGate, { force: true });
 	const cut = await offline(async (harness) => (await harness.snapshot(Projects, context))!);
 	assert.deepEqual(Object.values(cut.projects).map((project) => project.folder), [other], "the first project's commit alone");
-	assert.deepEqual(backupsMade().length, 1, "the copy made first");
+	assert.ok(readFileSync(logPath, "utf8").includes("carrying over at the update: removed 1 unfinished copy of the data"));
+	assert.ok(existsSync(theirs), "a folder without the mark stays");
+	rmdirSync(theirs);
+	assert.deepEqual(backupsMade().length, 1, "the copy made first, and the unfinished one gone");
 	const removal = cut.carry.removalBackup!;
 	assert.equal(removal.path, join(home, "backups", backupsMade()[0]!));
 	assert.equal(typeof removal.at, "number");
@@ -645,7 +690,9 @@ try {
 			delete meta.projectAgentId;
 		}, context);
 	});
-	const owners = { settings: readFileSync(settingsPath, "utf8"), settingsTime: statSync(settingsPath).mtimeMs, backups: backupsMade() };
+	// Switched on once, then off again: settings.json says so.
+	writeFileSync(settingsPath, JSON.stringify({ ...settingsFile(), projects: { preview: false } }, null, "\t"));
+	const owners = { backups: backupsMade() };
 	assert.equal(owners.backups.length, 1);
 	engine = start();
 	client = await Client.connect(engine, home);
@@ -661,8 +708,7 @@ try {
 	await client.until("the sub-chat put right", () => client.row(subChatInRepo)?.runsAs === scoutCopy);
 	assert.equal(client.row(subChatInRepo).agentId, "scout", "its template kept beside the copy");
 	await client.until("the one made since carried", () => client.row(madeSince)?.projectId === repoProject.id);
-	assert.equal(readFileSync(settingsPath, "utf8"), owners.settings);
-	assert.equal(statSync(settingsPath).mtimeMs, owners.settingsTime, "settings.json already says so: not written");
+	await client.until("settings.json written", () => settingsFile().projects?.preview === true);
 	// Nothing else changed: every other conversation where it was, running as it did, the agents and the projects as they
 	// were, and the record but for the run's time and the copy.
 	assert.deepEqual(client.places().filter((line) => !line.startsWith(`${madeSince} `)), ownersBefore.places);
@@ -670,7 +716,7 @@ try {
 	assert.deepEqual(client.events.projects.projects, ownersBefore.projects.projects);
 	const unrecorded = (state: any) => ({ ...state, ranAt: 0, removalBackup: null });
 	assert.deepEqual(unrecorded(client.events.projects.carryOver), unrecorded(ownersBefore.projects.carryOver));
-	step("the owner's case: a fresh copy made and recorded beside the older one; nothing changes but a conversation made since and a sub-chat made with the switch off, given its project's copy");
+	step("the owner's case, switched on once and off again: a fresh copy made and recorded beside the older one, settings.json's switch written; nothing changes but a conversation made since and a sub-chat made with the switch off, given its project's copy");
 
 	// ---- An engine stopped and started again keeps it all
 
@@ -686,6 +732,30 @@ try {
 	assert.equal(settingsFile().projects.preview, true);
 	assert.equal(backupsMade().length, 2);
 	step("an engine stopped and started again keeps the projects, the copies and the record");
+
+	// ---- A release engine ignores PI2_CARRY_NEVER, and says so
+
+	client.close();
+	await stop(engine);
+	// A release engine is one with a `BUILD` file next to its `src`: this engine's sources, copied with one.
+	const release = join(work, "release", "engine");
+	cpSync(join(import.meta.dirname, "..", "src"), join(release, "src"), { recursive: true });
+	cpSync(join(import.meta.dirname, "..", "package.json"), join(release, "package.json"));
+	symlinkSync(join(import.meta.dirname, "..", "node_modules"), join(release, "node_modules"));
+	writeFileSync(join(release, "BUILD"), "test-release\n");
+	const releaseHome = join(work, "release-home");
+	mkdirSync(releaseHome);
+	const releaseLog = openSync(join(releaseHome, "engine.log"), "a");
+	engine = spawn(process.execPath, [join(release, "src", "main.ts")], { env: { ...env(), PI2_HOME: releaseHome, PI2_CARRY_NEVER: "1" }, stdio: ["ignore", "ignore", releaseLog] });
+	closeSync(releaseLog);
+	client = await Client.connect(engine, releaseHome);
+	await ready(client);
+	const carried = (await client.call("conversation.create", { agentId: "forge" })).id as number;
+	assert.equal(typeof (await client.until("carried", () => client.row(carried)?.projectId !== null && client.row(carried))).projectId, "string", "a conversation made is carried as ever");
+	assert.equal(JSON.parse(readFileSync(join(releaseHome, "settings.json"), "utf8")).projects.preview, true, "the update ran");
+	assert.ok(readFileSync(join(releaseHome, "engine.log"), "utf8").includes("PI2_CARRY_NEVER is set and ignored: a release engine always carries over"));
+	assert.ok(readFileSync(logPath, "utf8").includes("PI2_CARRY_NEVER is set: this development engine carries nothing into projects"), "and a development one says it is in force");
+	step("a release engine (a BUILD file beside its src) ignores PI2_CARRY_NEVER and says so; a development one says it is in force");
 } finally {
 	client.close();
 	await stop(engine);
