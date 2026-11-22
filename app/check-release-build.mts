@@ -315,6 +315,19 @@ async function checkInfo(connection: Connection, build: Build, pid: number): Pro
 	step(`engine.info: build ${info.build}, from inside the app, process ${info.pid}`);
 }
 
+/** A switch only the engine's tests may set (engine/src/testswitches.ts): the demo model's speed, which nothing else changes. */
+const TEST_SWITCH = "PI2_DEMO_TOKENS_PER_SECOND";
+
+/**
+ * A release engine honours none of the switches only tests may set (#720), and says at start which it was given. Its
+ * log is written before it listens, so the line is there by now.
+ */
+function checkTestSwitchIgnored(log: string): void {
+	const line = readFileSync(log, "utf8").split("\n").find((each) => each.includes(`${TEST_SWITCH} is set and ignored`));
+	if (line === undefined) fail(`The engine did not say it ignores ${TEST_SWITCH}, a switch only tests may set: a release engine must ignore it and say so.`);
+	step(`the engine ignores a switch only tests may set: ${line.slice(line.indexOf(TEST_SWITCH))}`);
+}
+
 /** A conversation with the scripted demo model, which needs no provider: the engine stores it and runs a turn. */
 async function checkAnswer(connection: Connection): Promise<void> {
 	const { id } = await connection.call("conversation.create");
@@ -388,7 +401,8 @@ function engineEnvironment(home: string): Record<string, string> {
 		PI2_HOME: home,
 		PI2_KEYCHAIN_SERVICE: keychainService,
 		PI2_LOGIN_SHELL: "off",
-		PI2_DEMO_TOKENS_PER_SECOND: "1000",
+		// A switch only tests may set, which a release engine must ignore and name in its log (checkTestSwitchIgnored).
+		[TEST_SWITCH]: "1000",
 	};
 	for (const name of ["HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "__CF_USER_TEXT_ENCODING"]) {
 		const value = process.env[name];
@@ -423,6 +437,7 @@ async function checkEngine(build: Build): Promise<void> {
 	cleanups.push(() => connection.close());
 	step(`the engine inside the app listens on ${join(home, "engine.sock")}`);
 	await checkInfo(connection, build, engine.pid!);
+	checkTestSwitchIgnored(log);
 	await checkAnswer(connection);
 	await checkOthersRefused(connection);
 	connection.close();
