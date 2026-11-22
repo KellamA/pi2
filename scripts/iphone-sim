@@ -1,0 +1,400 @@
+#!/bin/bash
+# The iPhone app in a simulator of the caller's own (docs/iphone.md section 10, #681): makes one under a name the
+# caller gives, builds and tests the app for it, runs the app there with launch arguments and environment, takes its
+# picture in either appearance and any text size, and deletes it. Builds for the simulator only and signs nothing.
+#
+#   scripts/iphone-sim create <name> [--type <device type>] [--runtime <runtime>] [--derived-data <folder>]
+#   scripts/iphone-sim build <name> [--release] [--derived-data <folder>] [-- <xcodebuild options>]
+#   scripts/iphone-sim test <name> [--derived-data <folder>] [-- <xcodebuild options>]
+#   scripts/iphone-sim run <name> [--release] [--derived-data <folder>] [--env NAME=VALUE]... [-- <launch arguments>]
+#   scripts/iphone-sim shot <name> <file.png> [--appearance light|dark] [--text-size <size>]
+#   scripts/iphone-sim appearance <name> light|dark
+#   scripts/iphone-sim text-size <name> <size>
+#   scripts/iphone-sim shutdown <name>
+#   scripts/iphone-sim delete <name>
+#   scripts/iphone-sim id <name>
+#   scripts/iphone-sim list
+#
+# Every command but `create` and `list` works only on a simulator this checkout's `create` made: it keeps each one's id
+# in iphone/build/simulators/<name>, and refuses a name it has no record of, or whose simulator has since been renamed or
+# deleted. So it never touches a simulator someone else made, such as the one already booted, which may be the person's;
+# `booted` is refused as a name for the same reason. Run scripts/test-iphone-sim after changing it.
+
+set -uo pipefail
+export LC_ALL=C
+
+root="$(cd -P -- "$(dirname -- "$0")/.." && pwd -P)"
+records="$root/iphone/build/simulators"
+project="$root/iphone/pi2.xcodeproj"
+bundle_id=dev.pi2.ios
+
+usage() {
+	cat <<'EOF'
+Usage: scripts/iphone-sim <command> <name> [options]
+
+The iPhone app in a simulator of your own. <name> is yours to choose (lower-case letters, digits and hyphens, such as
+pi2-681); every command but create works only on a simulator this checkout's create made.
+
+  create <name>          Make a simulator and print its id. --type <device type> (default "iPhone 18 Pro"),
+                         --runtime <runtime id> (default: the newest iOS), --derived-data <folder> (where build,
+                         test and run put and find the build; default $PI2_SCRATCH/iphone-build, or
+                         iphone/build/DerivedData without one; never under ~/Library).
+  build <name>           Build the app for it, unsigned, at nice 15. --release for a Release build.
+  test <name>            Run the app's unit tests on it, unsigned, at nice 15.
+                         After --, build and test take -only-testing:<id>, -skip-testing:<id>, -quiet and
+                         -resultBundlePath <path>, and nothing else.
+  run <name>             Boot it, install what build made and launch it. --release for the Release build,
+                         --env NAME=VALUE (repeatable) for the app's environment; after --, its launch arguments.
+  shot <name> <file.png> Take a picture of its screen. --appearance light|dark and --text-size <size> set them first.
+  appearance <name> light|dark
+  text-size <name> <size>  extra-small, small, medium, large (the default), extra-large, extra-extra-large,
+                         extra-extra-extra-large, accessibility-medium, accessibility-large,
+                         accessibility-extra-large, accessibility-extra-extra-large or
+                         accessibility-extra-extra-extra-large.
+  shutdown <name>        Shut it down, keeping it.
+  delete <name>          Shut it down and delete it. The derived data stays.
+  id <name>              Print its id, for an xcrun simctl command this script does not cover.
+  list                   The simulators this checkout made, with each one's state.
+
+Builds for the simulator only (CODE_SIGNING_ALLOWED=NO); a device destination, -sdk, signing or provisioning
+options are refused. See "Building the iPhone app" in docs/development.md.
+EOF
+}
+
+die() {
+	echo "iphone-sim: $*" >&2
+	exit 1
+}
+
+refuse() {
+	echo "iphone-sim: $*" >&2
+	exit 2
+}
+
+# Variables the caller's shell happens to have would reach the app through simctl, which passes on every SIMCTL_CHILD_
+# variable it is given: only the ones --env names do.
+for v in $(compgen -e); do
+	[[ $v == SIMCTL_CHILD_* ]] && unset "$v"
+done
+
+text_sizes=" extra-small small medium large extra-large extra-extra-large extra-extra-extra-large accessibility-medium accessibility-large accessibility-extra-large accessibility-extra-extra-large accessibility-extra-extra-extra-large "
+
+check_name() {
+	local name=$1
+	[[ -n $name ]] || refuse "give the simulator a name of your own, such as pi2-681"
+	[[ $name != booted ]] || refuse "'booted' names whichever simulator is booted, which may be someone else's: give your own simulator's name"
+	[[ $name =~ ^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$ ]] ||
+		refuse "'$name' is not a name this script takes: lower-case letters, digits and hyphens, at most 40, such as pi2-681"
+	[[ ! $name =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
+		refuse "'$name' looks like a simulator's id: give the name you created it with"
+}
+
+need_jq() {
+	command -v jq >/dev/null || die "needs jq"
+}
+
+devices() {
+	xcrun simctl list devices --json || die "xcrun simctl list devices failed"
+}
+
+# Where a derived-data folder may be: anywhere but ~/Library, where Xcode would put it, and where the person's own
+# builds and caches are. ~ is both $HOME and the account's own home folder, which differ when a caller sets HOME.
+# Prints the folder as an absolute path, made if missing.
+derived_data_folder() {
+	local folder=$1 account home libraries=() library
+	[[ -n $folder ]] || refuse "--derived-data needs a folder"
+	[[ $folder == /* ]] || folder="$PWD/$folder"
+	account=$(eval "printf '%s' ~$(id -un)" 2>/dev/null) || account=
+	for home in "${HOME:-}" "$account"; do
+		[[ -n $home ]] || continue
+		libraries+=("$home/Library")
+		home="$(cd -P -- "$home" 2>/dev/null && pwd -P)" && libraries+=("$home/Library")
+	done
+	for library in ${libraries[@]+"${libraries[@]}"}; do
+		[[ $folder != "$library" && $folder != "$library"/* ]] ||
+			refuse "the derived data goes in a folder of your own, not under ~/Library: $folder"
+	done
+	mkdir -p -- "$folder" || die "cannot make $folder"
+	folder="$(cd -P -- "$folder" && pwd -P)" || die "cannot open $folder"
+	for library in ${libraries[@]+"${libraries[@]}"}; do
+		[[ $folder != "$library" && $folder != "$library"/* ]] ||
+			refuse "the derived data goes in a folder of your own, not under ~/Library: $folder"
+	done
+	printf '%s\n' "$folder"
+}
+
+default_derived_data() {
+	if [[ -n ${PI2_SCRATCH:-} && -d $PI2_SCRATCH ]]; then
+		printf '%s\n' "$PI2_SCRATCH/iphone-build"
+	else
+		printf '%s\n' "$root/iphone/build/DerivedData"
+	fi
+}
+
+# The simulator a name stands for, from this checkout's record, checked against what simctl has now. Sets udid,
+# derived_data and state.
+udid=
+derived_data=
+state=
+resolve() {
+	local name=$1 record json now
+	check_name "$name"
+	record="$records/$name"
+	[[ -f $record/udid ]] ||
+		refuse "no simulator named '$name' was made by this checkout: make one with scripts/iphone-sim create $name"
+	udid=$(cat "$record/udid")
+	derived_data=$(cat "$record/derived-data" 2>/dev/null || default_derived_data)
+	json=$(devices) || exit 1
+	now=$(jq -r --arg u "$udid" '[.devices[][] | select(.udid == $u)] | first | if . == null then "" else .name end' <<<"$json")
+	[[ -n $now ]] ||
+		refuse "the simulator '$name' ($udid) is gone: scripts/iphone-sim delete $name forgets it"
+	[[ $now == "$name" ]] ||
+		refuse "the simulator made as '$name' ($udid) is now called '$now': it is left alone"
+	state=$(jq -r --arg u "$udid" '[.devices[][] | select(.udid == $u)] | first | .state' <<<"$json")
+}
+
+boot() {
+	[[ $state == Booted ]] && return
+	xcrun simctl bootstatus "$udid" -b >/dev/null || die "could not boot $udid"
+	state=Booted
+}
+
+# What may follow -- for build and test: choosing tests, and where the results go. A destination, an SDK, signing and
+# provisioning are the ones that matter to refuse, and a list of what is allowed refuses them and anything new.
+xcode_options=()
+take_xcode_options() {
+	while (($#)); do
+		case $1 in
+		-only-testing:?* | -skip-testing:?* | -quiet) xcode_options+=("$1") ;;
+		-resultBundlePath)
+			(($# >= 2)) || refuse "-resultBundlePath needs a path"
+			xcode_options+=("$1" "$2")
+			shift
+			;;
+		-destination | -destination=* | -sdk | -sdk=* | -arch | generic/* | *platform=iOS* | -allowProvisioningUpdates | -allowProvisioningDeviceRegistration | CODE_SIGN* | DEVELOPMENT_TEAM* | PROVISIONING_PROFILE* | archive | -exportArchive)
+			refuse "builds for its own simulator only, unsigned: $1 is not taken" ;;
+		*) refuse "$1 is not an option build and test take after --: -only-testing:<id>, -skip-testing:<id>, -quiet, -resultBundlePath <path>" ;;
+		esac
+		shift
+	done
+}
+
+xcodebuild_for() {
+	local action=$1 configuration=$2
+	nice -n 15 xcodebuild "$action" \
+		-project "$project" -scheme pi2 -configuration "$configuration" \
+		-destination "platform=iOS Simulator,id=$udid" \
+		-derivedDataPath "$derived_data" -packageCachePath "$derived_data/PackageCache" \
+		-parallel-testing-enabled NO \
+		${xcode_options[@]+"${xcode_options[@]}"} \
+		CODE_SIGNING_ALLOWED=NO
+}
+
+check_text_size() {
+	[[ $text_sizes == *" $1 "* && -n $1 ]] ||
+		refuse "'$1' is not a text size: one of$(printf '%s' "$text_sizes" | sed 's/ $//; s/ /, /g; s/^,//')"
+}
+
+check_appearance() {
+	[[ $1 == light || $1 == dark ]] || refuse "the appearance is light or dark, not '$1'"
+}
+
+command=${1:-}
+(($#)) && shift
+case $command in
+"" | -h | --help | help)
+	usage
+	[[ -n $command ]] || exit 2
+	exit 0
+	;;
+esac
+need_jq
+
+case $command in
+create)
+	name=${1:-}
+	check_name "$name"
+	shift
+	type="iPhone 18 Pro"
+	runtime=
+	folder=$(default_derived_data)
+	while (($#)); do
+		case $1 in
+		--type) (($# >= 2)) || refuse "--type needs a device type, such as \"iPhone 18 Pro\""; type=$2; shift ;;
+		--runtime) (($# >= 2)) || refuse "--runtime needs a runtime's id"; runtime=$2; shift ;;
+		--derived-data) (($# >= 2)) || refuse "--derived-data needs a folder"; folder=$2; shift ;;
+		*) refuse "create takes --type, --runtime and --derived-data, not $1" ;;
+		esac
+		shift
+	done
+	[[ $type == iPhone* ]] || refuse "the app is for iPhone: '$type' is not an iPhone's device type"
+	folder=$(derived_data_folder "$folder") || exit
+	json=$(devices) || exit 1
+	[[ -z $(jq -r --arg n "$name" '.devices[][] | select(.name == $n) | .udid' <<<"$json") ]] ||
+		refuse "a simulator named '$name' is there already, and it may be someone else's: choose another name"
+	mkdir -p "$records" || die "cannot make $records"
+	# mkdir succeeds for one of two creates with the same name at once, so neither takes the other's record.
+	mkdir "$records/$name" 2>/dev/null ||
+		refuse "this checkout has a simulator named '$name' already: scripts/iphone-sim delete $name first"
+	udid=$(xcrun simctl create "$name" "$type" ${runtime:+"$runtime"}) || udid=
+	if [[ ! $udid =~ ^[0-9A-Fa-f-]{36}$ ]]; then
+		rm -rf -- "${records:?}/$name"
+		die "xcrun simctl create did not make the simulator"
+	fi
+	printf '%s\n' "$udid" >"$records/$name/udid"
+	printf '%s\n' "$folder" >"$records/$name/derived-data"
+	echo "iphone-sim: made '$name' ($type), its builds in $folder" >&2
+	printf '%s\n' "$udid"
+	;;
+
+build | test)
+	name=${1:-}
+	(($#)) && shift
+	resolve "$name"
+	configuration=Debug
+	while (($#)); do
+		case $1 in
+		--release)
+			[[ $command == build ]] || refuse "test runs the Debug build's tests: --release is build's and run's"
+			configuration=Release
+			;;
+		--derived-data) (($# >= 2)) || refuse "--derived-data needs a folder"; derived_data=$2; shift ;;
+		--) shift; take_xcode_options "$@"; break ;;
+		*) refuse "$command takes --release, --derived-data and, after --, xcodebuild's test options, not $1" ;;
+		esac
+		shift
+	done
+	derived_data=$(derived_data_folder "$derived_data") || exit
+	xcodebuild_for "$command" "$configuration"
+	;;
+
+run)
+	name=${1:-}
+	(($#)) && shift
+	resolve "$name"
+	configuration=Debug
+	child_env=()
+	arguments=()
+	while (($#)); do
+		case $1 in
+		--release) configuration=Release ;;
+		--derived-data) (($# >= 2)) || refuse "--derived-data needs a folder"; derived_data=$2; shift ;;
+		--env)
+			(($# >= 2)) || refuse "--env needs NAME=VALUE"
+			[[ $2 =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || refuse "--env takes NAME=VALUE, not '$2'"
+			[[ $2 != *$'\n'* ]] || refuse "--env takes a value on one line"
+			child_env+=("SIMCTL_CHILD_$2")
+			shift
+			;;
+		--) shift; arguments=("$@"); break ;;
+		*) refuse "run takes --release, --derived-data, --env NAME=VALUE and, after --, the app's arguments, not $1" ;;
+		esac
+		shift
+	done
+	derived_data=$(derived_data_folder "$derived_data") || exit
+	app="$derived_data/Build/Products/$configuration-iphonesimulator/pi2.app"
+	[[ -d $app ]] || refuse "no $configuration build in $derived_data: scripts/iphone-sim build $name$([[ $configuration == Release ]] && echo ' --release') first"
+	boot
+	xcrun simctl install "$udid" "$app" || die "could not install $app"
+	env ${child_env[@]+"${child_env[@]}"} xcrun simctl launch --terminate-running-process "$udid" "$bundle_id" \
+		${arguments[@]+"${arguments[@]}"} || die "could not launch $bundle_id"
+	;;
+
+shot)
+	name=${1:-}
+	(($#)) && shift
+	file=${1:-}
+	(($#)) && shift
+	[[ -n $file ]] || refuse "shot needs a file to write, ending in .png"
+	[[ $file == *.png ]] || refuse "the picture is a PNG: name a file ending in .png, not '$file'"
+	resolve "$name"
+	appearance=
+	size=
+	while (($#)); do
+		case $1 in
+		--appearance) (($# >= 2)) || refuse "--appearance needs light or dark"; check_appearance "$2"; appearance=$2; shift ;;
+		--text-size) (($# >= 2)) || refuse "--text-size needs a size"; check_text_size "$2"; size=$2; shift ;;
+		*) refuse "shot takes --appearance and --text-size, not $1" ;;
+		esac
+		shift
+	done
+	mkdir -p -- "$(dirname -- "$file")" || die "cannot make the folder for $file"
+	boot
+	[[ -z $appearance ]] || xcrun simctl ui "$udid" appearance "$appearance" || die "could not set the appearance"
+	[[ -z $size ]] || xcrun simctl ui "$udid" content_size "$size" || die "could not set the text size"
+	# The app draws a change of appearance or size on its next frame, not by the time simctl returns.
+	[[ -z $appearance$size ]] || sleep 1
+	xcrun simctl io "$udid" screenshot --type=png "$file" || die "could not take the picture"
+	;;
+
+appearance)
+	name=${1:-}
+	(($#)) && shift
+	(($# == 1)) || refuse "appearance takes a simulator's name and light or dark"
+	check_appearance "$1"
+	resolve "$name"
+	boot
+	xcrun simctl ui "$udid" appearance "$1"
+	;;
+
+text-size)
+	name=${1:-}
+	(($#)) && shift
+	(($# == 1)) || refuse "text-size takes a simulator's name and a size"
+	check_text_size "$1"
+	resolve "$name"
+	boot
+	xcrun simctl ui "$udid" content_size "$1"
+	;;
+
+shutdown)
+	(($# == 1)) || refuse "shutdown takes a simulator's name"
+	resolve "$1"
+	[[ $state == Shutdown ]] || xcrun simctl shutdown "$udid"
+	;;
+
+delete)
+	(($# == 1)) || refuse "delete takes a simulator's name"
+	name=$1
+	check_name "$name"
+	[[ -f $records/$name/udid ]] || refuse "no simulator named '$name' was made by this checkout"
+	udid=$(cat "$records/$name/udid")
+	json=$(devices) || exit 1
+	now=$(jq -r --arg u "$udid" '[.devices[][] | select(.udid == $u)] | first | if . == null then "" else .name end' <<<"$json")
+	if [[ -z $now ]]; then
+		echo "iphone-sim: '$name' ($udid) was gone already; forgetting it" >&2
+	else
+		[[ $now == "$name" ]] || refuse "the simulator made as '$name' ($udid) is now called '$now': it is left alone"
+		state=$(jq -r --arg u "$udid" '[.devices[][] | select(.udid == $u)] | first | .state' <<<"$json")
+		[[ $state == Shutdown ]] || xcrun simctl shutdown "$udid" || die "could not shut down $udid"
+		xcrun simctl delete "$udid" || die "could not delete $udid"
+	fi
+	folder=$(cat "$records/$name/derived-data" 2>/dev/null || true)
+	rm -rf -- "${records:?}/$name"
+	echo "iphone-sim: deleted '$name'${folder:+; its builds stay in $folder}" >&2
+	;;
+
+id)
+	(($# == 1)) || refuse "id takes a simulator's name"
+	resolve "$1"
+	printf '%s\n' "$udid"
+	;;
+
+list)
+	(($# == 0)) || refuse "list takes nothing"
+	[[ -d $records ]] || exit 0
+	json=$(devices) || exit 1
+	for record in "$records"/*/; do
+		[[ -f $record/udid ]] || continue
+		name=$(basename -- "$record")
+		udid=$(cat "$record/udid")
+		state=$(jq -r --arg u "$udid" --arg n "$name" '[.devices[][] | select(.udid == $u)] | first |
+			if . == null then "gone" elif .name != $n then "renamed to \(.name)" else .state end' <<<"$json")
+		printf '%s\t%s\t%s\n' "$name" "$udid" "$state"
+	done
+	;;
+
+*)
+	refuse "no command '$command': run scripts/iphone-sim help"
+	;;
+esac
