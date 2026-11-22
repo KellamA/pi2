@@ -648,8 +648,8 @@ struct WorkingRow: View {
 // MARK: - Finished today
 
 /// One report since midnight: which agent, on what, how it ended, when, and a mark on what the orchestrator has not
-/// read yet.
-private struct FinishedRow: View {
+/// read yet. Shown in the board's Now tab, and in a Dashboard column's Finished today (#618).
+struct FinishedRow: View {
     let engine: EngineClient
     let report: ProjectReport
 

@@ -1,6 +1,7 @@
 import ComposeKit
 import ComputerKit
 import BrowserKit
+import MenuKit
 import SwiftUI
 import WebKit
 import WindowKit
@@ -26,6 +27,8 @@ struct ChatView: View {
     @State private var retryingSummary = false
     @State private var summaryNote = ""
     @FocusState private var composerFocused: Bool
+    /// Whether the message field is to take the keyboard once the page has shown the conversation.
+    @State private var focusOnceShown = false
 
     private var data: OpenConversation? { engine.open[id] }
     private var items: [Item] { data?.items ?? [] }
@@ -62,19 +65,43 @@ struct ChatView: View {
         // The window's title and toolbar are WorkspaceView's: they follow whichever conversation is active.
         .onAppear {
             engine.openConversation(id)
-            if active { composerFocused = true }
+            // The message field takes the keyboard once the page has shown the conversation, not as the pane is made:
+            // making it the first responder costs the main thread some 10 ms, which held up the page's first frame
+            // (#502). What shows no page takes it at once.
+            if active { focusOnceShown = true }
+            if !showsPage { pageShown() }
         }
         .onChange(of: focusRequest) { if active { composerFocused = true } }
+        // A conversation found empty shows its introduction, or a chat's beginning, rather than the page; and one that
+        // takes long to come (the engine away, say) can be written to meanwhile, as before.
+        .onChange(of: isEmpty) { if isEmpty { pageShown() } }
+        .task {
+            try? await Task.sleep(for: .milliseconds(300))
+            if !Task.isCancelled { pageShown() }
+        }
         // Moving to another pane takes the keyboard along, so typing never goes to a pane the person has left. A click
         // on the conversation page leaves the keyboard with the page, where it can copy what was selected.
         .onChange(of: active) { _, active in
             if !active {
                 composerFocused = false
+                focusOnceShown = false
             } else if !Self.pageHasKeyboard {
                 composerFocused = true
             }
         }
         .onChange(of: composerFocused) { _, focused in if focused && !active { onFocus() } }
+    }
+
+    /// Whether the conversation shows as its page (`ConversationTranscript`), which comes into view once it has drawn it.
+    private var showsPage: Bool { TranscriptPage.folder != nil && !isEmpty }
+
+    /// The page has shown the conversation, or it turned out to show none, or it is long in coming: the window's
+    /// controls for it can be made, and the message field takes the keyboard if it was waiting to.
+    private func pageShown() {
+        data?.markShown()
+        guard focusOnceShown else { return }
+        focusOnceShown = false
+        if active { composerFocused = true }
     }
 
     /// A way to begin an empty chat, put in the message field to finish or send.
@@ -115,7 +142,8 @@ struct ChatView: View {
         } else {
             ConversationTranscript(
                 engine: engine, conversationID: id, items: items, earlier: data?.earlier ?? 0,
-                older: TranscriptFeed.Older(more: data?.more ?? false, loading: data?.loadingOlder ?? false), state: state
+                older: TranscriptFeed.Older(more: data?.more ?? false, loading: data?.loadingOlder ?? false), state: state,
+                onShown: pageShown
             )
         }
     }
@@ -514,6 +542,12 @@ struct ContextMeter: View {
                 .labelStyle(.titleAndIcon)
         }
         .help("How full the model's context is. Earlier messages are summarised when it fills up, or sooner at a size set in Settings › General or the agent's settings.")
+        // The window's toolbar keeps this control from one conversation to the next (#502): what was typed for one is
+        // not offered for another.
+        .onChange(of: id) {
+            resetting = false
+            note = ""
+        }
         .alert("Start a fresh context?", isPresented: $resetting) {
             TextField("Note to carry over (optional)", text: $note)
             Button("Start Fresh") {
@@ -584,27 +618,18 @@ struct ModelChoices: View {
     let choose: (ModelInfo) -> Void
 
     var body: some View {
-        ForEach(engine.modelGroups, id: \.provider) { group in
-            let models = group.models.filter { !excluding.contains($0.ref) }
-            if models.count > 12 {
-                Menu(group.name) { modelButtons(models) }
-            } else if !models.isEmpty {
-                Section(group.name) { modelButtons(models) }
-            }
+        // Rows made by MenuKit, which pi2-window-check reads as a native menu draws them (#597).
+        let groups = engine.modelGroups.map { group in
+            MenuChoiceGroup(id: group.provider, title: group.name, choices: group.models.filter { !excluding.contains($0.ref) }.map { model in
+                MenuChoice(id: Self.id(of: model.ref), title: model.listName, ticked: model.ref == selected)
+            })
+        }
+        GroupedMenuChoices(groups) { choice in
+            if let model = engine.models.first(where: { Self.id(of: $0.ref) == choice.id }) { choose(model) }
         }
     }
 
-    private func modelButtons(_ models: [ModelInfo]) -> some View {
-        ForEach(models, id: \.ref) { model in
-            Button { choose(model) } label: {
-                if model.ref == selected {
-                    Label(model.listName, systemImage: "checkmark")
-                } else {
-                    Text(model.listName)
-                }
-            }
-        }
-    }
+    private static func id(of ref: ModelRef) -> String { "\(ref.provider)/\(ref.modelId)" }
 }
 
 struct ToolsMenu: View {

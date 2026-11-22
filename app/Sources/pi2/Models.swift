@@ -1113,6 +1113,11 @@ final class ExtraEvents {
     }
 
     private var slots: [String: Slot] = [:]
+    /// How many times each kind has changed, for a reading of it worked out once per change rather than at every look
+    /// (`WorkListings`, #599). Not observed: what reads it reads the value too.
+    private var generations: [String: Int] = [:]
+
+    func generation(_ kind: String) -> Int { generations[kind] ?? 0 }
 
     private func slot(_ kind: String) -> Slot {
         if let slot = slots[kind] { return slot }
@@ -1125,7 +1130,10 @@ final class ExtraEvents {
         get { slot(kind).value }
         set {
             let slot = slot(kind)
-            if slot.value != newValue { slot.value = newValue }
+            if slot.value != newValue {
+                slot.value = newValue
+                generations[kind, default: 0] += 1
+            }
         }
     }
 }
@@ -1141,6 +1149,9 @@ final class OpenConversation {
     init(draft: ConversationDraft) { self.draft = draft }
     /// Nil until the engine has sent the conversation.
     private(set) var state: ConversationState?
+    /// Whether the engine has sent the conversation: set once, for a view that needs to know only that and should not be
+    /// drawn again whenever the state changes, as the Dashboard's window onto an orchestrator (#618).
+    private(set) var arrived = false
     /// How many entries older than `items` the engine is still to send: it sends a long conversation newest first (#380).
     private(set) var earlier = 0
     /// Whether the conversation has entries older than all of those, which come when asked for (#440): the engine's view
@@ -1148,6 +1159,13 @@ final class OpenConversation {
     private(set) var more = false
     /// Whether a part of those older entries has been asked for and has not come yet (`EngineClient.loadOlder`).
     var loadingOlder = false
+    /// Whether a pane has shown the conversation since it was opened. The window's controls for it wait for that, so
+    /// that making them does not hold up the first frame that shows it (#502).
+    private(set) var shown = false
+
+    func markShown() {
+        if !shown { shown = true }
+    }
 
     /// Takes in one update from the engine, touching only what changed. `earlier` and `more` come with a list sent from
     /// the start.
@@ -1155,6 +1173,7 @@ final class OpenConversation {
         if reset, !items.isEmpty { items = [] }
         if !new.isEmpty { items.append(contentsOf: new) }
         if self.state != state { self.state = state }
+        if !arrived { arrived = true }
         if reset, self.earlier != (earlier ?? 0) { self.earlier = earlier ?? 0 }
         if reset, self.more != (more ?? false) { self.more = more ?? false }
     }

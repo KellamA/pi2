@@ -15,7 +15,9 @@
 // - that a stack of requests cannot make the split view taller than the window, as it did before, and four or twelve
 //   requests leave the transcript, the message field and Stop visible at the smallest size (#489);
 // - that the Dashboard's columns, five where two fit, scroll sideways at the smallest size without resizing the window
-//   or changing its smallest size, with the sidebar and without (#481);
+//   or changing its smallest size, with the sidebar and without (#481), and that each column's vitals and its window
+//   onto the orchestrator, shown or folded away, stay inside it with the field in view, that a column folds to a strip
+//   40 points wide, and that the line across all projects at the top says less rather than widen anything (#618);
 // - that the watch which names a view whose size does not settle reports one that changes size again and again in one
 //   turn of the run loop, once, and stays quiet for a window resized a step a turn as a person does;
 // - that the watch on the app's scene body (#436) reports a body that reads something that then changes, once, and
@@ -28,6 +30,10 @@
 // bar's is, over a hundred changes of their content: at most one frame a turn, at most two layout and two Update
 // Constraints passes in a display cycle, and a quiet size watch. A hosting view is never one of those windows'
 // content view (#589), which is where SwiftUI sizes a window itself after each layout.
+//
+// Last, it reads what the projects screens' pop-up menus come out as in a native menu, without showing one (#597,
+// MenuCheck.swift): each row must be the whole name it stands for, never empty or a letter, and an agent's row has its
+// avatar. `--menu-pictures <folder>` also draws the rows as read, dark and light, into that folder.
 // Exits 1 if anything failed.
 
 import AppKit
@@ -79,6 +85,11 @@ final class Feed {
     var hubAgent = false
     /// Whether the detail shows the Dashboard (#481).
     var dashboard = false
+    /// The Dashboard's columns whose window onto the orchestrator is folded away, and those folded to a strip (#618).
+    var paneFolded: Set<Int> = []
+    var columnFolded: Set<Int> = []
+    /// What the board's Work tab shows, when the board shows it (#599): nil for the plain board.
+    var work: WorkShown?
     @ObservationIgnored var frames: [String: CGRect] = [:]
 }
 
@@ -285,7 +296,11 @@ struct HubDetail: View {
         probe("board") {
             VStack(spacing: 8) {
                 ScrollView(.horizontal) { HStack { ForEach(["Now", "Work", "Agents", "Rules", "Notes", "Branches", "Settings"], id: \.self) { Text($0) } } }
-                ScrollView { Text(longLine).fixedSize(horizontal: false, vertical: true) }
+                if let work = feed.work {
+                    WorkTab(shown: work).frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
+                } else {
+                    ScrollView { Text(longLine).fixedSize(horizontal: false, vertical: true) }
+                }
             }
         }
     }
@@ -298,9 +313,100 @@ struct HubDetail: View {
     }
 }
 
-/// The Dashboard as the app shows it (#481): a bar with the projects to tick, then a column per project, each with
-/// long lines from outside and a field to type in, and a strip at its foot. Five columns are shown, more than fit, so
-/// the check covers the columns scrolling sideways. The width is the app's own column width.
+/// What the board's Work tab shows (#599).
+enum WorkShown: CaseIterable {
+    /// The first read of a repository, with nothing read yet: the bar with its spinner, and the groups' places with
+    /// bars where rows will be, each a share of the width (`WorkLoading`).
+    case loading
+    /// The list: one line a row, the title first and cut where it must be, its facts at their own size, in a lazy stack.
+    case list
+    /// The list with two of its sections folded to their headings (#599), which keep their counts.
+    case folded
+    /// An opened issue: its top and its line of where it is (which says less when it does not fit), the bar of its
+    /// actions, its text, and the field at its foot.
+    case page
+}
+
+/// The board's Work tab as the app draws it (`ProjectWorkGitHub`, `WorkParts.swift`), in each of the states it can be in
+/// as it comes on screen, with long lines from outside where the app shows titles and text from GitHub.
+struct WorkTab: View {
+    let shown: WorkShown
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Text("owner/repository").lineLimit(1)
+                Text("read 2 min ago").lineLimit(1).layoutPriority(-1)
+                ProgressView().controlSize(.mini)
+                Spacer(minLength: 8)
+                Button("Refresh") {}
+            }
+            .frame(height: 38)
+            switch shown {
+            case .loading:
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack {
+                        ProgressView().controlSize(.small)
+                        Text(longLine).fixedSize(horizontal: false, vertical: true)
+                    }
+                    ForEach(0..<3, id: \.self) { _ in
+                        Text("Open")
+                        ForEach(0..<3, id: \.self) { row in
+                            GeometryReader { geometry in
+                                RoundedRectangle(cornerRadius: 3).frame(width: max(0, (geometry.size.width - 16) * [0.7, 0.55, 0.62][row]), height: 9)
+                            }
+                            .frame(height: 30)
+                        }
+                    }
+                }
+                Spacer(minLength: 0)
+            case .list, .folded:
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        if shown == .folded {
+                            ForEach(["Open 6", "Done 179"], id: \.self) { heading in
+                                HStack(spacing: 5) {
+                                    Image(systemName: "chevron.right").frame(width: 10)
+                                    Text(heading).lineLimit(1)
+                                    Spacer(minLength: 0)
+                                }
+                                .focusable()
+                            }
+                        }
+                        ForEach(0..<(shown == .folded ? 20 : 200), id: \.self) { index in
+                            HStack(spacing: 8) {
+                                Text(index.isMultiple(of: 2) ? longLine : unbroken).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                                Text("#\(index) · 5 min ago").lineLimit(1).fixedSize()
+                                Button("Give to") {}.fixedSize()
+                            }
+                            .frame(minHeight: 30)
+                        }
+                    }
+                }
+            case .page:
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(longLine).fixedSize(horizontal: false, vertical: true).lineLimit(4)
+                    ViewThatFits(in: .horizontal) {
+                        Text("Waiting · Nobody has it · needs a cloud model · \(unbroken.prefix(80))").fixedSize()
+                        Text("Waiting · Nobody · cloud model").fixedSize()
+                    }
+                    HStack { Button("Release") {}; Button("Resume") {}; Spacer(minLength: 8); Button("Close") {} }
+                }
+                ScrollView { Text(longLine).fixedSize(horizontal: false, vertical: true) }
+                HStack {
+                    TextField("Add a comment", text: .constant(""), axis: .vertical).lineLimit(1...4)
+                    Button("Add") {}
+                }
+                .padding(12)
+            }
+        }
+    }
+}
+
+/// The Dashboard as the app shows it (#481, #618): a bar with the projects to tick, then a column per project, each
+/// with its header, its vitals in a line, a need that holds a long line, the working rows, and at its foot the window
+/// onto the orchestrator over the field that messages it, which can be folded away. Five columns are shown, more than
+/// fit, so the check covers the columns scrolling sideways. The widths and heights are the app's own.
 struct DashboardDetail: View {
     let feed: Feed
 
@@ -309,8 +415,13 @@ struct DashboardDetail: View {
             probe("bar") {
                 HStack {
                     Text("Projects…").fixedSize()
-                    Text("· \(longLine)").lineLimit(1)
-                    Spacer(minLength: 8)
+                    // The line across all projects, which says less when it does not fit.
+                    ViewThatFits(in: .horizontal) {
+                        Text("15 need you · 5 working · $4.20 today · Anthropic Max 5-hour 42%, week 61% · OpenAI refuses until 14:05 · \(longLine)").fixedSize()
+                        Text("15 need you · 5 working · $4.20 today · Anthropic 61% · OpenAI until 14:05").fixedSize()
+                        Text("15 need you · 5 working · \(unbroken)").lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 12)
                 .frame(height: 38)
@@ -318,9 +429,25 @@ struct DashboardDetail: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: 0) {
                     ForEach(0..<5, id: \.self) { index in
-                        column(index)
-                            .frame(width: 300)
-                            .frame(minHeight: 0, maxHeight: .infinity)
+                        if feed.columnFolded.contains(index) {
+                            probe("folded-\(index)") {
+                                VStack(spacing: 10) {
+                                    Text("D").frame(width: 18, height: 18)
+                                    Text("3").fixedSize()
+                                    Text("Demo project \(index) · \(longLine)").lineLimit(1).fixedSize()
+                                        .rotationEffect(.degrees(90))
+                                        .frame(width: 18, height: 160)
+                                        .clipped()
+                                    Spacer(minLength: 0)
+                                }
+                                .frame(width: 40)
+                                .frame(minHeight: 0, maxHeight: .infinity)
+                            }
+                        } else {
+                            Column(feed: feed, index: index)
+                                .frame(width: 290)
+                                .frame(minHeight: 0, maxHeight: .infinity)
+                        }
                     }
                 }
             }
@@ -331,50 +458,101 @@ struct DashboardDetail: View {
         .toolbar { ToolbarItem { Button("Projects") {} } }
     }
 
-    /// One project's column: its header, a need that holds a long line, the working rows, and the strip.
-    private func column(_ index: Int) -> some View {
-        VStack(spacing: 0) {
-            probe("head-\(index)") {
-                HStack {
-                    Text("Demo project \(index)").fixedSize()
-                    Text("· \(longLine)").lineLimit(1)
-                    Spacer(minLength: 6)
-                    Button("Open") {}
-                }
-                .padding(.horizontal, 12)
-                .frame(height: 38)
-            }
-            probe("need-\(index)") {
-                ScrollView { Text(longLine).fixedSize(horizontal: false, vertical: true).padding(12) }
-            }
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Working").font(.system(size: 12, weight: .semibold))
-                    Text(unbroken).lineLimit(3)
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            probe("strip-\(index)") {
-                HStack {
-                    VStack(alignment: .leading) {
-                        Text("“\(unbroken)”").lineLimit(2)
-                        TextField("Message the orchestrator…", text: .constant(""))
-                    }
-                    Button("Send") {}
-                }
-                .padding(12)
-            }
-        }
-        .overlay(alignment: .trailing) { Rectangle().fill(.separator).frame(width: 1) }
-    }
-
     /// Notes where a part is while it is shown, and forgets it once it is folded away.
     private func probe<V: View>(_ name: String, @ViewBuilder view: () -> V) -> some View {
         view()
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { feed.frames[name] = $0 }
             .onDisappear { feed.frames[name] = nil }
+    }
+
+    /// One project's column, sized as the app's: the window onto the orchestrator takes its height, 190 points unless
+    /// the person changed it, but at most about a third of what the column has beside its header, vitals and field.
+    struct Column: View {
+        let feed: Feed
+        let index: Int
+        @State private var height: CGFloat = 0
+
+        var body: some View {
+            VStack(spacing: 0) {
+                probe("head-\(index)") {
+                    HStack {
+                        Text("Demo project \(index)").fixedSize()
+                        Text("· \(longLine)").lineLimit(1)
+                        Spacer(minLength: 6)
+                        Button("Open") {}
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(height: 38)
+                }
+                probe("vitals-\(index)") {
+                    ViewThatFits(in: .horizontal) {
+                        Text("3 need you · 2 working, 1 on a limit until 14:05 · 4 finished today, 1 unread · $1.20 of $5.00 today").fixedSize()
+                        Text("3 need you · 2 working (1 until 14:05) · 4 done (1 unread) · \(longLine)").lineLimit(1)
+                    }
+                    .font(.system(size: 11))
+                    .padding(.horizontal, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(height: 24)
+                }
+                probe("need-\(index)") {
+                    ScrollView { Text(longLine).fixedSize(horizontal: false, vertical: true).padding(12) }
+                }
+                Divider()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Working").font(.system(size: 12, weight: .semibold))
+                        Text(unbroken).lineLimit(3)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minHeight: 0)
+                VStack(spacing: 0) {
+                    probe("paneHeader-\(index)") {
+                        HStack {
+                            Text("Orchestrator").fixedSize()
+                            Text("waits for a limit until 14:05 · \(longLine)").lineLimit(1)
+                            Spacer(minLength: 0)
+                            Button(feed.paneFolded.contains(index) ? "Show" : "Fold") {}
+                        }
+                        .padding(.horizontal, 12)
+                        .frame(height: 28)
+                    }
+                    if !feed.paneFolded.contains(index) {
+                        probe("pane-\(index)") {
+                            ScrollView {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(unbroken).lineLimit(5)
+                                    Text(longLine).frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .padding(12)
+                            }
+                            .defaultScrollAnchor(.bottom)
+                            .frame(height: max(80, min(190, (height - 170) * 0.35)))
+                            .frame(maxWidth: .infinity)
+                        }
+                    }
+                    probe("strip-\(index)") {
+                        HStack {
+                            VStack(alignment: .leading) {
+                                if feed.paneFolded.contains(index) { Text("“\(unbroken)”").lineLimit(2) }
+                                TextField("Message the orchestrator…", text: .constant(""))
+                            }
+                            Button("Send") {}
+                        }
+                        .padding(12)
+                    }
+                }
+            }
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+            .overlay(alignment: .trailing) { Rectangle().fill(.separator).frame(width: 1) }
+        }
+
+        private func probe<V: View>(_ name: String, @ViewBuilder view: () -> V) -> some View {
+            view()
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { feed.frames[name] = $0 }
+                .onDisappear { feed.frames[name] = nil }
+        }
     }
 }
 
@@ -480,6 +658,15 @@ let app = NSApplication.shared
 // No Dock icon, no menu bar, and never made active: the person's focus stays where it is.
 app.setActivationPolicy(.prohibited)
 Task { @MainActor in
+    let arguments = CommandLine.arguments
+    let pictures = arguments.firstIndex(of: "--menu-pictures").flatMap { arguments.indices.contains($0 + 1) ? URL(fileURLWithPath: arguments[$0 + 1]) : nil }
+    if let pictures { try? FileManager.default.createDirectory(at: pictures, withIntermediateDirectories: true) }
+    // The menus alone, for a quick look at them.
+    if arguments.contains("--menus") {
+        await menuCheck(pictures: pictures)
+        print(failures == 0 ? "all checks passed" : "\(failures) checks failed")
+        exit(failures == 0 ? 0 : 1)
+    }
     await group("the pill, Quick Ask and the menu bar window size themselves outside AppKit's passes (#589)") { await indicatorCheck() }
     // The content as the app had it before: what to keep, and what to stop.
     let before = Made(fixed: false)
@@ -627,6 +814,46 @@ Task { @MainActor in
         hub.close()
     }
 
+    await group("a project's hub on the Work tab, loading for the first time, its list with sections open and folded, and an opened issue, at the smallest size, in each fold (#599)") {
+        let hub = Made(fixed: true, hub: true)
+        hub.feed.work = .loading
+        await hub.layOut()
+        check("the smallest size is the same as without the hub", hub.window.contentMinSize == fixed, "smallest \(hub.window.contentMinSize), fixed \(fixed)")
+        check("the content is never asked for a size as small as that", hub.measuredFor.isEmpty, "asked for \(hub.measuredFor)")
+        hub.window.setContentSize(fixed)
+        await hub.layOut()
+        let smallest = hub.window.frame
+        let bounds = hub.host.frame
+        hub.resizes = 0
+        for sidebar in [NavigationSplitViewVisibility.all, .detailOnly] {
+            hub.feed.sidebar = sidebar
+            for fold in [HubFold.both, .conversationFolded] {
+                hub.feed.hubFold = fold
+                // The tab goes from its first read to the list, and the list to an opened issue and back, as it does
+                // when a read lands and the person clicks a row.
+                for work in WorkShown.allCases + [.list, .folded, .loading] {
+                    hub.feed.work = work
+                    await hub.layOut()
+                    let name = "\(sidebar == .all ? "with the sidebar" : "without it"), \(fold.rawValue), \(work)"
+                    check("\(name): the window does not resize", hub.window.frame == smallest, "frame \(hub.window.frame), was \(smallest)")
+                    check("\(name): smallest size", hub.window.contentMinSize == fixed, "smallest \(hub.window.contentMinSize), fixed \(fixed)")
+                    check("\(name): the split view is no taller than the window", hub.tallestColumn <= hub.host.frame.height + 0.5, "a column is \(hub.tallestColumn) tall")
+                    // At the smallest size with the sidebar, both panels do not fit, and the hub folds the board itself.
+                    if fold.shown(narrow: hub.feed.hubNarrow) == .boardFolded {
+                        check("\(name): the board folded itself away", hub.feed.frames["board"] == nil, "frames \(hub.feed.frames)")
+                    } else if let board = hub.feed.frames["board"] {
+                        check("\(name): the board is inside the window", board.minX >= -0.5 && board.maxX <= bounds.width + 0.5 && board.maxY <= bounds.height + 0.5, "board \(board) in \(bounds.size)")
+                    } else {
+                        check("\(name): the board is shown", false, "frames \(hub.feed.frames)")
+                    }
+                }
+            }
+        }
+        check("the window was never resized", hub.resizes == 0, "\(hub.resizes) resizes")
+        check("nothing was reported as not settling", hub.reports.isEmpty, hub.reports.joined(separator: "\n      "))
+        hub.close()
+    }
+
     await group("a project's hub with an agent's conversation in place of the board, at the smallest size, in each fold (#473)") {
         let hub = Made(fixed: true, hub: true)
         hub.feed.hubAgent = true
@@ -678,7 +905,7 @@ Task { @MainActor in
         hub.close()
     }
 
-    await group("the Dashboard with five columns at the smallest size, with the sidebar and without (#481)") {
+    await group("the Dashboard with five columns at the smallest size, with the sidebar and without, their windows onto the orchestrator shown and folded, columns folded to strips, and a long line across all projects (#481, #618)") {
         let dash = Made(fixed: true, dashboard: true)
         await dash.layOut()
         check("the smallest size is the same as without the Dashboard", dash.window.contentMinSize == fixed, "smallest \(dash.window.contentMinSize), fixed \(fixed)")
@@ -688,20 +915,53 @@ Task { @MainActor in
         let smallest = dash.window.frame
         let bounds = dash.host.frame
         dash.resizes = 0
-        for sidebar in [NavigationSplitViewVisibility.all, .detailOnly] {
-            dash.feed.sidebar = sidebar
-            await dash.layOut()
-            let frames = dash.feed.frames
-            let name = sidebar == .all ? "with the sidebar" : "without it"
-            check("\(name): the window does not resize", dash.window.frame == smallest, "frame \(dash.window.frame), was \(smallest)")
-            check("\(name): smallest size", dash.window.contentMinSize == fixed, "smallest \(dash.window.contentMinSize), fixed \(fixed)")
-            check("\(name): the split view is no taller than the window", dash.tallestColumn <= dash.host.frame.height + 0.5, "a column is \(dash.tallestColumn) tall")
-            if let bar = frames["bar"], let head = frames["head-0"], let strip = frames["strip-0"], let last = frames["head-4"] {
-                check("\(name): the bar spans the detail column", abs(bar.minX - head.minX) <= 0.5 && abs(bar.maxX - bounds.maxX) <= 2, "bar \(bar), window \(bounds.size)")
-                check("\(name): the first column is inside the window", head.minX >= -0.5 && head.maxX <= bounds.width + 0.5 && strip.maxY <= bounds.height + 0.5, "head \(head), strip \(strip) in \(bounds.size)")
-                check("\(name): the fifth column is beyond the window, so the columns scroll sideways", last.minX > bounds.width, "fifth column at \(last.minX) in \(bounds.size)")
-            } else {
-                check("\(name): the bar, a column and its strip are shown", false, "frames \(frames)")
+        for (folded, columns) in [(Set<Int>(), Set<Int>()), ([0], []), ([0, 1, 2, 3, 4], []), ([], [1]), ([], [1, 2, 3, 4]), ([], [])] {
+            dash.feed.paneFolded = folded
+            dash.feed.columnFolded = columns
+            for sidebar in [NavigationSplitViewVisibility.all, .detailOnly] {
+                dash.feed.sidebar = sidebar
+                await dash.layOut()
+                let frames = dash.feed.frames
+                let name = "\(sidebar == .all ? "with the sidebar" : "without it"), \(folded.isEmpty ? "no window folded" : folded.count == 1 ? "a window folded" : "\(folded.count) windows folded"), \(columns.isEmpty ? "no column folded" : columns.count == 1 ? "a column folded" : "\(columns.count) columns folded")"
+                check("\(name): the window does not resize", dash.window.frame == smallest, "frame \(dash.window.frame), was \(smallest)")
+                check("\(name): smallest size", dash.window.contentMinSize == fixed, "smallest \(dash.window.contentMinSize), fixed \(fixed)")
+                check("\(name): the split view is no taller than the window", dash.tallestColumn <= dash.host.frame.height + 0.5, "a column is \(dash.tallestColumn) tall")
+                if let bar = frames["bar"], let head = frames["head-0"], let vitals = frames["vitals-0"], let strip = frames["strip-0"], let last = frames["head-4"] {
+                    check("\(name): the bar spans the detail column", abs(bar.minX - head.minX) <= 0.5 && abs(bar.maxX - bounds.maxX) <= 2, "bar \(bar), window \(bounds.size)")
+                    check("\(name): the first column is inside the window", head.minX >= -0.5 && head.maxX <= bounds.width + 0.5 && strip.maxY <= bounds.height + 0.5, "head \(head), strip \(strip) in \(bounds.size)")
+                    check("\(name): the vitals are one line under the header, the column's width", abs(vitals.minY - head.maxY) <= 0.5 && abs(vitals.height - 24) <= 0.5 && abs(vitals.width - head.width) <= 0.5, "vitals \(vitals), head \(head)")
+                    if columns.isEmpty {
+                        check("\(name): the fifth column is beyond the window, so the columns scroll sideways", last.minX > bounds.width, "fifth column at \(last.minX) in \(bounds.size)")
+                    }
+                } else if columns.contains(4), let bar = frames["bar"], let head = frames["head-0"], let last = frames["folded-4"] {
+                    check("\(name): the bar spans the detail column", abs(bar.minX - head.minX) <= 0.5 && abs(bar.maxX - bounds.maxX) <= 2, "bar \(bar), window \(bounds.size)")
+                    check("\(name): with four columns folded, every column is inside the window", last.maxX <= bounds.width + 0.5, "last strip \(last) in \(bounds.size)")
+                } else {
+                    check("\(name): the bar, a column, its vitals and its strip are shown", false, "frames \(frames)")
+                }
+                for index in columns.sorted() {
+                    if let strip = frames["folded-\(index)"], let head = frames["head-0"] {
+                        check("\(name): column \(index) is a strip 40 points wide, as tall as the others", abs(strip.width - 40) <= 0.5 && abs(strip.minY - head.minY) <= 0.5 && strip.maxY <= bounds.height + 0.5, "strip \(strip), first head \(head)")
+                        if let next = frames["head-\(index + 1)"] ?? frames["folded-\(index + 1)"] {
+                            check("\(name): the column after the strip starts where it ends", abs(next.minX - strip.maxX) <= 0.5, "strip \(strip), next \(next)")
+                        }
+                    } else {
+                        check("\(name): column \(index) is folded to a strip", false, "frames \(frames)")
+                    }
+                    check("\(name): a folded column draws nothing of its own", frames["pane-\(index)"] == nil && frames["vitals-\(index)"] == nil, "frames \(frames)")
+                }
+                for index in 0..<2 where !columns.contains(index) {
+                    let header = frames["paneHeader-\(index)"], pane = frames["pane-\(index)"], strip = frames["strip-\(index)"], need = frames["need-\(index)"]
+                    if folded.contains(index) {
+                        check("\(name): column \(index)'s window is folded away, its header and field kept", pane == nil && header != nil && strip != nil, "pane \(String(describing: pane)), header \(String(describing: header)), strip \(String(describing: strip))")
+                    } else if let header, let pane, let strip, let need {
+                        check("\(name): column \(index)'s window sits between its header and the field", abs(pane.minY - header.maxY) <= 0.5 && abs(strip.minY - pane.maxY) <= 0.5, "header \(header), pane \(pane), strip \(strip)")
+                        check("\(name): column \(index)'s window is at least 80 points and leaves room for the needs", pane.height >= 79.5 && need.height >= 40, "pane \(pane), need \(need)")
+                        check("\(name): column \(index)'s field is inside the window", strip.maxY <= bounds.height + 0.5, "strip \(strip) in \(bounds.size)")
+                    } else {
+                        check("\(name): column \(index)'s window, its header, its field and its need are shown", false, "frames \(frames)")
+                    }
+                }
             }
         }
         check("the window was never resized", dash.resizes == 0, "\(dash.resizes) resizes")
@@ -776,6 +1036,8 @@ Task { @MainActor in
             window.close()
         }
     }
+
+    await menuCheck(pictures: pictures)
 
     print(failures == 0 ? "all checks passed" : "\(failures) checks failed")
     exit(failures == 0 ? 0 : 1)

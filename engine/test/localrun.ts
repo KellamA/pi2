@@ -8,10 +8,13 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { createModels, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
 import { STRATA } from "../src/localengine.ts";
+import { Providers } from "../src/providers.ts";
 import { EngineClient, exited, running, standInApp, stop, until } from "./patience.ts";
 // The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
 // for the app's, as the tests that answer for the person already do (#504).
@@ -46,7 +49,7 @@ step("how far loading has got is read from what the engine prints");
 	try {
 		const written = join(data, "strata-m.json");
 		writeFileSync(written, JSON.stringify({ exe: "component:strata-engine", args: ["--pack", "/p", "--max-context", "32768", "--mmap-experts", "--vision"], vision: { mmproj: "/m/v.gguf" }, log: "/c/strata-m.log", port: 8080 }));
-		const engine = { version: "0.1.60", path: "/e/strata", folder: "/e", control: { version: "0.1.61", folder: "/c" } };
+		const engine = { version: "0.1.63", path: "/e/strata", folder: "/e", control: { version: "0.1.63", folder: "/c" } };
 		const model = { id: "m", name: "M", pack: "IQ3_S", path: "/m/1.gguf", contextSize: 65_536, options: { parallel: 2 } };
 		const served = STRATA.command(engine, { ...model, config: written }, 4321, data);
 		const run = join(data, "local", "run", "m.json");
@@ -64,11 +67,72 @@ step("how far loading has got is read from what the engine prints");
 		assert.match(STRATA.missing?.(engine, model) ?? "", /^M is not prepared for Strata yet/, "a model not yet prepared cannot be started");
 		assert.match(STRATA.missing?.({ version: "0.1.60", path: "/e/strata" }, { ...model, config: written }) ?? "", /from an earlier pi² and has no server/);
 		assert.ok(!JSON.stringify(served).includes("key"), "no key on the command line");
+		// Several requests at once only with an engine whose watchdog counts a batch window on a Mac as progress (#605).
+		const parallel = (version: string, options: Record<string, unknown> = model.options) => {
+			const args = STRATA.command({ ...engine, version }, { ...model, config: written, options }, 4321, data).args;
+			return args[args.indexOf("--parallel") + 1];
+		};
+		assert.equal(parallel("0.1.60"), "1", "Strata 0.1.60 would stop itself with two answers written side by side for a minute");
+		assert.equal(parallel("0.1.61"), "1");
+		assert.equal(parallel("0.0.9"), "1");
+		assert.equal(parallel("0.1.62"), "2");
+		assert.equal(parallel("0.1.63"), "2");
+		assert.equal(parallel("0.2.0"), "2");
+		assert.equal(parallel("1.0.0"), "2");
+		assert.equal(parallel("0.1.63", { parallel: 4 }), "4");
+		assert.equal(parallel("0.1.63", {}), "1", "one when the setting is not there");
+		assert.equal(parallel("0.1.63", { parallel: 0 }), "1");
+		assert.equal(parallel("unknown"), "2", "an engine whose version does not read as numbers is taken at its word");
 	} finally {
 		rmSync(data, { recursive: true, force: true });
 	}
 }
 step("a prepared model is started through Strata's control package with its run config, adjusted to its settings");
+{
+	// A section of the system prompt that changes mid-conversation goes in place, as a later system message, and the
+	// first one stays byte for byte what it was: folded into it, the engine read the whole conversation again (#606).
+	const bodies: { messages: { role: string; content: unknown }[]; tools?: unknown[] }[] = [];
+	const server = createServer((request, response) => {
+		let text = "";
+		request.setEncoding("utf8").on("data", (chunk: string) => (text += chunk)).on("end", () => {
+			bodies.push(JSON.parse(text));
+			const chunk = (delta: Record<string, unknown>, finish: string | null = null) => `data: ${JSON.stringify({ id: "c", object: "chat.completion.chunk", created: 0, model: "m", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			response.end(`${chunk({ role: "assistant", content: "ok" })}${chunk({}, "stop")}data: [DONE]\n\n`);
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const data = mkdtempSync(join(tmpdir(), "pi2-local-prompt-"));
+	try {
+		const providers = new Providers(data, new InMemoryCredentialStore(), () => "device", { builtins: (options) => createModels(options) });
+		const setup = { engine: null, models: [{ id: "m", name: "M", pack: "Q2", path: "/m", contextSize: 32_768, options: {} }] };
+		const port = (server.address() as { port: number }).port;
+		providers.connectLocal({ setup: () => setup, lease: async () => ({ baseUrl: `http://127.0.0.1:${port}/v1`, key: "k", signal: new AbortController().signal, done: () => {} }) });
+		const local = providers.models.getModel("local", "m")!;
+		const tool = { name: "bash", description: "Run a command", parameters: { type: "object", properties: { command: { type: "string" } } } } as never;
+		const user = (text: string) => ({ role: "user" as const, content: text, timestamp: 1 });
+		const first = [user("Start the tests in the background")];
+		const answered = { role: "assistant", content: [{ type: "text", text: "Started." }], api: "openai-completions", provider: "local", model: "m", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 2 };
+		const update = { role: "system", content: "", sections: { background_commands: "- bg-1: `npm test`, running since 10:00." }, timestamp: 3 };
+		for (const messages of [first, [...first, answered, update, user("Is it done?")]]) {
+			const stream = providers.models.stream(local, { systemPrompt: "You are a worker.", tools: [tool], messages } as never, { reasoningEffort: "low" } as never);
+			assert.equal((await stream.result()).stopReason, "stop");
+		}
+		assert.equal(bodies.length, 2);
+		assert.deepEqual(bodies[1]!.messages[0], bodies[0]!.messages[0], "the first system message is the same in both requests");
+		assert.deepEqual(bodies[1]!.tools, bodies[0]!.tools);
+		assert.deepEqual(
+			bodies[1]!.messages.map((message) => message.role),
+			["system", "user", "assistant", "system", "user"],
+			"the update is a later system message, where it happened, which Strata's server makes a user message in place",
+		);
+		assert.match(String(bodies[1]!.messages[3]!.content), /^Updated system prompt section "background_commands":\n\n- bg-1: `npm test`/);
+	} finally {
+		server.close();
+		rmSync(data, { recursive: true, force: true });
+	}
+}
+step("a section of the system prompt that changes is sent in place, and the prompt's start stays the same");
 
 // ---- The stand-in, as the engine set up on this Mac, and the models it serves
 
@@ -92,8 +156,8 @@ const broken = model("broken", { fail: "not enough memory to load this model" })
 writeFileSync(
 	join(home, "local-models.json"),
 	JSON.stringify({
-		// The downloads piece drops an engine whose folders are gone; these are there.
-		engine: { version: "0.0.0-test", path: standIn, folder: files, control: { version: "0.0.0-test", folder: files } },
+		// The downloads piece drops an engine whose folders are gone; these are there. A version that takes several requests at once (#605).
+		engine: { version: "0.1.63-test", path: standIn, folder: files, control: { version: "0.1.63-test", folder: files } },
 		models: [
 			{ id: "alpha", name: "Alpha (stand-in)", pack: "Q2", path: alpha, contextSize: 40_960, config: config("alpha"), options: { parallel: 2, unknown: "kept" } },
 			{ id: "beta", name: "Beta (stand-in)", pack: "Q2", path: beta, contextSize: 8_192, config: config("beta"), options: { vision: true, visionFile: join(files, "beta.mmproj") } },
@@ -195,7 +259,7 @@ try {
 	// ---- Start on first use; a message sent while it loads waits and is answered
 	const a = await client.conversation("alpha");
 	assert.equal(client.state(a).local.status, "stopped", "a conversation with the model, not shown and not working, does not start it");
-	assert.equal(client.state(a).agent.thinkingLevel, "low", "a new conversation with a model on this Mac thinks at Low");
+	assert.equal(client.state(a).agent.thinkingLevel, "medium", "a new conversation with a model on this Mac thinks at Medium");
 	assert.equal(client.server("alpha"), undefined);
 	await client.show(a);
 	const loading = await client.until("alpha starting", () => client.server("alpha"));

@@ -215,6 +215,27 @@ export function runConfig(model: LocalModel, home: string): string {
 }
 
 /**
+ * The first Strata engine whose watchdog counts a batch window on a Mac as progress (#605). Before it, with more than one
+ * request at once, two answers written side by side for 60 s with no request coming in were taken for a hang, and the
+ * engine ended itself ("no progress for 60 s during a request (idle -1)", exit code -6).
+ */
+const BATCH_WATCHDOG_FIXED = [0, 1, 62];
+
+/** Whether an engine of this version runs several requests at once without stopping itself. One whose version does not read as numbers is taken at its word. */
+export function takesSeveral(engineVersion: string): boolean {
+	const version = /^(\d+)\.(\d+)\.(\d+)/.exec(engineVersion)?.slice(1).map(Number);
+	if (version === undefined) return true;
+	const differs = version.findIndex((part, at) => part !== BATCH_WATCHDOG_FIXED[at]);
+	return differs === -1 || version[differs]! > BATCH_WATCHDOG_FIXED[differs]!;
+}
+
+/** How many requests at once the server is started with: the model's setting, or one with an engine that would stop itself with several. */
+export function requestsAtOnce(engine: LocalEngine, model: LocalModel): number {
+	const wanted = typeof model.options.parallel === "number" && Number.isInteger(model.options.parallel) && model.options.parallel > 0 ? model.options.parallel : 1;
+	return takesSeveral(engine.version) ? wanted : 1;
+}
+
+/**
  * Strata (https://github.com/Niko1221/Strata), as #290 found it and #293 ran it through pi²: its HTTP server is the
  * control package's Python `serve/server.py`, which starts the `strata` engine itself (from Strata's component folder,
  * where the downloads piece installs it), with the run config Strata's setup wrote when it prepared the model. It does
@@ -230,7 +251,7 @@ export const STRATA: EngineRecipe = {
 	},
 	command: (engine, model, port, home) => {
 		const control = engine.control!.folder;
-		const parallel = typeof model.options.parallel === "number" && Number.isInteger(model.options.parallel) && model.options.parallel > 0 ? model.options.parallel : 1;
+		const parallel = requestsAtOnce(engine, model);
 		return {
 			program: join(control, "python", "bin", "python3"),
 			args: [
