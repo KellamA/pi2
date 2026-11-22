@@ -283,8 +283,7 @@ export const FEATURES: Feature[] = [
 	orchestrator,
 	// Carrying over (#458): requests, and the `projects` event's `carryOver`, with no greeting of its own.
 	carryOver,
-	// The projects epic (docs/projects.md). Their greetings go to an app in this order (4.4), so each later issue adds its
-	// feature on its own line, in place of the comment that names it.
+	// The projects epic (docs/projects.md). Their greetings go to an app in this order (4.4).
 	projects,
 	projectRules,
 	needs,

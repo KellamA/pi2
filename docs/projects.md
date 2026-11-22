@@ -49,7 +49,7 @@ Retired by #483 (#715 for the engine, #716 for the app). Projects were a preview
 What is left of it, for the versions before the removal:
 
 - **`settings.json`'s `projects: { preview: true }`** is written once, at the first start of a version without the switch, once carrying over there is whole ([9.8](#98-the-report-and-the-run)), so that the last version with the switch, if someone goes back to it, shows projects. Nothing reads the key now.
-- **The `projects` event keeps `preview: true`**, always, for the app built before #716; nothing else reads it, and a later issue takes it out.
+- **The `projects` event's `preview`**, kept `true` for the app built before #716 until #725 took it out: the event and `projects.list` no longer have it.
 - **Documents the versions with the switch wrote** are read as they are: a carried conversation and a carried schedule keep `agentId`, the template, beside the project's copy ([9.6](#96-conversations-what-each-keeps)), so those versions still read every document.
 
 ## 3. Documents
@@ -722,8 +722,7 @@ Errors every new request can give, besides its own:
 
 | Request | Answers | Does, and refuses |
 |---|---|---|
-| `projects.list {}` | `{ preview, projects, carryOver }` | Exactly the `projects` event's content, for a script that does not read events; `preview` is always `true` (section 2) |
-| `projects.setPreview { on, plan? }` | — | Retired by #715 (section 2): an unknown request now |
+| `projects.list {}` | `{ projects, carryOver }` | Exactly the `projects` event's content, for a script that does not read events |
 | `projects.create { folder, name?, template? }` | `{ id, conversation }` | A project from a folder in one step, with its orchestrator and an empty conversation with it. `folder` a folder's path, or null; `name` defaults to the folder's last part ("No folder" for null), with " 2", " 3"… when taken; `template` the id of a template to copy as its orchestrator, else the default orchestrator. Refuses "Not a folder: …" and, for a folder, "There is already a project for this folder: <name>" (an archived one: "…; restore it instead") |
 | `projects.rename { id, name }` | `{}` | Refuses an empty name, one over 80 characters, or one taken |
 | `projects.set { id, folder?, settings? }` | `{ settings }` | Changes the folder (checked as in create; new conversations of its agents start there, those working stay where they are) and any part of the settings ([section 8](#8-settings-without-asking-waking-limits)), each checked; parts not given are kept |
@@ -801,11 +800,11 @@ Errors every new request can give, besides its own:
 New events, each sent whole when what it holds changes, and to each app as it connects:
 
 ```ts
-{ event: "projects"; preview: true; projects: ProjectRow[]; carryOver: CarryOverState | null }   // `preview` always true (section 2)
+{ event: "projects"; projects: ProjectRow[]; carryOver: CarryOverState | null }
 
 type ProjectRow = Project & {
 	folderMissing: boolean;
-	/** About how many tokens the rules add to each request: an orchestrator's, and every other agent's (6.2). Zeros until #459. */
+	/** About how many tokens the rules add to each request: an orchestrator's, and every other agent's (6.2). */
 	ruleTokens: { orchestrator: number; agents: number };
 	/** The last line of the orchestrator's last finished answer, at most 200 characters, and when: the Dashboard's and the folded strip's. */
 	lastWords: { text: string; at: number } | null;
@@ -831,7 +830,7 @@ type CarryOverState = {
 On a new data folder, with nothing made yet, an app is sent exactly:
 
 ```json
-{ "event": "projects", "preview": true, "projects": [], "carryOver": null }
+{ "event": "projects", "projects": [], "carryOver": null }
 { "event": "projectRules", "projects": {} }
 { "event": "needs", "items": [] }
 { "event": "reports", "projects": {} }
@@ -1713,34 +1712,32 @@ Each piece below has one owner, which builds it, with what the others need of it
 
 | Shared piece | Owner | Until then, and how others plug in |
 |---|---|---|
-| `inProject(conversation)` (in a project neither archived nor deleted; `projectsOn()` beside it until #715 took the switch out), the `projects` feature and its place in `FEATURES`, with the places after it for the others | #456 | Every other issue asks these two functions and adds its feature in its place |
-| `pi2.projects`, the `projects` event and `ProjectRow` | #456 | `ruleTokens` is zeros until #459 fills it; `lastWords` null until #466; `carry` empty until #458 |
-| `projects.setPreview`, and the refusal of new requests while off | #456 | Retired by #715 (section 2). Carrying over was plugged in through `onPreviewOn(plan)`; it now runs by itself at every start (9.8) |
+| `inProject(conversation)` (in a project neither archived nor deleted; `projectsOn()` beside it until #715 took the switch out), the `projects` feature and its place in `FEATURES`, with the places after it for the others | #456 | Every project feature asks `inProject`, and has its place in `FEATURES` after `projects` |
+| `pi2.projects`, the `projects` event and `ProjectRow` | #456 | `ruleTokens`, `lastWords` and `carryOver` are given by projectrules.ts (#459), orchestrator.ts (#466) and carryover.ts (#458) through `wireRuleTokens`, `wireLastWords` and `wireCarryOver`; without them (a stand-in engine in a test), zeros, null and null |
 | `requireSwitch` (8.1) and the Inbox's `projectSwitch` | #456 | Every tool a switch governs calls it (#457, #465, #467, #468) |
 | `addNews` and `news` (storing) | #456 | #463, #464, #465, #467 add news from the start; #466 delivers it |
-| `runsAs`, and every lookup of a conversation's agent through it | #457 | Until #457, a conversation runs as its `agentId` (no `projectAgentId` exists before #458) |
+| `runsAs`, and every lookup of a conversation's agent through it | #457 | A conversation runs as its `agentId`, or, carried over, as its project's copy (`projectAgentId`, #458) |
 | `admit(start)` (8.3), project spending and limit answers | #464 | `delegate`, `work` `assign`, and the person's starts share `projectlimits.ts`. `reports` calls `reportPastLimit` at the end and again before a wake. #458 uses the same error envelope and checks any starts newly attributed by folder |
-| The Needs you list: `needs.ts`, `claim`, `putNeed`, `withdrawNeed`, `onAnswer(kind, handler)`, the `needs` event, the wake kind `answer` | #462 | Each kind's handler belongs to the issue that puts it: reach (#465), proposed rules (#465, adding through #459's `addRule`), limit cards (#464), questions and decisions (#462). #464 and #465 wait for #462. Until a kind's handler is registered, an answer to it is refused and the item stays |
-| Reports and `settle` (3.10), the watches' `wake` and `batch` | #463 | `delegate` and `sub_chats` call `settle` once it lands; until then they deliver as today |
-| The catch-up and the state block, `compactionCheckpoint`'s addition | #466 | Until #466, news is stored and not delivered; the orchestrator reads reports with `reports` |
-| The record of changes, `Op`, `record(op)`, `undo` | #465 | Notes' operations (#461) and work's (#467) record themselves through it when #465 has landed; whichever of the two lands after #465 does the wiring, and #465 wires those that landed before it, each saying so in its pull request |
+| The Needs you list: `needs.ts`, `claim`, `putNeed`, `withdrawNeed`, `onAnswer(kind, handler)`, the `needs` event, the wake kind `answer` | #462 | Each kind's handler belongs to the issue that puts it: reach (#465), proposed rules (#465, adding through #459's `addRule`), limit cards (#464), questions and decisions (#462). An answer to a kind with no handler registered (a stand-in engine in a test) is refused and the item stays |
+| Reports and `settle` (3.10), the watches' `wake` and `batch` | #463 | `delegate` and `sub_chats` call `settle` |
+| The catch-up and the state block, `compactionCheckpoint`'s addition | #466 | It delivers the news `addNews` stores; the orchestrator reads reports with `reports` too |
+| The record of changes, `Op`, `record(op)`, `undo` | #465 | Notes' operations (#461), work's (#467, #468) and waking's (#463) record themselves through it |
 | The work dispatcher, the table of 3.11, `WorkBackend`, the backend kept by pi² | #467 | #468 adds the GitHub backend behind the same interface |
 | `pi2.github`, intents, `github.json`, `projects.watch` | #468 | — |
-| The `project` section | #466 | Until #466, project conversations have no `project` section |
+| The `project` section | #466 | — |
 | The `project_rules` section | #459 | — |
 | The `memory` section's project notes, `remember` and `forget` in a project | #461 | — |
-| `activity`: `projectId` (#456), `runsAs` (#457), `lastLine` (#466) | as named | Absent until each lands |
-| `library`: `projectId` (#456), `runsAs` (#457), `orchestrator` (#466) | as named | Absent until each lands |
+| `activity`: `projectId` (#456), `runsAs` (#457), `lastLine` (#466) | as named | — |
+| `library`: `projectId` (#456), `runsAs` (#457), `orchestrator` (#466) | as named | — |
 | `scripts/test-copy`'s project commands, `PI2_SHOW` and `PI2_HUB` values, `PI2_GH` in its allowlist | #469 | — |
-| **Projects (preview)** in Settings, the carrying-over report sheet | #470 | Until #470, the switch is turned on through the engine (`test-copy call`) |
 
-**As #456 built them.** Every piece #456 owns is in `engine/src/projects.ts`, which says at its top which later issue fills in each place. What the table does not say:
+**As #456 built them.** Every piece #456 owns is in `engine/src/projects.ts`, which says at its top what the other features wire into it. What the table does not say:
 
 - `inProject(conversation: number): Project | undefined`, the project, or undefined outside one, or in an archived or deleted project. `projectOf(conversation)` gives the project whether it is archived or not, for what holds in an archived project too (limits, `startAgents`); a conversation whose project was deleted is in none (#458), and `projectDeleted(id)` says so of a project. `allProjects()` gives a plain copy of every project.
 - `PROJECT_ARCHIVED` is the refusal of 4.1 for an archived project; `refuseInArchivedProject(conversation)` and `refuseStartWith(agent)` give it, and `submit`, `continue` and `conversation.create` call them. (`requirePreview()` and its refusal went with the switch, #715.)
 - `requireSwitch(conversation, name, what)`: `conversation` is the asking tool call, `{ conversationId, id, callId, tool, arguments, api, context }`, with `id` the Inbox item's (`String(api.taskId)`, as every approval's) and `api` the hook's or tool's (for `memo`). It answers `{ ok: true }`, or `{ ok: false, reason }` with what to tell the model when the person denies. It asks in a project whose switch is off, archived or not, and nowhere else: not in a deleted project's conversations, which are in no project (#458). `inbox.decide` takes only `once` or `deny` for such an item.
 - `addNews(tx, projectId, { kind, text, ref, keep?, at? })` adds to `news` inside the commit `tx`, so a piece of news is stored with what it tells of, and answers the `News` with its id. An unknown project throws.
-- `carryOverState()`, `ruleTokens(projectId)`, `lastWords(projectId)` are the bodies #458, #459 and #466 replace. (`onPreviewOn(plan)` and `emptyReport()` went with the switch, #715.)
+- `carryOverState()`, `ruleTokens(projectId)` and `lastWords(projectId)` answer what carryover.ts, projectrules.ts and orchestrator.ts give through `wireCarryOver`, `wireRuleTokens` and `wireLastWords` as each feature is made. Each of those files imports projects.ts, and what they give lives in their features, made with each engine, so it is handed in rather than imported, and the imports go one way. (`onPreviewOn(plan)` and `emptyReport()` went with the switch, #715.)
 - `Projects` is the document's token, for a feature that changes it in a commit of its own; the `projects` event follows any commit that changes it, by anyone, and is sent only when what it holds changed.
 - A project's orchestrator and its conversation are made in the one commit that makes the project. The default orchestrator's memory switch is set through a feature hook, `agentMade(agentId, { memory })`; a template copied as orchestrator goes through `agentDuplicated`, as `agents.duplicate` does.
 - `agents.save` keeps `projectId`, `role`, `template`, `madeBy`, `updatedAt` and `removedAt` as stored, and checks a name against the templates, or against the agents of the same project. `agents.delete` refuses an orchestrator.
