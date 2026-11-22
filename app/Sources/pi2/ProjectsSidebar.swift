@@ -56,6 +56,23 @@ struct ProjectsSidebar: View {
 
             Section {
                 TemplateRows(model: model)
+                // What runs on this Mac apart from the agents' runs, and where the money went (#655).
+                HStack(spacing: 8) {
+                    Image(systemName: "waveform.path.ecg").foregroundStyle(Theme.tx2).frame(width: 20)
+                    Text("Activity").lineLimit(1).layoutPriority(1)
+                    Spacer(minLength: 4)
+                    ActivityRowBadge(engine: engine)
+                }
+                .tag(Selection.activity)
+                .help("Background commands left running and models running on this Mac")
+                HStack(spacing: 8) {
+                    Image(systemName: "chart.bar").foregroundStyle(Theme.tx2).frame(width: 20)
+                    Text("Usage").lineLimit(1).layoutPriority(1)
+                    Spacer(minLength: 4)
+                    UsageRowBadge(engine: engine)
+                }
+                .tag(Selection.usage)
+                .help("What was spent, by model, agent, project and day, and the daily budget")
                 HStack(spacing: 8) {
                     Image(systemName: "archivebox").foregroundStyle(Theme.tx2).frame(width: 20)
                     Text("Archive")
@@ -135,6 +152,17 @@ private struct DashboardRow: View {
                 .help(store.needsCount == 1 ? "1 thing waits for you" : "\(store.needsCount) things wait for you")
                 .accessibilityLabel("\(store.needsCount) waiting on you")
             }
+        }
+    }
+}
+
+/// "over budget" on Usage's row, as the old sidebar's row says it.
+private struct UsageRowBadge: View {
+    let engine: EngineClient
+
+    var body: some View {
+        if engine.usage?.overBudget == true {
+            Tag("over budget", .bad).fixedSize()
         }
     }
 }
@@ -511,7 +539,8 @@ private struct ProjectsPreviewFollowing: ViewModifier {
                         model.landOnProjects()
                     } else if case .conversation(let id) = model.selection {
                         model.openConversation(id)
-                    } else if model.selection == nil {
+                    } else if model.selection == nil || model.selection == .inbox || model.selection == .branches {
+                        // Neither the Inbox nor the page of every conversation's branches is offered with projects (#655).
                         model.landOnProjects()
                     }
                     return

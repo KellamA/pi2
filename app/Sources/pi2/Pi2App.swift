@@ -354,8 +354,7 @@ struct Pi2App: App {
             CommandGroup(after: .sidebar) {
                 ModeCommands(model: model)
                 Divider()
-                Button("Show Inbox") { model.selection = .inbox }
-                    .keyboardShortcut("i", modifiers: [.command, .shift])
+                InboxCommand(model: model)
                 Button("Show Activity") { model.selection = .activity }
                     .keyboardShortcut("a", modifiers: [.command, .shift])
                 Button("Show Usage") { model.selection = .usage }
@@ -432,6 +431,20 @@ struct MenuBarLabel: View {
     var body: some View {
         Image(systemName: engine.waitingCount == 0 ? "circle.hexagongrid" : "circle.hexagongrid.fill")
         if engine.waitingCount > 0 { Text("\(engine.waitingCount)") }
+    }
+}
+
+/// View › Show Inbox (⇧⌘I), offered only with the Projects preview off: with it on, Now, the Dashboard and the menu bar
+/// item show what waits, and the Dashboard the limit notices (#655). A view of its own, so that the switch changing draws
+/// the menu again and not every scene (#436).
+struct InboxCommand: View {
+    let model: AppModel
+
+    var body: some View {
+        if !model.engine.projectsPreview {
+            Button("Show Inbox") { model.selection = .inbox }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
+        }
     }
 }
 
@@ -514,7 +527,8 @@ struct RootView: View {
                     case .inbox:
                         InboxView(model: model)
                     case .activity:
-                        ActivityView(model: model)
+                        // With projects, only what runs apart from the agents' runs (ActivityPage.swift, #655).
+                        if engine.projectsPreview { ActivityPage(model: model) } else { ActivityView(model: model) }
                     case .usage:
                         UsageView(model: model)
                     case .archive:
