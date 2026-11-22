@@ -212,7 +212,7 @@ function runsAs(meta: Meta | undefined, agents: Record<string, AgentProfile>): s
 }
 ```
 
-The agents are an argument, since the engine keeps no one map of them that every caller reads (main.ts, a feature's `engine.agents()` and a commit's `tx.doc(Agents)` each have their own). Beside it, `agentOf(meta, agents)` gives the agent itself, or none for a chat, an agent deleted or one removed through a tool; most lookups use it.
+The agents are an argument, since the engine keeps no one map of them that every caller reads (indexes.ts, a feature's `engine.agents()` and a commit's `tx.doc(Agents)` each have their own). Beside it, `agentOf(meta, agents)` gives the agent itself, or none for a chat, an agent deleted or one removed through a tool; most lookups use it.
 
 A conversation whose copy has been removed or deleted, or whose project has been deleted, runs as its `agentId`; one whose `agentId` was deleted too keeps the setup it has, as a conversation whose agent was deleted does today. A conversation whose own `agentId` names a removed project agent keeps the setup it has in the same way.
 
@@ -684,7 +684,7 @@ type Field = { name: string; before: unknown; after: unknown };
 
 ### 3.13 Schedules (`pi2.schedules`)
 
-A schedule names an agent, and starts a conversation with it and the schedule's prompt at its times ([schedules.md](schedules.md); `schedules.ts`, run from `main.ts`). In a project there is no other kind (#656):
+A schedule names an agent, and starts a conversation with it and the schedule's prompt at its times ([schedules.md](schedules.md); `schedules.ts`, run from `scheduleruns.ts`). In a project there is no other kind (#656):
 
 ```ts
 // Added to Schedule (schedules.ts). Optional.
@@ -1780,7 +1780,7 @@ Each piece below is shared by several parts of the engine. It has one home, whic
 - `ReachChange.op` is `unknown`, as what is stored; changes.ts reads it as its `Op`. The `pi2.needs` token is a plain JSON object's for that reason.
 - An item's `agentId` is the agent its conversation runs as (`agentOf` in `needs.ts`, through `runsAs`).
 - Questions and decisions wake the conversation that asked through `arriveIn(tx, conversationId, item)` and `arrivedIn(conversationId)` in `wakes.ts`, the wake kind `answer`, keyed `answer:<id>`: stored in the commit that takes the answer, so it is given once, after a restart too.
-- The `needs` event holds the Inbox's items and the stored ones, oldest first. A feature hook sends it again, `inboxChanged`, whenever `main.ts` sends the `inbox` event. The menu bar item's count, the Dock's badge and notifications count its items.
+- The `needs` event holds the Inbox's items and the stored ones, oldest first. A feature hook sends it again, `inboxChanged`, whenever the engine sends the `inbox` event (`announceInbox`, appevents.ts). The menu bar item's count, the Dock's badge and notifications count its items.
 - `needs_you` is offered by agent, since a feature's `toolNames` is not told the conversation: to a project agent of a project neither archived nor deleted, whatever its access. The tool checks the conversation itself as well.
 - A conversation archived or deleted, itself or its root, takes its stored needs with it (`putAwayChanged`), and so does a project deleted (read from any commit to `pi2.projects`).
 
@@ -1857,7 +1857,7 @@ Each piece below is shared by several parts of the engine. It has one home, whic
 - **The listing** reads open issues and pull requests, and those closed in the last seven days with `--search closed:>=<date>`. `state` is `loading` until a project's first read. Any `gh` that meets the rate limit, a sign-out or no network, a write's or `show`'s too, sets `state` and `error`; the next listing read clears them. An agent's `list` and `show` end with a line saying when the listing was read and why it is not newer; `show` reads the issue afresh, and gives the cached one when GitHub cannot be asked.
 - **`projects.watch`** is kept per connection: a feature's handler is given the connection that asked (`handlers[method](params, connection)`), and a feature's `disconnected(connection)` is told when it closes (features.ts, main.ts).
 - **Comments.** `wait` and `block` with text post "**Waiting:** …" and "**Blocked:** …"; `finish` and `close` post "**Done.** …" or "**Dropped.** …"; a review, "**Approved.**", "**Changes requested.**" or "**Comment.**" and the finding; Send back, "**Sent back.**" and the reason. Notes leave out pi²'s "Taken by", "Released", "Done." and "Dropped.". Who posted a comment is read from its intent: a comment whose intent is no longer kept reads as the person's.
-- **Send back** gives the conversation that opened the pull request an input with the entry `pi2.sentBack { by, number, reason }` (`githubItem` draws its line, through main.ts's `toItem`), queued if it is answering; one archived or deleted is not given it, and the answer says so. The person's Send back and merge are news for the orchestrator.
+- **Send back** gives the conversation that opened the pull request an input with the entry `pi2.sentBack { by, number, reason }` (`githubItem` draws its line, through transcript.ts's `toItem`), queued if it is answering; one archived or deleted is not given it, and the answer says so. The person's Send back and merge are news for the orchestrator.
 - **Attaching.** `setRepositoryIn(tx, projectId, repository | null)` is what `github.attach` and `github.detach` do, and what `project.change`'s `repository` field applies (changes.ts, through `wireRepository`), first among its fields. `project_settings` `change` with `repository` asks `gh` for it before its commit, then puts it to the person as a reach request; detaching (null) is one too. `checkRepository` and `parseRepository` are for that.
 - **The state block** reads a project's GitHub work from the cached listing (`wireWorkState`), as 6.4 says it for the list kept by pi².
 - **`work.github`** is registered with no inverse; an agent's write on GitHub is one change per action, its summary such as "Took #12 “Fix login” on GitHub". The person's are not recorded.

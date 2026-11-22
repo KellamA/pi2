@@ -5,7 +5,7 @@ Every agent asks before it does something that matters, as its settings say: a c
 
 **Allow everything** is a switch, per agent and off unless you turn it on, that lifts all of that for one agent. It is for when you have set up its surroundings so that nothing it could reach is something you cannot afford to lose: a spare Mac, a virtual machine, a throwaway account, a folder you have backed up. It is the same idea as Claude Code's "dangerously skip permissions".
 
-The code is the `Inbox` in `engine/src/state.ts`, which every approval goes through, and `agents.allowEverything` in `engine/src/main.ts`.
+The code is the `Inbox` in `engine/src/state.ts`, which every approval goes through, and `agents.allowEverything` in `engine/src/agentrequests.ts`.
 
 ## Turning it on
 
