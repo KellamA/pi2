@@ -271,3 +271,32 @@ export function sealedItem(size = 200, fill = 7): Uint8Array<ArrayBuffer> {
 export function itemId(): string {
 	return base64url(random(16));
 }
+
+/**
+ * Counts the writes the pairing's object makes from here on, at its storage itself: every `put`, `delete`,
+ * `deleteAll`, `setAlarm` and `deleteAlarm`, and every SQL statement but a `SELECT`.
+ */
+export async function countStorageWrites(pairing: string): Promise<{ count: number; what: string[] }> {
+	const writes = { count: 0, what: [] as string[] };
+	await runInDurableObject(pairingObject(pairing), (_: Pairing, state) => {
+		const storage = state.storage as unknown as Record<string, (...args: unknown[]) => unknown> & { sql: SqlStorage };
+		for (const name of ["put", "delete", "deleteAll", "setAlarm", "deleteAlarm"]) {
+			const real = storage[name].bind(storage);
+			storage[name] = (...args: unknown[]) => {
+				writes.count += 1;
+				writes.what.push(name);
+				return real(...args);
+			};
+		}
+		const sql = storage.sql as unknown as { exec: (query: string, ...bindings: unknown[]) => unknown };
+		const exec = sql.exec.bind(sql);
+		sql.exec = (query: string, ...bindings: unknown[]) => {
+			if (!/^\s*SELECT/i.test(query)) {
+				writes.count += 1;
+				writes.what.push(query.split(" ")[0]);
+			}
+			return exec(query, ...bindings);
+		};
+	});
+	return writes;
+}

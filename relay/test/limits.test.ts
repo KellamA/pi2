@@ -2,19 +2,22 @@
 // limit the end's own socket is closed with `busy` and when it may come back; past the day's, it is held off for an
 // hour; and no end's traffic ever holds off another, the Mac least of all.
 
-import { runInDurableObject } from "cloudflare:test";
+import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { base64url, concat, fromBase64url, random } from "../src/bytes.ts";
-import { JOINED_LIMITS, LIMITS, type Limits } from "../src/limits.ts";
+import { JOINED_LIMITS, LIMITS, type Limits, PENDING_LIMITS } from "../src/limits.ts";
 import type { Pairing } from "../src/pairing.ts";
 import { proofText } from "../src/protocol.ts";
 import {
 	addPhone,
 	type Client,
 	connect,
+	countStorageWrites,
 	joinHello,
 	macHello,
 	type Mac,
+	newAttestKeyId,
+	newDeviceId,
 	newKey,
 	openWindow,
 	pairingObject,
@@ -287,5 +290,90 @@ describe("limits", () => {
 		phones[0].sendBytes(new Uint8Array([2]));
 		expect((await mac.client.bytes()).at(-1)).toBe(1);
 		expect((await mac.client.bytes()).at(-1)).toBe(2);
+	});
+});
+
+describe("what a pairing costs in writes", () => {
+	it("holds off a pending pairing's Mac opening and closing windows after a small allowance, and its writes with it", async () => {
+		const mac = await register();
+		const writes = await countStorageWrites(mac.pairing);
+		let client = mac.client;
+		let taken = 0;
+		let heldFor = 0;
+		for (let second = 0; second < 400 && heldFor === 0; second++) {
+			nextSecond();
+			if (second > 0) client = (await macHello(mac)).client;
+			for (let index = 0; index < 40; index++) client.send(index % 2 === 0 ? { openJoin: { tokenHash: base64url(random(32)), expires: Date.now() + 60_000 } } : { closeJoin: {} });
+			for (;;) {
+				const message = await client.next();
+				if (typeof message === "string" && message.startsWith('{"ok"')) taken += 1;
+				else if (typeof message === "string" && message.startsWith('{"busy"')) {
+					const { until } = JSON.parse(message).busy;
+					// Ten a second, then busy for the rest of the second; past the day's 200, for an hour.
+					if (until - Date.now() >= HOUR) heldFor = until - Date.now();
+					else expect(until).toBe(Date.now() + 1000);
+				} else if (typeof message === "object" && "closed" in message) break;
+			}
+		}
+		expect(heldFor).toBe(HOUR);
+		// The day's count holds the refused ones too, so fewer than 200 were taken.
+		expect(taken).toBeGreaterThan(PENDING_LIMITS.messagesPerDay / 2);
+		expect(taken).toBeLessThanOrEqual(PENDING_LIMITS.messagesPerDay);
+		// Each window opened or closed is at most two writes (the record, and the alarm when it moves earlier), and the
+		// hold and the day's counts a few more.
+		expect(writes.count).toBeLessThanOrEqual(2 * taken + 10);
+		// Past the hour's hold, the pairing has long been deleted: no phone was ever added.
+		vi.setSystemTime(Date.now() + HOUR);
+		const after = await connect(mac.pairing);
+		after.send({ hello: { v: 1, role: "mac", pairing: mac.pairing, build: "120" } });
+		await runDurableObjectAlarm(pairingObject(mac.pairing));
+		expect(Object.keys(await after.json())).toEqual(["refused"]);
+	});
+
+	it("leaves the ordinary first pairing room inside a pending pairing's allowance, retries and all", async () => {
+		const mac = await register();
+		await standInVerifier(mac.pairing);
+		// Three windows opened and closed again (a person who took their time), in one second.
+		nextSecond();
+		for (let index = 0; index < 3; index++) {
+			await openWindow(mac);
+			mac.client.send({ closeJoin: {} });
+			expect(await mac.client.json()).toEqual({ ok: { what: "closeJoin" } });
+		}
+		// The next second: a window, a join, and the Mac's side of the pairing exchange on the phone's slot.
+		nextSecond();
+		const token = await openWindow(mac);
+		const joining = await joinHello(mac.pairing);
+		sendJoin(mac.pairing, joining, token);
+		const { joined } = await joining.client.json();
+		await mac.client.json();
+		for (let index = 0; index < 6; index++) mac.client.sendBytes(prefixed(joined.device, [index]));
+		for (let index = 0; index < 6; index++) expect([...(await joining.client.bytes())]).toEqual([index]);
+		nextSecond();
+		const device = newDeviceId();
+		mac.client.send({ addDevice: { device, deviceKey: joining.key.publicKey, attestKeyId: newAttestKeyId() } });
+		expect(await mac.client.json()).toEqual({ ok: { what: "addDevice" } });
+		// Paired: the Mac has the whole table now.
+		mac.client.send({ closeJoin: {} });
+		expect(await mac.client.json()).toEqual({ ok: { what: "closeJoin" } });
+		for (let index = 0; index < 50; index++) mac.client.sendBytes(prefixed(device, [index]));
+		for (let index = 0; index < 50; index++) expect([...(await joining.client.bytes())]).toEqual([index]);
+	});
+
+	it("writes at most a handful of times for 50 reconnects of a phone in a minute", async () => {
+		// A time after the runtime's own, so that its alarms wait for the test's clock rather than fire at once.
+		vi.setSystemTime(Date.parse("2027-06-01T12:00:00Z"));
+		const mac = await register();
+		const phone = await addPhone(mac);
+		const writes = await countStorageWrites(mac.pairing);
+		for (let index = 0; index < 50; index++) {
+			vi.setSystemTime(Date.now() + 1200);
+			const again = await phoneHello(mac.pairing, phone);
+			expect(await mac.client.json()).toEqual({ online: { device: phone.device } });
+			again.client.close();
+			expect(await mac.client.json()).toEqual({ offline: { device: phone.device } });
+		}
+		// The time it was last seen, once a minute, and the ten seconds' alarm, set again at most every ten seconds.
+		expect(writes.count).toBeLessThanOrEqual(8);
 	});
 });
