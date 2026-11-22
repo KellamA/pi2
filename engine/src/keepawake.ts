@@ -26,6 +26,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
 import type { Feature } from "./features.ts";
 import { runOffThread } from "./offthread.ts";
+import { type TestSwitch, testSwitch } from "./testswitches.ts";
 
 /** The switch and its second switch, in Settings › General. Absent from settings.json means on, and not on battery. */
 export type AwakeSettings = { keep: boolean; battery: boolean };
@@ -43,7 +44,8 @@ export type Power = "ac" | "battery";
 
 /** How the power source is read: `pmset -g ps`, which reads and changes nothing. A read that fails counts as AC power. */
 export async function readPower(env: NodeJS.ProcessEnv, run: (file: string, args: readonly string[]) => Promise<{ stdout: string }> = runOffThread): Promise<Power> {
-	const forced = env.PI2_AWAKE_POWER;
+	// A test's (testswitches.ts): a release engine reads the power source.
+	const forced = testSwitch("PI2_AWAKE_POWER", env);
 	if (forced === "ac" || forced === "battery") return forced;
 	// A test can name a file holding `pmset -g ps`'s words instead, so it can change the power source while the engine
 	// runs and watch being unplugged let the Mac sleep again.
@@ -78,10 +80,11 @@ export function keepingAwake(state: AwakeState): { hold: boolean; conversations:
 	return { hold: state.keep && conversations > 0 && (state.battery || state.power === "ac"), conversations };
 }
 
-/** A setting from the environment, for tests: a number of milliseconds, or the default. */
-function setting(name: string, fallback: number): number {
-	const value = Number(process.env[name]);
-	return process.env[name] !== undefined && Number.isFinite(value) && value >= 0 ? value : fallback;
+/** A setting from the environment, for tests: a number of milliseconds, or the default, always in a release engine. */
+function setting(name: TestSwitch, fallback: number): number {
+	const given = testSwitch(name);
+	const value = Number(given);
+	return given !== undefined && Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
 /** How long the assertion is held after the last run ends, so a run that ends and another that starts do not flap it. */
@@ -89,8 +92,8 @@ export const GRACE_MS = setting("PI2_AWAKE_GRACE_MS", 60_000);
 /** How often the power source is looked at while work goes on, so being unplugged lets the Mac sleep again. */
 const POWER_POLL_MS = setting("PI2_AWAKE_POLL_MS", 30_000);
 
-/** The program that holds the assertion; a stand-in can be named for tests. */
-const PROGRAM = process.env.PI2_AWAKE_PROGRAM ?? "/usr/bin/caffeinate";
+/** The program that holds the assertion; a stand-in can be named for tests, in a development engine. */
+const PROGRAM = testSwitch("PI2_AWAKE_PROGRAM") ?? "/usr/bin/caffeinate";
 
 export const keepAwake: Feature = (_host, engine) => {
 	let settings = DEFAULT_AWAKE;

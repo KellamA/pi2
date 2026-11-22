@@ -36,6 +36,7 @@ import { commandEnvironment } from "./environment.ts";
 import type { Feature } from "./features.ts";
 import { STRATA_SETUP, type StrataCommand, takesSeveral } from "./localengine.ts";
 import { forgetRun, leftOverLog, newRun, noteProcess, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
+import { testSwitch } from "./testswitches.ts";
 import {
 	CATALOG,
 	type Catalog,
@@ -110,17 +111,20 @@ type Live = {
 	lastSent: number;
 };
 
-/** Settings for tests, from the environment. The catalog can be replaced only by naming a file, which a test does. */
+/**
+ * Settings for tests, from the environment, which a release engine ignores (testswitches.ts). The catalog can be
+ * replaced only by naming a file, which a test does.
+ */
 const TUNING = {
-	stallMs: Number(process.env.PI2_LOCAL_STALL_MS ?? 60_000),
-	retryMs: Number(process.env.PI2_LOCAL_RETRY_MS ?? 2_000),
-	retries: Number(process.env.PI2_LOCAL_RETRIES ?? 8),
-	keepFree: Number(process.env.PI2_LOCAL_KEEP_FREE ?? KEEP_FREE_BYTES),
-	memoryGB: process.env.PI2_LOCAL_MEMORY_GB === undefined ? undefined : Number(process.env.PI2_LOCAL_MEMORY_GB),
+	stallMs: Number(testSwitch("PI2_LOCAL_STALL_MS") ?? 60_000),
+	retryMs: Number(testSwitch("PI2_LOCAL_RETRY_MS") ?? 2_000),
+	retries: Number(testSwitch("PI2_LOCAL_RETRIES") ?? 8),
+	keepFree: Number(testSwitch("PI2_LOCAL_KEEP_FREE") ?? KEEP_FREE_BYTES),
+	memoryGB: ((given) => (given === undefined ? undefined : Number(given)))(testSwitch("PI2_LOCAL_MEMORY_GB")),
 };
 
 function loadCatalog(): Catalog {
-	const file = process.env.PI2_LOCAL_CATALOG;
+	const file = testSwitch("PI2_LOCAL_CATALOG");
 	return file === undefined ? CATALOG : (JSON.parse(readFileSync(file, "utf8")) as Catalog);
 }
 

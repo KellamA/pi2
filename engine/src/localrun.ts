@@ -32,6 +32,7 @@ import { refusalOf } from "./limitwait.ts";
 import { localChanged } from "./localmodels.ts";
 import { forgetRun, killLater, killRemaining, type Listed, leftOverLog, newRun, noteProcess, processes, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
 import { LOCAL_PROVIDER, type LocalLease } from "./providers.ts";
+import { testSwitch } from "./testswitches.ts";
 
 /** How long a model nobody uses stays loaded: switching between two conversations does not unload and load it again. */
 const GRACE_MS = (() => {
@@ -51,9 +52,10 @@ const MEMORY_MS = 10_000;
 export const LOCAL_RETRY_ENTRY = "pi2.localRetry";
 const LOCAL_RETRY_NOTICE = "The model on this Mac stopped and was started again. Carrying on.";
 const RETRY_DELAYS = [2_000, 10_000, 30_000];
-// Only tests shorten or hold the durable sleep; its normal backoff does not depend on the model's settings.
+// Only tests shorten or hold the durable sleep, in a development engine (testswitches.ts); its normal backoff does not
+// depend on the model's settings.
 const retryDelay = (ms: number): number => {
-	const testDelay = Number(process.env.PI2_LOCAL_RUN_RETRY_MS);
+	const testDelay = Number(testSwitch("PI2_LOCAL_RUN_RETRY_MS"));
 	return Number.isFinite(testDelay) && testDelay >= 0 ? testDelay : ms;
 };
 const ENGINE_STOPPED = /\bthe engine stopped unexpectedly \(exit code -?\d+\); the next request restarts it\b/i;

@@ -27,6 +27,7 @@ import { addNews, Projects, projectOf } from "./projects.ts";
 import { latestReport, type ReportWake, reportOf, reportWatched, settle, unreadReports, wakeFor } from "./reports.ts";
 import { Library, type Meta } from "./state.ts";
 import { subChatActivity } from "./subchats.ts";
+import { testSwitch } from "./testswitches.ts";
 import { syncWorkForInput } from "./work.ts";
 
 /** The message that wakes an agent: the model reads its content, and the transcript shows a line. */
@@ -42,8 +43,8 @@ export const WAKE_NOTE = "pi2.wake-note";
  * or the person sends a message. The daily budget bounds what the wakes cost either way.
  */
 export const WAKES_PER_HOUR = (() => {
-	// A test sets another, to reach it in a few wakes.
-	const given = Number(process.env.PI2_WAKES_PER_HOUR);
+	// A test sets another, to reach it in a few wakes; a release engine ignores it (testswitches.ts).
+	const given = Number(testSwitch("PI2_WAKES_PER_HOUR"));
 	return Number.isInteger(given) && given > 0 ? given : 30;
 })();
 const HOUR = 3_600_000;

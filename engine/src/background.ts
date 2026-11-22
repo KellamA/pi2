@@ -30,6 +30,7 @@ import { scratchVariable } from "./scratch.ts";
 import { arrive, unwatch, watch, watched } from "./wakes.ts";
 import { agentVariables } from "./variables.ts";
 import { unlessMessaged } from "./heed.ts";
+import { testSwitch } from "./testswitches.ts";
 import { forgetRun, killLater, killRemaining, type Listed, type LeftOver, leftOverLog, type NewRun, newRun, noteProcess, processes, RUN_VARIABLE, type RunProcess, signallable, stopLeftOver } from "./processes.ts";
 
 /** How much of a command's output is kept: its end. The buffer is cut back to this once it holds twice as much. */
@@ -56,10 +57,11 @@ const SHUTDOWN_GRACE_MS = 1_500;
 export const MAX_WAIT_SECONDS = 240;
 /**
  * The longest a request from the app for a command's output waits for more. The app asks again when it returns.
- * `PI2_OUTPUT_WAIT_SECONDS` sets another, for a test that must tell a wait ended by output from one that ran out.
+ * `PI2_OUTPUT_WAIT_SECONDS` sets another, for a test that must tell a wait ended by output from one that ran out; a
+ * release engine ignores it (testswitches.ts).
  */
 export const APP_WAIT_SECONDS = (() => {
-	const given = Number(process.env.PI2_OUTPUT_WAIT_SECONDS);
+	const given = Number(testSwitch("PI2_OUTPUT_WAIT_SECONDS"));
 	return Number.isFinite(given) && given > 0 ? given : 30;
 })();
 /** How many ended commands are remembered, across all conversations, for their output to be read. */
