@@ -7,7 +7,8 @@
 # An issue that adds a file to one of these paths, or a path of the same kind (the iPhone app's entitlements, signing
 # and upload configuration, P14), adds its line here in the same pull request, which the owner then reviews (12.1).
 # GitHub reads the last line that matches a file, so keep every line naming the owner: a line with no owner after
-# a broader one takes the file out.
+# a broader one takes the file out, and scripts/auto-merge refuses everything while such a line is here. Keep the
+# patterns plain too (letters, digits, . _ - /, * within a name, ** as a whole one), which is all the script reads.
 
 # The guard itself: this file, the script that refuses, its test, and every workflow (relay.yml and iphone.yml among
 # them), since any workflow can be changed to use a protected environment, and one run from main can use it once the
@@ -16,6 +17,10 @@
 /.github/workflows/ @KellamA
 /scripts/auto-merge @KellamA
 /scripts/test-auto-merge @KellamA
+
+# The owner's own instructions for the settings that guard all this: an edit cannot change a setting, but it can mislead
+# the person following them.
+/docs/relay.md @KellamA
 
 # What decides who is the person: the relay, the channel and sealing, the helper, the devices in the engine, the
 # device lists (in answers.ts) and App Attest's verifier.
