@@ -131,6 +131,7 @@ struct HomeView: View {
         } header: {
             header(String(localized: "Projects"), asOf: asOf)
         }
+        .id("projects")
         chats(asOf: asOf)
         more
     }
@@ -142,7 +143,7 @@ struct HomeView: View {
 
     /// When what is shown was last heard from the Mac, while it cannot be reached: everything shows as it was then.
     private var asOf: Date? {
-        if case .outOfReach(let seen) = session.connection { return seen ?? .distantPast }
+        if case .outOfReach(let seen) = session.connection, loaded { return seen ?? .distantPast }
         return nil
     }
 

@@ -6,6 +6,8 @@ import SwiftUI
 /// it is: `HomeConnectionBar()`. Tapping it says what can be done from here.
 struct HomeConnectionBar: View {
     @Environment(AppSession.self) private var session
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @ScaledMetric(relativeTo: .footnote) private var dot: CGFloat = 8
     #if DEBUG
     @State private var explaining = HomeDebugLaunch.explains
     #else
@@ -15,28 +17,28 @@ struct HomeConnectionBar: View {
     var body: some View {
         let reading = Reading(session.connection, mac: session.macName)
         Button { explaining = true } label: {
-            HStack(spacing: 8) {
+            // The dot on the first line, about the middle of its letters, so that it stays by the first words when the
+            // line wraps; at the largest text sizes "Why" goes under the line, which keeps the room for the words.
+            let large = typeSize.isAccessibilitySize
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Group {
                     if reading.tone == .busy {
                         ProgressView().controlSize(.mini)
                     } else {
-                        Circle().fill(reading.tone.color).frame(width: 8, height: 8)
+                        Circle().fill(reading.tone.color).frame(width: dot, height: dot)
                     }
                 }
-                .frame(width: 14)
+                .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + dot * 0.55 }
+                .frame(minWidth: 14)
                 .accessibilityHidden(true)
-                Text(reading.line)
-                    .foregroundStyle(.primary)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Group {
-                    if reading.tone == .warn {
-                        Text("Why").foregroundStyle(.tint)
-                    } else {
-                        Image(systemName: "info.circle").foregroundStyle(.secondary)
-                    }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(reading.line)
+                        .foregroundStyle(.primary)
+                        .multilineTextAlignment(.leading)
+                    if large { trailing(reading) }
                 }
-                .accessibilityHidden(true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                if !large { trailing(reading) }
             }
             .font(.footnote)
             .padding(.horizontal, 11)
@@ -54,6 +56,18 @@ struct HomeConnectionBar: View {
         .sheet(isPresented: $explaining) {
             HomeConnectionDetail(reading: reading)
         }
+    }
+
+    /// "Why" where something is wrong, else the sign that tapping says more.
+    private func trailing(_ reading: Reading) -> some View {
+        Group {
+            if reading.tone == .warn {
+                Text("Why").foregroundStyle(.tint)
+            } else {
+                Image(systemName: "info.circle").foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityHidden(true)
     }
 
     /// What the bar says of a state of the connection, and what tapping it explains.

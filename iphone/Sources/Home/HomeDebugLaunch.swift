@@ -6,7 +6,7 @@ import Foundation
 /// the simulator without a tap (docs/iphone-app.md, "Launch arguments"; `SIMCTL_CHILD_PI2_HOME` with `xcrun simctl
 /// launch`). None of it is compiled into a release build. `PI2_HOME` is one of:
 ///
-/// - `scroll:chats` or `scroll:more`: the list scrolled to its Chats or More, once the projects are in.
+/// - `scroll:projects`, `scroll:chats` or `scroll:more`: the list scrolled to that section, once the projects are in.
 /// - `search:<words>`: the words typed in the search field.
 /// - `why`: the connection bar's explanation open.
 /// - `archive:<project>`: Archive chosen on the project of that name, as a tap would, which sends the request (the

@@ -126,11 +126,12 @@ struct HomeSearchResults: View {
     let messages: HomeMessageSearch
     @Environment(AppSession.self) private var session
     @Environment(\.openRoute) private var openRoute
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         let names = HomeSearch.names(query, in: session.engine)
         if !names.isEmpty {
-            Section("Projects and conversations") {
+            Section("By Name") {
                 ForEach(names) { found in row(found) }
             }
         }
@@ -167,9 +168,9 @@ struct HomeSearchResults: View {
         Button { openRoute(found.route) } label: {
             Label {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(found.title).lineLimit(found.kind == .message ? 3 : 2)
+                    Text(found.title).lineLimit(typeSize.isAccessibilitySize ? nil : found.kind == .message ? 3 : 2)
                     if !found.detail.isEmpty {
-                        Text(found.detail).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
+                        Text(found.detail).font(.footnote).foregroundStyle(.secondary).lineLimit(typeSize.isAccessibilitySize ? nil : 2)
                     }
                 }
                 .foregroundStyle(.primary)

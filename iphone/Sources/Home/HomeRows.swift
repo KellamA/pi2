@@ -152,15 +152,21 @@ struct HomeMoreRow<Trailing: View>: View {
     let title: LocalizedStringKey
     let icon: String
     @ViewBuilder let trailing: Trailing
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
         HStack(spacing: 10) {
-            Label {
-                Text(title)
-            } icon: {
-                Image(systemName: icon).foregroundStyle(Color.accentColor)
+            // At the largest sizes the icon gives its room to the words, which would otherwise break inside themselves.
+            if typeSize.isAccessibilitySize {
+                Text(title).frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Label {
+                    Text(title)
+                } icon: {
+                    Image(systemName: icon).foregroundStyle(Color.accentColor)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
             trailing
                 .font(.footnote)
                 .foregroundStyle(.secondary)
