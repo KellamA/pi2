@@ -66,6 +66,7 @@ import { preparedTool } from "./stringargs.ts";
 import { WAKE_ENTRY } from "./wakes.ts";
 import { type AssistantLike, answeredNeeds, assistantParts, imagesOf, type Item, textOf, toItem, wakeLabel } from "./transcript.ts";
 import { broadcast, type Client, clients, coalesced, send, type Subscription } from "./clients.ts";
+import { agents, busyConversations, chatOf, conversationsWithWork, isSubChat, library, refreshBusy, rootOf, setAgents, setLibrary, setVersions, setWorking, since, versions, working } from "./indexes.ts";
 import { McpServers } from "./mcp.ts";
 import { claim, storedNeeds } from "./needs.ts";
 import { linesOf } from "./changes.ts";
@@ -83,7 +84,7 @@ import { adoptLoginPath } from "./shellpath.ts";
 import { runningCommands } from "./running.ts";
 import { sweepRuns, useRunFolder } from "./processes.ts";
 import { dueForArchive, isArchived, isDeleted, isPutAway, migrateDeleted, validateAutoArchive } from "./archive.ts";
-import { type ChatVersions, chatIdOf, points, versionRequests, Versions, versionsAllowed } from "./versions.ts";
+import { points, versionRequests, Versions, versionsAllowed } from "./versions.ts";
 import { type Access, ACCESS_LEVELS, type AgentProfile, agentOf, Agents, Inbox, Library, type Meta, type ModelRef, projectFrom, runsAs, scheduleRunsAs, starterAgents, takeAgentSwitch } from "./state.ts";
 import { allProjects, inProject, type Project, PROJECT_ARCHIVED, PROJECT_DELETED, Projects, projectDeleted, projectOf, refuseInArchivedProject, refuseStartWith, type Start, startWithRefusal } from "./projects.ts";
 import { orchestratorConversation, orchestratorRole, placeInput, refuseEarlier, tellOrchestrator } from "./orchestrator.ts";
@@ -211,8 +212,6 @@ mcp.log = log;
 const inbox = new Inbox(async (id) => (await harness.snapshot(Library, context))?.conversations[String(id)]?.allowEverything === true);
 const computer = new ComputerHost();
 const browser = new BrowserHost();
-let library: { conversations: Record<string, Meta> } = { conversations: {} };
-let agents: Record<string, AgentProfile> = {};
 /**
  * The default model for agents as `defaultModel` last worked it out, for what is decided inside a commit, where the
  * providers are not asked (`followedModel`). Worked out again whenever the providers or the settings change, and as
@@ -536,8 +535,7 @@ function deviceId(): string {
 	return settings.deviceId;
 }
 
-/** Which version of each chat is shown (versions.ts); kept up to date by a watch further down. */
-let versions: { chats: Record<string, ChatVersions> } = (await harness.snapshot(Versions, context)) ?? { chats: {} };
+setVersions((await harness.snapshot(Versions, context)) ?? { chats: {} });
 
 /** A conversation the app names by its id. A chat with several versions is the version it shows. */
 async function conversation(id: unknown): Promise<Conversation> {
@@ -545,15 +543,6 @@ async function conversation(id: unknown): Promise<Conversation> {
 	const found = shown === undefined ? undefined : await harness.conversation(shown as unknown as ConversationId, context);
 	if (found === undefined) throw new Error(`Unknown conversation: ${String(id)}`);
 	return found;
-}
-
-/** The chat a version belongs to, or the conversation itself. */
-function chatOf(id: number | ConversationId): number {
-	return chatIdOf(library.conversations, id as number);
-}
-/** A sub-chat, handed work by another conversation; not a chat's version. */
-function isSubChat(meta: Meta | undefined): boolean {
-	return meta?.parent !== undefined && meta.version !== true;
 }
 
 /**
@@ -963,15 +952,12 @@ let nextLocalId = 1;
 
 const announceActivity = coalesced(() => activityEvent());
 
-library = (await harness.snapshot(Library, context)) ?? { conversations: {} };
+setLibrary((await harness.snapshot(Library, context)) ?? { conversations: {} });
 // Conversations deleted before there was an archive are marked the new way, once.
 if (Object.values(library.conversations).some((meta) => meta.archived !== undefined)) {
 	await harness.commit(async (tx) => void migrateDeleted((await tx.doc(Library)).conversations), context);
-	library = (await harness.snapshot(Library, context)) ?? { conversations: {} };
+	setLibrary((await harness.snapshot(Library, context)) ?? { conversations: {} });
 }
-let busyConversations = new Set<number>();
-/** Every conversation with live work, sub-chats included. */
-let working = new Set<number>();
 
 function libraryEvent() {
 	const conversations = Object.entries(library.conversations)
@@ -2417,7 +2403,7 @@ let wasPutAway = putAway();
 libraryWatch.start(async (call) => {
 	if (call.kind !== "value") return;
 	const before = library.conversations;
-	library = call.value;
+	setLibrary(call.value);
 	if (usageRowsChanged(before, library.conversations)) scheduleUsageRefresh();
 	runsAsSent = runsAsNow();
 	broadcast(libraryEvent());
@@ -2434,10 +2420,10 @@ libraryWatch.start(async (call) => {
 await harness.commit(async (tx) => void (await tx.doc(Versions)), context);
 const versionsWatch = await harness.watchDoc(Versions, context);
 if (versionsWatch === undefined) throw new Error("The versions document could not be opened");
-versions = versionsWatch.value;
+setVersions(versionsWatch.value);
 versionsWatch.start(async (call) => {
 	if (call.kind !== "value") return;
-	versions = call.value;
+	setVersions(call.value);
 	for (const client of clients) for (const subscription of client.subscriptions.values()) void subscription.follow().then(() => subscription.push());
 });
 
@@ -2448,10 +2434,10 @@ await harness.commit(async (tx) => {
 }, context);
 const agentsWatch = await harness.watchDoc(Agents, context);
 if (agentsWatch === undefined) throw new Error("The agents document could not be opened");
-agents = agentsWatch.value.agents;
+setAgents(agentsWatch.value.agents);
 agentsWatch.start(async (call) => {
 	if (call.kind !== "value") return;
-	agents = call.value.agents;
+	setAgents(call.value.agents);
 	broadcast(agentsEvent());
 	announceInbox();
 	runsAsChanged();
@@ -2467,19 +2453,7 @@ for (const feature of host.features) await feature.start?.();
 // Recovery has dealt with recorded runs. Unrecorded files can go only once nothing holds them.
 void sweepRuns().catch((error) => log("run files could not be tidied:", error));
 const graphWatch = await harness.watchTaskGraph(context);
-type Graph = { tasks: Record<string, { conversationId?: unknown }> };
-/** The conversation `id` belongs to: itself, or the one whose sub-chat it is. */
-const rootOf = (id: number): number => library.conversations[String(id)]?.parent ?? id;
-const conversationsWithWork = (graph: Graph) => new Set(Object.values(graph.tasks).map((task) => task.conversationId as number));
-working = conversationsWithWork(graphWatch.value as never);
-/** When each conversation's current work was first seen, for "running for…" in the app. */
-const since = new Map<number, number>();
-const refreshBusy = () => {
-	const now = Date.now();
-	for (const id of working) if (!since.has(id)) since.set(id, now);
-	for (const id of [...since.keys()]) if (!working.has(id)) since.delete(id);
-	busyConversations = new Set([...working].map(rootOf));
-};
+setWorking(conversationsWithWork(graphWatch.value as never));
 refreshBusy();
 // A wait the last engine noted for a run that has since ended (it stopped between the two) is let go.
 for (const feature of host.features) feature.runsChanged?.(working);
@@ -2531,7 +2505,7 @@ const recoveryEvent = () => ({ event: "recovery", recovery });
 graphWatch.start(async (call) => {
 	if (call.kind !== "value") return;
 	const before = working;
-	working = conversationsWithWork(call.value as never);
+	setWorking(conversationsWithWork(call.value as never));
 	refreshBusy();
 	for (const feature of host.features) feature.runsChanged?.(working);
 	const changed = before.size !== working.size || [...working].some((id) => !before.has(id));
