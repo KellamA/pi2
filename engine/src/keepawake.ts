@@ -24,7 +24,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
-import type { Engine, Feature } from "./features.ts";
+import type { Feature } from "./features.ts";
 import { runOffThread } from "./offthread.ts";
 
 /** The switch and its second switch, in Settings › General. Absent from settings.json means on, and not on battery. */
