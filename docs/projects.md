@@ -1470,7 +1470,7 @@ It is the engine's own: it runs by itself at every start, and nothing is shown t
 | "Always Allow … Here" on a conversation | Stays on the conversation | Unchanged |
 | Approvals and questions waiting | Shown under Needs you, in their conversation's project | Unchanged |
 | Sub-chats handed over without waiting, still working | Their watches are left as they are: such a run has no report, so it wakes the agent that handed it over as it would have ([wakes.md](wakes.md)); runs started afterwards follow the project's `wakeOnReports`, which is on for a project carrying over makes | Unchanged |
-| Inbox notices of plans' limits | Stay in the `limits` event, shown as today | Unchanged |
+| Notices of plans' limits | Stay in the `limits` event, shown under the Dashboard's line | Unchanged |
 | Worktrees | Stay where they are, with their conversations | Unchanged |
 | Schedules | A schedule on a template: the copy of its template in the project of the template's folder, when that project and copy exist ([3.13](#313-schedules-pi2schedules)); otherwise it stays on its template, and its runs are put in projects as they are made (9.9) | `projectAgentId` added |
 
