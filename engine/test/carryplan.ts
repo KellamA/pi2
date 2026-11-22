@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { type CarrySnapshot, fingerprint, groupingKey, Grouping, planCarryOver, reportOf } from "../src/carryover.ts";
+import { type CarrySnapshot, fingerprint, groupingKey, Grouping, planCarryOver, reportOf } from "../src/carryplan.ts";
 import type { MemoryDoc } from "../src/knowledge.ts";
 import { defaultProjectSettings, type Project, type ProjectsDoc } from "../src/projects.ts";
 import type { AgentProfile, Meta } from "../src/state.ts";

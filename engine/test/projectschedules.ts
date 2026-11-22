@@ -13,7 +13,7 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { closeSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Grouping, scheduleCopies } from "../src/carryover.ts";
+import { Grouping, scheduleCopies } from "../src/carryplan.ts";
 import { EngineClient, standInApp, stop } from "./patience.ts";
 
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
