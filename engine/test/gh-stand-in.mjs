@@ -19,7 +19,7 @@
 // comments costs GitHub more to answer. `delay` in the file, in the same form, does the same for a test, and wins over the variable.
 // A search with a qualifier it cannot read (`closed:` or `updated:` without a date it takes) fails as GitHub refuses it.
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 
 const file = process.env.GH_STAND_IN_STATE;
 if (!file) {
@@ -54,7 +54,10 @@ function withState(change) {
 	try {
 		const state = JSON.parse(readFileSync(file, "utf8"));
 		const result = change(state);
-		writeFileSync(file, JSON.stringify(state, null, "\t"));
+		// Whole or not at all: a stand-in running at the same moment reads the file without the lock (`peek`), and once
+		// read half of one, failing as GitHub refusing (#707).
+		writeFileSync(`${file}.${process.pid}`, JSON.stringify(state, null, "\t"));
+		renameSync(`${file}.${process.pid}`, file);
 		return result;
 	} finally {
 		rmSync(lock, { recursive: true, force: true });

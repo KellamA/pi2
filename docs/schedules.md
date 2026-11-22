@@ -1,6 +1,6 @@
 # Schedules an agent sets for itself
 
-An agent asked to "check this every morning" or "look again in two hours" can set the schedule itself, if the person has allowed it, and the person approves each one before it is set. It is the same kind of schedule the person makes in Activity › Schedules (with the Projects preview on, on a project's Settings tab, or on a template's page): at its time, a new conversation starts with the agent and the schedule's prompt. The engine side is `engine/src/selfschedule.ts`; the schedules themselves are in `engine/src/schedules.ts` and run from `main.ts`.
+An agent asked to "check this every morning" or "look again in two hours" can set the schedule itself, if the person has allowed it, and the person approves each one before it is set. It is the same kind of schedule the person makes on a project's Settings tab, or on a template's page: at its time, a new conversation starts with the agent and the schedule's prompt. The engine side is `engine/src/selfschedule.ts`; the schedules themselves are in `engine/src/schedules.ts` and run from `main.ts`.
 
 ## Turning it on
 
@@ -8,7 +8,7 @@ Per agent, and **off by default**. In the agent's settings, under Schedules: "Ca
 
 A sub-chat, where another agent handed the agent a task, has neither the tools nor the section, whatever the switch says (#177). Its work is that one task, and the sub-chat is archived once it reports, so setting its own future work is not its to do; the conversation that handed it the work has the tools if its own agent may schedule. A conversation the person starts, and a scheduled run, have them.
 
-Turning it off takes the tools away. Schedules the agent already set, which the person approved, keep running until the person turns them off or deletes them in Activity (with the preview on, on the project's Settings tab, or the template's page).
+Turning it off takes the tools away. Schedules the agent already set, which the person approved, keep running until the person turns them off or deletes them on the project's Settings tab, or the template's page.
 
 ## What the agent can do
 
@@ -26,7 +26,7 @@ What it cannot do:
 
 - Schedule another agent. A schedule always runs as the agent whose conversation set it: in a conversation of a project, the agent it runs as, so the project's copy in a carried conversation, and the schedule is that project's ([projects.md](projects.md#313-schedules-pi2schedules)).
 - Schedule anything from a sub-chat (above).
-- Cancel or change a schedule the person made. It is refused with a plain message saying the person can turn it off or delete it in Activity (in a project with the preview on, on the project's Settings tab). A schedule the agent set that the person has since moved to another agent counts as the person's.
+- Cancel or change a schedule the person made. It is refused with a plain message saying the person can turn it off or delete it on the project's Settings tab. A schedule the agent set that the person has since moved to another agent counts as the person's.
 - Change a schedule. To change one it cancels it and asks for a new one, which is asked about again.
 
 ## Times
@@ -39,11 +39,11 @@ Daily and weekly schedules follow the wall clock, through changes to and from su
 
 Every new schedule asks the person first, whatever the agent's tool access. A schedule runs later with no one watching, so there is **no "always allow"**: the choices are Allow Once and Deny. (An app that sends "always" anyway is treated as once, and nothing is remembered.)
 
-The question goes to the Inbox and to the call in the transcript, like any approval. It says what will run and when, in plain words:
+The question goes under Needs you and to the call in the transcript, like any approval. It says what will run and when, in plain words:
 
 > Atlas wants to schedule “Morning news brief”: every day at 07:00, first run Friday 13 November at 07:00 — Sum up the morning's news in five lines.
 
-The cards show the title in the heading, when it would run (the item's `when`, worded by the engine), the prompt in full, and a line saying that each run starts a new conversation with no one watching and can be turned off or deleted in Activity, or, for an agent of a project with the preview on, on the project's Settings tab. Dates are written out ("Friday 13 November"), never "tomorrow", because a question can wait past midnight. A notification, if they are on, carries the whole sentence.
+The cards show the title in the heading, when it would run (the item's `when`, worded by the engine), the prompt in full, and a line saying that each run starts a new conversation with no one watching, and where it can be turned off or deleted. Dates are written out ("Friday 13 November"), never "tomorrow", because a question can wait past midnight. A notification, if they are on, carries the whole sentence.
 
 Before asking, the engine checks everything it can: the switch, the words, the time and the limits. A call that could not be carried out is refused with a reason and nothing is asked. After the person allows it, the engine checks again (the switch may have been turned off, the time may have passed, the agent may have reached its limit meanwhile) and only then saves it. If the person denies it, nothing is saved and the agent is told not to ask again unless the person brings it up.
 
@@ -58,13 +58,13 @@ The first run is the one shown in the question, unless it went by while the ques
 
 ## Nothing runs on its own without the person
 
-Each new schedule waits for the person, every time. A run started by a schedule can itself call `schedule_task`; its question then waits in the Inbox like any other, and nothing more is set until the person answers. The same goes for a script that calls the tool (code mode): each call asks. Many calls asked together each wait for their own answer, and the limit of 20 is checked again as each is saved.
+Each new schedule waits for the person, every time. A run started by a schedule can itself call `schedule_task`; its question then waits under Needs you like any other, and nothing more is set until the person answers. The same goes for a script that calls the tool (code mode): each call asks. Many calls asked together each wait for their own answer, and the limit of 20 is checked again as each is saved.
 
-The run itself works with the agent's own tool access, as the person's scheduled runs do: under "Ask first" its commands wait in the Inbox too.
+The run itself works with the agent's own tool access, as the person's scheduled runs do: under "Ask first" its commands wait under Needs you too.
 
 ## Who made it
 
-A schedule an agent set carries `createdBy: { agentId, conversationId }`. Only the engine sets it: `schedules.save` from the app ignores it on a new schedule and keeps it when the person edits one. Activity, and a project's Settings tab, show "set by Atlas" on its row, and the row's tooltip names the conversation it was set in. A schedule carried over into a project ([projects.md](projects.md#313-schedules-pi2schedules)) keeps `createdBy` naming the template that set it; with the preview on it counts as the copy's own, which may list and cancel it.
+A schedule an agent set carries `createdBy: { agentId, conversationId }`. Only the engine sets it: `schedules.save` from the app ignores it on a new schedule and keeps it when the person edits one. A project's Settings tab, and a template's page, show "set by Atlas" on its row, and the row's tooltip names the conversation it was set in. A schedule carried over into a project ([projects.md](projects.md#313-schedules-pi2schedules)) keeps `createdBy` naming the template that set it; it counts as the copy's own, which may list and cancel it.
 
 Deleting an agent does not touch schedules, the person's or the agent's: they stay listed, and a run whose agent is gone starts with the first agent, as before. The row then says "set by a deleted agent".
 
