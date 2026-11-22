@@ -14,7 +14,10 @@ import { ARCHIVED_PAGE, archivedPage } from "../src/subchats.ts";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
 // This test is about conversations in no project, made with the agents of no project: its engines carry nothing into
-// projects (`PI2_CARRY_NEVER`, carryover.ts), as the last version with the switch never on did (#715).
+// projects (`PI2_CARRY_NEVER`, carryover.ts), as the last version with the switch never on did (#715). It stays so
+// (#718): it follows the templates themselves from end to end, made, edited, duplicated and deleted with their
+// conversations following them (another agent's list after a deletion, a copy no one may hand work to, schedules run
+// as a template), none of which a project's agent does.
 process.env.PI2_CARRY_NEVER = "1";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-test-"));

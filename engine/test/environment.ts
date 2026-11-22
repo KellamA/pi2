@@ -16,11 +16,8 @@ import { join } from "node:path";
 import { commandEnvironment, passedOn } from "../src/environment.ts";
 import { describeScratch, scratchFolder, scratchGone, scratchRoot, sweepScratch } from "../src/scratch.ts";
 import { refusal, variablesAccount } from "../src/variables.ts";
-import { EngineClient, standInApp, stop, until } from "./patience.ts";
+import { aProject, EngineClient, standInApp, stop, until } from "./patience.ts";
 
-// This test is about conversations in no project, made with the agents of no project: its engines carry nothing into
-// projects (`PI2_CARRY_NEVER`, carryover.ts), as the last version with the switch never on did (#715).
-process.env.PI2_CARRY_NEVER = "1";
 // The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
 // for the app's, as the tests that answer for the person already do (#504).
 process.env.PI2_APP_BUNDLE = standInApp();
@@ -182,8 +179,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 	};
 
 	const setupFile = join(scratch, "setup.env");
-	const { id: helper } = await client.call("agents.save", { agent: { name: "Helper", access: "full", cwd: project } });
-	const { id: agent } = await client.call("agents.save", { agent: { name: "Worker", access: "full", cwd: project, worktree: true, setup: writeEnv(setupFile), mcpServers: ["env"], delegates: [helper] } });
+	// The agents are a project's, in the repository they work in, as every agent's conversation is a project's (#718).
+	const { id: projectId } = await aProject(client, project, []);
+	const { id: helper } = await client.call("projects.addAgent", { projectId, agent: { name: "Helper", access: "full", cwd: project } });
+	const { id: agent } = await client.call("projects.addAgent", { projectId, agent: { name: "Worker", access: "full", cwd: project, worktree: true, setup: writeEnv(setupFile), mcpServers: ["env"], delegates: [helper] } });
 	// The agents' own variables, set before the conversation that runs the set-up command is made. Random, so that a
 	// value found anywhere can only have come from here.
 	const SERVICE = PI2_OWN.PI2_KEYCHAIN_SERVICE;

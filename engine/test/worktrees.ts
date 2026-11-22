@@ -13,7 +13,9 @@ import { inspect, linesIn, parseShortstat, parseStatus, statusPaths, suggestBran
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
 // This test is about conversations in no project, made with the agents of no project: its engines carry nothing into
-// projects (`PI2_CARRY_NEVER`, carryover.ts), as the last version with the switch never on did (#715).
+// projects (`PI2_CARRY_NEVER`, carryover.ts), as the last version with the switch never on did (#715). It stays so
+// (#718): its agents each have a folder of their own, in several repositories, and a sub-chat of one whose folder is in
+// another repository keeps it while the others join their parent's worktree; a project's agents all work in its folder.
 process.env.PI2_CARRY_NEVER = "1";
 
 // Commits made here and by the engine's shell use a fixed identity and none of the person's own git settings.

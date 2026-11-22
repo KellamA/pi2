@@ -10,11 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { backgroundMarker, backgroundMarkerDetails, commandLine, elapsed, MAX_WAIT_SECONDS } from "../src/background.ts";
-import { EngineClient, exited, PATIENT_MS, running, standInApp, stop, until } from "./patience.ts";
-
-// This test is about conversations in no project, made with the agents of no project: its engines carry nothing into
-// projects (`PI2_CARRY_NEVER`, carryover.ts), as the last version with the switch never on did (#715).
-process.env.PI2_CARRY_NEVER = "1";
+import { aProject, EngineClient, exited, PATIENT_MS, running, standInApp, stop, until } from "./patience.ts";
 
 // Commits made here use a fixed identity and none of the person's own git settings.
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
@@ -247,7 +243,13 @@ let passed = false;
 let engine: ChildProcess = boot();
 try {
 	let client = await Client.attach(engine);
-	const save = async (agent: Record<string, unknown>): Promise<string> => (await client.call("agents.save", { agent })).id;
+	// The agents are a project's, one for each folder they work in, as every agent's conversation is a project's (#718).
+	const projects = new Map<string, string>();
+	const save = async (agent: Record<string, unknown> & { cwd: string }): Promise<string> => {
+		let projectId = projects.get(agent.cwd);
+		if (projectId === undefined) projects.set(agent.cwd, (projectId = (await aProject(client, agent.cwd, [])).id));
+		return (await client.call("projects.addAgent", { projectId, agent })).id;
+	};
 	const open = async (agentId: string, cwd?: string): Promise<number> => {
 		const { id } = await client.call("conversation.create", { agentId });
 		await client.call("conversation.open", { id });

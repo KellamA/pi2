@@ -12,11 +12,7 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EngineClient, standInApp, stop } from "./patience.ts";
-
-// This test is about conversations in no project, made with the agents of no project: its engines carry nothing into
-// projects (`PI2_CARRY_NEVER`, carryover.ts), as the last version with the switch never on did (#715).
-process.env.PI2_CARRY_NEVER = "1";
+import { aProject, EngineClient, standInApp, stop } from "./patience.ts";
 
 const home = mkdtempSync(join(tmpdir(), "pi2-all-"));
 const repo = realpathSync(mkdtempSync(join(tmpdir(), "pi2-all-repo-")));
@@ -108,8 +104,10 @@ try {
 	const noteTool = mcp.tools[0].toolName as string;
 
 	const settings = { access: "ask", cwd: repo, computer: { enabled: true, apps: [NOTES] }, browser: { enabled: true }, schedule: { enabled: true }, mcpServers: [server], codeMode: true };
+	// The agents are a project's, in the repository they work in, as every agent's conversation is a project's (#718).
+	const { id: projectId } = await aProject(client, repo, []);
 	const save = async (agent: Record<string, unknown>): Promise<string> => {
-		const { id } = await client.call("agents.save", { agent });
+		const { id } = agent.id === undefined ? await client.call("projects.addAgent", { projectId, agent }) : await client.call("agents.save", { agent });
 		await client.until(
 			`agent ${String(agent.name)}`,
 			() =>

@@ -15,11 +15,8 @@ import { dueForArchive } from "../src/archive.ts";
 import { CHAT_TOOLS } from "../src/builtins.ts";
 import { CHAT_MEMORY_TOOLS } from "../src/knowledge.ts";
 import { FILE_LINK_NOTE } from "../src/plan.ts";
-import { EngineClient, standInApp, stop } from "./patience.ts";
+import { aProject, EngineClient, standInApp, stop } from "./patience.ts";
 
-// This test is about conversations in no project, made with the agents of no project: its engines carry nothing into
-// projects (`PI2_CARRY_NEVER`, carryover.ts), as the last version with the switch never on did (#715).
-process.env.PI2_CARRY_NEVER = "1";
 // The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
 // for the app's, as the tests that answer for the person already do (#504).
 process.env.PI2_APP_BUNDLE = standInApp();
@@ -92,7 +89,9 @@ engine = spawn(process.execPath, [main], { env, stdio: ["ignore", "ignore", "inh
 const client = await Client.connect(engine, home);
 try {
 	await client.until("providers", () => client.events.providers);
-	await client.until("agents", () => client.events.agents);
+	// The agent view's conversations are a project's, with its copy of Forge, as every agent's conversation is (#718).
+	const { agents: { forge } } = await aProject(client, null, ["forge"]);
+	await client.until("agents", () => client.events.agents?.agents.some((agent: any) => agent.id === forge));
 	const agentsBefore = client.events.agents.agents.map((agent: any) => agent.id);
 
 	// ---- Settings: there with their defaults before anything is changed.
@@ -117,7 +116,7 @@ try {
 	step("conversation.create with chat: true makes a chat: chat: true, no agent, no folder, and no new agent");
 
 	// The agent view's conversations are not chats.
-	const { id: plain } = await client.call("conversation.create", { agentId: "forge" });
+	const { id: plain } = await client.call("conversation.create", { agentId: forge });
 	await client.call("conversation.open", { id: plain });
 	assert.equal((await client.until("the agent's conversation", () => client.row(plain))).chat, false);
 	assert.equal((await client.until("its state", () => client.conversations.get(plain)?.state)).chat, false);
@@ -182,7 +181,7 @@ try {
 	const { id: next } = await client.call("conversation.create", { chat: true });
 	await client.call("conversation.open", { id: next });
 	assert.equal((await client.until("the next chat's state", () => client.conversations.get(next)?.state)).agent.model.modelId, "demo-text", "a new chat starts with the model used last in a chat");
-	const { id: agentNext } = await client.call("conversation.create", { agentId: "forge" });
+	const { id: agentNext } = await client.call("conversation.create", { agentId: forge });
 	await client.call("conversation.open", { id: agentNext });
 	assert.equal((await client.until("the agent's next state", () => client.conversations.get(agentNext)?.state)).agent.model.modelId, "demo-1", "the agent view keeps its own last model");
 	step("a chat has no folder or access to change; its model and thinking change in the middle, and the next chat starts with that model");

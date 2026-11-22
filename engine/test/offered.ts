@@ -15,11 +15,8 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EngineClient, standInApp, stop } from "./patience.ts";
+import { aProject, EngineClient, standInApp, stop } from "./patience.ts";
 
-// This test is about conversations in no project, made with the agents of no project: its engines carry nothing into
-// projects (`PI2_CARRY_NEVER`, carryover.ts), as the last version with the switch never on did (#715).
-process.env.PI2_CARRY_NEVER = "1";
 // The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
 // for the app's, as the tests that answer for the person already do (#504).
 process.env.PI2_APP_BUNDLE = standInApp();
@@ -78,8 +75,10 @@ engine = spawn(process.execPath, [main], { env, stdio: ["ignore", "ignore", "inh
 const client = await Client.connect(engine, home);
 try {
 	await client.until("providers", () => client.events.providers);
+	// The agents are a project's, in the folder they work in, as every agent's conversation is a project's (#718).
+	const { id: projectId } = await aProject(client, scratch, []);
 	const agentOf = async (agent: Record<string, unknown>): Promise<string> => {
-		const { id } = await client.call("agents.save", { agent });
+		const { id } = agent.id === undefined ? await client.call("projects.addAgent", { projectId, agent }) : await client.call("agents.save", { agent });
 		const apps = JSON.stringify((agent.computer as { apps?: string[] } | undefined)?.apps ?? []);
 		const off = JSON.stringify(agent.toolsOff ?? []);
 		await client.until(`agent ${agent.name}`, () =>
@@ -188,7 +187,8 @@ try {
 	await agentOf({ ...builder, id: builderId, toolsOff: ["files", "documents", "ask", "web"] });
 	const trimmed = await client.offered(built);
 	report("the same, with files, documents, asking and the web left out", trimmed);
-	assert.deepEqual([...trimmed.tools].sort(), ["background", "bash", "edit", "read", "update_plan", "write"], "only what a worker uses");
+	// And its project's own tools, which the list does not govern: a worker in a project asks the person and keeps its work with them.
+	assert.deepEqual([...trimmed.tools].sort(), ["background", "bash", "edit", "needs_you", "read", "update_plan", "work", "write"], "only what a worker uses");
 	assert.ok(!trimmed.sections.includes("documents"), "the documents section goes with write_document");
 	assert.ok(trimmed.prompt + trimmed.definitions < everyTool.prompt + everyTool.definitions);
 	console.log(`#   ${Math.round(100 - (100 * (trimmed.prompt + trimmed.definitions)) / (everyTool.prompt + everyTool.definitions))}% less`);

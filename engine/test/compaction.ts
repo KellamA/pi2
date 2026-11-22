@@ -6,11 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFauxCore } from "@earendil-works/pi-ai/providers/faux";
 import { automaticCompactionReady, SUMMARY_TOKENS, summaryThinking } from "../src/compaction.ts";
-import { EngineClient, standInApp, stop } from "./patience.ts";
+import { aProject, EngineClient, standInApp, stop } from "./patience.ts";
 
-// This test is about conversations in no project, made with the agents of no project: its engines carry nothing into
-// projects (`PI2_CARRY_NEVER`, carryover.ts), as the last version with the switch never on did (#715).
-process.env.PI2_CARRY_NEVER = "1";
 // The engine takes changes to what the person set only from its app's connection (#513): this test's connection stands
 // for the app's, as the tests that answer for the person already do (#504).
 process.env.PI2_APP_BUNDLE = standInApp();
@@ -74,8 +71,10 @@ try {
 		await client.until(`conversation ${id}`, () => state(id));
 		return id as number;
 	};
+	// The agents are a project's, in the folder they work in, as every agent's conversation is a project's (#718).
+	const { id: projectId } = await aProject(client, work, []);
 	const saveAgent = async (agent: Record<string, unknown>) => {
-		const { id } = await client.call("agents.save", { agent });
+		const { id } = agent.id === undefined ? await client.call("projects.addAgent", { projectId, agent }) : await client.call("agents.save", { agent });
 		await client.until(`saved agent ${id}`, () => client.events.agents.agents.some((it: any) => it.id === id && Object.entries(agent).every(([key, value]) => JSON.stringify(it[key]) === JSON.stringify(value))));
 		return id as string;
 	};

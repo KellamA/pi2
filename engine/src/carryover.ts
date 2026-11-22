@@ -98,7 +98,9 @@ const releaseBuild = (() => {
 
 /**
  * Tests make a data folder as the last version with the switch left it, the switch never turned on, with this engine:
- * with `PI2_CARRY_NEVER=1` nothing is carried, at start or as conversations are made, and the update records nothing.
+ * with `PI2_CARRY_NEVER=1` nothing is carried, at start or as conversations are made, and the update records nothing
+ * (test/carryover.ts, test/projectschedules.ts). Two tests that follow the agents of no project themselves run with it
+ * too, test/engine.ts and test/worktrees.ts (#718); the others make their conversations with a project's agents.
  * Only in a development engine (as `PI2_TEST_COPY`, main.ts): a release engine ignores it, and says so at start.
  */
 const carryNeverAsked = () => process.env.PI2_CARRY_NEVER === "1";
