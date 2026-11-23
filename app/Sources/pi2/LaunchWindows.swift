@@ -46,6 +46,7 @@ private struct LaunchWindowPlacer: NSViewRepresentable {
 
     static func dismantleNSView(_ view: Placer, coordinator: ()) {
         view.stopFollowing()
+        view.stopWatchingSheets()
     }
 
     final class Placer: NSView {
@@ -54,16 +55,22 @@ private struct LaunchWindowPlacer: NSViewRepresentable {
         /// When the window was first seen on screen. A window a `WindowGroup` opens (a background command's output) is
         /// shown first and moved by SwiftUI just after, so a window is followed for a second after it shows.
         private var shownAt: Date?
+        private var sheetBegins: NSObjectProtocol?
+        private var sheetEnds: NSObjectProtocol?
+        /// Where the window's top-left corner was before it was moved for a sheet, to put it back when the sheet closes.
+        private var beforeSheet: NSPoint?
 
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             stopFollowing()
+            stopWatchingSheets()
             shownAt = nil
             guard let window else { return }
             if LaunchWindows.behind { window.level = LaunchWindows.behindLevel }
             guard LaunchWindows.topLeft != nil else { return }
+            watchSheets(of: window)
             place(window)
             if window.isVisible { shown() }
             moves = NotificationCenter.default.addObserver(forName: NSWindow.didMoveNotification, object: window, queue: nil) { [weak self] _ in
@@ -95,7 +102,8 @@ private struct LaunchWindowPlacer: NSViewRepresentable {
         }
 
         private func place(_ window: NSWindow) {
-            guard let topLeft = LaunchWindows.topLeft, NSPoint(x: window.frame.minX, y: window.frame.maxY) != topLeft else { return }
+            // Moved for a sheet, it stays there until the sheet closes, even while it is still being followed.
+            guard beforeSheet == nil, let topLeft = LaunchWindows.topLeft, NSPoint(x: window.frame.minX, y: window.frame.maxY) != topLeft else { return }
             window.setFrameTopLeftPoint(topLeft)
         }
 
@@ -104,6 +112,43 @@ private struct LaunchWindowPlacer: NSViewRepresentable {
             if let shows { NotificationCenter.default.removeObserver(shows) }
             moves = nil
             shows = nil
+        }
+
+        /// A parked window shows only its top-left corner, and a sheet attaches below its toolbar and inset from its
+        /// sides, so a sheet opened over it lies on no screen at all. macOS does not bring the window back for it, and
+        /// ScreenCaptureKit, which the computer tool pictures with, gives no image of a window on no screen (#793).
+        /// So for as long as such a sheet is open, the window is moved by the sheet's place inside it: the sheet's
+        /// corner shows where the window's did, still behind every other window.
+        private func watchSheets(of window: NSWindow) {
+            sheetBegins = NotificationCenter.default.addObserver(forName: NSWindow.willBeginSheetNotification, object: window, queue: nil) { [weak self] _ in
+                // The sheet has its frame once it is attached, just after this.
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { self?.bringSheetOnScreen() }
+                }
+            }
+            sheetEnds = NotificationCenter.default.addObserver(forName: NSWindow.didEndSheetNotification, object: window, queue: nil) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, let window = self.window, let before = self.beforeSheet, window.attachedSheet == nil else { return }
+                    self.beforeSheet = nil
+                    window.setFrameTopLeftPoint(before)
+                }
+            }
+        }
+
+        private func bringSheetOnScreen() {
+            guard let window, let sheet = window.attachedSheet, beforeSheet == nil,
+                  !NSScreen.screens.contains(where: { $0.frame.intersects(sheet.frame) }) else { return }
+            let topLeft = NSPoint(x: window.frame.minX, y: window.frame.maxY)
+            beforeSheet = topLeft
+            window.setFrameTopLeftPoint(NSPoint(x: topLeft.x - (sheet.frame.minX - window.frame.minX),
+                                                y: topLeft.y + (window.frame.maxY - sheet.frame.maxY)))
+        }
+
+        func stopWatchingSheets() {
+            if let sheetBegins { NotificationCenter.default.removeObserver(sheetBegins) }
+            if let sheetEnds { NotificationCenter.default.removeObserver(sheetEnds) }
+            sheetBegins = nil
+            sheetEnds = nil
         }
     }
 }

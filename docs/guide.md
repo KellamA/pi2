@@ -146,6 +146,8 @@ Either way, a piece of work is open, in progress, waiting, blocked, done or drop
 
 For a GitHub project, pull requests come first, with their checks and what reviewing agents found. An opened pull request has **Diff**, **Merge** and **Send Back**, which posts your reason on it and gives it to the agent that opened it. If pi² was cut off while writing to GitHub and cannot tell whether the write happened, the Work tab says so: look at the repository, then choose **It Happened** or **It Did Not**.
 
+An agent that lists the work with its `work` tool is given the open issues and the open pull requests, and only a count of the merged and closed ones: it asks for those when it needs them, a page at a time.
+
 ## Limits
 
 A project's limits, on its Settings tab, hold back new work, not work already running:
