@@ -192,7 +192,7 @@ struct UsageTests {
         // six minutes ago, is not.
         #expect(UsageLimits.stale(providers, now: now).isEmpty)
         #expect(UsageLimits.stale(providers, now: now.addingTimeInterval(2 * 3600)) == ["anthropic", "openai"])
-        #expect(UsageLimits.providers(nil).isEmpty)
+        #expect((PlanLimits(nil)?.providers ?? []).isEmpty)
     }
 
     @Test func budgetIsReadAsTheMacTakesIt() throws {
@@ -206,15 +206,33 @@ struct UsageTests {
         #expect(UsagePage.budgetField(nil) == "")
     }
 
+    @Test func summaryDecodesTheChatsAndOlderOnesWithoutIt() throws {
+        let decoder = JSONDecoder()
+        func summary(_ text: String) throws -> UsageSummary {
+            try decoder.decode(UsageSummary.self, from: Data(text.utf8))
+        }
+        // The engine counts chats, the built-in assistant's, on their own, apart from every agent (engine/src/usage.ts).
+        let with = try summary("""
+            {"models": [], "agents": [], "chats": {"cost": 0.12, "tokens": 3400}, "conversations": [], "total": {"cost": 0.42, "tokens": 8400}, "today": {"cost": 0.12, "tokens": 3400}, "days": [], "budget": {"daily": null}, "overBudget": false}
+            """)
+        #expect(with.chats?.cost == 0.12)
+        #expect(with.chats?.tokens == 3400)
+        // An older recording has no field, and still decodes.
+        let without = try summary("""
+            {"models": [], "agents": [], "conversations": [], "total": {"cost": 0.42, "tokens": 8400}, "today": {"cost": 0.12, "tokens": 3400}, "days": [], "budget": {"daily": null}, "overBudget": false}
+            """)
+        #expect(without.chats == nil)
+    }
+
     @Test func timesAreWordedAsTheMacWordsThem() {
-        #expect(UsageTime.duration(30) == "1 min")
-        #expect(UsageTime.duration(0) == "less than a minute")
-        #expect(UsageTime.duration(2 * 3600) == "2 h")
-        #expect(UsageTime.duration(3 * 86_400 + 4 * 3600) == "3 d 4 h")
-        #expect(UsageTime.percent(62) == "62")
-        #expect(UsageTime.percent(97.14) == "97.1")
-        #expect(UsageTime.ago(now.addingTimeInterval(-30), now: now) == "just now")
-        #expect(UsageTime.ago(now.addingTimeInterval(-3 * 3600), now: now) == "3 h ago")
+        #expect(LimitsFormat.duration(30) == "1 min")
+        #expect(LimitsFormat.duration(0) == "less than a minute")
+        #expect(LimitsFormat.duration(2 * 3600) == "2 h")
+        #expect(LimitsFormat.duration(3 * 86_400 + 4 * 3600) == "3 d 4 h")
+        #expect(LimitsFormat.percent(62) == "62")
+        #expect(LimitsFormat.percent(97.14) == "97.1")
+        #expect(LimitsFormat.ago(now.addingTimeInterval(-30), now: now) == "just now")
+        #expect(LimitsFormat.ago(now.addingTimeInterval(-3 * 3600), now: now) == "3 h ago")
     }
 
     @Test func requestsAreTheMacsAndARefusalIsSaid() async throws {
