@@ -46,6 +46,12 @@ enum DemoScreens {
             ("An agent's page (#696)", .agent(project.orchestratorId, project: project.id)),
             ("A template's page (#696)", .agent(try #require(engine.agents.first?.id))),
             ("The templates (#696)", .templates),
+            ("A project's other conversations (#698)", .conversations(project: project.id)),
+            ("Chats and conversations outside projects (#698)", .conversations()),
+            ("The archive (#698)", .archive),
+            ("Background commands (#698)", .backgroundCommands()),
+            // New project (#698) asks for projects.folders as it opens, which the engine has only once #698's second part
+            // adds it, and the demo with it; a command's output needs a command, and the demo's agents start none.
             // The demo's projects keep their work in pi², with no repository: the page says it has no pull requests, and
             // asks the demo nothing.
             ("A pull request (#695)", .pullRequest(project: project.id, number: 7)),

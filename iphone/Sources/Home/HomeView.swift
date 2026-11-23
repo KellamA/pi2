@@ -250,38 +250,38 @@ struct HomeView: View {
     // MARK: More
 
     /// The Mac's places beside the projects (docs/design/iphone.md's drawing, "Further down"), each with what the engine
-    /// says of it now. Their screens are later issues', which have no route yet: each opens the placeholder that says so.
+    /// says of it now. Each opens its screen by its route, pushed onto the navigation stack.
     private var more: some View {
         let engine = session.engine
         let running = engine.backgroundCommands.count
         let archived = HomeLists.archivedCount(engine)
         return Section("More") {
-            NavigationLink { FeaturePlaceholder(screen: "Templates", issue: 696) } label: {
+            NavigationLink(value: Route.templates) {
                 HomeMoreRow(title: "Templates", icon: "person.2") {
                     if loaded { Text("\(engine.agents.count)").monospacedDigit() }
                 }
             }
-            NavigationLink { FeaturePlaceholder(screen: "Schedules", issue: 697) } label: {
+            NavigationLink(value: Route.schedules) {
                 HomeMoreRow(title: "Schedules", icon: "calendar.badge.clock") {
                     if !engine.schedules.isEmpty { Text("\(engine.schedules.count)").monospacedDigit() }
                 }
             }
-            NavigationLink { FeaturePlaceholder(screen: "Background commands", issue: 698) } label: {
+            NavigationLink(value: Route.backgroundCommands()) {
                 HomeMoreRow(title: "Background Commands", icon: "terminal") {
                     if running > 0 { Text("\(running) running").foregroundStyle(.tint) }
                 }
             }
-            NavigationLink { FeaturePlaceholder(screen: "Usage and limits", issue: 697) } label: {
+            NavigationLink(value: Route.usage) {
                 HomeMoreRow(title: "Usage and Limits", icon: "chart.bar") {
                     if engine.usage?.overBudget == true { Text("over budget").foregroundStyle(.red) }
                 }
             }
-            NavigationLink { FeaturePlaceholder(screen: "Archive", issue: 698) } label: {
+            NavigationLink(value: Route.archive) {
                 HomeMoreRow(title: "Archive", icon: "archivebox") {
                     if archived > 0 { Text("\(archived)").monospacedDigit() }
                 }
             }
-            NavigationLink { FeaturePlaceholder(screen: "Settings", issue: 697) } label: {
+            NavigationLink(value: Route.settings) {
                 HomeMoreRow(title: "Settings", icon: "gearshape") { EmptyView() }
             }
         }
