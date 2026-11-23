@@ -63,9 +63,8 @@ enum BoardSample {
             guard let id, let index = data.allAgents.firstIndex(where: { $0.id == id }) else { return }
             edit(&data.allAgents[index])
         }
-        let template = data.templates.first
         change(agents.first?.id) { $0.allowEverything = true }
-        if agents.count > 1, let template {
+        if agents.count > 1, let template = data.templates.first(where: { $0.name == agents[1].name }) ?? data.templates.first {
             change(agents[1].id) { agent in
                 agent.template = try? decode(TemplateMark.self, ["id": template.id, "copiedAt": 0, "templateUpdatedAt": -1])
                 agent.variables = try? decode([AgentVariable].self, [["name": "GH_TOKEN", "set": true], ["name": "NPM_TOKEN", "set": false]])
@@ -127,8 +126,9 @@ enum BoardSample {
 /// - `PI2_BOARD_ACT`: `switch:<name>` asks to turn on one of the orchestrator's switches (the confirmation); `add-agent`
 ///   makes an agent; `add-rule:<text>`, `edit-rule`; `add-note:<text>`, `edit-note`; `remove-worktree` asks to remove
 ///   the first worktree pi² made (the confirmation); `save:<description>` changes an agent's description and saves it;
-///   `everything-off` turns Allow everything off.
-/// - `PI2_BOARD_SCROLL=<section>`: scrolls an agent's page to a `BoardAgentSection`, such as `everything` or `commands`.
+///   `everything-off` turns Allow everything off; `update-template` opens Update from Template.
+/// - `PI2_BOARD_SCROLL=<section>`: scrolls an agent's page to a `BoardAgentSection`, such as `everything` or `commands`,
+///   or the Branches page to `left-behind` or `legend`.
 @MainActor
 enum BoardDebugAct {
     static let act = ProcessInfo.processInfo.environment["PI2_BOARD_ACT"]
@@ -157,6 +157,7 @@ enum BoardDebugAct {
         await settle()
         if let words = take("save") { form.debugSave(words ?? "Changed from the phone") }
         if take("everything-off") != nil { form.debugEverythingOff() }
+        if take("update-template") != nil { form.debugUpdate() }
         if let scroll, let section = BoardAgentSection(rawValue: scroll) {
             try? await Task.sleep(for: .seconds(1))
             withAnimation { scroller.scrollTo(section, anchor: .top) }
@@ -177,9 +178,10 @@ enum BoardDebugAct {
         if take("edit-note") != nil, let first = notes.first { page.debugEdit(first) }
     }
 
-    static func branches(_ page: BoardBranchesPage, data: BoardData) async {
-        guard act != nil else { return }
+    static func branches(_ page: BoardBranchesPage, data: BoardData, scroller: ScrollViewProxy) async {
+        guard act != nil || scroll != nil else { return }
         await settle()
+        if let scroll { withAnimation { scroller.scrollTo(scroll, anchor: .top) } }
         if take("remove-worktree") != nil, let row = data.branchGroups(page.project.id).flatMap(\.rows).first(where: { $0.status.managed }) {
             page.debugRemove(row.conversation.id, status: row.status)
         }

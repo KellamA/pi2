@@ -28,8 +28,9 @@ struct BoardTemplatesView: View {
                         }
                         ForEach(templates) { template in
                             BoardLinkRow(route: .agent(template.id)) {
-                                HStack(spacing: 12) {
+                                BoardMarkRow {
                                     AgentMark(agent: template)
+                                } words: {
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(template.name).font(.body.weight(.semibold))
                                         BoardAgentTags(agent: template)

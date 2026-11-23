@@ -142,7 +142,7 @@ struct BoardData {
     /// The agents this one may be allowed to hand work to: a template's are the templates, a project agent's its
     /// project's agents.
     func delegateCandidates(_ agent: AgentProfile) -> [AgentProfile] {
-        allAgents.filter { $0.id != agent.id && $0.projectId == agent.projectId && $0.removedAt == nil }
+        allAgents.filter { $0.id != agent.id && $0.projectId == agent.projectId }
     }
 
     /// The agent's memory switch, from the `memory` event (the Mac's `AgentMemoryState`).

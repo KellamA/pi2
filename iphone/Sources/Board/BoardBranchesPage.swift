@@ -71,51 +71,54 @@ struct BoardBranchesPage: View {
         } message: {
             Text(notice ?? "")
         }
-        #if DEBUG
-        .task { await BoardDebugAct.branches(self, data: data) }
-        #endif
     }
 
     private var list: some View {
         let groups = data.branchGroups(project.id)
         let leftBehind = data.leftBehind(project.id)
-        return List {
-            if let sample = data.sample { BoardSampleNote(what: sample) }
-            Section {
-                Label(data.branchSummary(project.id), systemImage: "arrow.triangle.branch")
-                    .foregroundStyle(.secondary)
-                if let problem { BoardProblem(problem) }
-            }
-            if groups.isEmpty && leftBehind.isEmpty {
+        return ScrollViewReader { scroller in
+            List {
+                if let sample = data.sample { BoardSampleNote(what: sample) }
                 Section {
-                    Text("None of this project’s conversations is working in a git repository.").foregroundStyle(.secondary)
+                    Label(data.branchSummary(project.id), systemImage: "arrow.triangle.branch")
+                        .foregroundStyle(.secondary)
+                    if let problem { BoardProblem(problem) }
                 }
-            }
-            ForEach(groups) { group in
-                Section {
-                    ForEach(group.rows) { row in
-                        conversationRow(row)
-                    }
-                } header: {
-                    HStack {
-                        Label(group.repo, systemImage: "shippingbox")
-                        Spacer()
-                        if group.worktrees > 0 { Text("\(group.worktrees) worktree\(group.worktrees == 1 ? "" : "s")") }
+                if groups.isEmpty && leftBehind.isEmpty {
+                    Section {
+                        Text("None of this project’s conversations is working in a git repository.").foregroundStyle(.secondary)
                     }
                 }
-            }
-            if !leftBehind.isEmpty {
-                Section {
-                    ForEach(leftBehind) { item in leftBehindRow(item) }
-                } header: {
-                    Text("Left behind · \(leftBehind.count) worktree\(leftBehind.count == 1 ? "" : "s")")
-                } footer: {
-                    Text("Worktrees of conversations that were archived or deleted. They stay on your Mac, with any work in them, until you remove them. Removing one keeps its branch unless you choose otherwise.")
+                ForEach(groups) { group in
+                    Section {
+                        ForEach(group.rows) { row in
+                            conversationRow(row)
+                        }
+                    } header: {
+                        HStack {
+                            Label(group.repo, systemImage: "shippingbox")
+                            Spacer()
+                            if group.worktrees > 0 { Text("\(group.worktrees) worktree\(group.worktrees == 1 ? "" : "s")") }
+                        }
+                    }
                 }
+                if !leftBehind.isEmpty {
+                    Section {
+                        ForEach(leftBehind) { item in leftBehindRow(item) }
+                    } header: {
+                        Text("Left behind · \(leftBehind.count) worktree\(leftBehind.count == 1 ? "" : "s")")
+                    } footer: {
+                        Text("Worktrees of conversations that were archived or deleted. They stay on your Mac, with any work in them, until you remove them. Removing one keeps its branch unless you choose otherwise.")
+                    }
+                    .id("left-behind")
+                }
+                legend.id("legend")
             }
-            legend
+            .listStyle(.insetGrouped)
+            #if DEBUG
+            .task { await BoardDebugAct.branches(self, data: data, scroller: scroller) }
+            #endif
         }
-        .listStyle(.insetGrouped)
         .refreshable { await refresh() }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {

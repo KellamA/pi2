@@ -209,11 +209,18 @@ struct BoardRuleProposal: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Proposed by \(need.agentName ?? "an agent")").font(.subheadline.weight(.semibold))
-                Spacer(minLength: 8)
-                Text(Date(timeIntervalSince1970: need.createdAt / 1000).formatted(date: .abbreviated, time: .omitted))
-                    .font(.caption).foregroundStyle(.secondary)
+            let when = Text(Date(timeIntervalSince1970: need.createdAt / 1000).formatted(date: .abbreviated, time: .omitted))
+                .font(.caption).foregroundStyle(.secondary)
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Proposed by \(need.agentName ?? "an agent")").font(.subheadline.weight(.semibold)).fixedSize()
+                    Spacer(minLength: 8)
+                    when.fixedSize()
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Proposed by \(need.agentName ?? "an agent")").font(.subheadline.weight(.semibold))
+                    when
+                }
             }
             Text(need.text ?? "")
             if let why = need.why {

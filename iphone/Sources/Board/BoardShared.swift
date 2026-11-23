@@ -98,8 +98,10 @@ struct BoardSampleNote: View {
 
     var body: some View {
         Label("Sample data, drawn by a debug build: \(what). None of it came from a Mac.", systemImage: "testtube.2")
-            .font(.footnote)
+            .font(.caption)
             .foregroundStyle(.orange)
+            // A debug build's aside: it need not take the screen at the largest text sizes.
+            .dynamicTypeSize(...DynamicTypeSize.xxLarge)
     }
 }
 
@@ -108,5 +110,24 @@ struct BoardSampleNote: View {
 func boardSend(_ problem: Binding<String?>, _ request: @escaping @MainActor () async -> String?) {
     Task { @MainActor in
         problem.wrappedValue = await request()
+    }
+}
+
+/// A mark beside the words it belongs to, as a list's row has it; at the accessibility text sizes the mark goes above
+/// them, so that the words have the row's whole width rather than breaking a name in two.
+struct BoardMarkRow<Mark: View, Words: View>: View {
+    var spacing: CGFloat = 12
+    @ViewBuilder let mark: Mark
+    @ViewBuilder let words: Words
+    @Environment(\.dynamicTypeSize) private var size
+
+    var body: some View {
+        let layout = size.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
+            : AnyLayout(HStackLayout(alignment: .center, spacing: spacing))
+        layout {
+            mark
+            words
+        }
     }
 }

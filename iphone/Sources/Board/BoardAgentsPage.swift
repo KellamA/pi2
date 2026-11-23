@@ -123,12 +123,13 @@ struct BoardAgentsPage: View {
     private var orchestratorRow: some View {
         let orchestrator = data.agent(project.orchestratorId)
         BoardLinkRow(route: .agent(project.orchestratorId, project: project.id)) {
-            HStack(spacing: 12) {
+            BoardMarkRow {
                 if data.working(project.orchestratorId, in: project.id) {
                     ProgressView().frame(width: 36)
                 } else {
                     AgentMark(agent: orchestrator, size: 36)
                 }
+            } words: {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(orchestrator?.name ?? "Orchestrator").font(.headline)
                     BoardAgentTags(agent: orchestrator, extra: ["Orchestrator"])
@@ -176,12 +177,13 @@ struct BoardAgentsPage: View {
 
     private func agentRow(_ agent: AgentProfile) -> some View {
         BoardLinkRow(route: .agent(agent.id, project: project.id)) {
-            HStack(spacing: 12) {
+            BoardMarkRow {
                 if data.working(agent.id, in: project.id) {
                     ProgressView().frame(width: 28)
                 } else {
                     AgentMark(agent: agent)
                 }
+            } words: {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(agent.name).font(.body.weight(.semibold))
                     BoardAgentTags(agent: agent, extra: [data.madeBy(agent, in: project), data.working(agent.id, in: project.id) ? "working" : nil,
@@ -212,14 +214,16 @@ struct BoardAgentsPage: View {
     }
 
     private func removedRow(_ agent: AgentProfile) -> some View {
-        HStack(spacing: 12) {
-            AgentMark(agent: agent).opacity(0.6)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(agent.name).foregroundStyle(.secondary)
-                Text("Removed \(Date(timeIntervalSince1970: (agent.removedAt ?? 0) / 1000).formatted(.relative(presentation: .named))); nothing runs as it until it is restored.")
-                    .font(.footnote).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 8) {
+            BoardMarkRow {
+                AgentMark(agent: agent).opacity(0.6)
+            } words: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(agent.name).foregroundStyle(.secondary)
+                    Text("Removed \(Date(timeIntervalSince1970: (agent.removedAt ?? 0) / 1000).formatted(.relative(presentation: .named))); nothing runs as it until it is restored.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
             }
-            Spacer(minLength: 8)
             Button("Restore") {
                 let engine = session.engine
                 boardSend($problem) { await BoardRequests.restore(engine, agent: agent.id).map { "\(agent.name) was not restored: \($0)" } }

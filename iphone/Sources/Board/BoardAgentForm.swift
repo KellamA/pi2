@@ -139,8 +139,9 @@ struct BoardAgentForm: View {
 
     private var profile: some View {
         Section {
-            HStack(spacing: 12) {
+            BoardMarkRow {
                 AgentMark(agent: draft, size: 44)
+            } words: {
                 VStack(spacing: 6) {
                     TextField("Name", text: $draft.name)
                         .font(.headline)
@@ -625,6 +626,8 @@ struct BoardAgentForm: View {
             save()
         }
     }
+
+    func debugUpdate() { updating = true }
 
     func debugEverythingOff() {
         let engine = session.engine
