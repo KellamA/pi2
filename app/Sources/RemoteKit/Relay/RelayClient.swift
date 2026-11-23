@@ -20,6 +20,10 @@ import Foundation
 //   verified and kept them, for 25 hours (`RelayItemMemory`), and a repeat is dropped: the relay can deliver an item
 //   twice, and a Mac item that is not a state has no number to refuse it by. Only verified items are remembered, so
 //   that items the relay made up cannot fill the memory. The memory is the user's to keep across launches.
+// - A take is acknowledged (#806): the relay deletes nothing as it hands items over, and `take` tells it what this end
+//   has (`took`, every id the take brought, repeats and the state among them) only once its user's closure has kept
+//   what was new and returned. A closure that throws, or an app that ends first, acknowledges nothing, and the relay
+//   hands the items over again at the next take; the memory drops those already kept, and they are acknowledged then.
 // - Everything the relay says is its word, not a fact: a hint to show, never a reason to forget, revoke, wipe or
 //   register again (remotekit.md, "What a caller must and must not do").
 // - What it reports is bounded (`RelayOptions.eventBuffer`): a caller that does not read cannot be made to hold what a
@@ -213,8 +217,15 @@ public enum RelayPutResult: Equatable, Sendable {
 public struct RelayTaken: Equatable, Sendable {
 	public let items: [RelayMailItem]
 	public let state: RelayStateItem?
-	/// Items dropped as repeats of ones remembered in the last 25 hours, or twice in this take.
+	/// Items dropped as repeats of ones remembered in the last 25 hours, or twice in this take. They are acknowledged with
+	/// the rest, so that the relay deletes them.
 	public let repeats: Int
+
+	public init(items: [RelayMailItem], state: RelayStateItem?, repeats: Int) {
+		self.items = items
+		self.state = state
+		self.repeats = repeats
+	}
 }
 
 /// What a phone gives to App Attest at `join`, and what it gets back (3.3 step 2): its attestation of a new key, made
@@ -467,16 +478,33 @@ public actor RelayClient {
 		}
 	}
 
-	/// Takes what waits in this end's mailbox. The relay deletes each item as it hands it over. Items remembered in the
-	/// last 25 hours (`remember`), or given twice in this take, are dropped as repeats; the caller remembers the others
-	/// once it has opened, verified and kept them.
-	public func take() async throws -> RelayTaken {
+	/// Takes what waits in this end's mailbox, hands what is new to `keep`, and once `keep` has returned tells the relay
+	/// to delete everything this take brought (`took`, #806), and gives back what `keep` returned.
+	///
+	/// The relay deletes nothing as it hands items over: only what this end names in `took`. So **`keep` returns only once
+	/// what it was given is kept** (opened, verified, stored or handed on, and `remember`ed), and throws if it could not
+	/// keep it: then nothing is acknowledged, `take` throws what `keep` threw, and the relay hands the items over again at
+	/// the next take, until they expire. Items remembered in the last 25 hours (`remember`), or given twice in this take,
+	/// are dropped as repeats and not given to `keep`, but acknowledged with the rest: a redelivery after an
+	/// acknowledgement that was lost is dropped and deleted. An item that cannot be opened or verified is never kept and
+	/// never will be: `keep` passes it over and returns, and it is acknowledged too, so that it is not handed over for a day.
+	///
+	/// An acknowledgement that does not reach the relay (the socket dropped, the client stopped) is not an error: what
+	/// `keep` kept stays kept, and the relay hands those items over again, which the memory drops and the next take
+	/// acknowledges. A closure, rather than a token the caller acknowledges later, so that acknowledging cannot be left
+	/// out, or done before the items are kept.
+	public func take<Kept: Sendable>(_ keep: @Sendable (RelayTaken) async throws -> Kept) async throws -> Kept {
 		mailReported = false
 		guard case let .taken(items, state) = try await request(.take, .take) else { throw RelayClientError.unreadable }
 		let now = options.clock.now()
 		var seen = Set<String>()
 		let fresh = items.filter { !memory.contains($0, at: now) && seen.insert("\($0.from.text) \($0.id.text)").inserted }
-		return RelayTaken(items: fresh, state: state, repeats: items.count - fresh.count)
+		let kept = try await keep(RelayTaken(items: fresh, state: state, repeats: items.count - fresh.count))
+		// Every id the take brought, once: at most a mailbox's items and a state, which `took` holds.
+		var named = Set<String>()
+		let ids = (items.map(\.id) + (state.map { [$0.id] } ?? [])).filter { named.insert($0.text).inserted }
+		if !ids.isEmpty { try? await expectOK(.took(ids: ids), .took) }
+		return kept
 	}
 
 	// MARK: Registering and joining, each on a socket of its own

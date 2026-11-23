@@ -550,6 +550,9 @@ export class Pairing extends DurableObject<Env> {
 				return this.put(ws, message, "mac", now);
 			case "take":
 				return this.take(ws, "mac", now);
+			case "took":
+				this.mailbox.took("mac", message.ids);
+				return ok(ws, "took");
 			case "push":
 				// At most MAX_WAITING_PUSHES wait their turn; one past that is answered push-later in its turn, kept meanwhile
 				// as no more than its socket.
@@ -569,6 +572,9 @@ export class Pairing extends DurableObject<Env> {
 				return this.put(ws, message, id, now);
 			case "take":
 				return this.take(ws, id, now);
+			case "took":
+				this.mailbox.took(id, message.ids);
+				return ok(ws, "took");
 			case "token":
 				// The phone gives its token at every connection (apns.ts): written only when it changed.
 				if (device.token?.apns !== message.apns || device.token.environment !== message.environment) {
@@ -684,13 +690,24 @@ export class Pairing extends DurableObject<Env> {
 		return ok(ws, "put");
 	}
 
-	private async take(ws: WebSocket, reader: string, now: number): Promise<void> {
+	/**
+	 * Hands over what waits for `reader`, deleting nothing: the reader names what it kept in `took`, and the rest comes
+	 * again at its next take, until it expires (#806).
+	 *
+	 * What a take hands over counts against the reader's own day of data (500 MB), as if it had sent it. A reader that
+	 * never says what it kept would otherwise be sent its whole mailbox, up to some 2 MB, at every take, as often as its
+	 * messages allow (100 a second): a take is a few bytes in, and nothing else that small brings so much out. Counted
+	 * against the day alone, not the second's 2 MB, so that the largest take (a phone's 100 items of 16 KB and its state,
+	 * some 2.2 MB as sent) and the `took` after it pass; an honest reader takes its mailbox once, and is nowhere near.
+	 */
+	private take(ws: WebSocket, reader: string, now: number): void {
 		const { items, state } = this.mailbox.take(reader, now);
-		for (const item of items) {
-			send(ws, { item: { from: item.writer, id: item.id, item: base64url(item.item), presence: item.presence } });
-		}
-		if (state !== null) send(ws, { state: { id: state.id, item: base64url(state.item) } });
-		send(ws, { taken: { count: items.length + (state === null ? 0 : 1) } });
+		const texts = items.map((item) => JSON.stringify({ item: { from: item.writer, id: item.id, item: base64url(item.item), presence: item.presence } }));
+		if (state !== null) texts.push(JSON.stringify({ state: { id: state.id, item: base64url(state.item) } }));
+		texts.push(JSON.stringify({ taken: { count: items.length + (state === null ? 0 : 1) } }));
+		// Every text here is ASCII (ids, base64url), so its length is its size in bytes.
+		this.counters.addToDay(reader, texts.reduce((size, text) => size + text.length, 0), now);
+		for (const text of texts) sendText(ws, text);
 	}
 
 	// Revocation, leaving, deleting.
@@ -962,8 +979,12 @@ function isReady(attachment: Attachment): boolean {
 }
 
 function send(ws: WebSocket, message: object): void {
+	sendText(ws, JSON.stringify(message));
+}
+
+function sendText(ws: WebSocket, text: string): void {
 	try {
-		ws.send(JSON.stringify(message));
+		ws.send(text);
 	} catch {
 		// Closed while this was being sent: nothing to tell it.
 	}

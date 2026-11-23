@@ -85,6 +85,18 @@ export class Counters {
 		return { pass: true };
 	}
 
+	/**
+	 * Adds `size` bytes to `sender`'s day, with no message and no verdict: what a take handed over to it (pairing.ts,
+	 * `take`). Its next message is held off if its day is past.
+	 */
+	addToDay(sender: string, size: number, now: number): void {
+		const today = dayOf(now);
+		let day = this.days[sender];
+		if (day === undefined || day.day !== today) day = this.days[sender] = { day: today, messages: 0, bytes: 0 };
+		day.bytes += size;
+		this.unsaved += 1;
+	}
+
 	/** Forgets an end that is gone: a removed device, a slot let go. */
 	forget(sender: string): void {
 		this.seconds.delete(sender);

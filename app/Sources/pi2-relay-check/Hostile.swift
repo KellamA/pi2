@@ -39,7 +39,7 @@ enum Hostile {
 		_ = try await rig.events.next("the marker") { $0 == .anotherMac ? true : nil }
 		Check.equal(rig.events.all.filter { $0 == .mail }.count, 1, "5,000 mail notices are one until the next take")
 		Check.equal(rig.events.all.filter { $0 == .online(Formats.device) }.count, 1, "100 notices that a device is online are one")
-		let taken = Task { try await rig.client.take() }
+		let taken = Task { try await rig.client.take { $0 } }
 		_ = try await socket.nextText("take")
 		socket.say(#"{"taken":{"count":0}}"#)
 		_ = try await taken.value
@@ -118,7 +118,7 @@ enum Hostile {
 		let rig = Sessions.Rig(.mac(Formats.pairing))
 		await rig.client.start()
 		let socket = try await Sessions.macReady(rig)
-		let taken = Task { try await rig.client.take() }
+		let taken = Task { try await rig.client.take { $0 } }
 		_ = try await socket.nextText("take")
 		let sealed = Base64URL.encode(Formats.sealed)
 		for _ in 0...RelayLimits.macMailbox {

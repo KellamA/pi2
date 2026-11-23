@@ -1,5 +1,7 @@
 // The mailbox (docs/iphone.md 5.3): sealed items kept for an end that is away, in the pairing's own SQLite storage. The
-// relay cannot open them; it keeps each for its reader until taken or until it expires, within the contract's bounds.
+// relay cannot open them; it keeps each for its reader until the reader says it has kept it (`took`), or until it
+// expires, within the contract's bounds. A take hands items over without deleting them (#806), so that an item on its
+// way when a socket drops, or taken by an app that ends before it has kept it, is handed over again at the next take.
 
 export const DAY = 24 * 60 * 60 * 1000;
 export const HOUR = 60 * 60 * 1000;
@@ -53,21 +55,34 @@ export class Mailbox {
 		this.sql.exec("INSERT OR REPLACE INTO states (device, id, item, expires) VALUES (?, ?, ?, ?)", device, id, item.buffer, expires);
 	}
 
-	/** What waits for `reader`, oldest first, and its state for a device; each is deleted as it is taken. */
+	/**
+	 * What waits for `reader`, oldest first, and its state for a device. Nothing is deleted: what the reader has kept, it
+	 * names in `took`, and the rest is handed over again at the next take, until it expires.
+	 */
 	take(reader: string, now: number): { items: Item[]; state: { id: string; item: Uint8Array<ArrayBuffer> } | null } {
 		this.expire(now);
 		const items = this.sql
 			.exec<{ writer: string; id: string; item: ArrayBuffer; presence: number }>("SELECT writer, id, item, presence FROM items WHERE reader = ? ORDER BY rowid", reader)
 			.toArray()
 			.map((row) => ({ writer: row.writer, id: row.id, item: new Uint8Array(row.item), presence: row.presence === 1 }));
-		this.sql.exec("DELETE FROM items WHERE reader = ?", reader);
 		let state = null;
 		if (reader !== "mac") {
 			const row = this.sql.exec<{ id: string; item: ArrayBuffer }>("SELECT id, item FROM states WHERE device = ?", reader).toArray()[0];
 			if (row !== undefined) state = { id: row.id, item: new Uint8Array(row.item) };
-			this.sql.exec("DELETE FROM states WHERE device = ?", reader);
 		}
 		return { items, state };
+	}
+
+	/**
+	 * Deletes what `reader` says it has kept: its own items, and its own state, with these ids. Nothing of another
+	 * reader's is touched, whatever ids it names; an id not there (expired, acknowledged before, or never there) is
+	 * passed over, so that the same `took` sent again after a drop does nothing more. A state the Mac has replaced since
+	 * it was taken has another id, and stays. The ids go in as one JSON array, since a statement takes few bindings.
+	 */
+	took(reader: string, ids: string[]): void {
+		const list = JSON.stringify(ids);
+		this.sql.exec("DELETE FROM items WHERE reader = ? AND id IN (SELECT value FROM json_each(?))", reader, list);
+		if (reader !== "mac") this.sql.exec("DELETE FROM states WHERE device = ? AND id IN (SELECT value FROM json_each(?))", reader, list);
 	}
 
 	/** How many items wait for `reader`. */
