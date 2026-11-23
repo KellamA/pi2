@@ -218,10 +218,8 @@ struct ConversationTests {
         let picture = ConversationPicture(name: "Photo 1", data: Data([1, 2, 3]), mimeType: "image/jpeg", thumbnail: Data())
         let requests = ConversationRequests(engine: session.engine, conversationID: 9)
         _ = await requests.send("Look", pictures: [picture], steer: true)
-        let sent = try #require(transport.sent.first)
-        let object = try #require(try JSONSerialization.jsonObject(with: sent) as? [String: Any])
-        #expect(object["method"] as? String == "submit")
-        let params = try #require(object["params"] as? [String: Any])
+        // The session sends conversations.shown too, on connecting: the request is found by its method.
+        let params = try #require(transport.params(of: "submit"))
         #expect(params["id"] as? Int == 9)
         #expect(params["text"] as? String == "Look")
         #expect(params["mode"] as? String == "steer")
@@ -238,10 +236,7 @@ struct ConversationTests {
         #expect(try await eventually { session.engine.status == .connected })
         let picture = await ConversationRequests(engine: session.engine, conversationID: 9).picture(entry: 4, index: 1)
         #expect(picture == nil)
-        let sent = try #require(transport.sent.first)
-        let object = try #require(try JSONSerialization.jsonObject(with: sent) as? [String: Any])
-        #expect(object["method"] as? String == "conversation.image")
-        let params = try #require(object["params"] as? [String: Any])
+        let params = try #require(transport.params(of: "conversation.image"))
         #expect(params["id"] as? Int == 9)
         #expect(params["entryId"] as? Int == 4)
         #expect(params["index"] as? Int == 1)
@@ -360,5 +355,15 @@ private final class RecordingTransport: EngineTransport {
 
     func cancel() {
         handler = nil
+    }
+
+    /// The parameters of the first request sent with `method`, whatever else was sent before or after it.
+    func params(of method: String) -> [String: Any]? {
+        for data in sent {
+            guard let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  request["method"] as? String == method else { continue }
+            return request["params"] as? [String: Any] ?? [:]
+        }
+        return nil
     }
 }
