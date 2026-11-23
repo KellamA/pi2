@@ -6,6 +6,7 @@ import WidgetKit
 struct WidgetsNeedsView: View {
     let snapshot: WidgetsSnapshot
     let family: WidgetFamily
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     private var needs: WidgetsSnapshot.Needs { snapshot.needs }
 
@@ -23,7 +24,7 @@ struct WidgetsNeedsView: View {
             .accessibilityLabel(Self.countWords(needs.count))
         case .accessoryRectangular:
             VStack(alignment: .leading, spacing: 1) {
-                Label(Self.countWords(needs.count), systemImage: WidgetsKind.needs.symbol)
+                Label(needs.count == 0 ? "Nothing waits" : "\(needs.count) waiting", systemImage: WidgetsKind.needs.symbol)
                     .font(.headline).widgetAccentable().widgetsPrivate()
                 if let newest = needs.newest.first {
                     Text(newest.title).font(.caption).lineLimit(1).widgetsPrivate()
@@ -38,7 +39,7 @@ struct WidgetsNeedsView: View {
         case .systemSmall:
             small
         default:
-            list(rows: family == .systemLarge ? WidgetsSnapshot.named : 3)
+            list(rows: WidgetsRows.count(family, typeSize))
         }
     }
 
@@ -60,10 +61,12 @@ struct WidgetsNeedsView: View {
         VStack(alignment: .leading, spacing: 4) {
             WidgetsHeader(kind: .needs)
             if let newest = needs.newest.first {
-                WidgetsFigure(text: "\(needs.count)")
+                WidgetsFigure(text: "\(needs.count)", size: .system(size: 34, weight: .semibold, design: .rounded))
                 Text(newest.title)
                     .font(.subheadline.weight(.medium))
                     .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .layoutPriority(1)
                     .widgetsPrivate()
                 if let project = newest.projectName {
                     Text(project).font(.caption).foregroundStyle(.secondary).lineLimit(1).widgetsPrivate()
@@ -133,14 +136,14 @@ struct WidgetsNeedsView: View {
         HStack(spacing: 8) {
             WidgetsMark(name: need.agentName, color: need.agentColor).widgetsPrivate()
             VStack(alignment: .leading, spacing: 0) {
-                Text(need.title).font(.subheadline.weight(.medium)).lineLimit(1)
-                Text(need.projectName ?? "Outside projects").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(need.title).font(.subheadline.weight(.medium)).foregroundStyle(Color.primary).lineLimit(1)
+                Text(need.projectName ?? "Outside projects").font(.caption).foregroundStyle(Color.secondary).lineLimit(1)
             }
             .widgetsPrivate()
             Spacer(minLength: 0)
             if family == .systemLarge {
                 Text(WidgetsUpdated.words(need.createdAt))
-                    .font(.caption2).foregroundStyle(.secondary).widgetsPrivate()
+                    .font(.caption2).foregroundStyle(Color.secondary).widgetsPrivate()
             }
         }
         .accessibilityElement(children: .combine)

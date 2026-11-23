@@ -137,8 +137,10 @@ struct WidgetsTests {
 
         let url = try #require(file.url)
         #expect(try url.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == true)
-        #expect(try FileManager.default.attributesOfItem(atPath: url.path)[.protectionKey] as? FileProtectionType
-            == .completeUntilFirstUserAuthentication)
+        // The simulator keeps no data protection, and says none; a phone says the class the file was written with.
+        if let protection = try FileManager.default.attributesOfItem(atPath: url.path)[.protectionKey] as? FileProtectionType {
+            #expect(protection == .completeUntilFirstUserAuthentication)
+        }
 
         // Older than the store keeps the Mac's state: not drawn.
         #expect(file.read(now: written.heardAt.addingTimeInterval(WidgetsSnapshot.keptFor + 1)) == nil)
@@ -170,7 +172,8 @@ struct WidgetsTests {
         let file = WidgetsFile(folder: try folder())
         var reloads = 0
         let publisher = WidgetsPublisher(file: file, reload: { reloads += 1 })
-        let now = Date()
+        // Whole seconds: the file keeps milliseconds.
+        let now = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
         var snapshot = WidgetsSnapshot(needs: [], activity: [], projects: [], agents: [], usage: nil, limits: nil, heardAt: now, macName: nil)
 
         publisher.update(snapshot)

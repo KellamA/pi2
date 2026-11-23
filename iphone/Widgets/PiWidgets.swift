@@ -28,7 +28,7 @@ struct SpendingWidget: Widget {
 }
 
 enum WidgetsConfiguration {
-    static func make(_ kind: WidgetsKind) -> some WidgetConfiguration {
+    @MainActor static func make(_ kind: WidgetsKind) -> some WidgetConfiguration {
         StaticConfiguration(kind: kind.kind, provider: WidgetsTimeline()) { entry in
             WidgetsEntryView(kind: kind, entry: entry)
         }

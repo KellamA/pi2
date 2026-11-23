@@ -6,6 +6,7 @@ import WidgetKit
 struct WidgetsWorkingView: View {
     let snapshot: WidgetsSnapshot
     let family: WidgetFamily
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     private var working: [WidgetsSnapshot.Worker] { snapshot.working }
 
@@ -23,7 +24,7 @@ struct WidgetsWorkingView: View {
             .accessibilityLabel(Self.countWords(snapshot.workingCount))
         case .accessoryRectangular:
             VStack(alignment: .leading, spacing: 1) {
-                Label(Self.countWords(snapshot.workingCount), systemImage: WidgetsKind.working.symbol)
+                Label("\(snapshot.workingCount) at work", systemImage: WidgetsKind.working.symbol)
                     .font(.headline).widgetAccentable().widgetsPrivate()
                 ForEach(working.prefix(2)) { worker in
                     Text(Self.line(worker)).font(.caption).lineLimit(1).widgetsPrivate()
@@ -35,7 +36,7 @@ struct WidgetsWorkingView: View {
         case .systemSmall:
             small
         default:
-            list(rows: family == .systemLarge ? WidgetsSnapshot.named : 3)
+            list(rows: WidgetsRows.count(family, typeSize))
         }
     }
 
@@ -136,7 +137,7 @@ struct WidgetsWorkingView: View {
         HStack(spacing: 8) {
             WidgetsMark(name: worker.agentName, color: worker.agentColor)
             VStack(alignment: .leading, spacing: 0) {
-                Text(Self.line(worker)).font(.subheadline.weight(.medium)).lineLimit(1)
+                Text(Self.line(worker)).font(.subheadline.weight(.medium)).foregroundStyle(Color.primary).lineLimit(1)
                 HStack(spacing: 3) {
                     if worker.state != .working {
                         Image(systemName: worker.state == .waitsForYou ? "hand.raised.fill" : "hourglass")

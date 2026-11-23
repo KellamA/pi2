@@ -47,6 +47,18 @@ enum WidgetsKind: String, CaseIterable, Sendable {
     ]
 }
 
+/// How many rows a widget's list has room for: fewer at the larger text sizes, so that none is cut in half.
+enum WidgetsRows {
+    static func count(_ family: WidgetFamily, _ size: DynamicTypeSize) -> Int {
+        let large = size >= .xxLarge
+        return switch family {
+        case .systemLarge: large ? 4 : WidgetsSnapshot.named
+        case .systemMedium: large ? 2 : 3
+        default: 1
+        }
+    }
+}
+
 /// When a widget's content is marked `privacySensitive` (docs/iphone.md 4.5): on the Lock Screen, which draws the
 /// accessory families, and in StandBy, which draws the small one without its background, so that a phone left locked on
 /// a desk or a stand shows the shape of the widget and none of its words. On the Home Screen the phone is unlocked.
@@ -62,6 +74,10 @@ enum WidgetsPrivacy {
 extension EnvironmentValues {
     /// Whether the widget's words and numbers are marked `privacySensitive` where it is drawn (`WidgetsPrivacy`).
     @Entry var widgetsArePrivate = false
+
+    /// Whether what is private is hidden now: the phone is locked, and iOS draws the widget redacted. A shape that tells
+    /// a value (a window's bar, a gauge, an agent's colour) is not redacted by iOS, so it reads this and draws nothing.
+    var widgetsAreHidden: Bool { widgetsArePrivate && redactionReasons.contains(.privacy) }
 }
 
 /// Marks what the Mac sent, names and numbers, as private where the widget is drawn so.
@@ -113,15 +129,18 @@ struct WidgetsMark: View {
     let name: String?
     let color: String?
     var size: CGFloat = 24
+    @Environment(\.widgetsAreHidden) private var hidden
 
     var body: some View {
         RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
-            .fill(WidgetsColor.agent(color))
+            .fill(hidden ? AnyShapeStyle(.quaternary) : AnyShapeStyle(WidgetsColor.agent(color)))
             .frame(width: size, height: size)
             .overlay {
-                Text(name?.first.map { String($0).uppercased() } ?? "?")
-                    .font(.system(size: size * 0.5, weight: .semibold, design: .rounded))
-                    .foregroundStyle(WidgetsColor.lettering)
+                if !hidden {
+                    Text(name?.first.map { String($0).uppercased() } ?? "?")
+                        .font(.system(size: size * 0.5, weight: .semibold, design: .rounded))
+                        .foregroundStyle(WidgetsColor.lettering)
+                }
             }
             .accessibilityHidden(true)
     }

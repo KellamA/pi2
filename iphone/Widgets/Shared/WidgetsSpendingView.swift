@@ -9,6 +9,8 @@ struct WidgetsSpendingView: View {
     let spending: WidgetsSnapshot.Spending
     let heardAt: Date
     let family: WidgetFamily
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.widgetsAreHidden) private var hidden
 
     private var top: WidgetsSnapshot.PlanWindow? { spending.windows.first }
 
@@ -20,7 +22,7 @@ struct WidgetsSpendingView: View {
             case .accessoryInline:
                 Label(inlineWords, systemImage: WidgetsKind.spending.symbol).widgetsPrivate()
             case .systemSmall: small
-            default: list(rows: family == .systemLarge ? WidgetsSnapshot.named : 3)
+            default: list(rows: WidgetsRows.count(family, typeSize))
             }
         }
         .widgetURL(WidgetsKind.spending.link.url)
@@ -60,7 +62,7 @@ struct WidgetsSpendingView: View {
     @ViewBuilder
     private var circular: some View {
         if let fraction {
-            Gauge(value: fraction) {
+            Gauge(value: hidden ? 0 : fraction) {
                 Image(systemName: WidgetsKind.spending.symbol)
             } currentValueLabel: {
                 Text("\(Int((fraction * 100).rounded()))").monospacedDigit().widgetsPrivate()
@@ -169,15 +171,18 @@ struct WidgetsSpendingView: View {
 /// How full a window is: above 80% it is marked, as the Mac's Usage marks it.
 struct WidgetsBar: View {
     let fraction: Double
+    @Environment(\.widgetsAreHidden) private var hidden
 
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .leading) {
                 Capsule().fill(.quaternary)
-                Capsule()
+                if !hidden {
+                    Capsule()
                     .fill(fraction > 0.8 ? Color.orange : WidgetsColor.accent)
-                    .frame(width: max(geometry.size.height, geometry.size.width * min(1, max(0, fraction))))
-                    .widgetAccentable()
+                        .frame(width: max(geometry.size.height, geometry.size.width * min(1, max(0, fraction))))
+                        .widgetAccentable()
+                }
             }
         }
         .accessibilityHidden(true)
