@@ -108,11 +108,13 @@ export function newAddress(): string {
 	return `198.51.${(addresses >> 8) & 255}.${addresses & 255}`;
 }
 
-/** Opens a socket to the relay: to a pairing's object if `pairing` is given, or to register one. */
+/**
+ * Opens a socket to the relay: to a pairing's object if `pairing` is given, or to register one. Every connection comes
+ * from an address, as Cloudflare says it; a new one each time unless a test names one.
+ */
 export async function connect(pairing?: string, address = newAddress()): Promise<Client> {
-	const headers: Record<string, string> = { Upgrade: "websocket" };
+	const headers: Record<string, string> = { Upgrade: "websocket", "CF-Connecting-IP": address };
 	if (pairing !== undefined) headers["Pi2-Pairing"] = pairing;
-	else headers["CF-Connecting-IP"] = address;
 	const response = await worker.fetch("https://relay.test/v1", { headers });
 	expect(response.status).toBe(101);
 	return new Client(response.webSocket!);
