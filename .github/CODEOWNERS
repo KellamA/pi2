@@ -44,6 +44,10 @@
 # How pi² Remote is packaged and signed (#675): an entitlement given it there would let any program load a library into
 # the process that holds the Mac's keys.
 /app/remote-helper.sh @KellamA
+# What catches build.sh undoing that signing (#675's security read A): a release build's helper checked, and that check's
+# own test. Weakening them with build.sh in one pull request would let either change through unreviewed.
+/app/check-release-build.mts @KellamA
+/app/test-release-build.mts @KellamA
 /engine/src/devices.ts @KellamA
 /engine/src/remote.ts @KellamA
 /engine/test/devices.ts @KellamA

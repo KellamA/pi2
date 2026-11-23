@@ -1,7 +1,7 @@
 #!/bin/bash
 # Checks scripts/check-protected-targets against package descriptions made here, one good and one for each way of
 # getting round CODEOWNERS through app/Package.swift, and against Swift files that name @_spi(Vectors) in a folder of
-# their own. Needs only bash and jq, so CI runs it on Linux with the other scripts' tests. Touches nothing outside a
+# their own. Needs only bash, jq and perl, so CI runs it on Linux with the other scripts' tests. Touches nothing outside a
 # temporary folder.
 #
 #   scripts/test-check-protected-targets
@@ -156,7 +156,7 @@ for case in "pi2/Remote.swift|@testable import RemoteKit" "pi2-remote-helper-che
 	"pi2/Fourth.swift|@testable\nimport RemoteKit" "pi2/Fifth.swift|@testable import struct pi2_remote.Startup" \
 	"pi2/Sixth.swift|@testable import enum pi2_remote.BuildKind" "pi2/Seventh.swift|@testable import class RemoteKit.Channel" \
 	"pi2/Eighth.swift|@testable import func pi2_remote.log" "pi2/Ninth.swift|@testable /* x */ import RemoteKit" \
-	"pi2/Tenth.swift|@testable /* a\n * b */\nimport pi2_remote"; do
+	"pi2/Tenth.swift|@testable /* a\n * b */\nimport pi2_remote" "pi2/Eleventh.swift|@testable /* a /* b */ c */ import RemoteKit"; do
 	IFS='|' read -r file line <<<"$case"
 	rm -rf "$T/testable"; cp -R "$T/tree" "$T/testable"
 	printf "$line\n" >"$T/testable/app/Sources/$file"

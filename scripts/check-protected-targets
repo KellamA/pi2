@@ -33,6 +33,7 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 command -v jq >/dev/null || { echo "check-protected-targets: needs jq" >&2; exit 2; }
+command -v perl >/dev/null || { echo "check-protected-targets: needs perl" >&2; exit 2; }
 
 # Each protected target: its name, its type, what it may exclude (a JSON list), the targets it may depend on (a JSON
 # list of names, in order) and the build settings it has (a JSON list, as dump-package writes them; none for most).
@@ -165,7 +166,8 @@ done < <(grep -rlE --include='*.swift' --exclude-dir=.build --exclude-dir=.git '
 # Read with line comments taken out, lines joined and block comments taken out, so that an attribute on a line of its
 # own or a comment between the words counts; an import of one declaration (`import struct pi2_remote.Startup`) too.
 while IFS= read -r file; do
-	if sed -E 's#//.*$##' "$file" | tr '\n' ' ' | sed -E 's#/\*([^*]|\*+[^*/])*\*+/# #g' |
+	# Block comments nest in Swift, so the innermost goes first, again and again.
+	if perl -0777 -pe 's#//[^\n]*##g; 1 while s#/\*(?:(?!/\*|\*/).)*\*/# #gs; s/\n/ /g' "$file" |
 		grep -qE '@testable([[:space:]]+@[A-Za-z_]+(\([^)]*\))?)*[[:space:]]+import[[:space:]]+((typealias|struct|class|enum|protocol|let|var|func|actor|macro)[[:space:]]+)?(RemoteKit|pi2_remote)([^A-Za-z0-9_]|$)'; then
 		fail "${file#"$root"/} names @testable import of RemoteKit or pi² Remote, which nothing may"
 	fi
