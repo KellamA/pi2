@@ -503,8 +503,8 @@ export function requestFault(event: Extract<Event, { kind: "open" }>): string | 
 		if (!kind(value)) {
 			const fixed = { "user-agent": "USER_AGENT", "accept-language": "ACCEPT_LANGUAGE" }[name.toLowerCase()];
 			return fixed !== undefined
-				? `a ${name} that is not the relay client's fixed one (${fixed} in scan.ts)`
-				: `a ${name} header that is not what the allow-list takes`;
+				? `a ${name} that is not the relay client's fixed one (${fixed} in scan.ts): ${JSON.stringify(value)}`
+				: `a ${name} header that is not what the allow-list takes: ${JSON.stringify(value)}`;
 		}
 	}
 	return null;

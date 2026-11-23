@@ -1,6 +1,7 @@
-// A fixture for sealed.test.ts: relay/wrangler.jsonc as pull request #821 (#677, P9, the deployments) has it at 33bd066,
-// so that the logs-off check is held to a configuration with environments that inherit `observability` and `logpush`.
-// Never deployed, nor read by Wrangler.
+// A fixture for sealed.test.ts: a frozen copy of relay/wrangler.jsonc as pull request #821 (#677, P9, the deployments)
+// has it at 33bd066, so that the logs-off check is held to a configuration with environments that inherit
+// `observability` and `logpush`. Never deployed, nor read by Wrangler. Remove it, and its uses in sealed.test.ts, once
+// #821 is on main: relay/wrangler.jsonc is then the same configuration.
 // The relay's Worker (docs/iphone.md 5.3, #676), and its two deployments (#677, P9): `development`, for development
 // builds and the sandbox push environment, and `production`, for TestFlight builds and later (9.1). The top level is
 // for local runs and tests only, and has no settings, so a relay deployed from it refuses everything. Nothing deploys

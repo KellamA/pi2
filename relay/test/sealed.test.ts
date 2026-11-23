@@ -171,13 +171,19 @@ describe("the relay logs nothing", () => {
 	});
 
 	it("runs its tests on the relay's own runtime settings and objects: the test configurations' copies match", () => {
-		const relay = jsonc(wrangler);
-		for (const [name, text] of [["protocol", protocolWrangler], ["sealed", sealedWrangler]]) {
-			const copy = jsonc(text);
-			for (const key of ["compatibility_date", "compatibility_flags", "send_metrics", "durable_objects", "migrations", "observability"]) {
-				expect(copy[key], `test/${name}/wrangler.jsonc: ${key}`).toEqual(relay[key]);
+		// Their logs are held to being off, not to the relay's very block, which the deployments' adds to (#821).
+		const matches = (relayText: string) => {
+			const relay = jsonc(relayText);
+			for (const [name, text] of [["protocol", protocolWrangler], ["sealed", sealedWrangler]]) {
+				const copy = jsonc(text);
+				for (const key of ["compatibility_date", "compatibility_flags", "send_metrics", "durable_objects", "migrations"]) {
+					expect(copy[key], `test/${name}/wrangler.jsonc: ${key}`).toEqual(relay[key]);
+				}
+				expect(logsFaults(copy), `test/${name}/wrangler.jsonc`).toEqual([]);
 			}
-		}
+		};
+		matches(wrangler);
+		matches(deployment);
 	});
 
 	it("has no use of the console in its code, nor in the verifier it bundles", () => {
