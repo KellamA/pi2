@@ -45,6 +45,7 @@ import {
 	checkWorkTransition,
 	checkWriterIn,
 	type GithubWriting,
+	orchestrates,
 	type PullAction,
 	syncWorkForInput,
 	unknownItem,
@@ -280,11 +281,14 @@ export function publicText(text: string, home = process.env.HOME || homedir()): 
 	return home.length > 1 ? text.split(home.replace(/\/+$/, "")).join("~") : text;
 }
 
+/** The line naming the agent that posts a text, with the blank line after it; none for the person. */
+function agentLine(project: Project, by: Who): string {
+	return by.kind === "agent" ? `*From ${agentName(by.agentId)}, an agent of the pi² project “${project.name}”.*\n\n` : "";
+}
+
 /** The text pi² posts: for an agent, a line naming it first (3.11); the marker last, which GitHub does not show. */
 function compose(project: Project, by: Who, text: string, id: string): string {
-	const name = by.kind === "agent" ? agentName(by.agentId) : null;
-	const head = name === null ? "" : `*From ${name}, an agent of the pi² project “${project.name}”.*\n\n`;
-	return publicText(`${head}${text}${text === "" ? "" : "\n\n"}${marker(id)}`);
+	return publicText(`${agentLine(project, by)}${text}${text === "" ? "" : "\n\n"}${marker(id)}`);
 }
 
 /** What a person reads of a text pi² posted: without the agent's line and the marker. */
@@ -739,7 +743,7 @@ function listingNote(project: Project): string {
 
 // ---- Writes and their intents
 
-type WriteKind = "issue.create" | "issue.comment" | "issue.labels" | "issue.edit" | "issue.close" | "issue.reopen" | "pr.create" | "pr.comment" | "pr.merge";
+type WriteKind = "issue.create" | "issue.comment" | "issue.labels" | "issue.edit" | "issue.close" | "issue.reopen" | "pr.create" | "pr.comment" | "pr.edit" | "pr.merge";
 const CREATING = new Set<WriteKind>(["issue.create", "issue.comment", "pr.create", "pr.comment"]);
 
 /** A write pi² could not tell GitHub took. */
@@ -784,6 +788,9 @@ async function perform(project: Project, kind: WriteKind, args: Record<string, u
 			const url = (await gh(["pr", "create", ...repo, "--head", String(args.head), "--base", String(args.base), "--title", String(args.title), "--body", String(args.body)], cwd)).trim().split("\n").at(-1)!;
 			return { number: numberIn(url), url };
 		}
+		case "pr.edit":
+			await gh(["pr", "edit", n, ...repo, "--title", String(args.title), "--body", String(args.body)], cwd);
+			return {};
 		case "pr.merge":
 			await gh(["pr", "merge", n, ...repo, "--merge"], cwd);
 			return {};
@@ -813,6 +820,10 @@ async function look(project: Project, intent: Intent): Promise<{ result: unknown
 			const pulls = json<{ number: number; body?: string; url: string }[]>(await gh(["pr", "list", ...repo, "--state", "all", "--head", branch, "--limit", "30", "--json", "number,body,url"], cwd));
 			const found = pulls.find((pull) => has(pull.body));
 			return found === undefined ? undefined : { result: { number: found.number, url: found.url } };
+		}
+		case "pr.edit": {
+			const now = json<{ title: string; body?: string }>(await gh(["pr", "view", String(args.number), ...repo, "--json", "title,body"], cwd));
+			return now.title === args.title && (now.body ?? "") === args.body ? { result: {} } : undefined;
 		}
 		case "pr.merge": {
 			const { state } = json<{ state: string }>(await gh(["pr", "view", String(args.number), ...repo, "--json", "state"], cwd));
@@ -1288,6 +1299,59 @@ async function sendBack(project: Project, number: number, reason: string, by: Wh
 	return told;
 }
 
+/** The words GitHub reads as closing issue `number` on merge: "Fixes #12", "closes #12", "Resolved #12". */
+const closes = (number: number) => new RegExp(`\\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\\s+#${number}\\b`, "i");
+
+/**
+ * Replace the text (and the title, if given) of open pull request `number`, which this project's tool opened (#823),
+ * putting back what opening added: the line naming its agent, each issue it closed, and its marker, as they were. Only
+ * the conversation that opened it, or the orchestrator, may. Answers what was done, and the title it has after.
+ */
+async function updatePull(project: Project, number: number, by: Who, args: Record<string, unknown>, key: string, call: string): Promise<{ text: string; title: string }> {
+	const given = typeof args.text === "string" && args.text.trim() !== "" ? args.text.trimEnd() : undefined;
+	const retitled = typeof args.title === "string" ? args.title.trim() : "";
+	if (given === undefined && retitled === "") throw new Error("Give the pull request's new text, in text or text_file, or a new title.");
+	const pr = await viewPull(project, number);
+	const body = pr.body ?? "";
+	const tail = MARKER.exec(body);
+	if (tail === null) throw new Error(`Pull request #${number} was not opened with the work tool: its text has no pi² marker, so there is nothing of the tool's to keep. Edit it on GitHub, or with gh pr edit.`);
+	await readMirror();
+	const entry = sameRepository(mirror.projects[project.id]?.repository, project.repository) ? mirror.projects[project.id] : undefined;
+	const opening = intentsOf(project)[tail[1]!];
+	const openedBy = entry?.openedBy[String(number)]?.conversationId ?? (opening?.action === "pr.create" && typeof opening.args.openedBy === "number" ? opening.args.openedBy : undefined);
+	if (openedBy === undefined) throw new Error(`Pull request #${number} was not opened by this project's work tool: pi² has no record of it, so update_pull_request leaves it alone. Edit it on GitHub, or with gh pr edit.`);
+	const state = pr.state.toUpperCase();
+	if (state === "MERGED" || state === "CLOSED") throw new Error(`Pull request #${number} is ${state.toLowerCase()}, so its text stays as it is.`);
+	if (!orchestrates(project, by) && !(by.kind === "agent" && by.conversationId === openedBy)) {
+		throw new Error(`Only conversation ${openedBy}, which opened pull request #${number}, or the orchestrator can update it. Tell the orchestrator in your report.`);
+	}
+
+	const title = retitled === "" ? pr.title : publicText(retitled);
+	let edited = body;
+	const kept: string[] = [];
+	if (given !== undefined) {
+		// What opening added, read from the text as it is: never a line or an issue it did not have.
+		const line = AGENT_LINE.exec(body)?.[0] ?? (opening?.args.by === undefined ? "" : agentLine(project, opening.args.by as Who));
+		const head = line.trim() === "" ? "" : `${line.trim()}\n\n`;
+		if (head !== "") kept.push("the line naming its agent");
+		const fixed = [...new Set([...plain(body).matchAll(/\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+#(\d+)\b/gi)].map((match) => Number(match[1])))];
+		let said = given;
+		for (const issue of fixed) {
+			if (!closes(issue).test(said)) said = `${said}\n\nFixes #${issue}`;
+			kept.push(`Fixes #${issue}`);
+		}
+		kept.push("pi²'s marker");
+		edited = publicText(`${head}${said}\n\n${tail[0]}`);
+	}
+	if (title === pr.title && edited === body) return { text: `Pull request #${number} “${title}” already says that: nothing changed.`, title };
+	await write(project, key, "pr.edit", { call, by, number, role: "update_pull_request", title, body: edited, summary: `updating pull request #${number}` });
+	await readMirror();
+	keepInListing(project, undefined, pullOf(await viewPull(project, number), intentsOf(project), mirror.projects[project.id]?.openedBy));
+	const what = [title !== pr.title ? "title" : null, edited !== body ? "text" : null].filter((one) => one !== null).join(" and ");
+	const keeping = kept.length === 0 ? "" : `, keeping ${kept.length === 1 ? kept[0] : `${kept.slice(0, -1).join(", ")} and ${kept.at(-1)}`}`;
+	return { text: `Updated the ${what} of pull request #${number} “${title}”${keeping}: ${pr.url}`, title };
+}
+
 /** Every pull-request action of `work` (5.7); the tool has checked who may. */
 async function pull(project: Project, action: PullAction, by: Who, args: Record<string, unknown>, call: Call): Promise<{ text: string; change?: number }> {
 	const receipt = await workReceiptOf(call);
@@ -1313,7 +1377,7 @@ async function pull(project: Project, action: PullAction, by: Who, args: Record<
 		const { head } = await headOf(folder, repositoryOf(project));
 		const baseBranch = typeof args.base === "string" && args.base.trim() !== "" ? args.base.trim() : await defaultBranch(project);
 		let said = typeof args.text === "string" ? args.text : "";
-		if (fixes !== null && !new RegExp(`\\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\\s+#${fixes}\\b`, "i").test(said)) said = said.trim() === "" ? `Fixes #${fixes}` : `${said}\n\nFixes #${fixes}`;
+		if (fixes !== null && !closes(fixes).test(said)) said = said.trim() === "" ? `Fixes #${fixes}` : `${said}\n\nFixes #${fixes}`;
 		const made = (await write(project, key, "pr.create", { call: keys.call, by, role: "pull_request", head, base: baseBranch, title: publicText(title), body: compose(project, by, said, key), openedBy: by.conversationId, summary: `opening the pull request “${short(title)}”` })) as { number: number; url: string };
 		text = `Opened pull request #${made.number} from ${head} into ${baseBranch}: ${made.url}`;
 		summary = `Opened pull request #${made.number} “${short(title)}” on GitHub`;
@@ -1328,6 +1392,11 @@ async function pull(project: Project, action: PullAction, by: Who, args: Record<
 		const made = (await write(project, key, "pr.comment", { call: keys.call, by, number: n, role: "review", verdict, agentName: name, body: compose(project, by, `**${VERDICTS[verdict]}.** ${finding}`, key), summary: `posting a finding on pull request #${n}` })) as { url: string };
 		text = `Posted your finding (${VERDICTS[verdict].toLowerCase()}) on pull request #${n} “${pr.title}”: ${made.url}`;
 		summary = `Reviewed pull request #${n} “${short(pr.title)}” on GitHub: ${VERDICTS[verdict].toLowerCase()}`;
+	} else if (action === "update_pull_request") {
+		const n = number();
+		const updated = await updatePull(project, n, by, args, key, keys.call);
+		text = updated.text;
+		summary = `Updated pull request #${n} “${short(updated.title)}” on GitHub`;
 	} else if (action === "merge") {
 		const n = number();
 		const pr = await viewPull(project, n);

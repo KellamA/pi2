@@ -70,6 +70,7 @@ iphone/   pi² for iPhone (docs/iphone.md; being built, #680), one Xcode project
           Sources/Keys          where keys are made (KeyPlace); the debug-only check that one Face ID signs a session (docs/iphone.md 4.3)
           Tests                 its unit tests, run in the simulator
           It links PiModels, EngineKit and TranscriptKit from app/Package.swift as a local package, through the products declared there
+relay/    the relay for pi² for iPhone: a Cloudflare Worker and a Durable Object per pairing (iphone.md 5.3, relay/README.md); not part of the app
 ```
 
 The app is a view of the engine's committed state. It keeps no truth of its own: everything on screen is what the engine last said. The engine is the only process that opens the database.
