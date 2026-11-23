@@ -283,8 +283,8 @@ public actor RelayClient {
 	/// What was last reported of each device's presence, and of the Mac's, so that a repeat is not reported again; kept
 	/// only for the devices the client knows of (`known`).
 	private var presence: [DeviceID: Bool] = [:]
-	/// The devices the Mac's client takes notices of: those a `ready` listed, a `joined` named or `addDevice` added, the
-	/// latest `RelayClient.knownDevices`. A presence notice naming any other is not read, so that a relay naming new ids
+	/// The devices the Mac's client takes notices of: those a `ready` listed, a `joined` named, `addDevice` added or
+	/// `send(_:to:)` sent to, the latest `RelayClient.knownDevices` seen. A presence notice naming any other is not read, so that a relay naming new ids
 	/// cannot grow what the client holds.
 	private var known: [DeviceID] = []
 	/// The most devices known at once: five listed, and the slots of the windows opened while connected.
@@ -395,6 +395,9 @@ public actor RelayClient {
 	public func send(_ bytes: Data, to device: DeviceID) async throws {
 		try requireMac()
 		guard let deviceBytes = Base64URL.decode(String(device.text.dropFirst(4)), count: 16) else { throw RelayClientError.invalid(RemoteKitError("relay data", "not a device")) }
+		// The relay answers `offline` for an id it has no socket for, as an honest relay does: the id is the caller's
+		// own, so knowing it lets the relay grow nothing.
+		know(device)
 		try await sendBinary(deviceBytes + bytes, body: bytes.count)
 	}
 
@@ -754,8 +757,9 @@ public actor RelayClient {
 	}
 
 	/// Takes notices of `device` from now on; the earliest known goes past `knownDevices`.
+	/// A device seen again moves to the back, so that the devices in use are the last to go.
 	private func know(_ device: DeviceID) {
-		guard !known.contains(device) else { return }
+		known.removeAll { $0 == device }
 		known.append(device)
 		if known.count > Self.knownDevices { presence[known.removeFirst()] = nil }
 	}
