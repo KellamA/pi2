@@ -31,6 +31,10 @@
 # one would let a change to the channel through unnoticed.
 /app/Sources/pi2-remote-check/ @KellamA
 /app/Sources/pi2-remote-fuzz/ @KellamA
+# The relay client's checks and the protocol test (#678): the program that runs it and the script that starts the relay
+# for it, with relay/test/protocol under /relay/. A weakened protocol test would let a change to the client through.
+/app/Sources/pi2-relay-check/ @KellamA
+/scripts/relay-protocol-test @KellamA
 # What keeps app/Package.swift from building those targets from anything else, and its test (#674). The issue that adds
 # a protected target adds its line to the script's list.
 /scripts/check-protected-targets @KellamA

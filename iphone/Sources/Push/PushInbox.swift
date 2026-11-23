@@ -7,10 +7,12 @@ import Foundation
 /// backups, as everything the phone keeps (3.6).
 ///
 /// It lives in the app group's container, which the app and the extension share: none until #682 gives them the app
-/// group, so an unsigned build keeps nothing (`shared` is nil) and the tests give a folder of their own.
+/// group (no entitlement reaches an unsigned build), so there `shared` is nil and nothing is kept; the tests give a
+/// folder of their own.
 struct PushInbox: Sendable {
-    /// The app group the app and the service extension share; nil until #682 makes it.
-    static let appGroup: String? = nil
+    /// The app group the app and its extensions share, the name the widgets and the share extension use too; #682 makes
+    /// it, and the contract does not name it yet.
+    static let appGroup = "group.dev.pi2.ios"
     /// The most notices kept at once: past it a new one is not kept (the mailbox holds the need anyway, 5.3).
     static let limit = 200
 
@@ -18,9 +20,7 @@ struct PushInbox: Sendable {
 
     /// The extension's file in the app group's container, or nil without one.
     static var shared: PushInbox? {
-        guard let group = appGroup,
-              let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: group)
-        else { return nil }
+        guard let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) else { return nil }
         return PushInbox(folder: container.appending(path: "Push", directoryHint: .isDirectory))
     }
 

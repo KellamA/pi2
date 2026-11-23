@@ -37,10 +37,12 @@ TARGETS=(
 	'RemoteKit|regular|[]|[]'
 	'pi2-remote-check|executable|["vectors"]|["RemoteKit"]'
 	'pi2-remote-fuzz|executable|[]|["RemoteKit"]'
+	# The relay client's checks and the protocol test's program (#678).
+	'pi2-relay-check|executable|[]|["RemoteKit"]'
 )
 # The protected targets that are checks, not code: no product of the package may name them (a library or executable
 # product would hand the test-only entry points, or a stand-in for the checks, to whatever builds on the package).
-CHECKS_ONLY='["pi2-remote-check","pi2-remote-fuzz"]'
+CHECKS_ONLY='["pi2-remote-check","pi2-remote-fuzz","pi2-relay-check"]'
 # The packages app/Package.swift may depend on, by address. A new one is the owner's to allow.
 PACKAGES='["https://github.com/sparkle-project/Sparkle"]'
 # The fields a target's description may have, as `swift package dump-package` writes them. A field this list does not

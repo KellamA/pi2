@@ -23,6 +23,8 @@ jobs:
     timeout-minutes: 5
     outputs:
       macos: ${{ steps.files.outputs.macos }}
+      # Whether the relay changed, which the protocol test (a macOS job) reads besides what macos covers.
+      relay: ${{ steps.files.outputs.relay }}
     steps:
       - uses: actions/checkout@v7
         if: github.event_name == 'pull_request'
@@ -37,12 +39,14 @@ jobs:
           if [[ $EVENT != pull_request ]]; then
             echo "A $EVENT: running every job."
             echo macos=true >> "$GITHUB_OUTPUT"
+            echo relay=true >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # What the commit being tested changes from main as it is now, both names of a moved file.
           changed=$(git diff --no-renames --name-only HEAD^1 HEAD)
           macos=false
-          [[ -n $changed ]] || { echo "No file changed: running every job."; macos=true; }
+          relay=false
+          [[ -n $changed ]] || { echo "No file changed: running every job."; macos=true; relay=true; }
           while IFS= read -r file; do
             case $file in
               "") ;;
@@ -55,8 +59,8 @@ jobs:
               scripts/test-auto-merge | scripts/auto-merge | scripts/rerun-if-no-runner | scripts/test-docs-lists) ;;
               # Checked by Scripts (tests) with stand-ins; the iPhone workflow (iphone.yml) runs the script itself.
               scripts/iphone-sim | scripts/test-iphone-sim) ;;
-              # The relay: checked by the Linux job Relay (tests) alone.
-              relay/*) ;;
+              # The relay: checked by the Linux job Relay (tests), and by the protocol test, which runs on macOS for it.
+              relay/*) relay=true ;;
               # Copied into the app's Info.plist by app/build.sh, which drops white space: checked here for what
               # could break that.
               app/VERSION)
@@ -67,6 +71,7 @@ jobs:
           done <<<"$changed"
           [[ $macos == true ]] || echo "Only files no macOS job reads: skipping the engine's tests and the app's build."
           echo "macos=$macos" >> "$GITHUB_OUTPUT"
+          echo "relay=$relay" >> "$GITHUB_OUTPUT"
 
   engine:
     name: Engine (type-check and tests)
@@ -172,6 +177,36 @@ jobs:
       - run: npm run deploy -- production --dry-run
       - run: npm run test-deploy
 
+  relay-protocol:
+    name: Relay (protocol test)
+    # The protocol test (docs/iphone.md 10, #678): RemoteKit's relay client, through the system's WebSocket, against the
+    # relay itself, run on the runner under Wrangler's local runtime on 127.0.0.1 (scripts/relay-protocol-test, through
+    # relay/scripts/isolated.mjs: a throwaway home, no usage events, no Cloudflare credential). On macOS, since the client
+    # is Swift on CryptoKit and Foundation's WebSocket. Runs whenever the macOS jobs run, and when the relay changed.
+    # Deploys nothing.
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.outputs.macos != 'false' || needs.changes.outputs.relay == 'true') }}
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      # Pinned by commit (v7), so that a moved tag cannot change what this job runs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: relay/package-lock.json
+      - name: Install the relay's packages
+        working-directory: relay
+        run: npm ci
+      - name: Build the protocol test's program
+        working-directory: app
+        run: swift build --product pi2-relay-check
+      - name: Run the client against the relay
+        run: scripts/relay-protocol-test
+
   app:
     name: App (build)
     needs: changes
@@ -248,6 +283,11 @@ jobs:
       - name: Fuzz RemoteKit's parsers
         working-directory: app
         run: .build/debug/pi2-remote-fuzz --seed 674 --seconds 60
+      # RemoteKit's relay client (#678): its messages, written and read, and the client against a relay the check plays
+      # itself in memory, on a clock it moves. No network. The protocol test against the relay is its own job.
+      - name: Check RemoteKit's relay client
+        working-directory: app
+        run: .build/debug/pi2-relay-check
       # RemoteKit is shared with the iPhone app, so it must keep building for iOS: CryptoKit only, nothing of the Mac's.
       - name: Build RemoteKit for iOS
         working-directory: app

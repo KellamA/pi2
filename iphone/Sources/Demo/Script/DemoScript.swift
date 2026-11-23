@@ -19,6 +19,10 @@ enum DemoScript {
         library,        // Script/LibraryAnswers.swift (#685, #687): conversation.create (a chat), .pin, .archive, .unarchive,
                         // search
         projects,       // Script/ProjectAnswers.swift (#685, #688): projects.set, .rename, .archive, .startFresh, .watch
+        settings,       // Script/SettingsAnswers.swift (#697): a project's repository, projects.delete; agents.save; the app's
+                        // settings; schedules
+        board,          // Script/BoardAnswers.swift (#696): projects.rules.*, memory.add/.edit/.delete/.setEnabled,
+                        // agents.allowEverything (off), branches.refresh
         work,           // Script/WorkAnswers.swift (#694): work.list, work.create, work.act
         conversationsScreens, // Script/ConversationsAnswers.swift (#698): conversation.rename, .delete, settings.setAutoArchive,
                         // background.output, .stop, projects.unarchive, .restoreConversation

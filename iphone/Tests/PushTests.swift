@@ -401,8 +401,9 @@ struct PushTests {
         #expect(try inbox.take().isEmpty)
         try inbox.wipe()
         #expect(!FileManager.default.fileExists(atPath: folder.path))
-        // Unsigned, there is no app group, and nothing is kept.
-        #expect(PushInbox.appGroup == nil || PushInbox.shared != nil)
+        // One app group for the app and its extensions; an unsigned build has none, and keeps nothing.
+        #expect(PushInbox.appGroup == WidgetsFile.appGroup && PushInbox.appGroup == ShareDrop.appGroup)
+        #expect(PushInbox.shared == nil)
     }
 
     // MARK: The keys
