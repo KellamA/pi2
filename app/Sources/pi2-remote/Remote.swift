@@ -110,6 +110,9 @@ package final class Remote: @unchecked Sendable {
 			// Only channels with no claim yet: the engine says `closeJoin` before `paired` (devices.ts, pairConfirm).
 			window = nil
 			for connection in connections.values where connection.isPairingBeforeClaim { connection.windowClosed() }
+			// A claim with the engine is answered right after: `paired` follows `closeJoin` within one save, `pairRefused`
+			// at once. Neither within 30 seconds, and its channel ends, with no try counted.
+			for connection in connections.values where connection.isClaim { connection.endIfUnanswered(after: PhoneConnection.answerAfterCloseJoin) }
 			log("the pairing window closed")
 		case "paired": paired(event)
 		case "pairRefused":

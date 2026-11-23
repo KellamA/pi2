@@ -70,8 +70,10 @@ final class PhoneConnection: @unchecked Sendable {
 		io = SocketIO(descriptor: descriptor, queue: remote.queue)
 	}
 
-	/// How long a claim the engine holds may wait for `paired` or `pairRefused`: the window's five minutes and one more.
+	/// How long a claim the engine holds may wait for `paired` or `pairRefused`: the window's five minutes and one more,
+	/// and once the window has closed (`closeJoin`, which the engine sends just before `paired`), 30 seconds.
 	static let claimWithin: TimeInterval = 6 * 60
+	static let answerAfterCloseJoin: TimeInterval = 30
 
 	func start() {
 		io.onBytes = { [unowned self] in self.take($0) }
@@ -84,6 +86,23 @@ final class PhoneConnection: @unchecked Sendable {
 		// The first message has a short deadline of its own: a phone sends it at once (D1).
 		remote.queue.asyncAfter(deadline: .now() + Admission.firstMessageWithin) { [weak self] in
 			guard let self, case .first = self.phase else { return }
+			self.end()
+		}
+	}
+
+	/// A claim passed to the engine, waiting for its answer.
+	var isClaim: Bool {
+		switch phase {
+		case .claiming, .claimed: true
+		default: false
+		}
+	}
+
+	/// Ends the channel `seconds` from now if its claim has still had no answer; no try is counted (it reached the engine).
+	func endIfUnanswered(after seconds: TimeInterval) {
+		remote.queue.asyncAfter(deadline: .now() + seconds) { [weak self] in
+			guard let self, self.isClaim else { return }
+			log("a claim had no answer within \(Int(seconds)) seconds of the window closing; its channel is closed")
 			self.end()
 		}
 	}

@@ -227,10 +227,19 @@ enum Flows {
 
 		Check.section("Find on this network off and on: the engine hears of the new port (#675's security read B, M5)")
 		let homeOff = JSONValue.object([("on", .bool(true)), ("relay", .bool(true)), ("home", .bool(false)), ("direct", .bool(false)), ("preview", .bool(true))])
+		// A claimer with a wrong secret, the handshake done and nothing proven, when the switch goes off: no wrong try.
+		engine.event("openJoin", [("secret", .string(Base64URL.encode(secret))), ("tokenHash", .string("x")), ("expires", .integer(expires * 1000))])
+		let unproven = Phone(port: mac.port)!
+		let unprovenHandshake = try! ChannelHandshake.pairingInitiator(payload: wrong, channelKey: keys.channel)
+		unproven.send(try! unprovenHandshake.writeMessage())
+		Check.expect(unproven.message() != nil, "a claimer with a wrong secret gets the Mac's answer")
 		engine.event("settings", [("relay", .string("ws://127.0.0.1:9/v1")), ("switches", homeOff)])
+		Check.expect(unproven.closesWithin(10), "Find on this network off ends a pairing channel with no claim")
 		let none = engine.request("remote.state")
+		Check.expect(none != nil, "and is no wrong try: the engine is told only the addresses")
 		Check.expect(none?.params["addresses"] == .array([]), "off: the engine is told the Mac has no address to reach", none.map { JSON.text($0.params) } ?? "nothing")
 		if let none { engine.answer(none.id) }
+		engine.event("closeJoin")
 		engine.event("settings", [("relay", .string("ws://127.0.0.1:9/v1")), ("switches", switches)])
 		let again = engine.request("remote.state")
 		if let again { engine.answer(again.id) }
@@ -323,15 +332,40 @@ enum Flows {
 		Check.expect(drained > 0 && drained <= sent, "once the engine reads, what the phone sent reaches it", "\(drained) of \(sent)")
 		engine.event("sessionClosed", [("session", .string("s_two")), ("why", .string("check"))])
 		Check.expect(closing.event(within: 30) == .bye, "a session the engine closes ends its channel")
+		// A claim the engine took, then `closeJoin` as before `paired`, and no answer ever: its channel ends 30 s later.
+		let secret3 = Bytes.random(32)
+		let expires3 = Int64(Date().timeIntervalSince1970) + 300
+		engine.event("openJoin", [("secret", .string(Base64URL.encode(secret3))), ("tokenHash", .string("x")), ("expires", .integer(expires3 * 1000))])
+		let payload3 = try! PairingPayload(
+			pairing: mac.pairing, macName: "Check Mac", channelKey: mac.channel, identityKey: mac.identity, recordKey: mac.record, secret: secret3,
+			relay: "ws://127.0.0.1:9/v1", addresses: [], expires: expires3)
+		let unanswered = Phone(port: mac.port)!
+		var unansweredAt: Date?
+		if unanswered.pair(payload: payload3, keys: PhoneKeys(), team: team) != nil, let claimed = engine.request("remote.pairClaim") {
+			engine.answer(claimed.id, .object([("claim", .string("claim_3"))]))
+			usleep(300_000)
+			engine.event("closeJoin")
+			unansweredAt = Date()
+		} else {
+			Check.expect(false, "a third claim reached the engine")
+		}
 		guard let (lapsing, _) = attach(engine, mac: mac, device: other, keys: second2, session: "s_three") else { Check.stop("the second phone attached") }
 		// A `refused` line is the Mac's alone (#820): from a phone it closes the channel, and the session waits for a resume.
 		lapsing.sendLine(Data(#"{"refused":{"reason":"update"}}"#.utf8))
 		Check.expect(lapsing.closesWithin(10), "a refused line from a phone, which only the Mac may send, closes the channel")
 		let dropped = Date()
 		Check.expect(engine.sessionLine(within: 1) == nil, "and never reaches the engine")
+		if let unansweredAt {
+			usleep(UInt32(max(0, 20 - Date().timeIntervalSince(unansweredAt)) * 1_000_000))
+			Check.expect(unanswered.message(within: 0.2) == nil && !unanswered.closed, "20 s after closeJoin, a claim the engine took and has not answered still waits")
+		}
 		let lapsed = engine.request("remote.sessionEnd", within: 90)
 		let after = Date().timeIntervalSince(dropped)
 		Check.expect(lapsed?.params["session"]?.stringValue == "s_three" && after >= 59, "a session whose phone does not come back within 60 seconds is ended in the engine (remote.sessionEnd)", String(format: "after %.0f s", after))
+		if unansweredAt != nil {
+			Check.expect(unanswered.closesWithin(5), "and 30 s after closeJoin with neither paired nor pairRefused, its channel has ended")
+			Check.expect(engine.quiet(for: 0.5), "with no try counted")
+		}
 
 		Check.section("a phone's line limit, its challenge and its build (#675's security read B)")
 		if let (long, _) = attach(engine, mac: mac, device: other, keys: second2, session: "s_five") {
