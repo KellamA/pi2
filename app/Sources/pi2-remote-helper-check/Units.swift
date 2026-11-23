@@ -10,6 +10,7 @@ enum Units {
 	static func run(sources: URL, helper: URL) {
 		addresses()
 		admission()
+		scan()
 		builds()
 		homeTag()
 		dataFolder()
@@ -35,25 +36,68 @@ enum Units {
 	}
 
 	static func admission() {
-		Check.section("the listener's limits (5.4, 3.4)")
+		Check.section("the listener's limits (5.4, 3.4, and #675's security read B, D1)")
 		let gate = Admission()
 		let a = IPAddress("192.168.1.2")!, b = IPAddress("192.168.1.3")!
-		var taken = (0 ..< 10).filter { _ in gate.admit(a) }.count
-		Check.expect(taken == Admission.maxPendingPerSource, "at most \(Admission.maxPendingPerSource) connections wait to authenticate from one address", "\(taken)")
-		taken = (0 ..< 10).filter { _ in gate.admit(b) }.count
-		Check.expect(gate.pendingCount == Admission.maxPending, "at most \(Admission.maxPending) wait in all", "\(gate.pendingCount)")
+		var taken = (0 ..< 10).filter { _ in gate.admit(a) == .taken }.count
+		Check.expect(taken == Admission.maxPendingPerSource && gate.admit(a) == .sourceFull, "at most \(Admission.maxPendingPerSource) connections wait to authenticate from one address", "\(taken)")
+		taken = (0 ..< 10).filter { _ in gate.admit(b) == .taken }.count
+		Check.expect(gate.pendingCount == Admission.maxPending && gate.admit(IPAddress("192.168.1.9")!) == .allFull, "at most \(Admission.maxPending) wait in all", "\(gate.pendingCount)")
 		gate.release(a)
-		Check.expect(gate.admit(a), "a connection that authenticated or closed makes room")
+		Check.expect(gate.admit(a) == .taken, "a connection that authenticated or closed makes room")
+		let six = Admission()
+		let v6 = (1 ... 6).map { IPAddress("2001:db8:1:2::\($0)")! }
+		Check.expect(v6.map { six.admit($0) } == [.taken, .taken, .taken, .taken, .sourceFull, .sourceFull], "IPv6 addresses in one /64 are one source")
+		Check.expect(six.admit(IPAddress("2001:db8:1:3::1")!) == .taken, "and another /64 is another")
 		let now = 1_000.0
 		let firsts = (0 ..< 30).filter { _ in gate.firstMessage(from: a, now: now) }.count
 		Check.expect(firsts == Admission.firstMessagesPerSourcePerMinute, "at most \(Admission.firstMessagesPerSourcePerMinute) first messages a minute from one address", "\(firsts)")
 		Check.expect(gate.firstMessage(from: a, now: now + 61), "and more a minute later")
-		var all = 0
-		for host in 0 ..< 100 { if gate.firstMessage(from: IPAddress("10.0.0.\(host)")!, now: now + 61) { all += 1 } }
-		Check.expect(all + 1 <= Admission.firstMessagesPerMinute && all > 0, "at most \(Admission.firstMessagesPerMinute) first messages a minute in all", "\(all + 1)")
+		for _ in 0 ..< Admission.unknownFirstMessagesPerMinute { gate.unknownFirstMessage(now: now + 61) }
+		Check.expect(!gate.firstMessage(from: IPAddress("10.0.0.7")!, now: now + 62), "after \(Admission.unknownFirstMessagesPerMinute) first messages that found no device in a minute, none more from anyone")
+		Check.expect(gate.firstMessage(from: IPAddress("10.0.0.7")!, now: now + 122), "and more a minute later")
 		let shakes = (0 ..< 20).filter { _ in gate.handshake(for: "dev_x", now: now) }.count
 		Check.expect(shakes == Admission.handshakesPerDevicePerMinute, "at most \(Admission.handshakesPerDevicePerMinute) handshakes a minute for one device", "\(shakes)")
 		Check.expect(gate.handshake(for: "dev_y", now: now), "which does not hold back another device")
+		let recorded = Bytes.random(48)
+		gate.remember(recorded, now: now)
+		Check.expect(gate.replayed(recorded, now: now + 5) && !gate.replayed(Bytes.random(48), now: now + 5), "a first message that found its device, seen again, is a replay; another is not")
+		Check.expect(!gate.replayed(recorded, now: now + Admission.replayKept + 1), "and is forgotten after \(Int(Admission.replayKept / 60)) minutes")
+
+		Check.section("who the listener takes and keeps (5.4, decision 32; #675's security read B, M4 and D2)")
+		let local = IPAddress("192.168.1.5")!, public4 = IPAddress("8.8.8.8")!, shared = IPAddress("100.100.1.2")!, public6 = IPAddress("2606:4700::1")!
+		Check.expect(admits(peer: public4, arrivedOn: nil, kind: .development, direct: false), "a development build's listener, on 127.0.0.1 alone, takes what reaches it")
+		Check.expect(admits(peer: local, arrivedOn: nil, kind: .release, direct: false) && admits(peer: IPAddress("fd00::1")!, arrivedOn: nil, kind: .release, direct: false), "with Direct from any address off: a private or unique-local address is taken")
+		Check.expect(!admits(peer: public4, arrivedOn: nil, kind: .release, direct: false) && !admits(peer: public6, arrivedOn: nil, kind: .release, direct: false), "a public address is not, and is ended when the switch goes off")
+		Check.expect(admits(peer: public4, arrivedOn: nil, kind: .release, direct: true) && admits(peer: public6, arrivedOn: nil, kind: .release, direct: true), "with it on, a public address is taken")
+		Check.expect(admits(peer: shared, arrivedOn: "utun4", kind: .release, direct: false), "100.64.0.0/10 by a tunnel interface (Tailscale) is taken with the switch off")
+		Check.expect(!admits(peer: shared, arrivedOn: "en0", kind: .release, direct: false) && !admits(peer: shared, arrivedOn: nil, kind: .release, direct: false), "100.64.0.0/10 by any other interface (carrier-grade NAT) is not")
+		Check.expect(IPAddress("2001:db8::1:2:3:4")?.limitKey == IPAddress("2001:db8::") && IPAddress("10.1.2.3")?.limitKey == IPAddress("10.1.2.3"), "an IPv6 source is counted by its /64, an IPv4 one by its address")
+	}
+
+	static func scan() {
+		Check.section("a phone's line, read without building it (#675's security read B, M2)")
+		func names(_ text: String) -> [String]? { JSONScan.object(Data(text.utf8)) }
+		Check.expect(names(#"{"id":1,"method":"submit","params":{"text":"é \u00e9 \ud83d\ude00","a":[1,-2.5e3,true,false,null,{}]}}"#) == ["id", "method", "params"], "an engine request is taken, its member names read")
+		Check.expect(names(#"{"sessionEnd":{}}"#) == ["sessionEnd"] && names(#"{"\u0073essionEnd":{}}"#) == ["sessionEnd"], "a name is read as it decodes")
+		Check.expect(names("{}") == [], "an empty object is one")
+		let refused: [(String, String)] = [
+			("[1]", "an array"), (#"{"a":1} "#, "white space after"), (#" {"a":1}"#, "white space before"), (#"{"a":1}{"b":2}"#, "two objects"),
+			(#"{"a":1},"session":"other""#, "a second session named after it"), (#"{"a":1,"a":2}"#, "a name twice"), (#"{"a":"\ud800"}"#, "a lone surrogate"),
+			("{\"a\":\"\u{01}\"}", "a control character in a string"), (#"{"a":01}"#, "a number with a leading zero"), (#"{"a":1.}"#, "a number with no fraction digits"),
+			(#"{"a":tru}"#, "a word cut short"), (#"{"a":"\x"}"#, "an escape there is no such"), (#"{"a" 1}"#, "no colon"), (#"{"a":1,}"#, "a comma before the end"),
+			(String(repeating: #"{"a":"#, count: 33) + "1" + String(repeating: "}", count: 33), "33 levels"),
+		]
+		for (text, what) in refused { Check.expect(names(text) == nil, "refused: \(what)") }
+		Check.expect(JSONScan.object(Data([0x7B, 0x22, 0x61, 0x22, 0x3A, 0x22, 0xC3, 0x28, 0x22, 0x7D])) == nil, "refused: invalid UTF-8")
+		Check.expect(JSONScan.object(Data([0x7B, 0x22, 0x61, 0x22, 0x3A, 0x22, 0xED, 0xA0, 0x80, 0x22, 0x7D])) == nil, "refused: a surrogate written in UTF-8")
+		Check.expect(names(String(repeating: #"{"a":"#, count: 32) + "1" + String(repeating: "}", count: 32)) != nil, "32 levels are taken")
+		let many = "{" + (0 ..< 65).map { "\"k\($0)\":0" }.joined(separator: ",") + "}"
+		Check.expect(names(many) == nil, "refused: more than \(JSONScan.maxMembers) members")
+		let long = Data(("{\"x\":[" + String(repeating: "0,", count: 4 * 1024 * 1024) + "0]}").utf8)
+		let began = Date()
+		Check.expect(JSONScan.object(long) == ["x"], "an 8 MB line of small numbers is taken")
+		Check.expect(Date().timeIntervalSince(began) < 30, "in a few seconds", String(format: "%.1f s", Date().timeIntervalSince(began)))
 	}
 
 	static func builds() {

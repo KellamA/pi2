@@ -16,6 +16,14 @@ package final class SocketIO: @unchecked Sendable {
 	private(set) package var pending = 0
 	private(set) package var isClosed = false
 	private var sourcesLeft = 0
+	private var readerPaused = false
+	/// When the queue last moved: a write that took bytes, or the queue starting from empty.
+	private(set) package var lastProgress = ContinuousClock.now
+	/// The most read in one event, so that one fast peer does not keep the queue from everyone else (S7).
+	package static let readPerEvent = 1024 * 1024
+	/// Called once `pending` falls to `drainedBelow` or less after being above it.
+	package var onDrained: () -> Void = {}
+	package var drainedBelow = 0
 
 	/// Bytes as they come. Called on the queue.
 	package var onBytes: (Data) -> Void = { _ in }
@@ -54,9 +62,11 @@ package final class SocketIO: @unchecked Sendable {
 
 	private func readAvailable() {
 		var buffer = [UInt8](repeating: 0, count: 64 * 1024)
-		while !isClosed {
+		var read = 0
+		while !isClosed, !readerPaused, read < Self.readPerEvent {
 			let count = buffer.withUnsafeMutableBytes { Darwin.read(descriptor, $0.baseAddress, $0.count) }
 			if count > 0 {
+				read += count
 				onBytes(Data(buffer[0 ..< count]))
 				continue
 			}
@@ -66,9 +76,28 @@ package final class SocketIO: @unchecked Sendable {
 		}
 	}
 
+	/// Stops reading until `resumeReading`: the peer is pushed back by TCP, or by the socket pair's buffer.
+	package func pauseReading() {
+		guard !readerPaused, !isClosed, let reader else { return }
+		readerPaused = true
+		reader.suspend()
+	}
+
+	package func resumeReading() {
+		guard readerPaused, let reader else { return }
+		readerPaused = false
+		reader.resume()
+	}
+
+	package var isReadingPaused: Bool { readerPaused }
+
+	/// How long the queue has waited without a byte going, or zero when nothing waits.
+	package var stalledFor: Duration { pending == 0 ? .zero : ContinuousClock.now - lastProgress }
+
 	/// Queues `data` to be written, in order.
 	package func send(_ data: Data) {
 		guard !isClosed, !data.isEmpty else { return }
+		if outgoing.isEmpty { lastProgress = .now }
 		outgoing.append(data)
 		pending += data.count
 		flush()
@@ -78,8 +107,11 @@ package final class SocketIO: @unchecked Sendable {
 		while !isClosed, let first = outgoing.first {
 			let count = first.withUnsafeBytes { bytes in Darwin.write(descriptor, bytes.baseAddress! + offset, bytes.count - offset) }
 			if count > 0 {
+				let before = pending
 				offset += count
 				pending -= count
+				lastProgress = .now
+				if before > drainedBelow, pending <= drainedBelow { onDrained() }
 				if offset == first.count {
 					outgoing.removeFirst()
 					offset = 0
@@ -114,6 +146,10 @@ package final class SocketIO: @unchecked Sendable {
 		outgoing.removeAll()
 		pending = 0
 		if let reader, let writer {
+			if readerPaused {
+				readerPaused = false
+				reader.resume()
+			}
 			reader.cancel()
 			if !writerRunning { writer.resume() }
 			writer.cancel()

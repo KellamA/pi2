@@ -44,6 +44,12 @@ package final class Remote: @unchecked Sendable {
 	package var resumeWindow: TimeInterval = 60
 	/// How long a new connection has to attach, or a pairing claimer to send its first transport message (3.4).
 	package var attachWithin: TimeInterval = 10
+	/// The longest line taken from an attached phone (#675's security read B, M2): 16 MB, room for a message with two
+	/// pictures at the engine's limit of 5 MB each, written in base64, and its text. The engine's own request from a
+	/// phone needs no more; the engine caps what it takes from pi² Remote at the same (#776). A phone that sends more
+	/// pictures sends them in more than one message.
+	package static let phoneLineLimit = 16 * 1024 * 1024
+
 	/// The most lines a session keeps that its phone has not acknowledged, in bytes (5.8).
 	package var sessionBufferLimit = 4 * 1024 * 1024
 
@@ -76,6 +82,7 @@ package final class Remote: @unchecked Sendable {
 		devices = try vault.devices()
 		engine.onEvent = { [unowned self] in self.heard($0) }
 		engine.onSessionLine = { [unowned self] in self.fromEngine(session: $0, message: $1) }
+		engine.onDrained(below: Self.engineDrained) { [unowned self] in self.engineDrained() }
 	}
 
 	/// Seconds since 1970.
@@ -156,6 +163,7 @@ package final class Remote: @unchecked Sendable {
 			log("the relay key could not be read or made: \(error); stopping")
 			exit(1)
 		}
+		addresses = listener?.addresses ?? []
 		let hello: [(String, JSONValue)] = [
 			("macKeys", keys.report(relay: relayKey!)), ("pairing", pairing.map { .string($0.text) } ?? .null), ("addresses", .array(addresses.map(JSONValue.string))),
 		]
@@ -173,11 +181,16 @@ package final class Remote: @unchecked Sendable {
 		relay = event["relay"]?.stringValue ?? relay
 		switches = Switches(event["switches"])
 		applySwitches()
+		// Direct from any address turned off: the connections it let in end now, not when they next connect (M4). Their
+		// sessions keep the resume window, for another path.
+		for connection in connections.values where !admits(peer: connection.peer, arrivedOn: connection.arrivedOn, kind: kind, direct: switches.direct) {
+			log("a connection from outside the local and private ranges ended: Direct from any address is off")
+			connection.windowClosed()
+		}
 		if relay.utf8.elementsEqual(before.utf8) {
 			reportAddresses()
 		} else {
 			log("the relay's address changed: its own relay key is told to the engine")
-			addresses = listener?.addresses ?? []
 			hello()
 		}
 	}
@@ -215,10 +228,9 @@ package final class Remote: @unchecked Sendable {
 		} else if !switches.home, let current = listener {
 			current.stop()
 			listener = nil
-			for connection in connections.values { connection.end() }
+			for connection in connections.values { connection.windowClosed() }
 			log("stopped listening: Find on this network is off")
 		}
-		addresses = listener?.addresses ?? []
 		advertise()
 		if kind == .release, addressTimer == nil {
 			let timer = DispatchSource.makeTimerSource(queue: queue)
@@ -230,6 +242,8 @@ package final class Remote: @unchecked Sendable {
 	}
 
 	/// Tells the engine the Mac's addresses when they changed, and the phone with them (5.4, the `device` event).
+	/// `addresses` is what the engine was last told, by `remote.hello` or `remote.state`, never the listener's own: a
+	/// listener started again has a new port, which the engine must hear of (#675's security read B, M5).
 	private func reportAddresses() {
 		let now = listener?.addresses ?? []
 		advertise()
@@ -254,21 +268,51 @@ package final class Remote: @unchecked Sendable {
 	}
 
 	private func accepted(_ descriptor: Int32, from peer: IPAddress) {
-		// Direct from any address off: only local and private ranges (5.4, decision 32). In loopback mode the listener is
-		// on 127.0.0.1 alone, so nothing else reaches it.
-		if kind == .release, !switches.direct, !peer.isLocalOrPrivate {
+		// Which interface it came by matters only for the shared address space (D2), so it is looked up for that alone.
+		let arrivedOn = peer.isSharedAddressSpace ? IPAddress.local(of: descriptor).flatMap(MacAddresses.interface(of:)) : nil
+		guard admits(peer: peer, arrivedOn: arrivedOn, kind: kind, direct: switches.direct) else {
 			Seldom.shared.say("public", "a connection from an address outside the local and private ranges refused (Direct from any address is off)")
 			close(descriptor)
 			return
 		}
-		guard admission.admit(peer) else {
-			Seldom.shared.say("pending", "a connection from \(peer) refused: \(admission.pendingCount) wait to authenticate already")
-			close(descriptor)
-			return
+		// Too many waiting: the oldest that has sent no first message yet goes, from the same source if that source is
+		// over its share, so that a stranger holding idle connections cannot keep a phone out (D1).
+		while true {
+			let admitted = admission.admit(peer)
+			if admitted == .taken { break }
+			let idle = connections.values.filter { $0.waitingForFirstMessage && (admitted == .allFull || $0.peer.limitKey == peer.limitKey) }
+			guard let oldest = idle.min(by: { $0.acceptedAt < $1.acceptedAt }) else {
+				Seldom.shared.say("pending", "a connection from \(peer) refused: \(admission.pendingCount) wait to authenticate already")
+				close(descriptor)
+				return
+			}
+			oldest.end()
 		}
-		let connection = PhoneConnection(remote: self, descriptor: descriptor, peer: peer)
+		let connection = PhoneConnection(remote: self, descriptor: descriptor, peer: peer, arrivedOn: arrivedOn)
 		connections[ObjectIdentifier(connection)] = connection
 		connection.start()
+	}
+
+	// ---- Back-pressure towards the engine (#675's security read B, M2)
+
+	/// The most that may wait to be written to the engine before pi² Remote stops reading from phones, and how far it
+	/// must fall before it reads from them again: TCP then holds a phone back, not pi² Remote's memory.
+	package static let engineBacklog = 8 * 1024 * 1024
+	package static let engineDrained = 2 * 1024 * 1024
+	private(set) var phonesPaused = false
+
+	/// A phone's line went to the engine: if too much now waits, no phone is read until it has drained.
+	func engineMayBeFull() {
+		guard !phonesPaused, engine.pending > Self.engineBacklog else { return }
+		phonesPaused = true
+		Seldom.shared.say("backlog", "more than \(Self.engineBacklog / 1024 / 1024) MB wait for the engine: phones are not read until it drains")
+		for connection in connections.values { connection.pauseReading() }
+	}
+
+	private func engineDrained() {
+		guard phonesPaused else { return }
+		phonesPaused = false
+		for connection in connections.values { connection.resumeReading() }
 	}
 
 	func forget(_ connection: PhoneConnection) {

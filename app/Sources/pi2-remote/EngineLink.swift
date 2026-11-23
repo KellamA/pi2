@@ -40,6 +40,15 @@ package final class EngineLink: @unchecked Sendable {
 
 	package func start() { io.start() }
 
+	/// What waits to be written to the engine.
+	package var pending: Int { io.pending }
+
+	/// Calls `then` whenever what waits for the engine falls to `below` bytes or fewer.
+	package func onDrained(below: Int, _ then: @escaping () -> Void) {
+		io.drainedBelow = below
+		io.onDrained = then
+	}
+
 	private func take(_ bytes: Data) {
 		var rest = bytes[...]
 		while let newline = rest.firstIndex(of: 0x0A) {

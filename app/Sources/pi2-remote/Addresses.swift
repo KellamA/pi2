@@ -122,52 +122,83 @@ package enum MacAddresses {
 }
 
 /// How many connections the home listener holds before they authenticate, and how often a peer may send a first
-/// message (5.4, 3.4; the security reading of #767). A first message costs pi² Remote eight trials of key agreement
-/// before anything is authenticated, so it is limited by source address and in all; a handshake that found its device
-/// is limited for that device too.
+/// message (5.4, 3.4; the security reads of #767 and #675). A first message costs pi² Remote eight trials of key
+/// agreement before anything is authenticated, so it is limited by source and in all; a handshake that found its device
+/// is limited for that device too. A source is an IPv4 address or an IPv6 /64, which one host holds whole.
 package final class Admission: @unchecked Sendable {
 	package static let maxPending = 8
 	package static let maxPendingPerSource = 4
 	package static let firstMessagesPerSourcePerMinute = 20
-	package static let firstMessagesPerMinute = 60
+	/// First messages that found no paired device, in all: eight trials cost under a millisecond, so this many a minute
+	/// is cheap, and a real phone's, which find their device, are not counted in it (D1).
+	package static let unknownFirstMessagesPerMinute = 600
 	package static let handshakesPerDevicePerMinute = 6
 	package static let window: TimeInterval = 60
+	/// How long a connection may take to send its first message (D1): a phone sends it at once.
+	package static let firstMessageWithin: TimeInterval = 3
+	/// How long a first message that found its device is remembered, so that the same one again (a replay) is closed
+	/// before it uses up the device's handshakes (D1); and the most remembered.
+	package static let replayKept: TimeInterval = 600
+	package static let replayMax = 1024
+
+	package enum Admit: Equatable { case taken, sourceFull, allFull }
 
 	private var pending: [IPAddress: Int] = [:]
 	private var firstMessages: [IPAddress: [TimeInterval]] = [:]
-	private var allFirstMessages: [TimeInterval] = []
+	private var unknown: [TimeInterval] = []
 	private var handshakes: [String: [TimeInterval]] = [:]
+	private var seen: [Data: TimeInterval] = [:]
 
 	package init() {}
 
 	package var pendingCount: Int { pending.values.reduce(0, +) }
 
-	/// A new connection from `source`, before it authenticates: taken, or refused when too many wait.
-	package func admit(_ source: IPAddress) -> Bool {
-		guard pendingCount < Self.maxPending, pending[source, default: 0] < Self.maxPendingPerSource else { return false }
-		pending[source, default: 0] += 1
-		return true
+	/// A new connection from `source`, before it authenticates: taken, or which limit it is over.
+	package func admit(_ source: IPAddress) -> Admit {
+		let key = source.limitKey
+		guard pending[key, default: 0] < Self.maxPendingPerSource else { return .sourceFull }
+		guard pendingCount < Self.maxPending else { return .allFull }
+		pending[key, default: 0] += 1
+		return .taken
 	}
 
 	/// The connection from `source` authenticated, or closed.
 	package func release(_ source: IPAddress) {
-		guard let count = pending[source] else { return }
-		pending[source] = count > 1 ? count - 1 : nil
+		let key = source.limitKey
+		guard let count = pending[key] else { return }
+		pending[key] = count > 1 ? count - 1 : nil
 	}
 
 	/// A first message from `source`, before any key agreement: allowed, or over a limit.
 	package func firstMessage(from source: IPAddress, now: TimeInterval) -> Bool {
-		allFirstMessages.removeAll { now - $0 >= Self.window }
-		var mine = (firstMessages[source] ?? []).filter { now - $0 < Self.window }
-		guard allFirstMessages.count < Self.firstMessagesPerMinute, mine.count < Self.firstMessagesPerSourcePerMinute else {
-			firstMessages[source] = mine
+		let key = source.limitKey
+		unknown.removeAll { now - $0 >= Self.window }
+		var mine = (firstMessages[key] ?? []).filter { now - $0 < Self.window }
+		guard unknown.count < Self.unknownFirstMessagesPerMinute, mine.count < Self.firstMessagesPerSourcePerMinute else {
+			firstMessages[key] = mine
 			return false
 		}
 		mine.append(now)
-		firstMessages[source] = mine
-		allFirstMessages.append(now)
+		firstMessages[key] = mine
 		if firstMessages.count > 4096 { firstMessages = firstMessages.filter { !$0.value.isEmpty && now - $0.value.last! < Self.window } }
 		return true
+	}
+
+	/// A first message found no paired device: it counts against the limit for all.
+	package func unknownFirstMessage(now: TimeInterval) { unknown.append(now) }
+
+	/// Whether this first message was seen before, from a device, within `replayKept` (its ephemeral key, the first 32
+	/// bytes, is fresh in every real handshake).
+	package func replayed(_ message: Data, now: TimeInterval) -> Bool {
+		guard let at = seen[Data(message.prefix(32))] else { return false }
+		return now - at < Self.replayKept
+	}
+
+	/// A first message that found its device, remembered.
+	package func remember(_ message: Data, now: TimeInterval) {
+		seen = seen.filter { now - $0.value < Self.replayKept }
+		while seen.count >= Self.replayMax, let oldest = seen.min(by: { $0.value < $1.value }) { seen.removeValue(forKey: oldest.key) }
+		seen[Data(message.prefix(32))] = now
 	}
 
 	/// A handshake for `device`: allowed, or more than a few this minute (3.4).
@@ -181,6 +212,59 @@ package final class Admission: @unchecked Sendable {
 		handshakes[device] = mine
 		return true
 	}
+}
+
+extension IPAddress {
+	/// What the listener's limits count as one source: an IPv4 address, or the /64 an IPv6 address is in.
+	package var limitKey: IPAddress {
+		switch self {
+		case .v4: self
+		case let .v6(bytes): .v6(Array(bytes[0 ..< 8]) + Array(repeating: 0, count: 8))
+		}
+	}
+
+	/// 100.64.0.0/10, RFC 6598's shared address space: carrier-grade NAT's, and the range private networks such as
+	/// Tailscale number their devices in.
+	package var isSharedAddressSpace: Bool {
+		if case let .v4(b) = self { return b[0] == 100 && b[1] & 0xC0 == 64 }
+		return false
+	}
+
+	/// The local address `descriptor` is bound to (for an accepted connection, the one the peer reached).
+	package static func local(of descriptor: Int32) -> IPAddress? {
+		var address = sockaddr_storage()
+		var length = socklen_t(MemoryLayout<sockaddr_storage>.size)
+		let named = withUnsafeMutablePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(descriptor, $0, &length) } }
+		guard named == 0 else { return nil }
+		return withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { IPAddress($0) } }
+	}
+}
+
+extension MacAddresses {
+	/// The name of the interface that has `address`, or nil.
+	package static func interface(of address: IPAddress) -> String? {
+		var first: UnsafeMutablePointer<ifaddrs>?
+		guard getifaddrs(&first) == 0, let first else { return nil }
+		defer { freeifaddrs(first) }
+		var cursor: UnsafeMutablePointer<ifaddrs>? = first
+		while let entry = cursor {
+			defer { cursor = entry.pointee.ifa_next }
+			if let raw = entry.pointee.ifa_addr, IPAddress(UnsafePointer(raw)) == address { return String(cString: entry.pointee.ifa_name) }
+		}
+		return nil
+	}
+}
+
+/// Whether the home listener takes, or keeps, a connection from `peer` (5.4, decision 32; #675's security read B, M4
+/// and D2). A development build's listener is on 127.0.0.1 alone, so anything that reaches it is taken. A release
+/// build's takes anything with **Direct from any address** on; with it off, link-local, private (RFC 1918) and
+/// unique-local addresses, and loopback; and from 100.64.0.0/10 only a connection that came by a tunnel interface
+/// (`utun…`, as Tailscale's), since the same range is carrier-grade NAT's, whose other customers a Mac numbered in it
+/// would take otherwise.
+package func admits(peer: IPAddress, arrivedOn interface: String?, kind: BuildKind, direct: Bool) -> Bool {
+	guard kind == .release, !direct else { return true }
+	if peer.isSharedAddressSpace { return interface?.hasPrefix("utun") == true }
+	return peer.isLocalOrPrivate
 }
 
 /// The home path's TCP listener (5.4): in loopback mode on 127.0.0.1 alone; otherwise on every address, IPv4 and IPv6,

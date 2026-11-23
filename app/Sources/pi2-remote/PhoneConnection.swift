@@ -30,7 +30,7 @@ final class PhoneConnection: @unchecked Sendable {
 		case claimed(Channel, claim: String)
 		/// A connection's channel, waiting for the engine's challenge, then for the phone's attach, then for the engine.
 		case connecting(Channel)
-		case awaitingAttach(Channel)
+		case awaitingAttach(Channel, challenge: Data)
 		case attaching(Channel)
 		case attached(Channel, Session)
 		/// Its session was closed by the engine: nothing more is taken from the phone, and the channel ends shortly,
@@ -42,6 +42,9 @@ final class PhoneConnection: @unchecked Sendable {
 	private unowned let remote: Remote
 	private let io: SocketIO
 	let peer: IPAddress
+	/// The interface it came by, when that matters (a peer in the shared address space, D2).
+	let arrivedOn: String?
+	let acceptedAt = ContinuousClock.now
 	private var phase = Phase.first
 	private var framing = LengthFraming()
 	private var firstBytes = Data()
@@ -49,26 +52,50 @@ final class PhoneConnection: @unchecked Sendable {
 	private var deadline: DispatchWorkItem?
 	/// For counting a wrong pairing try: the second handshake message went, and no transport message opened yet.
 	private var awaitingClaimerProof = false
+	/// The claimer's first transport message opened, so it holds the code's secret; and whether the engine has heard of
+	/// its try (a claim, or `remote.pairWrong`). One that proved the secret and ends before a claim reaches the engine
+	/// is counted (#675's security read B, M3).
+	private var claimerProven = false
+	private var claimReported = false
 	private(set) var device: DeviceID?
 	/// Lines received in a session, and how far the last ack the Mac sent went (5.8).
 	private var received: UInt64 = 0
 	private var receivedBytesSinceAck = 0
 	private var ackScheduled = false
 
-	init(remote: Remote, descriptor: Int32, peer: IPAddress) {
+	init(remote: Remote, descriptor: Int32, peer: IPAddress, arrivedOn: String? = nil) {
 		self.remote = remote
 		self.peer = peer
+		self.arrivedOn = arrivedOn
 		io = SocketIO(descriptor: descriptor, queue: remote.queue)
 	}
+
+	/// How long a claim the engine holds may wait for `paired` or `pairRefused`: the window's five minutes and one more.
+	static let claimWithin: TimeInterval = 6 * 60
 
 	func start() {
 		io.onBytes = { [unowned self] in self.take($0) }
 		io.onClose = { [unowned self] in self.closed() }
 		io.start()
+		if remote.phonesPaused { io.pauseReading() }
 		let deadline = DispatchWorkItem { [weak self] in self?.tooSlow() }
 		self.deadline = deadline
 		remote.queue.asyncAfter(deadline: .now() + remote.attachWithin, execute: deadline)
+		// The first message has a short deadline of its own: a phone sends it at once (D1).
+		remote.queue.asyncAfter(deadline: .now() + Admission.firstMessageWithin) { [weak self] in
+			guard let self, case .first = self.phase else { return }
+			self.end()
+		}
 	}
+
+	/// Accepted, and no first message yet: the kind of connection the listener lets go first when too many wait (D1).
+	var waitingForFirstMessage: Bool {
+		if case .first = phase { return admitted }
+		return false
+	}
+
+	func pauseReading() { io.pauseReading() }
+	func resumeReading() { io.resumeReading() }
 
 	/// A pairing channel whose claimer has sent no claim yet: the one kind `closeJoin` ends. A claim passed to the engine
 	/// is the engine's to answer (`paired` or `pairRefused`, or its refusal of `remote.pairClaim`); the engine closes the
@@ -80,7 +107,7 @@ final class PhoneConnection: @unchecked Sendable {
 
 	private var channel: Channel? {
 		switch phase {
-		case let .pairing(channel, _), let .claiming(channel), let .claimed(channel, _), let .connecting(channel), let .awaitingAttach(channel),
+		case let .pairing(channel, _), let .claiming(channel), let .claimed(channel, _), let .connecting(channel), let .awaitingAttach(channel, _),
 		     let .attaching(channel), let .attached(channel, _), let .closing(channel):
 			channel
 		case .first, .ended:
@@ -126,13 +153,20 @@ final class PhoneConnection: @unchecked Sendable {
 
 	private func startConnection(_ message: Data) {
 		guard let pairing = remote.pairing else { return end() }
+		// A first message seen before from a device is a replay: it would only use up that device's handshakes (D1).
+		guard !remote.admission.replayed(message, now: remote.now) else {
+			Seldom.shared.say("replay", "a connection's first message from \(peer) was one seen before (a replay); closed")
+			return end()
+		}
 		let found: (DeviceID, ChannelHandshake)
 		do {
 			found = try ChannelHandshake.respond(toFirstMessage: message, pairing: pairing, channelKey: remote.keys.channel, devices: remote.channelKeys)
 		} catch {
+			remote.admission.unknownFirstMessage(now: remote.now)
 			Seldom.shared.say("no device", "a connection's first message from \(peer) was made for no paired device; closed")
 			return end()
 		}
+		remote.admission.remember(message, now: remote.now)
 		let (device, handshake) = found
 		guard remote.admission.handshake(for: device.text, now: remote.now) else {
 			log("more than \(Admission.handshakesPerDevicePerMinute) handshakes this minute for device \(device); closed")
@@ -147,7 +181,7 @@ final class PhoneConnection: @unchecked Sendable {
 			guard case let .success(value) = result, let text = value["challenge"]?.stringValue, let challenge = Base64URL.decode(text, count: 32),
 			      let proof = try? MacProof.make(challenge: challenge, pairing: pairing, binding: channel.handshakeHash, identity: self.remote.keys.identity)
 			else { return self.end() }
-			self.phase = .awaitingAttach(channel)
+			self.phase = .awaitingAttach(channel, challenge: challenge)
 			self.sendLine(ControlLine.mac(proof).line)
 		}
 	}
@@ -176,6 +210,7 @@ final class PhoneConnection: @unchecked Sendable {
 			if awaitingClaimerProof { wrongTry("the claimer's first message did not open") }
 			return end()
 		}
+		if awaitingClaimerProof { claimerProven = true }
 		awaitingClaimerProof = false
 		guard let event else { return }
 		switch event {
@@ -191,7 +226,7 @@ final class PhoneConnection: @unchecked Sendable {
 	private func heard(_ line: Data, on channel: Channel) {
 		switch phase {
 		case let .pairing(_, challenge): claim(line, channel: channel, challenge: challenge)
-		case .awaitingAttach: attach(line, channel: channel)
+		case let .awaitingAttach(_, challenge): attach(line, channel: channel, challenge: challenge)
 		case let .attached(_, session): fromPhone(line, session: session)
 		case .closing: return
 		default: end()
@@ -200,8 +235,15 @@ final class PhoneConnection: @unchecked Sendable {
 
 	// ---- Pairing (3.3)
 
+	/// A claimer that holds the code's secret, and whose claim pi² Remote refuses itself (not a `pair` line, or one not
+	/// signed for this channel by the device key it names, or naming another channel key than the handshake proved), is
+	/// counted as a wrong try when the channel ends (`closed`): the engine hears of it. The engine has no request that
+	/// closes the window at once for a claim pi² Remote refused; one is named for #776 (`remote.pairRefused`).
 	private func claim(_ line: Data, channel: Channel, challenge: Data) {
-		guard let pairing = remote.pairing, case let .pair(claim)? = try? ControlLine.parse(line) else { return end() }
+		guard let pairing = remote.pairing, case let .pair(claim)? = try? ControlLine.parse(line) else {
+			log("a claimer holding the code sent a first line that is not a claim to pair; closed")
+			return end()
+		}
 		do {
 			try claim.verify(pairing: pairing, binding: channel.handshakeHash, handshakeChannelKey: channel.remoteChannelKey)
 		} catch {
@@ -211,6 +253,19 @@ final class PhoneConnection: @unchecked Sendable {
 		// The claim as the phone wrote it, passed on whole: the engine checks it again, with its attestation.
 		guard let inner = (try? JSON.parse(line))?["pair"] else { return end() }
 		phase = .claiming(channel)
+		claimReported = true
+		// With the engine now: its answer, not the ten seconds, decides; bounded by the window's own time.
+		deadline?.cancel()
+		deadline = nil
+		remote.queue.asyncAfter(deadline: .now() + Self.claimWithin) { [weak self] in
+			guard let self else { return }
+			switch self.phase {
+			case .claiming, .claimed:
+				log("a claim the engine took had no answer within \(Int(Self.claimWithin / 60)) minutes; its channel is closed")
+				self.end()
+			default: break
+			}
+		}
 		let params = JSONValue.object([
 			("claim", inner), ("binding", .string(Base64URL.encode(channel.handshakeHash))), ("challenge", .string(Base64URL.encode(challenge))),
 			("path", .string("home")),
@@ -232,15 +287,16 @@ final class PhoneConnection: @unchecked Sendable {
 	}
 
 	private func wrongTry(_ why: String) {
-		guard awaitingClaimerProof else { return }
+		guard awaitingClaimerProof || (claimerProven && !claimReported) else { return }
 		awaitingClaimerProof = false
+		claimReported = true
 		log("a wrong pairing try: \(why)")
 		remote.engine.request("remote.pairWrong")
 	}
 
 	// ---- Attaching (3.4, 5.8)
 
-	private func attach(_ line: Data, channel: Channel) {
+	private func attach(_ line: Data, channel: Channel, challenge: Data) {
 		guard let pairing = remote.pairing, let device, let listed = remote.listed(device), case let .attach(claim)? = try? ControlLine.parse(line) else { return end() }
 		do {
 			try claim.verifyDevice(deviceKey: listed.deviceKey, pairing: pairing, device: device, binding: channel.handshakeHash)
@@ -248,11 +304,18 @@ final class PhoneConnection: @unchecked Sendable {
 			log("an attach for device \(device) is not signed by its device key on pi² Remote's own list; closed")
 			return end()
 		}
-		if Remote.isBuild(claim.build), !Remote.buildAtLeast(claim.build, remote.minimumBuild) {
-			log("device \(device) runs build \(claim.build), below the lowest this Mac attaches (\(remote.minimumBuild)); closed")
+		// The challenge this channel was given, exactly: the engine takes any it issued and has not seen used.
+		guard Bytes.constantTimeEqual(claim.challenge, challenge) else {
+			log("an attach for device \(device) names another challenge than this channel's; closed")
+			return end()
+		}
+		guard Remote.isBuild(claim.build), Remote.buildAtLeast(claim.build, remote.minimumBuild) else {
+			log("device \(device) runs a build that is not one the engine reads, or below the lowest this Mac attaches (\(remote.minimumBuild)); closed")
 			return end()
 		}
 		phase = .attaching(channel)
+		deadline?.cancel()
+		deadline = nil
 		// `received` is pi² Remote's alone, for its buffer: the engine takes exactly these three fields (devices.ts).
 		let attach = JSONValue.object([
 			("signed", .string(claim.statement.text)), ("signature", .string(claim.statement.signatureText)), ("presence", .string(Base64URL.encode(claim.presence))),
@@ -265,7 +328,7 @@ final class PhoneConnection: @unchecked Sendable {
 				return self.end()
 			}
 			self.passedFirstLines()
-			channel.maxLineLength = Lines.defaultMaxLength
+			channel.maxLineLength = Remote.phoneLineLimit
 			guard self.remote.attached(self, device: device, session: session, resumed: resumed, received: claim.received) else { return self.end() }
 		}
 	}
@@ -289,7 +352,7 @@ final class PhoneConnection: @unchecked Sendable {
 
 	private func tooSlow() {
 		switch phase {
-		case .claimed, .attached, .closing, .ended: return
+		case .claiming, .claimed, .attaching, .attached, .closing, .ended: return
 		default:
 			wrongTry("no message from the claimer within ten seconds")
 			end()
@@ -302,23 +365,24 @@ final class PhoneConnection: @unchecked Sendable {
 		received += 1
 		receivedBytesSinceAck += line.count
 		// Every line is read strictly as one JSON object before it is put in a line to the engine, so that nothing in it
-		// can end that line or name another session.
-		guard let value = try? JSON.parse(line), case let .object(members) = value else {
+		// can end that line or name another session; scanned, not built, so that a long line costs only itself (M2).
+		guard let names = JSONScan.object(line) else {
 			log("device \(session.device) sent a line that is not one JSON object; closed")
 			return end()
 		}
-		if members.count == 1, members[0].0.utf8.elementsEqual("sessionEnd".utf8) {
+		if names.count == 1, names[0].utf8.elementsEqual("sessionEnd".utf8) {
 			remote.end(session, why: "the phone's session ended")
 			return
 		}
 		// The channel's own lines are the Mac's to send, or a phone's first lines (5.6): none is taken from a phone in a
 		// session, nor passed to the engine as a request. A `refused` line, the Mac's word that it did not attach the phone
 		// (#820), is refused from a phone above all.
-		if members.count == 1, Self.macLines.contains(where: { members[0].0.utf8.elementsEqual($0.utf8) }) || value["challenge"] != nil {
+		if names.count == 1, Self.macLines.contains(where: { names[0].utf8.elementsEqual($0.utf8) }) || names.contains(where: { $0.utf8.elementsEqual("challenge".utf8) }) {
 			log("device \(session.device) sent one of the channel's own lines in its session; closed")
 			return end()
 		}
 		remote.engine.send(session: session.id, message: line)
+		remote.engineMayBeFull()
 		if receivedBytesSinceAck >= 64 * 1024 {
 			sendAck()
 		} else if !ackScheduled {
@@ -357,21 +421,33 @@ final class PhoneConnection: @unchecked Sendable {
 		io.send(framed)
 	}
 
+	/// What a phone may leave unread before pi² Remote gives up on it (#675's security read B, M1): judged by what waits
+	/// **before** a line, so that one line up to the engine's longest (64 MB) always goes. More than `slowAfter` waiting
+	/// with no byte taken for `stalledAfter`, or more than `neverAfter` waiting at all, ends the channel; its session keeps
+	/// what it needs for a resume.
+	static let slowAfter = 16 * 1024 * 1024
+	static let stalledAfter: Duration = .seconds(15)
+	static let neverAfter = 128 * 1024 * 1024
+
 	/// A line on the channel, in as many frames as it takes.
 	func sendLine(_ line: Data) {
 		guard let channel, !io.isClosed else { return }
+		if io.pending > Self.neverAfter || (io.pending > Self.slowAfter && io.stalledFor >= Self.stalledAfter) {
+			log("a phone left more than \(io.pending / 1024 / 1024) MB unread; its channel is closed")
+			return end()
+		}
 		do {
 			for message in try channel.seal(line: line) { io.send(try LengthFraming.encode(message)) }
 		} catch {
 			return end()
 		}
-		// A phone that reads nothing does not make the Mac hold more: its session keeps what it needs for a resume.
-		if io.pending > 16 * 1024 * 1024 { end() }
 	}
 
-	/// The Mac closed the pairing window: the channel ends, and that is no wrong try of the claimer's.
+	/// The Mac ended the channel (it closed the pairing window, stopped listening, or narrowed who may connect): that is
+	/// no wrong try of a claimer's.
 	func windowClosed() {
 		awaitingClaimerProof = false
+		claimReported = true
 		end()
 	}
 
@@ -391,6 +467,7 @@ final class PhoneConnection: @unchecked Sendable {
 			remote.admission.release(peer)
 		}
 		if awaitingClaimerProof { wrongTry("the claimer closed the connection before its first message") }
+		if claimerProven, !claimReported { wrongTry("a claimer holding the code ended without a claim pi² Remote could pass on") }
 		switch was {
 		case let .claimed(_, claim): remote.claims.removeValue(forKey: claim)
 		case let .attached(_, session): session.lost(self)

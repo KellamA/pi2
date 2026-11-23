@@ -11,15 +11,20 @@ final class LineReader {
 
 	init(descriptor: Int32) { self.descriptor = descriptor }
 
+	/// How far `buffer` is known to hold no line break, so that a long line is searched once, not once a read.
+	private var scanned = 0
+
 	/// The next line, or nil if none came within `seconds` or the socket closed.
 	func next(within seconds: Double = 30) -> Data? {
 		let deadline = Date().addingTimeInterval(seconds)
 		while true {
-			if let newline = buffer.firstIndex(of: 0x0A) {
+			if let newline = buffer[(buffer.startIndex + scanned)...].firstIndex(of: 0x0A) {
 				let line = Data(buffer[buffer.startIndex ..< newline])
 				buffer = Data(buffer[(newline + 1)...])
+				scanned = 0
 				return line
 			}
+			scanned = buffer.count
 			let left = deadline.timeIntervalSinceNow
 			guard !closed, left > 0, readable(descriptor, within: left) else { return nil }
 			var chunk = [UInt8](repeating: 0, count: 65536)
@@ -35,7 +40,26 @@ final class LineReader {
 	func write(_ data: Data) {
 		var line = data
 		line.append(0x0A)
-		_ = line.withUnsafeBytes { Darwin.write(descriptor, $0.baseAddress, $0.count) }
+		writeAll(descriptor, line)
+	}
+}
+
+/// Writes all of `data`, as many writes as it takes; false if the socket refused (or, with a send timeout, stayed full).
+@discardableResult
+func writeAll(_ descriptor: Int32, _ data: Data) -> Bool {
+	data.withUnsafeBytes { bytes in
+		var offset = 0
+		while offset < bytes.count {
+			let count = Darwin.write(descriptor, bytes.baseAddress! + offset, bytes.count - offset)
+			if count > 0 {
+				offset += count
+			} else if count < 0, errno == EINTR {
+				continue
+			} else {
+				return false
+			}
+		}
+		return true
 	}
 }
 
@@ -142,9 +166,11 @@ final class Phone {
 
 	deinit { if !closed { close(descriptor) } }
 
-	func raw(_ bytes: Data) { _ = bytes.withUnsafeBytes { write(descriptor, $0.baseAddress, $0.count) } }
+	@discardableResult
+	func raw(_ bytes: Data) -> Bool { writeAll(descriptor, bytes) }
 
-	func send(_ message: Data) { raw(try! LengthFraming.encode(message)) }
+	@discardableResult
+	func send(_ message: Data) -> Bool { raw(try! LengthFraming.encode(message)) }
 
 	/// The next whole message, or nil within `seconds` or once closed.
 	func message(within seconds: Double = 30) -> Data? {
@@ -181,7 +207,14 @@ final class Phone {
 		guard let channel else { return nil }
 		let deadline = Date().addingTimeInterval(seconds)
 		while let message = message(within: max(0, deadline.timeIntervalSinceNow)) {
-			guard let event = try? channel.open(message) else { return nil }
+			// `open` gives nil for a frame that is not yet a whole line: read on. A `try?` here would take that for the end.
+			let opened: ChannelEvent?
+			do {
+				opened = try channel.open(message)
+			} catch {
+				return nil
+			}
+			guard let event = opened else { continue }
 			switch event {
 			case .line:
 				received += 1
@@ -198,9 +231,17 @@ final class Phone {
 		return nil
 	}
 
-	func sendLine(_ line: Data) {
-		guard let channel else { return }
-		for message in try! channel.seal(line: line) { send(message) }
+	@discardableResult
+	func sendLine(_ line: Data) -> Bool {
+		guard let channel else { return false }
+		for message in try! channel.seal(line: line) where !send(message) { return false }
+		return true
+	}
+
+	/// Writes give up after `seconds` on a full socket, so that a phone held back by the Mac does not hold the check.
+	func sendTimeout(_ seconds: Int) {
+		var limit = timeval(tv_sec: seconds, tv_usec: 0)
+		setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &limit, socklen_t(MemoryLayout<timeval>.size))
 	}
 
 	func sendAck(_ count: UInt64) {
