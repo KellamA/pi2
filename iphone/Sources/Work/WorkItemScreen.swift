@@ -69,7 +69,7 @@ struct WorkItemScreen: View {
         }
     }
 
-    private func page(_ listed: WorkItem) -> some View {
+    private func page(_ listed: WorkPiece) -> some View {
         let change = desk.pending[listed.id]
         let item = listed.showing(change)
         let canChange = change == nil && !listing.troubled
@@ -155,7 +155,7 @@ struct WorkItemScreen: View {
 
     /// Its number and title, and one line of where it stands: its state, who has it and where, what class of model it
     /// needs, and when it last changed, with the change on its way before them.
-    private func top(_ item: WorkItem, pending: String?) -> some View {
+    private func top(_ item: WorkPiece, pending: String?) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             (Text("#\(item.id)  ").foregroundStyle(.secondary).monospacedDigit() + Text(item.title).foregroundStyle(.primary))
                 .font(.title3.weight(.semibold))
@@ -191,13 +191,13 @@ struct WorkItemScreen: View {
 
     /// Its notes (on GitHub, comments), in the order they were added, then one on its way, faded, then the field for
     /// another.
-    private func notes(_ item: WorkItem, canChange: Bool) -> some View {
+    private func notes(_ item: WorkPiece, canChange: Bool) -> some View {
         Section {
             ForEach(Array(item.notes.enumerated()), id: \.offset) { _, note in
-                WorkNoteRow(note: note, agent: session.engine.agent(note.agentId))
+                WorkNoteRow(at: note.at, agentId: note.agentId, text: note.text, agent: session.engine.agent(note.agentId))
             }
             if let sending = desk.sending[item.id] {
-                WorkNoteRow(note: WorkItem.Note(at: .now, agentId: nil, text: sending), agent: nil, sending: true)
+                WorkNoteRow(at: .now, agentId: nil, text: sending, agent: nil, sending: true)
             }
             HStack(alignment: .bottom, spacing: 10) {
                 TextField("Add a \(listing.noteWord)", text: $noteText,
@@ -218,7 +218,7 @@ struct WorkItemScreen: View {
     /// The state table's actions from where it is (docs/projects.md, 3.11), each with the table's word, as the Mac's
     /// bar has them; Give to an Agent is at the top. On GitHub they are all made there.
     @ViewBuilder
-    private func actions(_ item: WorkItem, listed: WorkItem, canChange: Bool) -> some View {
+    private func actions(_ item: WorkPiece, listed: WorkPiece, canChange: Bool) -> some View {
         Section {
             if item.held {
                 actionButton("Release", systemImage: "arrow.uturn.backward",
@@ -281,7 +281,7 @@ struct WorkItemScreen: View {
 
     // MARK: - Words
 
-    private func holderName(_ item: WorkItem) -> String {
+    private func holderName(_ item: WorkPiece) -> String {
         session.engine.agent(item.holderAgentId)?.name ?? item.holderAgentId ?? "its agent"
     }
 
@@ -301,17 +301,17 @@ struct WorkItemScreen: View {
         }
     }
 
-    private var holding: [String: [WorkItem]] {
+    private var holding: [String: [WorkPiece]] {
         Dictionary(grouping: listing.items.filter { $0.held && $0.holderAgentId != nil }) { $0.holderAgentId ?? "" }
     }
 
     // MARK: - Changes
 
-    private func act(_ item: WorkItem, _ action: String, _ extra: [String: Any] = [:]) {
+    private func act(_ item: WorkPiece, _ action: String, _ extra: [String: Any] = [:]) {
         Task { await desk.act(session.engine, project: project.id, item: item, action, extra) }
     }
 
-    private func addNote(_ item: WorkItem) {
+    private func addNote(_ item: WorkPiece) {
         let text = noteText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         noteText = ""
@@ -362,14 +362,17 @@ struct WorkItemScreen: View {
 /// One note on a piece: who wrote it, with their mark when it is an agent, and when; then its words. One the person has
 /// just sent shows faded, as on its way.
 struct WorkNoteRow: View {
-    let note: WorkItem.Note
+    let at: Date
+    /// The agent that wrote the note; nil for the person.
+    let agentId: String?
+    let text: String
     let agent: AgentProfile?
     var sending = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             WorkFlow(spacing: 6) {
-                if let agentId = note.agentId {
+                if let agentId {
                     WorkHolder(agent: agent, agentId: agentId)
                         .fontWeight(.semibold)
                         .foregroundStyle(.primary)
@@ -382,12 +385,12 @@ struct WorkNoteRow: View {
                         Text("sending")
                     }
                 } else {
-                    WorkAgo(date: note.at)
+                    WorkAgo(date: at)
                 }
             }
             .font(.footnote)
             .foregroundStyle(.secondary)
-            WorkProse(text: note.text)
+            WorkProse(text: text)
         }
         .padding(.vertical, 2)
         .opacity(sending ? 0.6 : 1)

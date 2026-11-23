@@ -18,7 +18,7 @@ struct WorkListScreen: View {
     @Environment(\.openRoute) private var openRoute
     @State private var filter: WorkFilter = .open
     @State private var desk = WorkDesk()
-    @State private var giving: WorkItem?
+    @State private var giving: WorkPiece?
     @State private var filing = false
     @State private var refreshing = false
 
@@ -221,7 +221,7 @@ struct WorkListScreen: View {
     }
 
     /// The pieces each agent holds now, for the give sheet.
-    private var holding: [String: [WorkItem]] {
+    private var holding: [String: [WorkPiece]] {
         Dictionary(grouping: listing.items.filter { $0.held && $0.holderAgentId != nil }) { $0.holderAgentId ?? "" }
     }
 

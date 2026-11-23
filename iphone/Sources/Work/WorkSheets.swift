@@ -5,11 +5,11 @@ import SwiftUI
 /// already, as the Mac's Give menu lists them. Choosing one starts it on the piece at once, in a sub-chat of the
 /// orchestrator's conversation, as on the Mac.
 struct WorkGiveSheet: View {
-    let item: WorkItem
+    let item: WorkPiece
     let noun: String
     let agents: [AgentProfile]
     /// The pieces each agent holds now, by agent id.
-    let holding: [String: [WorkItem]]
+    let holding: [String: [WorkPiece]]
     let give: (AgentProfile) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -75,7 +75,7 @@ struct WorkGiveSheet: View {
 struct WorkComposer: View {
     enum Mode: Equatable {
         case new
-        case edit(WorkItem)
+        case edit(WorkPiece)
     }
 
     let mode: Mode
