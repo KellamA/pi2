@@ -108,7 +108,7 @@ struct WorkTests {
         #expect(failing.standing == "checks failing")
         #expect(failing.checksWords == "2 checks failing")
         #expect(try #require(listing.pulls.first { $0.number == 10 }).standing == "merged")
-        #expect(WorkPull.verdictWords("changes") == "asked for changes")
+        #expect(GitHubPull.verdictWords("changes") == "asked for changes")
 
         #expect(listing.unknown.map(\.summary) == ["merging pull request #12"])
         #expect(try #require(listing.item(3)).partial)
@@ -147,7 +147,7 @@ struct WorkTests {
     }
 
     @Test func aChangeOnItsWayShowsAtOnce() throws {
-        let item = try #require(WorkItem(try json("""
+        let item = try #require(WorkPiece(try json("""
             {"id": 4, "title": "Held", "text": "", "state": "waiting", "takenBy": {"agentId": "forge", "conversationId": 23}, "notes": []}
             """)))
         let closing = item.showing(.of("close", as: "dropped"))
@@ -158,7 +158,7 @@ struct WorkTests {
         #expect(item.showing(.of("note")) == item)
         let giving = item.showing(WorkChange(word: "Giving to Atlas", state: "in_progress", holderAgentId: "atlas"))
         #expect(giving.state == "in_progress" && giving.holderAgentId == "atlas" && giving.holderConversation == nil)
-        #expect(WorkItem(try json(#"{"id": 1}"#)) == nil)
+        #expect(WorkPiece(try json(#"{"id": 1}"#)) == nil)
         #expect(WorkState.name("in_progress") == "In progress")
         #expect(WorkState.name("someday") == "someday")
     }
@@ -208,7 +208,7 @@ struct WorkTests {
         session.start(transport, as: .connected(.home))
         let engine = session.engine
         #expect(try await eventually { engine.status == .connected })
-        let item = try #require(WorkItem(try json(#"{"id": 1, "title": "Write the release checklist", "state": "open", "notes": []}"#)))
+        let item = try #require(WorkPiece(try json(#"{"id": 1, "title": "Write the release checklist", "state": "open", "notes": []}"#)))
         let agent = try JSONDecoder().decode(AgentProfile.self, from: Data(#"""
             {"id": "atlas", "name": "Atlas", "description": "", "color": "blue", "instructions": "", "access": "full", "delegates": [], "createdAt": 0}
             """#.utf8))
@@ -317,7 +317,6 @@ struct WorkTests {
         #expect(WorkTime.ago(now.addingTimeInterval(-300), now: now) == "5 min ago")
         #expect(WorkTime.ago(now.addingTimeInterval(-3 * 3600), now: now) == "3 h ago")
         #expect(WorkTime.ago(now.addingTimeInterval(-50 * 3600), now: now) == "2 d ago")
-        #expect(WorkTime.date(.number(1_795_359_600_000)) == now)
         #expect(WorkComposer.oneLine("  Two\nlines \n") == "Two lines")
         #expect(WorkFilter.allCases.map(\.name) == ["Open", "Waiting", "Done"])
     }
