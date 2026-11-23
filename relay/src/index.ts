@@ -4,12 +4,13 @@
 // The address carries no id, since a platform's request logs keep URLs (5.3). A connection names its pairing in the
 // `Pi2-Pairing` header, only so that it reaches the right object; the pairing's object takes nothing on its word, and
 // its first message, `hello`, names the pairing again. A connection without the header is a Mac that registers a new
-// pairing: the Worker gives it a new id. Every connection is counted against its address first (addresses.ts), a
-// registration against the registrations' limit too, before any pairing's object is woken.
+// pairing: the Worker gives it a new id. Every connection is counted against its address first (addresses.ts), and an
+// IPv6 address's against its block's too, a registration against the registrations' limits as well, before any
+// pairing's object is woken.
 //
 // Logs are off (wrangler.jsonc), and nothing here or in the objects writes to the console.
 
-import { Address, type Admission, addressGroup, addressName } from "./addresses.ts";
+import { Address, type Admission, addressCounted, addressNames } from "./addresses.ts";
 import { base64url, random } from "./bytes.ts";
 import { AttestKey } from "./claims.ts";
 import { Pairing } from "./pairing.ts";
@@ -35,22 +36,26 @@ export default {
 
 		// Cloudflare sets the connecting address on every request that reaches the Worker, and overwrites a client's own;
 		// one without an address that reads as one is no client's, and nothing can be counted for it, so nothing is taken.
-		const group = addressGroup(request.headers.get("CF-Connecting-IP"));
-		if (group === null) return new Response(null, { status: 400 });
+		const counted = addressCounted(request.headers.get("CF-Connecting-IP"));
+		if (counted === null) return new Response(null, { status: 400 });
 		const now = Date.now();
-		const name = await addressName(settings.addressKey, group, now);
-		const until = held.get(name);
-		if (until !== undefined && until > now) return tooMany(until, now);
+		const names = await addressNames(settings.addressKey, counted, now);
+		for (const name of [names.group, names.block]) {
+			const until = name === null ? undefined : held.get(name);
+			if (until !== undefined && until > now) return tooMany(until, now);
+		}
 		let admission: Admission;
 		try {
-			admission = await env.ADDRESSES.get(env.ADDRESSES.idFromName(name)).admit(named === null);
+			// The group's object asks the block's itself, so that each counts only what both take.
+			admission = await env.ADDRESSES.get(env.ADDRESSES.idFromName(names.group)).admit(named === null, names.block);
 		} catch {
-			// The address's object did not answer, most likely overloaded by that same address: refused, rather than
-			// taken uncounted, which is what such a flood would be after.
+			// The address's object, or its block's, did not answer, most likely overloaded by that same address or block:
+			// refused, rather than taken uncounted, which is what such a flood would be after.
 			return new Response(null, { status: 503, headers: { "Retry-After": "60" } });
 		}
 		if (!admission.pass) {
-			if (admission.limit === "connections") hold(name, admission.until);
+			const name = admission.by === "block" ? names.block : names.group;
+			if (admission.limit === "connections" && name !== null) hold(name, admission.until);
 			return tooMany(admission.until, now);
 		}
 
@@ -66,9 +71,10 @@ function forward(route: "hello" | "register", pairing: string): Request {
 }
 
 /**
- * Addresses past their connections' limit, by their object's name, and until when, as this isolate last heard from the
- * objects: a flood from one address is refused here, without a call to its object each time. Only ever a refusal, and
- * only until the object's own time, so it is never more lenient than the object. Bounded, the oldest forgotten first.
+ * Addresses and blocks past their connections' limit, by their object's name, and until when, as this isolate last heard
+ * from the objects: a flood from one address, or from the /64s of one block, is refused here, without a call to an
+ * object each time. Only ever a refusal, and only until the object's own time, so it is never more lenient than the
+ * object. Bounded, the oldest forgotten first.
  */
 const held = new Map<string, number>();
 const MAX_HELD = 1024;
