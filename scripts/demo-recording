@@ -1,0 +1,145 @@
+#!/usr/bin/env node
+// Makes the recording the iPhone app's demo mode starts from (docs/iphone.md 9.4, #684):
+// iphone/Sources/Demo/Recording/demo-session.jsonl.
+//
+//   scripts/demo-recording [<suffix>]
+//
+// It starts a throwaway copy of the development build with scripts/test-copy (suffix test-684-demo unless given), filled
+// with two demo projects by the scripted demo model (`--fill project:2`, as pi2-client-check's recording was made,
+// docs/development.md "Client checks"), so it holds nothing of anyone's. It asks the first project's orchestrator, in the
+// demo model's `/tools` form, for the two kinds of card the fill leaves out (a request for more reach and a proposed
+// rule), then connects to the copy's engine socket as the app does, takes the greeting, opens every conversation the
+// library lists, and writes what a client would then know: the latest event of each kind and one snapshot of each
+// conversation. The copy's data folder and this Mac's home folder are written as /Users/someone, this Mac's memory and
+// free space are made up, and the script refuses
+// to write a recording that still names this Mac's user or host. It stops the copy at the end, whatever happened.
+//
+// Run it again whenever the greeting's shape changes (9.4, "Kept true"), from a worktree with a development build:
+//   ./app/build.sh && scripts/demo-recording
+// It needs no provider, no sign-in and no network; it touches nothing of the installed pi².
+
+'use strict';
+const { spawnSync } = require('node:child_process');
+const { writeFileSync, mkdirSync } = require('node:fs');
+const { connect } = require('node:net');
+const { homedir, hostname, userInfo } = require('node:os');
+const { join, dirname } = require('node:path');
+const { createInterface } = require('node:readline');
+
+const root = join(__dirname, '..');
+const suffix = process.argv[2] ?? 'test-684-demo';
+const out = join(root, 'iphone/Sources/Demo/Recording/demo-session.jsonl');
+const testCopy = join(root, 'scripts/test-copy');
+
+function run(args, { allow = [0], quiet = false } = {}) {
+	const result = spawnSync(testCopy, args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', quiet ? 'pipe' : 'inherit'] });
+	if (!allow.includes(result.status)) {
+		throw new Error(`scripts/test-copy ${args[0]} failed (${result.status}): ${result.stdout}${result.stderr ?? ''}`);
+	}
+	return result.stdout;
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Connects to the engine as the app does and keeps every line it sends; `ask` sends a request and waits for its answer. */
+function engine(path) {
+	return new Promise((resolve, reject) => {
+		const socket = connect(path);
+		const lines = [];
+		const waiting = new Map();
+		let next = 1;
+		socket.once('error', reject);
+		socket.once('connect', () => {
+			createInterface({ input: socket }).on('line', (line) => {
+				const message = JSON.parse(line);
+				if (message.event === undefined && waiting.has(message.id)) {
+					const { done, fail } = waiting.get(message.id);
+					waiting.delete(message.id);
+					if (message.error !== undefined) fail(new Error(message.error)); else done(message.result);
+				} else if (message.event !== undefined) {
+					lines.push(message);
+				}
+			});
+			resolve({
+				lines,
+				ask: (method, params) => new Promise((done, fail) => {
+					const id = next++;
+					waiting.set(id, { done, fail });
+					socket.write(JSON.stringify({ id, method, params }) + '\n');
+				}),
+				close: () => socket.destroy(),
+			});
+		});
+	});
+}
+
+/** Every string in `value` with `from` written as `to`, at any depth. */
+function replace(value, from, to) {
+	if (typeof value === 'string') return value.split(from).join(to);
+	if (Array.isArray(value)) return value.map((item) => replace(item, from, to));
+	if (value !== null && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, replace(item, from, to)]));
+	return value;
+}
+
+async function main() {
+	run(['start', suffix, '--fill', 'project:2']);
+	try {
+		const socket = run(['socket', suffix], { quiet: true }).trim();
+		const data = dirname(socket);
+		const client = await engine(socket);
+		await sleep(2000);
+
+		// The two kinds of card the fill leaves out (engine/scripts/test-copy-project.ts), asked as an orchestrator asks.
+		const projects = [...client.lines].reverse().find((line) => line.event === 'projects')?.projects ?? [];
+		const first = projects.find((project) => project.name === 'Demo project') ?? projects[0];
+		if (first === undefined) throw new Error('the copy has no demo project');
+		const tools = [
+			{ name: 'project_settings', arguments: { action: 'change', changes: { without_asking: { merge: true } }, why: 'So that a pull request whose checks pass can merge while you are away.' } },
+			{ name: 'project_rules', arguments: { action: 'propose', text: 'Run the tests before asking for a review.', binds: 'everyone', why: 'Two pull requests this week reached review with failing tests.' } },
+		];
+		run(['send', suffix, String(first.conversation), `/tools ${JSON.stringify(tools)}`, '--timeout', '120'], { allow: [0, 2] });
+		await sleep(2000);
+
+		// Every conversation, opened as the app opens one, so that each has its entries and state.
+		const library = [...client.lines].reverse().find((line) => line.event === 'library');
+		const ids = [...new Set([...(library?.conversations ?? []).map((row) => row.id), ...projects.map((project) => project.conversation)])].sort((a, b) => a - b);
+		for (const id of ids) await client.ask('conversation.open', { id });
+		await sleep(2000);
+		client.close();
+
+		// The latest event of each kind (each is the whole of its state), in the order kinds first came; and each
+		// conversation as a client that opened it then knows it.
+		const latest = new Map();
+		const conversations = new Map();
+		for (const line of client.lines) {
+			if (line.event === 'conversation') {
+				const known = conversations.get(line.id);
+				const items = line.reset || known === undefined ? [...line.items] : [...known.items, ...line.items];
+				conversations.set(line.id, { event: 'conversation', id: line.id, reset: true, items, state: line.state, earlier: 0, more: false });
+			} else if (line.event !== 'conversation.older' && line.event !== 'local.progress') {
+				latest.set(line.event, line);
+			}
+		}
+		let recording = [{ recorded: { at: Date.now(), by: 'scripts/demo-recording', conversations: conversations.size } }, ...latest.values(), ...[...conversations.values()].sort((a, b) => a.id - b.id)];
+		recording = replace(recording, data, '/Users/someone/Library/Application Support/pi2-demo');
+		recording = replace(recording, homedir(), '/Users/someone');
+		// This Mac's memory and free space, made up, as pi2-client-check's recording has them (#669).
+		const local = recording.find((line) => line.event === 'local');
+		if (local?.platform?.memoryGB !== undefined) Object.assign(local.platform, { memoryGB: 32, limitGB: 24 });
+		if (local?.folder?.free !== undefined) local.folder.free = 500_000_000_000;
+		const text = recording.map((line) => JSON.stringify(line)).join('\n') + '\n';
+		for (const personal of [userInfo().username, hostname().replace(/\.local$/, '')]) {
+			if (personal.length >= 3 && text.includes(personal)) throw new Error(`the recording still names "${personal}"; nothing was written`);
+		}
+		mkdirSync(dirname(out), { recursive: true });
+		writeFileSync(out, text);
+		console.log(`Wrote ${out}: ${latest.size} kinds of event, ${conversations.size} conversations, ${text.length} bytes.`);
+	} finally {
+		run(['stop', suffix]);
+	}
+}
+
+main().catch((error) => {
+	console.error(`demo-recording: ${error.message}`);
+	process.exitCode = 1;
+});
