@@ -4,8 +4,8 @@
 // and the times of the day's registrations, each removed once it has aged out.
 //
 // An address is counted by the group it belongs to: an IPv4 address whole, an IPv6 address by its /64, since a home or
-// a phone network is given a whole /64 and can use any address in it, and an IPv4-mapped or 6to4 IPv6 address as the
-// IPv4 address it carries. An IPv6 address is counted again, more loosely, by its block, the /48 it is in: a home or a
+// a phone network is given a whole /64 and can use any address in it, and an IPv4-mapped, 6to4 or Teredo IPv6 address
+// as the IPv4 address it carries. An IPv6 address is counted again, more loosely, by its block, the /48 it is in: a home or a
 // site given a /56 or a /48 has 256 or 65,536 /64s, each with a count of its own, and the block's count keeps that
 // from multiplying its limits by as much (README.md, "What it decides").
 
@@ -87,7 +87,8 @@ export function addressGroup(text: string | null): string | null {
 /**
  * What an address is counted by, from `CF-Connecting-IP` as Cloudflare gives it. Its group: an IPv4 address as itself
  * (`192.0.2.1`), an IPv6 address as its /64 (`2001:db8:1:2::/64`), an IPv4-mapped IPv6 address (`::ffff:192.0.2.1`) and a
- * 6to4 one (`2002:c000:201::/48`, a whole /48 for one IPv4 address) as the IPv4 address they carry. Its block: for an
+ * 6to4 one (`2002:c000:201::/48`, a whole /48 for one IPv4 address) and a Teredo one (`2001:0:…`, whose client's IPv4
+ * address is its last 32 bits inverted) as the IPv4 address they carry. Its block: for an
  * IPv6 address counted as IPv6, its /48 (`2001:db8:1::/48`); else none, since an IPv4 address is one place already.
  * Read strictly, by hand: anything else, a missing header among it, is null, and the relay takes nothing from it.
  */
@@ -101,6 +102,10 @@ export function addressCounted(text: string | null): Counted | null {
 	if (v6.slice(0, 5).every((group) => group === 0) && v6[5] === 0xffff) return { group: quad(v6[6], v6[7]), block: null };
 	// 2002::/16, 6to4 (RFC 3056): the /48 after it is the one IPv4 address's, which the next 32 bits give.
 	if (v6[0] === 0x2002) return { group: quad(v6[1], v6[2]), block: null };
+	// 2001::/32, Teredo (RFC 4380): `2001:0:server:server:flags:port:client:client`, the client's IPv4 address inverted.
+	// Its /64 and /48 are its server's, which the client chooses, so they would count nothing; its client's address is
+	// where the connection comes from.
+	if (v6[0] === 0x2001 && v6[1] === 0) return { group: quad(~v6[6] & 0xffff, ~v6[7] & 0xffff), block: null };
 	const prefix = (length: number) =>
 		v6
 			.slice(0, length)
@@ -167,11 +172,14 @@ function readGroups(text: string, last: boolean): number[] | null {
 }
 
 /**
- * The stored mark of a minute's connections: the count itself while small, then the next power of two, at most the
- * minute's limit.
+ * The stored mark of a minute's connections: what the object found stored when it last loaded (`base`), and on top of it
+ * the connections since, as themselves while one or two, then the next power of two; at most the minute's limit. Built
+ * on the passes since the last load, never on a mark, so a mark stays at most twice what passed however often the
+ * object leaves memory: by induction, base ≤ 2 × what passed before it, and the ladder ≤ 2 × what passed since.
  */
-function markFor(count: number, limit: number): number {
-	return Math.min(limit, count <= 2 ? count : 2 ** Math.ceil(Math.log2(count)));
+function markFor(count: number, base: number, limit: number): number {
+	const since = count - base;
+	return Math.min(limit, base + (since <= 2 ? since : 2 ** Math.ceil(Math.log2(since))));
 }
 
 /**
@@ -183,13 +191,17 @@ export class Address extends DurableObject<Env> {
 	/**
 	 * Connections counted in each clock minute of the last hour, by the minute's number. They are kept in storage too,
 	 * since an object with nothing to do leaves memory after some seconds, which an address could otherwise bring about
-	 * to start afresh. What is stored is a mark at or above the count, written before a connection passes it: the count
-	 * itself for a minute's first two, then 4, 8, 16 and each power of two up to the limit. So a minute's connections cost
-	 * at most eight writes however many they are (twelve for a block's), an object that left memory comes back counting at
-	 * most twice what was made, and nothing is ever counted below what passed.
+	 * to start afresh. What is stored is a mark at or above the count, written before a connection passes it: what was
+	 * stored when the object loaded, and on top of it the count since, itself for the first two, then 4, 8, 16 and each
+	 * power of two up to the limit (`markFor`). So the minute's connections since a load cost at most eight writes however
+	 * many they are (twelve for a block's); an object leaves memory only after some seconds with nothing to do, so a
+	 * minute has a handful of loads at most. An object that left memory comes back counting at most twice what was made,
+	 * however often it left, and nothing is ever counted below what passed.
 	 */
 	private minutes = new Map<number, number>();
 	private marks = new Map<number, number>();
+	/** Each minute's mark as it was stored when the object loaded: what `markFor` builds on. */
+	private bases = new Map<number, number>();
 	/** The times of the day's registrations, oldest first, as stored. */
 	private times: number[] = [];
 	private loading: Promise<void> | null = null;
@@ -200,6 +212,7 @@ export class Address extends DurableObject<Env> {
 			for (const [minute, mark] of Object.entries((stored.get("minutes") as Record<string, number> | undefined) ?? {})) {
 				this.minutes.set(Number(minute), mark);
 				this.marks.set(Number(minute), mark);
+				this.bases.set(Number(minute), mark);
 			}
 			this.times = (stored.get("times") as number[] | undefined) ?? [];
 		})();
@@ -260,8 +273,8 @@ export class Address extends DurableObject<Env> {
 		// The minute's count with any still waiting on the block: a mark at or above what passed.
 		const count = this.minutes.get(minute) ?? 0;
 		if (count > (this.marks.get(minute) ?? 0)) {
-			this.marks.set(minute, markFor(count, limits.connectionsAMinute));
-			for (const marked of this.marks.keys()) if (!this.minutes.has(marked)) this.marks.delete(marked);
+			this.marks.set(minute, markFor(count, this.bases.get(minute) ?? 0, limits.connectionsAMinute));
+			this.forgetMarks();
 			writes.minutes = Object.fromEntries(this.marks);
 		}
 		if (Object.keys(writes).length === 0) return { pass: true };
@@ -294,6 +307,12 @@ export class Address extends DurableObject<Env> {
 		if (this.minutes.size > 0) due.push((Math.max(...this.minutes.keys()) + 61) * MINUTE);
 		if (this.times.length > 0) due.push(this.times[0] + DAY);
 		return due.length > 0 ? Math.min(...due) : now + HOUR;
+	}
+
+	/** Forgets the marks, and what they were loaded as, of the minutes no longer counted. */
+	private forgetMarks(): void {
+		for (const marked of this.marks.keys()) if (!this.minutes.has(marked)) this.marks.delete(marked);
+		for (const based of this.bases.keys()) if (!this.minutes.has(based)) this.bases.delete(based);
 	}
 
 	/** Forgets the minutes older than the hour. */
@@ -331,7 +350,7 @@ export class Address extends DurableObject<Env> {
 		const cleanupAt = await this.ctx.storage.get<number>("cleanupAt");
 		if (cleanupAt !== undefined && now < cleanupAt) return this.ctx.storage.setAlarm(cleanupAt);
 		this.prune(now);
-		for (const marked of this.marks.keys()) if (!this.minutes.has(marked)) this.marks.delete(marked);
+		this.forgetMarks();
 		this.times = this.times.filter((time) => now - time < DAY);
 		if (this.marks.size === 0 && this.times.length === 0) {
 			await this.ctx.storage.deleteAll();

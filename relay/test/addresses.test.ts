@@ -145,6 +145,22 @@ async function afresh(address: string, count: number): Promise<Admission[]> {
 	});
 }
 
+/**
+ * The object as it is after leaving memory, in place: what its constructor sets made anew, so that its next call loads
+ * from storage, as the runtime's new instance would.
+ */
+async function evict(object: DurableObjectStub<Address>): Promise<void> {
+	await runInDurableObject(object, (instance: Address) => {
+		Object.assign(instance, { minutes: new Map(), marks: new Map(), bases: new Map(), times: [], loading: null });
+	});
+}
+
+/** The stored mark of the object's minute at NOON. */
+async function markOf(object: DurableObjectStub<Address>): Promise<number> {
+	const minutes = (await storedIn(object)).minutes as Record<string, number> | undefined;
+	return minutes?.[String(Math.floor(NOON / MINUTE))] ?? 0;
+}
+
 /** One connection to the pairing from `address`, as the Worker answers it; a socket it opens is closed again. */
 async function knock(pairing: string | null, address: string | null): Promise<Response> {
 	const headers: Record<string, string> = { Upgrade: "websocket" };
@@ -208,13 +224,19 @@ describe("the group an address is counted in", () => {
 		expect(addressGroup("64:ff9b::192.0.2.1")).toBe("64:ff9b:0:0::/64");
 	});
 
-	it("takes a 6to4 address, a whole /48 for one IPv4 address, as that IPv4 address, with no block", () => {
+	it("takes a 6to4 or Teredo address as the IPv4 address it carries, with no block", () => {
 		for (const text of ["2002:c000:201::1", "2002:C000:0201:0:0:0:0:1", "2002:c000:201:ffff:1:2:3:4", "2002:c000:201:5::", "2002:c000:201::192.0.2.9"]) {
 			expect(addressCounted(text), text).toEqual({ group: "192.0.2.1", block: null });
 		}
 		expect(addressCounted("2002:cb00:7101::1")).toEqual({ group: "203.0.113.1", block: null });
-		// Teredo (2001::/32) stays IPv6: its /64 is its server's, which all the server's clients share.
-		expect(addressCounted("2001:0:4136:e378:8000:63bf:3fff:fdd2")).toEqual({ group: "2001:0:4136:e378::/64", block: "2001:0:4136::/48" });
+		// Teredo (2001::/32): its client's IPv4 address, the last 32 bits inverted (RFC 4380's example: 192.0.2.45),
+		// whichever server, flags and port it names, which the client chooses.
+		for (const text of ["2001:0:4136:e378:8000:63bf:3fff:fdd2", "2001:0000:0a0b:0c0d:0:0:3fff:FDD2", "2001::ffff:1:3fff:fdd2", "2001:0:4136:e378:8000:63bf:63.255.253.210"]) {
+			expect(addressCounted(text), text).toEqual({ group: "192.0.2.45", block: null });
+		}
+		expect(addressCounted("2001:0:1:2::")).toEqual({ group: "255.255.255.255", block: null });
+		// 2001:1::/32 and the rest of 2001::/16 are ordinary IPv6.
+		expect(addressCounted("2001:1:4136:e378::3fff:fdd2")).toEqual({ group: "2001:1:4136:e378::/64", block: "2001:1:4136::/48" });
 	});
 
 	it("counts an IPv6 address in its /48 too, in every spelling; an IPv4 or mapped address in no block", () => {
@@ -412,6 +434,28 @@ describe("connections by address", () => {
 		expect(await afresh(other, 1)).toEqual([{ pass: false, until: NOON + 3 * HOUR, limit: "connections", by: "group" }]);
 	});
 
+	it("stores at most twice what passed however often its object leaves memory: an IPv4 address, and a /64 with its block", async () => {
+		for (const address of [newQuad(), newPrefix()(0)]) {
+			const objects = [await addressObject(address)];
+			if (addressCounted(address)!.block !== null) objects.push(await blockObject(address));
+			let passed = 0;
+			let refused: Admission | null = null;
+			// Seventeen connections each time it comes back: just past a power of two, where a mark built on the last mark
+			// would double what was stored each time.
+			while (refused === null) {
+				for (const object of objects) await evict(object);
+				for (let index = 0; index < 17 && refused === null; index++) {
+					const answer = await admitFrom(address);
+					if (answer.pass) passed += 1;
+					else refused = answer;
+				}
+				for (const object of objects) expect(await markOf(object), address).toBeLessThanOrEqual(2 * passed);
+			}
+			expect(refused).toEqual({ pass: false, until: NOON + MINUTE, limit: "connections", by: "group" });
+			expect(passed, address).toBeGreaterThanOrEqual(CONNECTIONS_A_MINUTE / 2);
+		}
+	});
+
 	it("removes the counts once they have aged out, the registrations' times a day after, and then everything", async () => {
 		const quad = newQuad();
 		const object = await addressObject(quad);
@@ -569,6 +613,31 @@ describe("an IPv6 address's block", () => {
 		const object = await blockObject(block(0));
 		expect(await runDurableObjectAlarm(object)).toBe(true);
 		expect(await storedIn(object)).toEqual({});
+	});
+
+	it(`takes half its ${BLOCK_CONNECTIONS_A_MINUTE} a minute at least from its /64s however often its objects leave memory, storing at most twice what passed`, async () => {
+		const block = newBlock();
+		const object = await blockObject(block(0));
+		let passed = 0;
+		let refused: Admission | null = null;
+		for (let segment = 0; refused === null; segment++) {
+			// Twenty /64s in turn, each and the block brought back from storage before its seventeen.
+			const address = block(segment % 20);
+			await evict(object);
+			await evict(await addressObject(address));
+			for (let index = 0; index < 17; index++) {
+				const answer = await admitFrom(address);
+				if (answer.pass) passed += 1;
+				else {
+					// A /64 at its own limit gives way to the next; the block's refusal ends it.
+					if (answer.by === "block") refused = answer;
+					break;
+				}
+			}
+			expect(await markOf(object)).toBeLessThanOrEqual(2 * passed);
+		}
+		expect(refused).toEqual({ pass: false, until: NOON + MINUTE, limit: "connections", by: "block" });
+		expect(passed).toBeGreaterThanOrEqual(BLOCK_CONNECTIONS_A_MINUTE / 2);
 	});
 
 	it(`keeps a block's ${BLOCK_CONNECTIONS_AN_HOUR} an hour when its object leaves memory`, async () => {
