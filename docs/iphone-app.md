@@ -139,6 +139,17 @@ Run them all with `xcodebuild test` and the same arguments as `build` above, or 
 - **The Mac out of reach.** An intent sends through `IntentCourier`; its one courier, `IntentEngineCourier`, sends on `session.engine` and reads the Outbox's answer `{ "outbox": <id> }` (#692's `CachedTransport`, run by the session while `.outOfReach`) as kept for later, which the intent says: the message waits in the mailbox and the answer comes later. Without it, the intent says nothing was sent.
 - **Tests.** `IntentsTests.swift` calls each intent's `perform()` and what it says in each state, on the recording, in the demo mode, and on stand-ins for a Mac that answers and for the Outbox. `IntentSessions.prompts` stands in for the system's confirmation and its opening of the app, which a test cannot answer.
 
+## The widgets
+
+`iphone/Widgets/` (#699) holds three widgets, **Needs you**, **Who is working** and **Today's spending**, each in the Home Screen's three sizes (StandBy draws the small one) and the Lock Screen's three. They draw one file the app writes, never the store, which no extension can open ([The extensions](#the-extensions)). Everything but the widget bundle is in `Widgets/Shared/`, so the app writes the file and the tests draw the views:
+
+- **`WidgetsSnapshot`**: counts and names only, made from the client's `needs`, `activity`, `projects`, `allAgents`, `usage` and `extras["limits"]`: how many things wait and who asks (a notification's title, never the card's text), the agents at work and their projects, today's spending and the plan's windows.
+- **`WidgetsFile`**: `widgets.json` in the app group's container (`WidgetsFile.appGroup`), protected until the first unlock, out of backups; not drawn after seven days without the Mac. An unsigned build has no app group, so its widgets say "Open pi² to show … here."
+- **`WidgetsPublisher`**: what `App/` calls: `update(_:)` whenever those values change, `flush()` when the app leaves the foreground, `clear()` when the store is wiped, the phone unpaired or the demo started. It writes only a real change, then asks WidgetKit to draw again.
+- **`WidgetsLink`**: where a tap opens the app, `pi2-widget://needs?project=…`, `conversation?id=…`, `dashboard`, `usage`, which `App/` maps to its routes in `onOpenURL`.
+- **Private on the Lock Screen and in StandBy** (`WidgetsPrivacy`): every name and number there is `privacySensitive`, and a bar, a gauge or an agent's colour draws nothing while iOS redacts the widget.
+- **Pictures**: `WidgetsTests.everyWidgetDrawsInEveryFamily` draws each widget in every family, light, dark, at the largest text and locked, from the demo's recording, with `ImageRenderer`; make `app/build/shots/699/` first to keep them.
+
 ## The extensions
 
 The app carries three app extensions, each a target of `pi2.xcodeproj` embedded in the app, with its bundle id under the app's ([iphone.md 9.1](iphone.md#91-given-out-testflights-internal-testing)) and the app's deployment target, Swift settings and version. Each began as an empty shell, whose entry file names the issue that fills it:
@@ -146,7 +157,7 @@ The app carries three app extensions, each a target of `pi2.xcodeproj` embedded 
 | Target | Folder | Bundle id | Extension point | Entry | Owner | Shared with the app in |
 |---|---|---|---|---|---|---|
 | `NotificationService` | `iphone/NotificationService/` | `dev.pi2.ios.notifications` | `com.apple.usernotifications.service` | `NotificationService`, a `UNNotificationServiceExtension`: hands each notification on unchanged | #690 | `iphone/Sources/Push/` |
-| `Widgets` | `iphone/Widgets/`, and `LiveActivity/` in it | `dev.pi2.ios.widgets` | `com.apple.widgetkit-extension` | `PiWidgets`, the `@main` widget bundle: one placeholder widget | #699; #700 for `LiveActivity/` | `iphone/Widgets/Shared/` |
+| `Widgets` | `iphone/Widgets/`, and `LiveActivity/` in it | `dev.pi2.ios.widgets` | `com.apple.widgetkit-extension` | `PiWidgets`, the `@main` widget bundle: Needs you, Who is working, Today's spending ([The widgets](#the-widgets)) | #699; #700 for `LiveActivity/` | `iphone/Widgets/Shared/` |
 | `ShareExtension` | `iphone/ShareExtension/` | `dev.pi2.ios.share` | `com.apple.share-services` (a link, text, a photo or a file) | `ShareViewController`: hosts `SharePage` (`Shared/`), whose Send writes the message as a draft into the app group's `Share/` folder (`ShareDrop`) for the app to send (`SharePickup`) | #702 | `iphone/ShareExtension/Shared/` |
 
 **Rules for the issues that fill them.**
