@@ -12,6 +12,7 @@ struct ConnectionProblemNotice: View {
             Label(problem.title, systemImage: symbol)
                 .font(.headline)
                 .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
             Text(problem.words)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)

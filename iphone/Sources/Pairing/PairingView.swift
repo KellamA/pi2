@@ -60,6 +60,9 @@ struct PairingPage<Extra: View>: View {
     var tint: Color = .accentColor
     let title: String
     let words: String
+    /// What the screen holds comes before the words, not after: the digits, which must show without scrolling at
+    /// any text size.
+    var holdingFirst = false
     @ViewBuilder var extra: Extra
 
     var body: some View {
@@ -72,10 +75,11 @@ struct PairingPage<Extra: View>: View {
                 Text(title)
                     .font(.title2.bold())
                     .accessibilityAddTraits(.isHeader)
+                if holdingFirst { extra }
                 Text(words)
                     .font(.body)
                     .foregroundStyle(.secondary)
-                extra
+                if !holdingFirst { extra }
             }
             .multilineTextAlignment(.center)
             .padding(.horizontal, 24)
@@ -184,7 +188,7 @@ struct PairingDigitsScreen: View {
     let path: AppSession.Path
 
     var body: some View {
-        PairingPage(symbol: "keyboard", title: "Type these digits on your Mac", words: "\(mac) is waiting for them under the code, in pi² › Settings › Devices. It pairs only if they match.") {
+        PairingPage(symbol: "keyboard", title: "Type these digits on your Mac", words: "\(mac) is waiting for them under the code, in pi² › Settings › Devices. It pairs only if they match.", holdingFirst: true) {
             Text(spaced)
                 .font(.system(.largeTitle, design: .monospaced).weight(.semibold))
                 .minimumScaleFactor(0.5)
@@ -195,9 +199,17 @@ struct PairingDigitsScreen: View {
                 .background(.fill.quaternary, in: RoundedRectangle(cornerRadius: 16))
                 .accessibilityLabel(digits.map(String.init).joined(separator: " "))
                 .accessibilityIdentifier("pairing-digits")
-            Label(path == .relay ? "Through pi²'s relay" : "On your home network", systemImage: path == .relay ? "cloud" : "house")
+            Label(pathWords, systemImage: path == .relay ? "cloud" : path == .home ? "house" : "network")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    private var pathWords: String {
+        switch path {
+        case .relay: "Through pi²'s relay"
+        case .home: "On your home network"
+        case .direct: "Straight to your Mac"
         }
     }
 

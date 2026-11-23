@@ -370,7 +370,7 @@ enum ConnectionProblem: Equatable, Sendable {
         case .presence:
             "Your Mac did not take this iPhone's Face ID. Open pi² again to use Face ID. If Face ID was set up again on this iPhone, accept its new key on your Mac in Settings › Devices first."
         case .clock:
-            "This iPhone's clock and your Mac's differ by more than two minutes. Set both to set the time automatically, then try again."
+            "This iPhone's clock and your Mac's differ by more than two minutes. On both, turn on setting the date and time automatically, then try again."
         case .faceID:
             "pi² is locked. Open it with Face ID to reach your Mac."
         case .macNotProved:
