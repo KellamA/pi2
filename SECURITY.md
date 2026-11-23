@@ -6,6 +6,8 @@ Please report security problems privately, not in a public issue. Use **Report a
 
 Say what you found, how to reproduce it, and what it lets someone do. You will get a reply as soon as it has been looked at.
 
+The same goes for **pi² for iPhone, pi² Remote** (the helper inside the Mac app that holds the Mac's end of a phone's connection) **and the relay** between them (`relay/`, [docs/iphone.md](docs/iphone.md)): report a fault in any of them here, privately, in the same way. For one that lets someone read or change what passes between a Mac and its phones, speak as either, or pair a phone without the person, the relay can be turned off for everyone within minutes ([docs/relay.md](docs/relay.md#turning-it-off-for-everyone)).
+
 ## What pi² is trusted with
 
 pi² runs with your permissions. It is worth knowing what that means.
@@ -23,6 +25,7 @@ pi² runs with your permissions. It is worth knowing what that means.
 - A way around the computer-use limits or the browser limits above.
 - Keys or provider sign-ins ending up outside the Keychain.
 - Another user on the Mac, or a remote party, reaching the engine.
+- pi² for iPhone, pi² Remote or the relay: anything that lets someone other than the person pair a phone, read what is passed or kept for them, send as their Mac or their phone, or use pi²'s relay as a free tunnel past its limits.
 
 ## Not in scope
 
