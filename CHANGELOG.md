@@ -6,6 +6,28 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 What the next version will have is in [changelog.d](changelog.d/), a file for each entry, until a release gathers them here.
 
+## 0.8.10
+
+### Added
+- An agent that hands out work, a project's orchestrator above all, can now stop a sub-chat it started whose task was overtaken, with `sub_chats` `stop`, instead of letting it run on. It is your Stop on that sub-chat: the sub-chat shows which agent stopped it, the agent gets the report of a stopped run, and it can carry the sub-chat on later. A sub-chat waiting for your approval or answer is not stopped.
+
+### Changed
+- A worktree whose work is on the repository's default branch as last fetched (`origin/main`) now counts as merged, and can be removed, even when it was made from a commit or from another branch, or its HEAD is detached at a commit there. Branches and Left Behind say "merged" by the same rule, and **Remove Worktree and Branch** deletes such a branch when no other worktree has it checked out.
+- An agent's `sub_chats` can delete a removed worktree's merged local branch too (`delete_branch: true`), says when a branch was merged by a rebase or a squash ("its changes are on origin/main under other commits") and removes that worktree only when named, keeping its branch; and its list of archived sub-chats says which still have a worktree of their own, with whether removing it would lose anything (`with_worktree: true` lists only those).
+- The "Welcome to pi²" sheet a new installation shows now speaks of projects: a project for each folder, its orchestrator that plans the work and hands it to agents, and Needs you for what is yours to decide. It names the tool access levels as an agent's settings do (Off, Read files, Ask first, Full access), and says ⌘K finds projects too.
+
+### Fixed
+- Computer use in a throwaway test copy of pi² sometimes read none of the copy's controls, and clicks at a point in the copy's window did nothing. Now the copy's main window is read even while macOS moves it between Spaces, and a click at a point in the copy presses the listed control there when nothing else is found at that point. Other apps are clicked as before. A click or context menu at a point now acts on what its approval named, and is refused, with the agent told to look again, if the window changed while it waited (#770).
+- A backup cut off by pi² stopping in the middle of it (Settings › Storage › Back Up Now…, or the copy made before the update to projects) left an unfinished `.partial` folder behind for ever, as large as your data. pi² now removes it when it next starts and before the next backup into that folder, never while a backup is still writing it, and never restores from one. Settings › Storage says when the last backup did not finish.
+- The computer tool's picture of a sheet or dialog was of the window under it as well, scaled into the sheet's size, so a point read off the picture missed what was there; in a test copy parked behind other windows there was no picture at all. Now a sheet is pictured by itself, and a point in the picture is the point clicked.
+
+### For contributors
+- The relay for pi² for iPhone has its two deployments, `development` and `production`, in `relay/wrangler.jsonc`, and a workflow, `.github/workflows/relay.yml`, that deploys one only when the owner starts it on `main` and approves it in that relay's protected environment. `relay/scripts/deploy.mjs` checks a deployment's configuration before it deploys (logs and traces off, no preview addresses, no build step, no binding but the relay's own, no secret among the variables) and reads no `.env` file, and `npm run deploy -- <relay> --dry-run` builds it without uploading anything, failing on any refusal, as CI now does on every pull request with `npm run test-deploy`. `relay/scripts/register.mjs` registers a test pairing at a deployed relay. `docs/relay.md` has the owner's steps, the spending limit and how to turn the relay off for everyone; `SECURITY.md` covers the iPhone app, pi² Remote and the relay. Nothing has been deployed.
+- RemoteKit has the relay's client (`RemoteKit/Relay`), for pi² Remote and the iPhone app. `pi2-relay-check` checks it in memory, and `scripts/relay-protocol-test` runs it against the relay itself on this computer, under Wrangler's local runtime with nothing deployed; CI runs the second as `Relay (protocol test)`.
+- `scripts/iphone-sim` builds, tests and runs the iPhone app in a simulator of your own, unsigned, and takes its pictures in either appearance and any text size; it works on no simulator it did not make, so never on the one already booted. `scripts/test-iphone-sim` checks it with stand-ins.
+- CI builds and tests the iPhone app: `.github/workflows/iphone.yml` runs its unit tests in a simulator and makes a Release build, unsigned, on every pull request and push to `main` that changes the app, the targets it shares with the Mac app or `app/Package.swift`. `Scripts (tests)` runs `scripts/test-iphone-sim` too.
+- `scripts/test-copy show` on a running copy now takes a `#<section>` as `--show` does at launch: `agent:<id>#<section>` brings that section of the agent's page up (again on the page already shown), `#everything` puts up the Allow everything confirmation, and `settings:<tab>#<section>` scrolls the tab. A section the page does not have is refused, with the ones it has.
+
 ## 0.8.9
 
 ### Changed
