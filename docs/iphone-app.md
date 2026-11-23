@@ -141,13 +141,13 @@ Run them all with `xcodebuild test` and the same arguments as `build` above, or 
 
 ## The extensions
 
-The app carries three app extensions, each a target of `pi2.xcodeproj` embedded in the app, with its bundle id under the app's ([iphone.md 9.1](iphone.md#91-given-out-testflights-internal-testing)) and the app's deployment target, Swift settings and version. Each is an empty shell for now, whose entry file names the issue that fills it:
+The app carries three app extensions, each a target of `pi2.xcodeproj` embedded in the app, with its bundle id under the app's ([iphone.md 9.1](iphone.md#91-given-out-testflights-internal-testing)) and the app's deployment target, Swift settings and version. Each began as an empty shell, whose entry file names the issue that fills it:
 
 | Target | Folder | Bundle id | Extension point | Entry | Owner | Shared with the app in |
 |---|---|---|---|---|---|---|
 | `NotificationService` | `iphone/NotificationService/` | `dev.pi2.ios.notifications` | `com.apple.usernotifications.service` | `NotificationService`, a `UNNotificationServiceExtension`: hands each notification on unchanged | #690 | `iphone/Sources/Push/` |
 | `Widgets` | `iphone/Widgets/`, and `LiveActivity/` in it | `dev.pi2.ios.widgets` | `com.apple.widgetkit-extension` | `PiWidgets`, the `@main` widget bundle: one placeholder widget | #699; #700 for `LiveActivity/` | `iphone/Widgets/Shared/` |
-| `ShareExtension` | `iphone/ShareExtension/` | `dev.pi2.ios.share` | `com.apple.share-services` (a link, text, a photo or a file) | `ShareViewController`: a page saying it is not built, whose Done completes the request | #702 | `iphone/ShareExtension/Shared/` |
+| `ShareExtension` | `iphone/ShareExtension/` | `dev.pi2.ios.share` | `com.apple.share-services` (a link, text, a photo or a file) | `ShareViewController`: hosts `SharePage` (`Shared/`), whose Send writes the message as a draft into the app group's `Share/` folder (`ShareDrop`) for the app to send (`SharePickup`) | #702 | `iphone/ShareExtension/Shared/` |
 
 **Rules for the issues that fill them.**
 
