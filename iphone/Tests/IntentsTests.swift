@@ -155,9 +155,11 @@ struct IntentsTests {
     // MARK: - The demo mode
 
     @Test func theDemoAnswersEachIntent() async throws {
+        // The demo's transport as `DemoMode.start` makes it, without the shared `DemoMode`, which DemoTests use beside these.
+        let transport = try #require(DemoTransport.recorded())
         let session = AppSession()
-        DemoMode.start(session)
-        defer { DemoMode.leave(session) }
+        session.start(transport, as: .demo)
+        defer { transport.close() }
         IntentSessions.register(session)
         IntentSessions.prompts = IntentSessions.Prompts(confirm: { _ in }, foreground: { _ in })
         #expect(try await eventually { !session.engine.projects.isEmpty && session.engine.hasLoadedLibrary })
