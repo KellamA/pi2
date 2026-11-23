@@ -27,9 +27,10 @@ export type Stored = {
 };
 
 /**
- * A push the relay asked Apple's service to send, as the local stand-in for APNs recorded it. The relay at this head
- * sends none (pushes are P20's, #689); the stand-in P20 adds hands each request to the recorder, and it is checked here
- * as everything else is.
+ * A push the relay asked Apple's service to send, as the local stand-in for APNs would hand it to the recorder
+ * (`Recorder.push`), to be checked as everything else is. The relay sends pushes since #829, but nothing hands them over
+ * yet: the marker session sends no `push` (RemoteKit's relay client has none), the recording relay does not put the
+ * stand-in (test/apns.ts) in, and `push`, `dropToken` and the stored `pushes` counts are not on the allow-list (#689).
  */
 export type Push = { url: string; headers: [string, string][]; body: Uint8Array };
 

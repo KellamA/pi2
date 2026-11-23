@@ -17,6 +17,7 @@ This folder is an owner's path (`.github/CODEOWNERS`): a pull request that chang
 | `src/addresses.ts` | The group an address is counted in (an IPv6 address by its /64), and `Address`, one object for each, named by a keyed hash that changes daily: its connections' counts and its registrations |
 | `src/mailbox.ts` | The mailbox, in the pairing's SQLite storage |
 | `src/limits.ts` | The limits of each end of a pairing, and their counters |
+| `src/apns.ts` | Pushes ([Pushes](#pushes)): the provider token, the request to Apple's service, its answers and back-off, the payload, the push limits |
 | `src/settings.ts` | The deployment's settings, read and checked |
 | `src/bytes.ts`, `src/crypto.ts` | Base64url and the other texts of bytes, read strictly; P-256 keys and signatures, SHA-256, HMAC |
 | `src/types.d.ts` | One type the engine's verifier needs that Workers' types say otherwise |
@@ -30,7 +31,7 @@ This folder is an owner's path (`.github/CODEOWNERS`): a pull request that chang
 | `scripts/register.mjs` | A test client for a deployed relay: asks whether it has its settings, then registers a pending pairing as a Mac would. Node alone, no account |
 | `wrangler.jsonc` | The Worker's configuration: its objects, logs off, Node's modules off; at the top level, for local runs and tests, no settings; and the two deployments, `development` and `production`, with every setting but the secrets |
 
-`src/apns.ts` (pushes, #689) is another issue's.
+`test/apns.ts` is the stand-in for Apple's push service ([Pushes](#pushes)). The recorder in `test/` is #683's.
 
 ## Tests
 
@@ -52,6 +53,7 @@ The tests run inside the Workers runtime (workerd, through `@cloudflare/vitest-p
 - `verifier.test.ts`: the verifier is the engine's file; it runs in workerd; Apple's sample (engine/test/appattest.json) through `join` with the real verifier, and refused for the relay's own client data, at today's time, for another key, and altered.
 - `addresses.test.ts`: the group an address is counted in, in every spelling, and what is not an address; registrations by /64 and mapped IPv4; connections a minute and an hour, with their writes counted, 429 and `Retry-After`, the counts kept when the object leaves memory and removed once aged out, a held address refused by the Worker without asking its object, 503 when the object does not answer, a household's worst minute.
 - `sealed.test.ts`: logs off in the configuration and every environment of it, as Wrangler works each out (no Workers Logs, invocation logs, traces, Issues, Logpush or tail Workers), held to `wrangler.jsonc` with its two deployments; the test configurations' copies of the runtime settings and objects match the relay's; no use of the console in `src` or the bundled verifier, and nothing written to it through a whole session with every console method watched; the recorder and the check of [The relay sees only sealed bytes](#the-relay-sees-only-sealed-bytes) on a session of the test's own, which passes, and with a marker planted in clear, which fails; and the check's forms and allow-list one by one.
+- `push.test.ts`: pushes to the stand-in for Apple's service: the request and the payload exactly, the padded sizes, a push that is not one, only the Mac's, a device with no token, removed or left; no push key, the key read from the secrets; each of Apple's answers, the back-off, an answer that never comes, the pushes that may wait, and the order of the answers; the provider token's life; the push limits, and the counts dropped with a device and at the hour's end; and the writes.
 - `routing.test.ts`, `mailbox.test.ts`, `limits.test.ts`, `revoke.test.ts`: routing and its notices; the mailbox, its bounds and its expiry; the limits of each end, an end held off with `busy` and never another, the Mac's revoking never held off, only authenticated traffic counted, text in bytes, the join windows a minute and their writes; `removeDevice`, `leave`, `deletePairing` (with the App Attest key's object failing, and nothing of a removed device passing meanwhile), and pairings deleted when pending or idle.
 
 To run it locally, `npm run dev` with every setting given, as `--var NAME:VALUE` after `--` or in a `.dev.vars` file here (which git ignores); it listens on 127.0.0.1.
@@ -67,7 +69,8 @@ Decision 8 of the contract ([docs/iphone.md 13](../docs/iphone.md#13-decisions-t
 - **The check** (`test/sealed/scan.ts`, run by `test/sealed/check.mjs` after the session) fails on any marker in UTF-8, UTF-16 either way, Latin-1, hex either case, base64 and base64url at each alignment, percent and JSON escapes; on any of the ends' private keys, the public keys the relay is never given (the Mac's identity, record and channel keys, the phone's presence, record and channel keys), the pairing's secret, a channel's binding or `pair`'s attestation, as bytes, hex or base64; in every message alone and every socket's bytes run together, every object's storage read back, every file of the relay's local state read raw, and what the local runtime printed. The relay runs at log level `log` for it, and the recording relay writes two fresh canaries with `console.log` and `console.debug` on every run, which the check fails without: so what the relay wrote to the console would be read. Every binary message must be one of the session's Noise messages, a Mac's for one of the session's devices; every item put or kept one of its sealed items; the relay key and device key the only keys the session gave for those fields; and every object with a file in the relay's state read back. It fails too if the recording missed a message of the session, or the storage or the files an item it left, so a recorder that stopped working cannot pass.
 - **What the relay may see** is an allow-list in `scan.ts`, of what 5.3 lists: every control message each way with each field's kind (ids, keys, signatures, sealed items, times, counts, builds, fixed words), the headers a connection brings, and every key, field and table the objects keep. A field, header, table or message it does not list fails the check until the list names it, in a pull request the owner reviews. Headers are held to their values too, as URLSession and the local runtime send them, and a connection the relay took must carry `User-Agent` and `Accept-Language`, exactly the relay client's fixed `pi2-relay-client` and `*` (#678's security read, S2): so the system's, which say the program's and the system's versions and the person's languages, fail the check if they come back.
 - **The check's own test**: `pi2-relay-check --plant` plants a marker in clear in the channel's bytes (both ways), in an item (in a text, a table row and the files), and in the relay's console (through the recording relay), and the check must find it in each. A marker in a header, the address, a stored key or value, a close's reason or the relay's own texts is shown to be found by `sealed.test.ts`'s tests of the check, not planted in the live run.
-- **Not covered yet**: pushes, which the relay sends none of until P20 (#689), whose stand-in for Apple's service hands each request to `Recorder.push` to be checked like the rest; a deployed relay, whose platform (Cloudflare's own logs, its TLS, headers its edge passes on) this check does not reach; `presence`, `resume` and `revoked` lines, and a session id long enough to look for; bytes written as a JSON array of numbers, or compressed.
+- **Pushes, not covered yet**: the relay sends them since #829 (`src/apns.ts`), but the marker session sends no `push` and no `dropToken` (RemoteKit's relay client has neither yet), and the recording relay's stand-in for Apple's service does not hand its requests to `Recorder.push`, so neither a push's sealed payload nor the request to Apple is checked. `push`, `dropToken`, their refusals and the stored `pushes` counts are not on the allow-list either, so a session that sent one would fail until they are added (#689).
+- **Not covered yet** besides: a deployed relay, whose platform (Cloudflare's own logs, its TLS, headers its edge passes on) this check does not reach; `presence`, `resume` and `revoked` lines, and a session id long enough to look for; bytes written as a JSON array of numbers, or compressed.
 
 ## The verifier
 
@@ -94,6 +97,14 @@ Every one is required, and none has a default: a relay missing any, or given one
 | `MIN_BUILD_MAC`, `MIN_BUILD_DEVICE` | The lowest build each role may connect with (6.5: raising them turns old builds off) |
 | `ADDRESS_KEY` | A secret of at least 32 characters, from which the day's key for hashing addresses is made |
 
+The push key is three more secrets, which the owner gives each relay with `wrangler secret put` ([docs/relay.md](../docs/relay.md), 4), never in this repository. Unlike the settings above they may all be missing: a relay without them, or with one that is not well formed, relays as before and answers every `push` `unavailable`, since a development relay is deployed before its key exists and a local one has none.
+
+| Secret | What it is |
+|---|---|
+| `APNS_KEY` | The APNs authentication key, the `.p8` file's text as Apple gives it (PKCS#8, PEM) |
+| `APNS_KEY_ID` | Its key id: ten upper-case letters or digits |
+| `APNS_TEAM_ID` | The team id it belongs to: ten upper-case letters or digits |
+
 ## The protocol
 
 Everything is inside one WebSocket at `wss://<relay>/v1`. The address carries no id, since a platform's request logs keep URLs. A connection names its pairing in the `Pi2-Pairing` header, only so that the Worker can hand it to that pairing's object; the object takes nothing on its word, and the end's `hello` names the pairing again. A connection without the header is a Mac registering a new pairing.
@@ -108,9 +119,9 @@ Everything is inside one WebSocket at `wss://<relay>/v1`. The address carries no
 | The Mac | `hello { v: 1, role: "mac", pairing, build, ext? }` | `challenge`, then `ready { devices: [{ device, online }], left, pending, mail }` |
 | A listed phone | `hello { v: 1, role: "device", pairing, device, build, ext? }` | `challenge`, then `ready { mac, mail }` |
 | A phone with no slot | `hello { v: 1, role: "device", pairing, build }`, then `join { pairing, deviceKey, attestation, keyId, token }` | `challenge`, then `joined { device }` |
-| The Mac | `openJoin { tokenHash, expires }`, `closeJoin {}`, `addDevice { device, deviceKey, attestKeyId }` (the engine's id for the phone, its device key, and the App Attest key the Mac checked), `removeDevice { device }`, `deletePairing {}`, `state { device, id, item }` | `ok { what }` or `refused { what, why }`; a `removeDevice` for a device already gone is `ok` |
+| The Mac | `openJoin { tokenHash, expires }`, `closeJoin {}`, `addDevice { device, deviceKey, attestKeyId }` (the engine's id for the phone, its device key, and the App Attest key the Mac checked), `removeDevice { device }`, `deletePairing {}`, `state { device, id, item }`, `push { device, kind, sealed, collapse? }` ([Pushes](#pushes)) | `ok { what }` or `refused { what, why }`; a `removeDevice` for a device already gone is `ok`; pushes are answered in the order asked |
 | Either | `put { to, id, item, presence? }`, `take {}` | `ok`, or the items as `item { from, id, item, presence }`, a phone's `state { id, item }`, then `taken { count }` |
-| A listed phone | `token { apns, environment }`, `leave { signature }` | `ok`; a leave closes the socket |
+| A listed phone | `token { apns, environment }`, `dropToken {}` ([Pushes](#pushes)), `leave { signature }` | `ok`; a leave closes the socket |
 | Either | `{"ping":{}}` | `{"pong":{}}`, answered without waking the object |
 
 **Notices** the relay sends: to the Mac, `online { device }`, `offline { device }` (also when it sends to a phone not connected), `joined { device, deviceKey, keyId }`, `left { device }`, `anotherMac {}`, `held { device, until }` (a phone closed past a limit, for the Devices page); to a phone, `mac { online }`; to either, `mail {}` when something arrives for it. Past a limit, an end is sent `busy { until }` and its socket is closed.
@@ -144,8 +155,57 @@ Where the contract left something open, or the relay had to choose:
 - **`presence` on `put`** marks an item whose request is a `"face"` one (a widening answer, 4.2): kept an hour, not a day. Every item a phone writes carries a presence signature inside its seal (4.3); the relay sees only the flag.
 - **The Mac's `state`** carries the item's id, which its reader needs to open it (HPKE's `info` holds it).
 
+## Pushes
+
+The relay sends pi²'s notifications through Apple's push service, with the deployment's push key (docs/iphone.md [7](../docs/iphone.md#7-notifications), decision 11). The engine decides what to push and pi² Remote seals it for the device; the relay puts the sealed bytes, as the Mac gave them, in a payload whose every other word is fixed in `src/apns.ts`, so nothing the Mac or the relay writes is ever readable text on a notification: the phone's notification service extension always replaces the title and the body with what it opens and verifies inside `sealed`, or with its own placeholder (question 2). `src/apns.ts` cites the parts of Apple's provider API it relies on.
+
+**A phone's token.** A listed phone gives its token with `token { apns, environment }`, the hexadecimal device token and the environment its build registered in (`development`, the sandbox, for a build signed for development; `production` for TestFlight and the App Store), which only the phone knows; and takes it back with `dropToken {}`. It may give it at every connection: it is written only when it changed. The relay keeps it in the device's record in the pairing's object and nowhere else, for as long as that record: until the phone gives another or drops it, Apple says it is no longer good, the device is removed or leaves, or the pairing is deleted; and from the point-in-time recovery 30 days after that, as everything the relay deletes (5.3). It is never sent to the Mac, never logged, and no object is named by it, so the relay cannot find the same phone in two pairings without reading every pairing's record (whoever does read them all, the account's holder or its point-in-time recovery, can tie them by the token, as 5.3 says): it follows the person no further than the one pairing, which is what 5.3's table allows ("Each device's push token and its environment, to send pushes, until removed, replaced or dropped by the phone, or Apple says it is no longer good").
+
+**The Mac's request.** `push { device, kind, sealed, collapse? }`, sent on the Mac's proved socket as all its requests are (only the Mac can ask for a push, 6.6; a phone that sends one is refused and closed):
+
+- `kind`: `alert` (a need, a limit, a finished answer) or `background` (take a notification away, 7). Live Activity updates are P30's.
+- `sealed`: the sealed bytes in base64url, a sealed item as `put` takes one, padded to **exactly 696, 1,464 or 3,000 bytes**: the most that make the payload at most 1, 2 or 4 KB once written as base64url (an alert's 1,023, 2,047 or 4,095 bytes; a background push's 971, 1,995 or 4,043), which is what the contract's padding means (7). Any other size is refused, so that a push's size says no more than its class even if the sealer slips, and cannot carry a signal of its own.
+- `collapse`: an alert's only, 32 bytes in base64url (7: an HMAC of the item's id with a key of the pairing), passed to Apple as `apns-collapse-id`.
+
+Anything else is refused as any message that is not the protocol's is: the socket is closed `malformed`. The answer is `ok { what: "push" }` once Apple took it, or `refused { what: "push", why }`:
+
+| `why` | What happened | What the Mac does |
+|---|---|---|
+| `unknown-device` | No listed device has that id | Nothing to push to |
+| `no-token` | The device has given no token, or dropped it | Push nothing until the phone gives one |
+| `token-dead` | Apple answered 410, or 400 `BadDeviceToken` or `DeviceTokenNotForTopic`: the relay forgot the token | As `no-token` |
+| `push-limit` | Past the push limits, for the device or the pairing, until the hour (UTC) is over | Push only what still waits, after the hour |
+| `push-later` | Apple asked the relay to slow down (429), was unavailable (5XX), could not be reached or did not answer within 10 seconds, too many of the pairing's pushes were waiting, or called the provider token stale | Ask again later, for what still waits |
+| `unavailable` | The relay has no push key, Apple refused its key or topic, or found the relay's request wrong | Nothing to do but report it; the owner fixes the secret |
+
+Pushes are handled one at a time for each pairing, so their answers come in the order the Mac asked. At most 16 wait their turn, the one in hand among them; one more is answered `push-later` in its turn, without being sent, and nothing of it is kept but its socket. The relay waits at most 10 seconds for Apple's answer, then gives the push up as on a failed connection (`push-later`, and the back-off below), so a stalled answer holds the pairing's pushes no longer than that.
+
+**What is posted**, to `https://api.sandbox.push.apple.com/3/device/<token>` for a `development` token or `https://api.push.apple.com/3/device/<token>` for a `production` one:
+
+| | An alert | A background push |
+|---|---|---|
+| `authorization` | `bearer <provider token>` | the same |
+| `apns-topic` | `APP_ATTEST_BUNDLE_ID`, the phone app's id | the same |
+| `apns-push-type` | `alert` | `background` |
+| `apns-priority` | `10` | `5` (Apple: 10 is an error for a background push) |
+| `apns-expiration` | an hour from now, in seconds: Apple keeps it that long for a phone that is offline, then drops it (the mailbox keeps the need) | the same, so that it replaces a stored alert it takes away |
+| `apns-collapse-id` | `collapse`, if given | none |
+| The payload | `{"aps":{"alert":{"title":"pi²","body":"Something needs you"},"mutable-content":1},"sealed":"<sealed>"}` | `{"aps":{"content-available":1},"sealed":"<sealed>"}` |
+
+No category, thread, sound, badge or anything else that could tell one push from another is outside the seal; the extension sets them once it has opened it.
+
+**The provider token** is an ES256 JWT, `{"alg":"ES256","kid":<APNS_KEY_ID>}` and `{"iss":<APNS_TEAM_ID>,"iat":<seconds>}`, signed with `APNS_KEY`, which is imported as a key Web Crypto will not export. It is kept in the isolate's memory and reused for 50 minutes (Apple refuses one over an hour old), and never made again within 20 (Apple refuses a new token more often on one connection), even when Apple calls it stale. Neither the key nor the token is logged, stored, or put in an error; the token goes only into Apple's `authorization` header.
+
+**Nothing is retried.** Whatever Apple answers, the Mac is told (the table above); what to ask again is the Mac's to decide, since it knows whether the need still waits (6.5). Meanwhile the relay sends nothing where Apple said not to, in the isolate's memory: a token Apple answered `TooManyRequests` for, for a minute; an environment that answered 5XX or could not be reached, for 30 seconds, doubling each time up to 15 minutes (Apple allows a 5XX to be retried after 15 minutes); one that answered `TooManyProviderTokenUpdates`, for a minute, with the same token after; one that refused the relay's key or topic (any 403 but `ExpiredProviderToken`, and `TopicDisallowed`), for an hour.
+
+**The limits** of [6.6](../docs/iphone.md#66-abuse-and-cost): 120 alerts and 60 background pushes an hour for each device, and five times as many for the pairing as a whole, so that removing a device and adding another does not start a count afresh. A push is counted before it is sent, and only one that is sent: the counts are stored in the pairing's object (`pushes`), with **one write for each push sent and none for one refused**. In memory alone they would not hold: a hibernating object forgets them between two pushes a minute apart. The writes are bounded by the limits themselves, and each one comes with a request to Apple that costs far more. They are kept until their hour is over: the hour's first push sets the pairing's alarm for the hour's end, which clears them, and any write after the hour clears them too. A removed or departed device's own count goes in the same write that removes the device; only the pairing's count remembers its pushes, until the hour is over. So the hour's first push costs one more write (the alarm), and the hour's end one (the cleared counts, with whatever else the alarm writes). Pushes count against the Mac's message limits too, as everything it sends.
+
+**HTTP/2.** Apple's service speaks HTTP/2 alone; a Worker's `fetch` chooses the protocol itself and has no switch for it. Clients for Workers that post to APNs with plain `fetch` exist and are used, but nothing here has yet reached Apple: the first push to the owner's phone from the development relay (#689) is what shows it for this relay.
+
+**The stand-in for Apple's service** is `test/apns.ts`, never in `src/`, so never in the Worker as deployed (`npm run check-bundle` fails on any input outside `src/` but the engine's verifier). It takes what the relay would post, checks it as Apple would (the provider token's signature, `kid`, `iss` and `iat`, the host, the path, the headers), records each push (its environment, token, headers, provider token and payload exactly), and answers as a test says, 200 unless told otherwise; it signs with a throwaway key it makes on first use, so no key of anyone's is in the tests. A test puts it in a pairing's object through `apns`, as it puts in App Attest's stand-in through `verify`; a local relay's Worker (P10's `test/protocol/worker.ts`, P15's recorder) does the same with `override apns = standIn.client`, and reads `standIn.pushes` for what `xcrun simctl push` and the sealed-bytes check need. It imports nothing of the tests' runtime, so such a Worker can take it as it is.
+
 ## Not here yet
 
-- **Pushes**: `token` is kept and deleted with its device; `push` is P20's (#689), with `src/apns.ts`.
+- **The rest of pushes** (#689): the engine's choice of what to push (`engine/src/remote.ts`) and pi² Remote's sealing (`app/Sources/pi2-remote/Push`); the local relay's Worker with the stand-in in it (with P10's); the one real push, to the owner's phone from the development relay, once it is deployed (P9), the App ID has its push capability (P14) and the owner has put the push key in; Live Activity updates (P30).
 - **A join without an attestation**, which only a local relay for tests may take ([10](../docs/iphone.md#10-testing-with-no-phone-in-hand)), is P13's (#681) to add when the simulator needs it; this relay takes none.
 - **Counting an IPv6 address by its /64**, for registrations and for connections, is #801.
