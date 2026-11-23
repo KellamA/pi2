@@ -601,6 +601,15 @@ public struct InboxItem: Codable, Equatable, Identifiable, Sendable {
     public let agentName: String?
     /// The conversation in the sidebar this belongs to; differs from `conversationId` for a subagent.
     public let rootConversationId: Int
+    /// The engine's mark of an approval whose call it partly kept from a device (#776; iphone.md 5.7): a key masked as
+    /// `[key hidden]`, or a value nested too deep to send, which leaves nothing in the call a phone could notice. Such
+    /// an approval can be allowed only on the Mac; a phone reads `isPartlyHidden` and offers Deny only. The key is
+    /// absent when nothing was hidden, so a synthesized encoding of this item leaves it out, and a value of the wrong
+    /// type fails the item's decoding, as every other field does.
+    public var partHidden: Bool?
+
+    /// Whether the engine marked this approval's call as shown in part: the safe side is hidden.
+    public var isPartlyHidden: Bool { partHidden == true }
 
     public var call: ToolCall { ToolCall(callId: callId, name: tool, arguments: arguments) }
 }
