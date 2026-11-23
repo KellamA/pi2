@@ -477,7 +477,10 @@ try {
 	const betaChild2 = note(pidOf(beta, ".child"));
 	engine.kill("SIGTERM");
 	await exited(engine);
-	assert.ok(!alive(betaPid2) && !alive(betaChild2), "a clean stop of the engine stops the model, and what it started, though it ignores SIGTERM");
+	// The engine has sent both SIGKILL by the time it exits, but a process killed a moment ago is listed as running until
+	// it has run its exit, which on a busy Mac can come after the engine's: one look at `ps` then could miss it (#791).
+	// Each runs for ever by itself, so only the stop can end them, and a stop that missed one still fails here.
+	await until("a clean stop of the engine stops the model, and what it started, though it ignores SIGTERM", () => !alive(betaPid2) && !alive(betaChild2));
 	const took = Number(/stopped cleanly in (\d+) ms/.exec(logged().split("\n").filter((line) => line.includes("stopped cleanly")).at(-1) ?? "")?.[1]);
 	assert.ok(took <= 5_000, `within the five seconds the app gives the engine: ${took} ms`);
 	step("a clean stop of the engine stops the model it runs, in time");
