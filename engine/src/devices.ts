@@ -1101,8 +1101,8 @@ async function pairConfirm(params: Params): Promise<{ device: string }> {
 		saving -= 1;
 	}
 	if (replaced !== null) {
-		remoteHooks.closeSessions(replaced, "replaced");
 		remoteHooks.toHelper({ kind: "revoke", device: replaced });
+		remoteHooks.closeSessions(replaced, "replaced");
 	}
 	remoteHooks.toHelper({
 		kind: "paired",
@@ -1134,8 +1134,10 @@ async function revoke(id: string): Promise<void> {
 		for (const one of doc.devices) if (one.id === id) forget(one, Date.now());
 	});
 	failures.delete(id);
-	remoteHooks.closeSessions(id, "revoked");
+	// `revoke` first: pi² Remote sends the phone its signed `revoked` line on the channel, which closing the sessions
+	// next would otherwise have ended (3.6).
 	remoteHooks.toHelper({ kind: "revoke", device: id });
+	remoteHooks.closeSessions(id, "revoked");
 }
 
 // ---- Attach and resume (3.4, 4.3, 5.8)

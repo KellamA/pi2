@@ -898,6 +898,8 @@ try {
 	assert.equal(told.id, phone.id);
 	assert.equal((await restarted.event("sessionClosed", revokedAt)).session, session4);
 	assert.equal((await restarted.event("revoke", revokedAt)).device, phone.id);
+	const told2 = restarted.events.slice(revokedAt).map((event) => event.kind);
+	assert.ok(told2.indexOf("revoke") < told2.indexOf("sessionClosed"), `revoke goes before the session is closed, for the phone's revoked line: ${told2.join(" ")}`);
 	const record = app.devicesEvents.at(-1).devices.find((one: any) => one.id === phone.id);
 	assert.ok(record.revokedAt !== null && record.deviceKey === "" && record.presenceKey === null, "its keys are forgotten in the same commit");
 	const afterRevoke = await restarted.call("remote.attachBegin");
@@ -956,6 +958,13 @@ try {
 		assert.equal(fourth4.closed, false);
 		assert.equal((await fourth4.inSession(result.session, "engine.info")).error, OPEN_WITH_FACE_ID);
 		step("the engine ends a session itself at its bound after the last attach, whatever pi² Remote does");
+		// A line longer than any a phone may send: pi² Remote is stopped, as a crash is, and started again.
+		const beforeLong = macApp.devicesEvents.length;
+		fourth4.socket.write("x".repeat(81 * 1024 * 1024));
+		await until("pi² Remote stopped for its line", () => fourth4.closed);
+		assert.equal((await nextRemote(5)).standIn!.ppid, limited.pid, "and started again");
+		await macApp.until("the stop counted as unexpected", () => macApp.devicesEvents.slice(beforeLong).some((event) => event.helper.stoppedInLastHour >= 1));
+		step("a line from pi² Remote longer than any a phone may send stops it, counted as an unexpected stop, and it is started again");
 	} finally {
 		macApp.close();
 		await stop(limited);

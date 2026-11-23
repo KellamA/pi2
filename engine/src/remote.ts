@@ -169,6 +169,12 @@ function helperProgram(): { command: string; args: string[] } | null {
 }
 
 let stopTimer: ReturnType<typeof setTimeout> | undefined;
+/**
+ * The longest line taken from pi² Remote, in characters: a device's line wrapped in its session's. RemoteKit takes at
+ * most 64 MB in one line from the phone (docs/remotekit.md, framing), a message with its pictures the largest; the rest
+ * is room for the wrapping and JSON's escapes.
+ */
+const MAX_HELPER_LINE = 80 * 1024 * 1024;
 
 /**
  * Starts or stops pi² Remote as `helperWanted` says. It is stopped a moment after it is no longer wanted, not at once:
@@ -213,16 +219,26 @@ function startHelper(): void {
 	log("remote: started pi² Remote, process", child.pid);
 	const unfinished: string[] = [];
 	wire.setEncoding("utf8");
+	let held = 0;
 	wire.on("data", (chunk: string) => {
 		let start = 0;
 		for (let newline = chunk.indexOf("\n"); ; newline = chunk.indexOf("\n", start)) {
 			if (newline === -1) {
 				if (start < chunk.length) unfinished.push(chunk.slice(start));
+				held += chunk.length - start;
+				// A line longer than any a phone may send stops pi² Remote, as a crash does: it faces the network.
+				if (held > MAX_HELPER_LINE && !current.stopping) {
+					log(`remote: pi² Remote sent a line longer than ${MAX_HELPER_LINE} characters, and was stopped`);
+					unfinished.length = 0;
+					wire.destroy();
+					current.child.kill("SIGKILL");
+				}
 				break;
 			}
 			unfinished.push(chunk.slice(start, newline));
 			const line = unfinished.join("");
 			unfinished.length = 0;
+			held = 0;
 			start = newline + 1;
 			if (line.trim() !== "") heard(current, line);
 		}
