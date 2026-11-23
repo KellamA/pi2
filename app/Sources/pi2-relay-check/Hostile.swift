@@ -228,7 +228,36 @@ enum Hostile {
 		Check.equal(rig.events.all.filter { if case .online = $0 { true } else { false } }.count, 1, "and none of the made-up ids is reported")
 		Check.that(socket.isClosedByClient, "the socket that sent them is closed")
 		await rig.client.stop()
+
+		// An id the Mac sends to and the relay has no socket for is answered offline by an honest relay: not a reason to
+		// reconnect.
+		let honest = Sessions.Rig(.mac(Formats.pairing))
+		await honest.client.start()
+		let honestSocket = try await Sessions.macReady(honest, ready: #"{"ready":{"devices":[],"left":[],"pending":false,"mail":0}}"#)
+		let stranger = DeviceID.random()
+		try await honest.client.send(Data([1]), to: stranger)
+		_ = try await honestSocket.nextBytes("bytes to it")
+		honestSocket.say(#"{"offline":{"device":"\#(stranger.text)"}}"#)
+		honestSocket.say(#"{"anotherMac":{}}"#)
+		_ = try await honest.events.next("the marker") { $0 == .anotherMac ? true : nil }
+		Check.that(!honest.events.all.contains { if case .disconnected = $0 { true } else { false } }, "offline for an id the Mac sent to keeps the socket")
+		await honest.client.stop()
+
+		// A listed device seen again is kept at the cap, while slots never seen again go first.
+		let busy = Sessions.Rig(.mac(Formats.pairing))
+		await busy.client.start()
+		let busySocket = try await Sessions.macReady(busy)
+		for index in 0..<(RelayClient.knownDevices + 8) {
+			let slot = DeviceID.random()
+			busySocket.say(#"{"joined":{"device":"\#(slot.text)","deviceKey":"\#(Formats.keyText)","keyId":"\#(Formats.keyID.text)"}}"#)
+			_ = try await busy.events.next("joined") { if case let .phoneJoined(notice) = $0, notice.slot == slot { true } else { nil } }
+			if index % 16 == 0, index <= 48 { try await busy.client.send(Data([1]), to: Formats.device) }
+		}
+		busySocket.say(#"{"online":{"device":"dev_EBESExQVFhcYGRobHB0eHw"}}"#)
+		Check.equal(try await busy.events.next("online") { if case let .online(device) = $0 { device } else { nil } }, Formats.device, "a device in use stays known past the cap of slots joined")
+		await busy.client.stop()
 	}
+
 
 	static func leaveUnanswered() async throws {
 		let rig = Sessions.Rig(.device(Formats.pairing, Formats.device))
