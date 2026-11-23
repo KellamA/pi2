@@ -347,6 +347,18 @@ struct PushTests {
         #expect(Set(registered.map(\.identifier)) == Set(PushCategories.all.map(\.identifier)))
     }
 
+    /// Provisional authorization asks nothing (no prompt, in the simulator or on a phone), and lets `xcrun simctl push`
+    /// deliver a notification to this app in the simulator, quietly: how #690 pictured one (docs/iphone-app.md, "The
+    /// extensions"). The app itself asks for notifications at pairing (3.3 step 9), which is not built yet.
+    @Test func aPushCanReachTheAppInTheSimulatorWithoutAPrompt() async throws {
+        let center = UNUserNotificationCenter.current()
+        if await center.notificationSettings().authorizationStatus == .notDetermined {
+            _ = try await center.requestAuthorization(options: [.provisional, .alert, .sound, .badge])
+        }
+        let status = await center.notificationSettings().authorizationStatus
+        #expect(status == .provisional || status == .authorized)
+    }
+
     // MARK: A button's response
 
     @Test func aButtonsResponseSaysWhichCardToOpen() {
