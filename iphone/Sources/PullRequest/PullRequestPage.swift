@@ -7,8 +7,8 @@ import SwiftUI
 /// and Send back at the foot. What the Mac's Work tab shows of it (`ProjectWorkGitHub.pullPage`), and the same requests.
 struct PullRequestPage: View {
     let key: PullRequestStore.Key
-    let pull: PullRequestInfo
-    let listing: PullRequestListing
+    let pull: GitHubPull
+    let listing: GitHubWork
     let diff: PullRequestStore.DiffState?
     /// Drawn from a debug build's sample, which the page says.
     let sample: Bool
@@ -194,7 +194,7 @@ struct PullRequestPage: View {
     }
 
     @ViewBuilder
-    private func settleButtons(_ write: PullRequestUnknownWrite) -> some View {
+    private func settleButtons(_ write: GitHubUnknownWrite) -> some View {
         Button("It happened") { store.settle(write.intent, happened: true, for: key, through: session.engine) }
             .buttonStyle(.bordered)
             .accessibilityLabel("\(write.summary): it happened")
@@ -214,7 +214,7 @@ struct PullRequestPage: View {
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 Label {
-                    Text(pull.checksWords)
+                    Text(pull.pageChecksWords)
                 } icon: {
                     Image(systemName: PullRequestLook.checksIcon(pull.checks)).foregroundStyle(PullRequestLook.checksColor(pull.checks))
                 }
@@ -377,7 +377,7 @@ struct PullRequestPage: View {
 
 /// Send back's sheet: what to put right, and who is told.
 struct PullRequestSendBack: View {
-    let pull: PullRequestInfo
+    let pull: GitHubPull
     @Binding var reason: String
     let send: () -> Void
 
@@ -421,7 +421,7 @@ struct PullRequestSendBack: View {
 
 /// One finding: who, the verdict and when, then its words, a long one folded to a few lines.
 struct PullRequestFindingRow: View {
-    let finding: PullRequestInfo.Finding
+    let finding: GitHubPull.Finding
     let agent: AgentProfile?
     let unfolded: Bool
     let toggle: () -> Void
@@ -433,7 +433,7 @@ struct PullRequestFindingRow: View {
             HStack(alignment: .center, spacing: 8) {
                 AgentMark(name: finding.agentName, color: agent?.color, size: 22, relativeTo: .subheadline)
                     .accessibilityHidden(true)
-                Text("\(Text(finding.agentName).bold()) \(Text(PullRequestInfo.verdictWords(finding.verdict)).foregroundStyle(PullRequestLook.verdictColor(finding.verdict)))")
+                Text("\(Text(finding.agentName).bold()) \(Text(GitHubPull.verdictWords(finding.verdict)).foregroundStyle(PullRequestLook.verdictColor(finding.verdict)))")
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }
@@ -512,7 +512,7 @@ struct PullRequestCounts: View {
 
 /// "Open", "Draft", "Merged" or "Closed", in a capsule of its colour.
 struct PullRequestStateTag: View {
-    let pull: PullRequestInfo
+    let pull: GitHubPull
 
     var body: some View {
         let color = PullRequestLook.stateColor(pull)
@@ -586,7 +586,7 @@ enum PullRequestLook {
         }
     }
 
-    static func stateColor(_ pull: PullRequestInfo) -> Color {
+    static func stateColor(_ pull: GitHubPull) -> Color {
         switch pull.state {
         case "merged": .purple
         case "closed": .red
@@ -594,7 +594,7 @@ enum PullRequestLook {
         }
     }
 
-    static func stateIcon(_ pull: PullRequestInfo) -> String {
+    static func stateIcon(_ pull: GitHubPull) -> String {
         switch pull.state {
         case "merged": "arrow.triangle.merge"
         case "closed": "xmark.circle"
