@@ -333,15 +333,20 @@ else
 	failures=$((failures + 1))
 fi
 
-# A responder standing in for the copy's app: answers the next request in its control folder with $1.
+# A responder standing in for the copy's app: answers the next request in its control folder with $1. It waits
+# longer than the drive script's own 30-second wait for an answer: a stand-in must not give up first on a loaded
+# Mac (#860). The answer is written under a temporary name and renamed into place, as the copy's own writer does
+# (TestCopyControl's answer): a plain write can be read half-way by the drive script's poll, which once made the
+# can-click check fail by chance (#860).
 respond() {
 	local answer=$1
 	(
-		local deadline=$((SECONDS + 20)) answered=0 d
+		local deadline=$((SECONDS + 60)) answered=0 d
 		while ((SECONDS < deadline && !answered)); do
 			for d in "$data"/test-copy-control/request-*/; do
 				[[ -f $d/request.json && ! -f $d/response.json ]] || continue
-				printf '%s' "$answer" >"$d/response.json"
+				printf '%s' "$answer" >"$d/response.json.tmp"
+				mv -- "$d/response.json.tmp" "$d/response.json"
 				answered=1
 			done
 			((answered)) || sleep 0.05

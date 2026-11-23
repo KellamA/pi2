@@ -29,6 +29,11 @@ async function windowCommand(folder, request, wait = limit) {
 		writeFileSync(pending, JSON.stringify(request));
 		renameSync(pending, join(dir, 'request.json'));
 		const deadline = performance.now() + wait;
+		// The copy writes its answer whole (an atomic rename, TestCopyControl's answer), but a writer that does not, or
+		// one still writing it, can leave response.json there before all of it is (#860): keep reading a file that does
+		// not parse yet for this long, and only then fail with the parse error, which is what an answer that never
+		// parses still says.
+		let unparseable = null, parseDeadline = 0;
 		while (performance.now() < deadline) {
 			try {
 				const response = JSON.parse(readFileSync(join(dir, 'response.json'), 'utf8'));
@@ -36,7 +41,11 @@ async function windowCommand(folder, request, wait = limit) {
 				if (typeof response.result !== 'string') throw new Error('invalid response from the copy’s window');
 				return response.result;
 			} catch (error) {
-				if (error.code !== 'ENOENT') throw error;
+				if (error.code !== 'ENOENT') {
+					if (!(error instanceof SyntaxError)) throw error;
+					if (unparseable === null) { unparseable = error; parseDeadline = performance.now() + 2000; }
+					if (performance.now() >= parseDeadline) throw unparseable;
+				}
 			}
 			await sleep(100);
 		}
