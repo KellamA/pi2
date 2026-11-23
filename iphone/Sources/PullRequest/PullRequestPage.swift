@@ -20,6 +20,7 @@ struct PullRequestPage: View {
     @State private var reason = ""
     @State private var unfolded: Set<String> = []
 
+    private static let end = "end"
     private var store: PullRequestStore { .shared }
     private var pending: String? { store.pending[key] }
     private var problem: String? { store.problems[key] }
@@ -29,15 +30,26 @@ struct PullRequestPage: View {
     }
 
     var body: some View {
-        List {
-            heading
-            notices
-            if !listing.unknown.isEmpty { unknownWrites }
-            checks
-            findings
-            files
+        ScrollViewReader { proxy in
+            List {
+                heading
+                notices
+                if !listing.unknown.isEmpty { unknownWrites }
+                checks
+                findings
+                files
+                Color.clear.frame(height: 1).listRowBackground(Color.clear).id(Self.end)
+            }
+            .listStyle(.insetGrouped)
+            #if DEBUG
+            .task {
+                // `PI2_PR_SCROLL=bottom`: the files, for a picture, once the list is drawn.
+                guard PullRequestSamples.bottom else { return }
+                try? await Task.sleep(for: .milliseconds(600))
+                proxy.scrollTo(Self.end, anchor: .bottom)
+            }
+            #endif
         }
-        .listStyle(.insetGrouped)
         .refreshable {
             await store.refresh(key, through: session.engine)
             store.readDiff(key, through: session.engine, again: true)
@@ -45,7 +57,9 @@ struct PullRequestPage: View {
         .safeAreaInset(edge: .bottom) {
             if pull.isOpen { actions }
         }
-        .confirmationDialog("Merge #\(pull.number) into \(pull.base)?", isPresented: $confirmingMerge, titleVisibility: .visible) {
+        // An alert rather than a confirmation dialog: its words scroll at the largest text sizes, and it sits in the middle
+        // of the screen whatever opened it.
+        .alert("Merge #\(pull.number) into \(pull.base)?", isPresented: $confirmingMerge) {
             Button("Merge") { merge() }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -450,14 +464,15 @@ struct PullRequestFileRow: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
+                // Colours, not `.primary` and `.secondary`, which a button's label would draw in its tint.
                 Text(file.path)
                     .font(.footnote.monospaced())
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(Color.primary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let words = PullRequestLook.changeWords(file) {
                     Text(words)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -467,7 +482,7 @@ struct PullRequestFileRow: View {
             }
             Image(systemName: "chevron.forward")
                 .font(.footnote.weight(.semibold))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(.tertiaryLabel))
                 .accessibilityHidden(true)
         }
         .contentShape(Rectangle())
@@ -485,13 +500,13 @@ struct PullRequestCounts: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            if additions > 0 || removals == 0 { Text("+\(additions)").foregroundStyle(PullRequestLook.added) }
+            if additions > 0 { Text("+\(additions)").foregroundStyle(PullRequestLook.added) }
             if removals > 0 { Text("−\(removals)").foregroundStyle(PullRequestLook.removed) }
         }
         .font(.footnote.monospacedDigit())
         .fixedSize()
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(additions) added, \(removals) removed")
+        .accessibilityLabel(additions == 0 && removals == 0 ? "No lines changed" : "\(additions) added, \(removals) removed")
     }
 }
 
@@ -501,13 +516,17 @@ struct PullRequestStateTag: View {
 
     var body: some View {
         let color = PullRequestLook.stateColor(pull)
-        Label(pull.stateWords, systemImage: PullRequestLook.stateIcon(pull))
-            .font(.footnote.weight(.semibold))
-            .foregroundStyle(color)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(color.opacity(0.15), in: Capsule())
-            .accessibilityLabel("State: \(pull.stateWords)")
+        HStack(spacing: 4) {
+            Image(systemName: PullRequestLook.stateIcon(pull))
+            Text(pull.stateWords)
+        }
+        .font(.footnote.weight(.semibold))
+        .foregroundStyle(color)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(color.opacity(0.15), in: Capsule())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("State: \(pull.stateWords)")
     }
 }
 
@@ -522,14 +541,14 @@ struct PullRequestRowLabel: View {
     var body: some View {
         HStack(spacing: 8) {
             Label {
-                Text(title).foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
+                Text(title).foregroundStyle(Color.primary).fixedSize(horizontal: false, vertical: true)
             } icon: {
                 Image(systemName: systemImage).foregroundStyle(tint)
             }
             Spacer(minLength: 4)
             Image(systemName: outward ? "arrow.up.forward" : "chevron.forward")
                 .font(.footnote.weight(.semibold))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(.tertiaryLabel))
                 .accessibilityHidden(true)
         }
         .contentShape(Rectangle())

@@ -30,15 +30,19 @@ struct PullRequestView: View {
                 ProgressView("Waiting for your Mac…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .noProject:
-                ContentUnavailableView(
-                    "No such project", systemImage: "questionmark.folder",
-                    description: Text("Your Mac has no project by this name now. It may have been deleted.")
-                )
+                PullRequestUnavailable {
+                    ContentUnavailableView(
+                        "No such project", systemImage: "questionmark.folder",
+                        description: Text("Your Mac has no project by this name now. It may have been deleted.")
+                    )
+                }
             case .noRepository(let name):
-                ContentUnavailableView(
-                    "No pull requests here", systemImage: "arrow.triangle.pull",
-                    description: Text("\(name)'s work is kept by pi², not in a GitHub repository, so it has no pull requests. A repository is attached to a project on the Mac.")
-                )
+                PullRequestUnavailable {
+                    ContentUnavailableView(
+                        "No pull requests here", systemImage: "arrow.triangle.pull",
+                        description: Text("\(name)'s work is kept by pi², not in a GitHub repository, so it has no pull requests. A repository is attached to a project on the Mac.")
+                    )
+                }
             case .firstRead(let repository):
                 ProgressView("Reading \(repository) on GitHub…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -135,6 +139,10 @@ private struct PullRequestNotListed: View {
     let trouble: String?
 
     var body: some View {
+        PullRequestUnavailable { unavailable }
+    }
+
+    private var unavailable: some View {
         ContentUnavailableView {
             Label("Pull request #\(number) is not listed", systemImage: "arrow.triangle.pull")
         } description: {
@@ -142,6 +150,21 @@ private struct PullRequestNotListed: View {
         } actions: {
             if let url = URL(string: "https://github.com/\(repository)/pull/\(number)") {
                 Link("Open on GitHub", destination: url)
+            }
+        }
+    }
+}
+
+/// What a screen says in place of its content, scrolling when its words are taller than the screen, as at the largest
+/// text sizes, and in the middle of it otherwise.
+struct PullRequestUnavailable<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        GeometryReader { geometry in
+            ScrollView {
+                content()
+                    .frame(maxWidth: .infinity, minHeight: geometry.size.height)
             }
         }
     }

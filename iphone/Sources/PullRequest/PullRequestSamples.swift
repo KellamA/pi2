@@ -18,6 +18,7 @@ import PiModels
 /// - `PI2_PR_PRESS=merge` opens the merge question once the page shows, `send-back` the sheet, `merge-now` sends the
 ///   merge at once, so that each can be pictured with no tap.
 /// - `PI2_PR_WRAP=off` opens a file's diff with long lines scrolling sideways.
+/// - `PI2_PR_SCROLL=bottom` opens the pull request's page scrolled to its end, for a picture of its files.
 struct PullRequestSamples {
     let listing: PullRequestListing
     /// The sample's diff; nil to ask the engine for it.
@@ -29,6 +30,7 @@ struct PullRequestSamples {
     }()
 
     static let wrap = ProcessInfo.processInfo.environment["PI2_PR_WRAP"] != "off"
+    static let bottom = ProcessInfo.processInfo.environment["PI2_PR_SCROLL"] == "bottom"
     private static let pressing = ProcessInfo.processInfo.environment["PI2_PR_PRESS"]
     @MainActor private static var pressed = false
 

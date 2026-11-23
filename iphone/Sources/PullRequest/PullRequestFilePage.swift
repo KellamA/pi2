@@ -37,24 +37,28 @@ struct PullRequestFilePage: View {
                 ProgressView("Reading the diff from your Mac…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .refused(let words)?:
-                ContentUnavailableView {
-                    Label("Your Mac did not send the diff", systemImage: "exclamationmark.triangle")
-                } description: {
-                    Text(words)
-                } actions: {
-                    Button("Try again") { PullRequestStore.shared.readDiff(key, through: session.engine, again: true) }
-                        .buttonStyle(.bordered)
+                PullRequestUnavailable {
+                    ContentUnavailableView {
+                        Label("Your Mac did not send the diff", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(words)
+                    } actions: {
+                        Button("Try again") { PullRequestStore.shared.readDiff(key, through: session.engine, again: true) }
+                            .buttonStyle(.bordered)
+                    }
                 }
             case .read(let read)?:
                 if let file = read.file(path) {
                     page(file, in: read)
                 } else {
-                    ContentUnavailableView(
-                        "Not in the diff", systemImage: "doc.questionmark",
-                        description: Text(read.cutNote != nil
-                            ? "\(path) is not in the part of the diff your Mac sent: the diff is longer than 2 MB, and was cut. The Mac and GitHub show all of it."
-                            : "Pull request #\(number) no longer changes \(path).")
-                    )
+                    PullRequestUnavailable {
+                        ContentUnavailableView(
+                            "Not in the diff", systemImage: "doc.questionmark",
+                            description: Text(read.cutNote != nil
+                                ? "\(path) is not in the part of the diff your Mac sent: the diff is longer than 2 MB, and was cut. The Mac and GitHub show all of it."
+                                : "Pull request #\(number) no longer changes \(path).")
+                        )
+                    }
                 }
             }
         }
@@ -64,45 +68,48 @@ struct PullRequestFilePage: View {
 
     private func page(_ file: PullRequestDiff.File, in diff: PullRequestDiff) -> some View {
         let index = diff.files.firstIndex { $0.path == file.path } ?? 0
-        return VStack(spacing: 0) {
-            header(file, index: index, of: diff.files.count)
-            Divider()
-            lines(file)
-        }
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    wrap.toggle()
-                } label: {
-                    Label(wrap ? "Scroll long lines sideways" : "Wrap long lines",
-                          systemImage: wrap ? "arrow.left.and.right.text.vertical" : "text.justify.left")
+        return lines(file)
+            .toolbar {
+                if !file.binary, !file.lines.isEmpty {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            wrap.toggle()
+                        } label: {
+                            Label(wrap ? "Scroll long lines sideways" : "Wrap long lines",
+                                  systemImage: wrap ? "arrow.left.and.right.text.vertical" : "text.justify.left")
+                        }
+                        .accessibilityLabel(wrap ? "Lines wrapped. Scroll long lines sideways instead" : "Long lines scroll sideways. Wrap them instead")
+                    }
                 }
-                .accessibilityLabel(wrap ? "Lines wrapped. Scroll long lines sideways instead" : "Long lines scroll sideways. Wrap them instead")
+                // With one file there is nowhere else to go.
+                if diff.files.count > 1 {
+                    ToolbarItemGroup(placement: .bottomBar) {
+                        Button {
+                            path = diff.files[index - 1].path
+                        } label: {
+                            Label("Previous file", systemImage: "chevron.backward")
+                        }
+                        .disabled(index == 0)
+                        Spacer()
+                        Text("\(index + 1) of \(diff.files.count)")
+                            .font(.footnote.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("File \(index + 1) of \(diff.files.count)")
+                        Spacer()
+                        Button {
+                            path = diff.files[index + 1].path
+                        } label: {
+                            Label("Next file", systemImage: "chevron.forward")
+                        }
+                        .disabled(index + 1 >= diff.files.count)
+                    }
+                }
             }
-            ToolbarItemGroup(placement: .bottomBar) {
-                Button {
-                    path = diff.files[index - 1].path
-                } label: {
-                    Label("Previous file", systemImage: "chevron.backward")
-                }
-                .disabled(index == 0)
-                Spacer()
-                Text("\(index + 1) of \(diff.files.count)")
-                    .font(.footnote.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("File \(index + 1) of \(diff.files.count)")
-                Spacer()
-                Button {
-                    path = diff.files[index + 1].path
-                } label: {
-                    Label("Next file", systemImage: "chevron.forward")
-                }
-                .disabled(index + 1 >= diff.files.count)
-            }
-        }
     }
 
-    private func header(_ file: PullRequestDiff.File, index: Int, of count: Int) -> some View {
+    /// The file's path and what it adds and removes, at the top of what scrolls, so that at the largest text sizes it
+    /// scrolls away rather than taking the screen.
+    private func header(_ file: PullRequestDiff.File) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             if sample {
                 Text("Debug build: a sample diff (PI2_PR_SAMPLE), not one your Mac sent.")
@@ -129,28 +136,41 @@ struct PullRequestFilePage: View {
 
     @ViewBuilder
     private func lines(_ file: PullRequestDiff.File) -> some View {
-        if file.binary {
-            ContentUnavailableView(
-                "A binary file", systemImage: "doc",
-                description: Text("Its change is not lines of text, so there is nothing to show here. GitHub shows it.")
-            )
-        } else if file.lines.isEmpty {
-            ContentUnavailableView(
-                "No lines changed", systemImage: "doc.text",
-                description: Text(file.change == .renamed ? "It was renamed, and its lines are as they were." : "Only the file's mode changed.")
-            )
+        if file.binary || file.lines.isEmpty {
+            ScrollView {
+                VStack(spacing: 0) {
+                    header(file)
+                    Divider()
+                    if file.binary {
+                        ContentUnavailableView(
+                            "A binary file", systemImage: "doc",
+                            description: Text("Its change is not lines of text, so there is nothing to show here. GitHub shows it.")
+                        )
+                    } else {
+                        ContentUnavailableView(
+                            "No lines changed", systemImage: "doc.text",
+                            description: Text(file.change == .renamed ? "It was renamed, and its lines are as they were." : "Only the file's mode changed.")
+                        )
+                    }
+                }
+            }
         } else {
-            PullRequestDiffLines(file: file, wrap: wrap, shown: $shownLines)
+            PullRequestDiffLines(file: file, wrap: wrap, shown: $shownLines) {
+                header(file)
+                Divider()
+            }
         }
     }
 }
 
 /// A file's lines, in a scrolling column: wrapped to the screen's width, or each on one line with the whole diff
 /// scrolling sideways. Drawn lazily, so a long file costs only the lines on screen.
-struct PullRequestDiffLines: View {
+struct PullRequestDiffLines<Header: View>: View {
     let file: PullRequestDiff.File
     let wrap: Bool
     @Binding var shown: Int
+    /// What is above the lines, which scrolls with them, and stays the screen's width when they scroll sideways.
+    @ViewBuilder let header: () -> Header
 
     @State private var width: CGFloat = 0
 
@@ -159,6 +179,8 @@ struct PullRequestDiffLines: View {
         let left = file.lines.count - lines.count
         ScrollView(wrap ? .vertical : [.vertical, .horizontal]) {
             LazyVStack(alignment: .leading, spacing: 0) {
+                VStack(spacing: 0) { header() }
+                    .frame(width: wrap ? nil : width)
                 ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
                     PullRequestDiffLine(line: line, wrap: wrap)
                 }
