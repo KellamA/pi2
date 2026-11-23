@@ -111,7 +111,7 @@ struct ConversationComposer: View {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.title)
                         .symbolRenderingMode(.palette)
-                        .foregroundStyle(Color(uiColor: ConversationColors.onAccent), Color.conversationAccent)
+                        .foregroundStyle(Color(uiColor: ConversationColors.onAccent), Color.pi2Accent)
                         .opacity(canSend ? 1 : 0.35)
                 }
                 .buttonStyle(.plain)
@@ -124,7 +124,7 @@ struct ConversationComposer: View {
         .padding(.trailing, 4)
         .padding(.vertical, 3)
         .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(focused ? Color.conversationAccent.opacity(0.6) : Color(uiColor: .separator)))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(focused ? Color.pi2Accent.opacity(0.6) : Color(uiColor: .separator)))
         .padding(.horizontal, 12)
     }
 

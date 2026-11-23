@@ -68,7 +68,7 @@ struct ConversationFooter: View {
                 }
             }
             ForEach(status.banners) { banner in
-                ConversationNote(text: banner.text, symbol: banner.symbol, tint: banner.tone == .accent ? Color.conversationAccent : .orange) { EmptyView() }
+                ConversationNote(text: banner.text, symbol: banner.symbol, tint: banner.tone == .accent ? Color.pi2Accent : .orange) { EmptyView() }
             }
             if let failure = status.failure {
                 ConversationNote(text: failure.message, symbol: failure.stopped ? "stop.circle" : "exclamationmark.triangle.fill", tint: failure.stopped ? .secondary : .red) {
@@ -112,7 +112,7 @@ struct ConversationFooter: View {
                 Spacer(minLength: 8)
                 Text("Answer")
                     .fontWeight(.semibold)
-                    .foregroundStyle(Color.conversationAccent)
+                    .foregroundStyle(Color.pi2Accent)
             }
             .font(.subheadline)
             .padding(12)
@@ -140,7 +140,7 @@ struct ConversationFooter: View {
         return ConversationNote(text: text, symbol: "archivebox", tint: .secondary) {
             Button("Restore") { restore(root) }
                 .buttonStyle(.borderedProminent)
-                .tint(Color.conversationAccent)
+                .tint(Color.pi2Accent)
         }
     }
 }
