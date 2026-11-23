@@ -1,0 +1,208 @@
+#!/usr/bin/env node
+// Makes the recording the iPhone app's demo mode starts from (docs/iphone.md 9.4, #684):
+// iphone/Sources/Demo/Recording/demo-session.jsonl.
+//
+//   scripts/demo-recording [<suffix>]
+//
+// It starts a throwaway copy of the development build with scripts/test-copy (suffix test-684-demo unless given), filled
+// with two demo projects by the scripted demo model (`--fill project:2`, as pi2-client-check's recording was made,
+// docs/development.md "Client checks"), so it holds nothing of anyone's. The demo model is given a price
+// (`PI2_DEMO_COST`), so that a project has spent something today. Then, as the person and the orchestrators would:
+// - the first project's orchestrator asks, in the demo model's `/tools` form, for the two kinds of card the fill leaves
+//   out (a request for more reach and a proposed rule), and hands Scout a long run (`delegate`, `wait: false`), so that
+//   the hub has a sub-chat working whose report is still to come, which Stop ends;
+// - Atlas and Forge of both projects run the fill's harmless `sleep` again, so that each hub has agents working;
+// - the second project's daily spend limit is set below what it spent, and its orchestrator's `delegate` is held back
+//   by it (a limit card); its `fileWork` switch is turned off, and its orchestrator's `work` `file` then asks (an
+//   approval a project's switch asked for).
+// It then connects to the copy's engine socket as the app does, takes the greeting, opens every conversation the
+// library lists, and writes what a client would then know: the latest event of each kind and one snapshot of each
+// conversation. The copy's data folder and this Mac's home folder are written as /Users/someone, this Mac's memory and
+// free space are made up, and the script refuses
+// to write a recording that still names this Mac's user or host. It stops the copy at the end, whatever happened.
+//
+// Run it again whenever the greeting's shape changes (9.4, "Kept true"), from a worktree with a development build:
+//   ./app/build.sh && scripts/demo-recording
+// It needs no provider, no sign-in and no network; it touches nothing of the installed pi².
+
+'use strict';
+const { spawnSync } = require('node:child_process');
+const { writeFileSync, mkdirSync } = require('node:fs');
+const { connect } = require('node:net');
+const { homedir, hostname, userInfo } = require('node:os');
+const { join, dirname } = require('node:path');
+const { createInterface } = require('node:readline');
+
+const root = join(__dirname, '..');
+const suffix = process.argv[2] ?? 'test-684-demo';
+const out = join(root, 'iphone/Sources/Demo/Recording/demo-session.jsonl');
+const testCopy = join(root, 'scripts/test-copy');
+
+function run(args, { allow = [0], quiet = false } = {}) {
+	const result = spawnSync(testCopy, args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', quiet ? 'pipe' : 'inherit'] });
+	if (!allow.includes(result.status)) {
+		throw new Error(`scripts/test-copy ${args[0]} failed (${result.status}): ${result.stdout}${result.stderr ?? ''}`);
+	}
+	return result.stdout;
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Connects to the engine as the app does and keeps every line it sends; `ask` sends a request and waits for its answer. */
+function engine(path) {
+	return new Promise((resolve, reject) => {
+		const socket = connect(path);
+		const lines = [];
+		const waiting = new Map();
+		let next = 1;
+		socket.once('error', reject);
+		socket.once('connect', () => {
+			createInterface({ input: socket }).on('line', (line) => {
+				const message = JSON.parse(line);
+				if (message.event === undefined && waiting.has(message.id)) {
+					const { done, fail } = waiting.get(message.id);
+					waiting.delete(message.id);
+					if (message.error !== undefined) fail(new Error(message.error)); else done(message.result);
+				} else if (message.event !== undefined) {
+					lines.push(message);
+				}
+			});
+			resolve({
+				lines,
+				ask: (method, params) => new Promise((done, fail) => {
+					const id = next++;
+					waiting.set(id, { done, fail });
+					socket.write(JSON.stringify({ id, method, params }) + '\n');
+				}),
+				close: () => socket.destroy(),
+			});
+		});
+	});
+}
+
+/** Every string in `value` with `from` written as `to`, at any depth. */
+function replace(value, from, to) {
+	if (typeof value === 'string') return value.split(from).join(to);
+	if (Array.isArray(value)) return value.map((item) => replace(item, from, to));
+	if (value !== null && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, replace(item, from, to)]));
+	return value;
+}
+
+const latestOf = (client, kind) => [...client.lines].reverse().find((line) => line.event === kind);
+
+/** Waits, for at most `seconds`, until `ready()` says so; throws `what` if it never does. */
+async function until(what, ready, seconds = 120) {
+	const end = Date.now() + seconds * 1000;
+	while (!ready()) {
+		if (Date.now() > end) throw new Error(`gave up waiting for ${what}`);
+		await sleep(250);
+	}
+}
+
+/** The harmless command the fill allows Atlas and Forge in the project's folder (engine/scripts/test-copy-project.ts). */
+const longRun = '/bin/sleep 540';
+
+async function main() {
+	run(['start', suffix, '--fill', 'project:2', '--env', 'PI2_DEMO_COST=3']);
+	try {
+		const socket = run(['socket', suffix], { quiet: true }).trim();
+		const data = dirname(socket);
+		const client = await engine(socket);
+		await sleep(2000);
+
+		// The two kinds of card the fill leaves out (engine/scripts/test-copy-project.ts), asked as an orchestrator asks.
+		const projects = latestOf(client, 'projects')?.projects ?? [];
+		const first = projects.find((project) => project.name === 'Demo project') ?? projects[0];
+		const second = projects.find((project) => project.name === 'Demo project 2');
+		if (first === undefined || second === undefined) throw new Error('the copy does not have the two demo projects');
+		const agents = latestOf(client, 'agents')?.agents ?? [];
+		const agentOf = (project, name) => {
+			const agent = agents.find((each) => each.projectId === project.id && each.name === name);
+			if (agent === undefined) throw new Error(`${project.name} has no agent called ${name}`);
+			return agent.id;
+		};
+		const call = (method, params) => run(['call', suffix, method, JSON.stringify(params)], { quiet: true });
+		const tools = [
+			{ name: 'project_settings', arguments: { action: 'change', changes: { without_asking: { merge: true } }, why: 'So that a pull request whose checks pass can merge while you are away.' } },
+			{ name: 'project_rules', arguments: { action: 'propose', text: 'Run the tests before asking for a review.', binds: 'everyone', why: 'Two pull requests this week reached review with failing tests.' } },
+		];
+		run(['send', suffix, String(first.conversation), `/tools ${JSON.stringify(tools)}`, '--timeout', '120'], { allow: [0, 2] });
+
+		// A sub-chat of the first orchestrator, working, its report to come: Scout may run the same harmless command.
+		call('rules.add', { agentId: agentOf(first, 'Scout'), folder: first.folder, command: longRun });
+		const handOff = { agent: 'Scout', task: `/timeout 600 ${longRun}`, title: 'Time the walkthrough', wait: false };
+		run(['send', suffix, String(first.conversation), `/tool delegate ${JSON.stringify(handOff)}`, '--timeout', '120']);
+
+		// Atlas and Forge at work in both projects.
+		const library = () => latestOf(client, 'library')?.conversations ?? [];
+		for (const project of [first, second]) {
+			for (const name of ['Atlas', 'Forge']) {
+				const agentId = agentOf(project, name);
+				const chat = library().find((row) => row.agentId === agentId && row.parent === null);
+				if (chat === undefined) throw new Error(`${name} of ${project.name} has no conversation`);
+				call('submit', { id: chat.id, text: `/timeout 600 ${longRun}` });
+			}
+		}
+
+		// A start held back by the second project's daily spend limit: set below what it has spent today.
+		const spent = latestOf(client, 'usage')?.projects?.find((project) => project.id === second.id)?.today?.cost ?? 0;
+		if (!(spent > 0.02)) throw new Error(`${second.name} has spent ${spent} today: the demo model's price did not count`);
+		call('projects.set', { id: second.id, settings: { limits: { dailySpend: Math.floor(spent * 50) / 100 } } });
+		run(['send', suffix, String(second.conversation), '/delegate Forge: Draft the release notes for Friday.', '--timeout', '120']);
+
+		// An approval the second project's fileWork switch asks for. The orchestrator waits on it, as the recording keeps it.
+		call('projects.set', { id: second.id, settings: { withoutAsking: { fileWork: false } } });
+		const filing = { action: 'file', title: 'Write the walkthrough FAQ', text: 'Collect the questions people asked at the last walkthrough.' };
+		run(['send', suffix, String(second.conversation), `/tool work ${JSON.stringify(filing)}`, '--timeout', '30'], { allow: [2] });
+
+		const kinds = ['question', 'decision', 'approval', 'reach', 'rule', 'limit'];
+		await until('a card of every kind, the approval a switch asked for among them', () => {
+			const needs = latestOf(client, 'needs')?.items ?? [];
+			return kinds.every((kind) => needs.some((need) => need.kind === kind)) && needs.some((need) => need.kind === 'approval' && need.projectSwitch !== undefined);
+		});
+		const working = () => (latestOf(client, 'activity')?.runs ?? []).filter((run) => run.status === 'working' && run.commands.length > 0).length;
+		await until('Scout, Atlas and Forge running their command', () => working() >= 5);
+		await sleep(2000);
+
+		// Every conversation, opened as the app opens one, so that each has its entries and state.
+		const ids = [...new Set([...library().map((row) => row.id), ...projects.map((project) => project.conversation)])].sort((a, b) => a - b);
+		for (const id of ids) await client.ask('conversation.open', { id });
+		await sleep(2000);
+		client.close();
+
+		// The latest event of each kind (each is the whole of its state), in the order kinds first came; and each
+		// conversation as a client that opened it then knows it.
+		const latest = new Map();
+		const conversations = new Map();
+		for (const line of client.lines) {
+			if (line.event === 'conversation') {
+				const known = conversations.get(line.id);
+				const items = line.reset || known === undefined ? [...line.items] : [...known.items, ...line.items];
+				conversations.set(line.id, { event: 'conversation', id: line.id, reset: true, items, state: line.state, earlier: 0, more: false });
+			} else if (line.event !== 'conversation.older' && line.event !== 'local.progress') {
+				latest.set(line.event, line);
+			}
+		}
+		let recording = [{ recorded: { at: Date.now(), by: 'scripts/demo-recording', conversations: conversations.size } }, ...latest.values(), ...[...conversations.values()].sort((a, b) => a.id - b.id)];
+		recording = replace(recording, data, '/Users/someone/Library/Application Support/pi2-demo');
+		recording = replace(recording, homedir(), '/Users/someone');
+		// This Mac's memory and free space, made up, as pi2-client-check's recording has them (#669).
+		const local = recording.find((line) => line.event === 'local');
+		if (local?.platform?.memoryGB !== undefined) Object.assign(local.platform, { memoryGB: 32, limitGB: 24 });
+		if (local?.folder?.free !== undefined) local.folder.free = 500_000_000_000;
+		const text = recording.map((line) => JSON.stringify(line)).join('\n') + '\n';
+		for (const personal of [userInfo().username, hostname().replace(/\.local$/, '')]) {
+			if (personal.length >= 3 && text.includes(personal)) throw new Error(`the recording still names "${personal}"; nothing was written`);
+		}
+		mkdirSync(dirname(out), { recursive: true });
+		writeFileSync(out, text);
+		console.log(`Wrote ${out}: ${latest.size} kinds of event, ${conversations.size} conversations, ${text.length} bytes.`);
+	} finally {
+		run(['stop', suffix]);
+	}
+}
+
+main().catch((error) => {
+	console.error(`demo-recording: ${error.message}`);
+	process.exitCode = 1;
+});
