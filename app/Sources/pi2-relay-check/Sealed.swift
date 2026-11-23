@@ -243,7 +243,10 @@ enum SealedSession {
 		try await mac.addDevice(device, deviceKey: claim.device.deviceKey, attestKeyId: macAttestKey)
 		try await mac.closeJoin()
 		let macToDevice = End(channel: macPairingChannel, send: { try await mac.send($0, to: device) }, receive: fromPhone, ledger: ledger)
-		try await macToDevice.say(.paired(try Paired(device: device, pairing: pairing, name: m("Mac name"), addresses: addresses)))
+		// The home key, which tags the Mac's Bonjour record (#815): the relay must never see it.
+		let homeKey = HomeKey.random()
+		ledger.secrets.append(homeKey.rawRepresentation)
+		try await macToDevice.say(.paired(try Paired(device: device, pairing: pairing, name: m("Mac name"), addresses: addresses, homeKey: homeKey)))
 		guard case let .paired(paired) = try await phonePairing.hearControl() else { throw RemoteKitError("marker session", "not paired") }
 		if paired.device == device, paired.name == m("Mac name") { ledger.arrived.insert("Mac name") }
 		if paired.addresses == addresses { ledger.arrived.formUnion(["home address", "private address"]) }
