@@ -23,7 +23,7 @@ final class WorkDesk {
 
     /// Sends one action of the state table, shown at once as `change`; answers whether the engine took it.
     @discardableResult
-    func act(_ engine: EngineSession<MessageField>, project: String, item: WorkItem, _ action: String,
+    func act(_ engine: EngineSession<MessageField>, project: String, item: WorkPiece, _ action: String,
              _ extra: [String: Any] = [:], change: WorkChange? = nil) async -> Bool {
         guard pending[item.id] == nil else { return false }
         pending[item.id] = change ?? WorkChange.of(action, as: extra["as"] as? String)
@@ -34,7 +34,7 @@ final class WorkDesk {
     }
 
     /// Adds a note (or, on GitHub, a comment); answers the engine's refusal, for the field to take its words back.
-    func note(_ engine: EngineSession<MessageField>, project: String, item: WorkItem, text: String) async -> String? {
+    func note(_ engine: EngineSession<MessageField>, project: String, item: WorkPiece, text: String) async -> String? {
         guard pending[item.id] == nil else { return "Wait for the change on its way." }
         sending[item.id] = text
         defer { sending[item.id] = nil }
@@ -44,8 +44,8 @@ final class WorkDesk {
 
     /// Gives a piece to an agent, shown at once as given; past the project's limit the engine holds it, for the person to
     /// confirm that one start (`confirming`) or leave it.
-    func assign(_ engine: EngineSession<MessageField>, project: String, item: WorkItem, to agent: AgentProfile,
-                confirming: WorkLimitReading? = nil) async {
+    func assign(_ engine: EngineSession<MessageField>, project: String, item: WorkPiece, to agent: AgentProfile,
+                confirming: WorkLimit? = nil) async {
         guard pending[item.id] == nil else { return }
         pending[item.id] = WorkChange(word: "Giving to \(agent.name)", state: "in_progress", holderAgentId: agent.id)
         defer { pending[item.id] = nil }
@@ -61,7 +61,7 @@ final class WorkDesk {
         }
     }
 
-    func settle(_ engine: EngineSession<MessageField>, project: String, write: WorkUnknownWrite, happened: Bool) async {
+    func settle(_ engine: EngineSession<MessageField>, project: String, write: GitHubUnknownWrite, happened: Bool) async {
         guard !settling.contains(write.intent) else { return }
         settling.insert(write.intent)
         defer { settling.remove(write.intent) }

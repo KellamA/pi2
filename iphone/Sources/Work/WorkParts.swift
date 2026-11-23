@@ -38,7 +38,7 @@ struct WorkTag: View {
     }
 
     /// A pull request's tag: "PR · ready", "PR · checks failing", "PR · merged".
-    init(pull: WorkPull) {
+    init(pull: GitHubPull) {
         words = "PR · \(pull.standing)"
         color = switch pull.standing {
         case "ready": .pi2Accent
@@ -100,7 +100,7 @@ struct WorkHolder: View {
 /// One piece of work (or issue) in the list: its number and title, its state's tag, who has it or the change on its way,
 /// and Give for one nobody has. Tapping it opens it.
 struct WorkItemRow: View {
-    let item: WorkItem
+    let item: WorkPiece
     let holder: AgentProfile?
     /// The change on its way, in a word ("Closing").
     let pending: String?
@@ -173,7 +173,7 @@ struct WorkItemRow: View {
 /// One pull request in the list: its number and title, where it stands, and what a reviewing agent last found. Tapping
 /// it opens its own screen (#695).
 struct WorkPullRow: View {
-    let pull: WorkPull
+    let pull: GitHubPull
     let open: () -> Void
 
     var body: some View {
@@ -187,7 +187,7 @@ struct WorkPullRow: View {
                     WorkFlow {
                         WorkTag(pull: pull)
                         if let finding = pull.newestFinding {
-                            Text("\(finding.agentName) \(WorkPull.verdictWords(finding.verdict))")
+                            Text("\(finding.agentName) \(GitHubPull.verdictWords(finding.verdict))")
                         } else if pull.state == "open" {
                             Text(pull.checksWords)
                         }
@@ -212,7 +212,7 @@ struct WorkPullRow: View {
     private var label: String {
         var words = ["Pull request #\(pull.number)", pull.title, pull.standing]
         if pull.state == "open" { words.append(pull.checksWords) }
-        if let finding = pull.newestFinding { words.append("\(finding.agentName) \(WorkPull.verdictWords(finding.verdict))") }
+        if let finding = pull.newestFinding { words.append("\(finding.agentName) \(GitHubPull.verdictWords(finding.verdict))") }
         return words.joined(separator: ", ")
     }
 }
@@ -250,7 +250,7 @@ struct WorkProblemBar: View {
 /// A write whose outcome pi² could not tell, as the Mac's card says it: the person looks at the repository, then says
 /// whether it happened. Saying it did not lets pi² try the write again (docs/iphone.md, 4.2).
 struct WorkUnknownCard: View {
-    let write: WorkUnknownWrite
+    let write: GitHubUnknownWrite
     let busy: Bool
     let settle: (Bool) -> Void
 

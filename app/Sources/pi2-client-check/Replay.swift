@@ -320,6 +320,43 @@ final class Replay: EngineSessionHost {
             write("  \(id): \(data.items.count) items, ids \(Dump.text(data.items.map(\.id))), earlier \(data.earlier), more \(data.more), arrived \(data.state != nil)")
         }
     }
+
+    /// What the work and github readings read (#828): the recording's last `work` event through `ProjectWork`, and one
+    /// `github` event through `GitHubWork`. The recording's own `github` event is empty — its projects keep their work in
+    /// pi² — so the event here is the phone's test fixture, which holds issues, pull requests with findings and failing
+    /// checks, and a write whose outcome is unknown (`iphone/Tests/WorkTests.swift`,
+    /// "aRepositorysIssuesAndPullsReadAsTheMacs", with its interpolated dates filled in).
+    func writeWorkReadings() {
+        write("work and github readings")
+        for project in session.projects {
+            let work = ProjectWork(session.extras["work"]?["projects"]?[project.id])
+            write("  work \(project.id) \(Dump.text(work))")
+        }
+        guard let event = try? JSONDecoder().decode(JSONValue.self, from: Data(Self.githubEvent.utf8)) else {
+            unread.append("the sample github event")
+            return
+        }
+        write("  github \(Dump.text(GitHubWork(event["projects"]?["p-1"])))")
+    }
+
+    /// A `github` event as the engine sends one for a project with a repository attached, taken from the phone's test
+    /// fixture: the recording's own holds no project, so this is what the `github` reading is decoded against.
+    private static let githubEvent = """
+        {"projects": {"p-1": {"state": "ok", "readAt": 1795359420000, "reading": true, "error": null,
+          "issues": [
+            {"id": 7, "title": "Open one", "text": "", "state": "open", "class": "local", "takenBy": null, "notes": [], "updatedAt": 1795359540000},
+            {"id": 8, "title": "Newer open one", "text": "", "state": "open", "takenBy": null, "notes": [], "updatedAt": 1795359599000},
+            {"id": 9, "title": "Held", "state": "in_progress", "takenBy": {"agentId": "forge", "conversationId": 21}, "notes": [], "updatedAt": 1795359600000},
+            {"id": 3, "title": "Closed", "state": "done", "takenBy": null, "notes": [], "result": "Shipped.", "updatedAt": 1795359600000, "partial": true}],
+          "pulls": [
+            {"number": 12, "title": "Ready", "state": "open", "draft": false, "checks": "passing", "failingChecks": [], "mergeable": "yes",
+             "findings": [{"agentName": "Scout", "verdict": "changes", "at": 1795359591000, "url": "", "text": ""},
+                          {"agentName": "Reviewer", "verdict": "approve", "at": 1795359599000, "url": "", "text": ""}], "work": 7},
+            {"number": 14, "title": "Failing", "state": "open", "draft": false, "checks": "failing",
+             "failingChecks": [{"name": "engine", "url": ""}, {"name": "app", "url": ""}], "mergeable": "yes", "findings": []},
+            {"number": 10, "title": "Merged", "state": "merged", "draft": false, "checks": "passing", "failingChecks": [], "mergeable": "unknown", "findings": []}],
+          "unknown": [{"intent": "merge:12", "summary": "merging pull request #12", "at": 1795359000000}]}}}
+        """
 }
 
 /// The recording, given to the session as its connection gives it the engine's lines. It is never ready, so the

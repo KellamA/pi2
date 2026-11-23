@@ -20,7 +20,7 @@ import PiModels
 /// - `PI2_PR_WRAP=off` opens a file's diff with long lines scrolling sideways.
 /// - `PI2_PR_SCROLL=bottom` opens the pull request's page scrolled to its end, for a picture of its files.
 struct PullRequestSamples {
-    let listing: PullRequestListing
+    let listing: GitHubWork
     /// The sample's diff; nil to ask the engine for it.
     let diff: PullRequestDiff?
 
@@ -100,7 +100,7 @@ struct PullRequestSamples {
         listing["pulls"] = [pull]
         guard let data = try? JSONSerialization.data(withJSONObject: listing),
               let value = try? JSONDecoder().decode(JSONValue.self, from: data) else { return nil }
-        self.listing = PullRequestListing(value)
+        self.listing = GitHubWork(value)
         self.diff = diff
     }
 

@@ -74,9 +74,10 @@ enum WorkSample {
         }
     }
 
-    /// A start the daily spending limit held, for `item` and `agent`.
-    static func heldStart(item: WorkItem, agent: AgentProfile) -> WorkHeldStart? {
-        let reading = WorkLimitReading(decode(["id": "limit-sample", "limit": "dailySpend", "reason": "$4.90 of today's $5.00 is spent"]))
+    /// A start the daily spending limit held, for `item` and `agent`: the limit itself is the shared reading
+    /// (`WorkLimit` in PiModels, #828).
+    static func heldStart(item: WorkPiece, agent: AgentProfile) -> WorkHeldStart? {
+        let reading = WorkLimit(decode(["id": "limit-sample", "limit": "dailySpend", "reason": "$4.90 of today's $5.00 is spent"]))
         return reading.map { WorkHeldStart(item: item, agent: agent, limit: $0) }
     }
 

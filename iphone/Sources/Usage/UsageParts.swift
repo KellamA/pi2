@@ -95,7 +95,7 @@ struct UsageBarRow: View {
 /// One subscription's card in Plan limits, as the Mac's Usage draws it (`LimitsSection.card`): its name and plan, when
 /// its figures were read, Check Now, a bar for each window, and what went wrong when the last check failed.
 struct UsagePlanCard: View {
-    let provider: UsageLimits.Provider
+    let provider: PlanLimits.Provider
     let now: Date
     let asking: Bool
     /// What the engine said when Check Now was refused.
