@@ -119,6 +119,11 @@ final class DemoWorld {
         opened.remove(id)
     }
 
+    /// A new conversation, with its first entries and its state, which the client can then open.
+    func make(_ id: Int, items: [[String: Any]] = [], state: [String: Any]) {
+        conversations[id] = Conversation(items: items, state: state)
+    }
+
     /// Adds entries to a conversation and changes its state, and sends both to a client that has it open.
     func append(_ items: [[String: Any]], to id: Int, state body: (inout [String: Any]) -> Void = { _ in }) {
         guard var conversation = conversations[id] else { return }
@@ -134,7 +139,7 @@ final class DemoWorld {
         append([], to: id, state: body)
     }
 
-    /// A new entry's id: the engine numbers the entries of every conversation in one sequence.
+    /// A new entry's id: the engine numbers the entries of every conversation in one sequence, and the conversations too.
     func newItemID() -> Int {
         lastItemID += 1
         return lastItemID

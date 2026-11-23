@@ -1,0 +1,114 @@
+name: Relay
+
+# Deploys the relay (relay/, docs/iphone.md 5.3) to one of its two deployments, `development` or `production`
+# (relay/wrangler.jsonc), and nothing else (#677). docs/relay.md, "Deploying", is the owner's page for it.
+#
+# Only by hand, and only the owner: started from the Actions tab (workflow_dispatch) on main, then held until the owner
+# approves it in the environment's review. No push, pull request or other workflow starts it, so nothing a branch or a
+# pull request holds can reach the environments' secrets. The guard is the environments themselves, which the owner
+# makes (docs/relay.md, step 3): each allows only main, and waits for the owner's approval before its job sees a secret.
+# Everything here is a second fence behind them: a run started from another branch, or by anyone but the owner, skips
+# the deploying jobs before they ask for an environment.
+#
+# The relay's tests on pull requests are ci.yml's job Relay (tests), which runs on every one; this runs the same checks
+# again before each deploy, on the commit it deploys.
+#
+# Actions are pinned by commit; the tag each commit was is beside it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      relay:
+        description: Which relay to deploy
+        type: choice
+        options: [development, production]
+        required: true
+
+permissions: {}
+
+# One deploy of each relay at a time, and none cancelled half way.
+concurrency:
+  group: relay-${{ inputs.relay }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Relay (tests, before the deploy)
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: relay
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run check-bundle
+      - run: npm run test-deploy
+      - name: Build it as the deploy will, and check its configuration
+        env:
+          RELAY: ${{ inputs.relay }}
+        run: npm run deploy -- "$RELAY" --dry-run
+
+  # Two jobs, each naming its environment outright, rather than one naming it from the input.
+  development:
+    name: Deploy the development relay
+    needs: test
+    if: inputs.relay == 'development' && github.ref == 'refs/heads/main' && github.triggering_actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: relay-development
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: relay
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+      # No package's install script runs where the token is about to be: a deploy needs none of them.
+      - run: npm ci --ignore-scripts
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/deploy.mjs development
+
+  production:
+    name: Deploy the production relay
+    needs: test
+    if: inputs.relay == 'production' && github.ref == 'refs/heads/main' && github.triggering_actor == github.repository_owner
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: relay-production
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: relay
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+      - run: npm ci --ignore-scripts
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/deploy.mjs production

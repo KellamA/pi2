@@ -49,6 +49,7 @@ enum Sessions {
 		resume(mac: mac, phone: phone, pairing: pairing, device: paired.device, session: session)
 		Check.section("Pairing and connecting refused")
 		refusals(mac: mac, phone: phone, pairing: pairing, secret: secret, device: paired.device)
+		refusedAttach(mac: mac, phone: phone, pairing: pairing, device: paired.device)
 		Check.section("Sealed items, signed by their writer")
 		sealing(mac: mac, phone: phone, pairing: pairing, device: paired.device)
 	}
@@ -539,6 +540,50 @@ enum Sessions {
 			}
 		} catch {
 			Check.that(false, "refusals: \(error)")
+		}
+	}
+
+	/// An attach pi² Remote does not take (#816): the phone reads `refused` with its reason, then `bye`, and every reason
+	/// makes messages of the same lengths.
+	static func refusedAttach(mac: Mac, phone: Phone, pairing: PairingID, device: DeviceID) {
+		do {
+			var lengths: [[Int]] = []
+			for reason in Refusal.Reason.allCases {
+				var wire = Wire()
+				let (phoneChannel, macChannel) = try kk(mac: mac, phone: phone, pairing: pairing, device: device)
+				let challenge = Bytes.random(32)
+				let proof = try MacProof.make(challenge: challenge, pairing: pairing, binding: macChannel.handshakeHash, identity: mac.identity)
+				_ = try send(.mac(proof), from: macChannel, to: phoneChannel, wire: &wire)
+				let attach = try AttachClaim.make(
+					pairing: pairing, device: device, session: nil, received: nil, binding: phoneChannel.handshakeHash, challenge: challenge,
+					build: "1.0.42", deviceKey: phone.device, presenceKey: phone.presence)
+				guard case let .attach(received) = try send(.attach(attach), from: phoneChannel, to: macChannel, wire: &wire) else {
+					throw RemoteKitError("check", "not an attach")
+				}
+				// Sent only once the attach is signed by a device key on pi² Remote's own list.
+				try received.verifyDevice(deviceKey: phone.device.publicKey, pairing: pairing, device: device, binding: macChannel.handshakeHash)
+				let messages = try macChannel.sealRefusal(Refusal(reason))
+				lengths.append(messages.map(\.count))
+				Check.that(macChannel.isOver, "after refused \(reason.rawValue) the Mac's end is over")
+				Check.refuses("nothing is sent after refused \(reason.rawValue)") { _ = try macChannel.seal(line: Data("{}".utf8)) }
+				var events: [ChannelEvent?] = []
+				for message in messages { events.append(try phoneChannel.open(try wire.carry(message))) }
+				Check.that(events.count == 2 && events.last == .bye, "refused \(reason.rawValue) comes before bye")
+				guard case let .refused(refusal) = try line(events.first!) else { throw RemoteKitError("check", "not refused") }
+				Check.that(refusal.reason == reason, "the phone reads refused \(reason.rawValue)")
+				Check.that(phoneChannel.isOver, "and its end is over too")
+				subjects += [phoneChannel, macChannel]
+			}
+			Check.that(Set(lengths).count == 1 && lengths[0][0] == Frame.paddingBlock + Noise.tagLength,
+				"every reason is sealed to the same lengths, its line padded to 256 bytes, though the Mac pads nothing else")
+			let (_, ended) = try kk(mac: mac, phone: phone, pairing: pairing, device: device)
+			_ = try ended.sealBye()
+			Check.refuses("no refusal after bye") { _ = try ended.sealRefusal(Refusal(.update)) }
+			let (_, old) = try kk(mac: mac, phone: phone, pairing: pairing, device: device)
+			Check.refuses("no refusal on a channel over a day old") { _ = try old.sealRefusal(Refusal(.update), at: old.openedAt + Channel.lifetime + .seconds(1)) }
+			print("ok   an attach refused: refused with each reason, then bye, all of one length")
+		} catch {
+			Check.that(false, "refused attach: \(error)")
 		}
 	}
 

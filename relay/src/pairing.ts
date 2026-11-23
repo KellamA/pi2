@@ -9,6 +9,7 @@
 // within ten seconds is closed.
 
 import { DurableObject } from "cloudflare:workers";
+import { type Apns, apnsFor, MAX_WAITING_PUSHES, PUSH_LIMITS, PushCounts, type PushHour, type PushLimits } from "./apns.ts";
 import { verifyAttestation } from "./attest.ts";
 import { base64url, concat, fromBase64url, random, same } from "./bytes.ts";
 import { publicKeyBytes, sha256, verifySignature } from "./crypto.ts";
@@ -25,6 +26,7 @@ import {
 	type Message,
 	PAIRING_HEADER,
 	proofText,
+	type Push,
 	type Put,
 	readMessage,
 	ROUTE_HEADER,
@@ -48,6 +50,13 @@ const WINDOW_FOR = 5 * 60 * 1000;
 const WINDOW_TRIES = 3;
 /** Phones that may join one window: the engine needs to see a second claim to close it (3.3 step 6). */
 const WINDOW_JOINS = 3;
+/**
+ * Join windows the Mac may open in any minute (6.6). Opening one is a write or two, and closing it another, so the Mac's
+ * whole allowance of messages spent on them would be hundreds of writes a second; a person pairing a phone, and trying
+ * again a few times, opens a handful in some minutes.
+ */
+const WINDOWS_A_MINUTE = 10;
+const MINUTE = 60 * 1000;
 /** Devices listed at most (3.5). */
 const MAX_DEVICES = 5;
 /** A Mac socket that has sent nothing, not even a ping, for this long is taken for gone (it pings every 30 seconds). */
@@ -69,6 +78,8 @@ type Meta = {
 	window: Window | null;
 	/** Devices that left while the Mac was away, which it is told when it next connects (3.6). */
 	left: string[];
+	/** When the join windows of the last minute were opened, for their limit (`WINDOWS_A_MINUTE`). */
+	opened?: number[];
 };
 
 type Window = { id: string; tokenHash: string; expires: number; tries: number; joins: number };
@@ -134,6 +145,10 @@ const CLOSE: Record<Why, number> = {
 	deleted: 4008,
 	"window-ended": 4008,
 	replaced: 4009,
+	"no-token": 4002,
+	"token-dead": 4002,
+	"push-limit": 4002,
+	"push-later": 4002,
 };
 
 export class Pairing extends DurableObject<Env> {
@@ -144,11 +159,22 @@ export class Pairing extends DurableObject<Env> {
 	limits: Limits = LIMITS;
 	joinedLimits: Limits = JOINED_LIMITS;
 	pendingLimits: Limits = PENDING_LIMITS;
+	/** The join windows the Mac may open in any minute; tests change it. */
+	windowsAMinute = WINDOWS_A_MINUTE;
 
 	/** The object of an App Attest key's tie (claims.ts). Tests stand it in, to make its calls fail; nothing else does. */
 	keyObject(keyId: string): Pick<DurableObjectStub<import("./claims.ts").AttestKey>, "tie" | "retie" | "untie"> {
 		return this.env.ATTEST_KEYS.get(this.env.ATTEST_KEYS.idFromName(keyId));
 	}
+
+	/** Apple's push service with the deployment's push key (apns.ts). Tests stand in Apple's service (test/apns.ts); nothing else does. */
+	apns: (topic: string) => Apns | null = (topic) => apnsFor(this.env, topic);
+	/** 6.6's push limits; tests make them smaller. */
+	pushLimits: PushLimits = PUSH_LIMITS;
+	private pushCounts = new PushCounts(undefined);
+	/** The pushes in hand, one at a time, so that the Mac's answers come in the order it asked; and how many wait. */
+	private pushing: Promise<void> = Promise.resolve();
+	private pushesWaiting = 0;
 
 	private meta: Meta | null = null;
 	private devices: Record<string, Device> = {};
@@ -165,6 +191,7 @@ export class Pairing extends DurableObject<Env> {
 			this.devices = (await ctx.storage.get<Record<string, Device>>("devices")) ?? {};
 			const days = await ctx.storage.get<Record<string, Day>>("days");
 			if (days !== undefined) this.counters = new Counters(days);
+			this.pushCounts = new PushCounts(await ctx.storage.get<PushHour>("pushes"));
 		});
 	}
 
@@ -276,6 +303,8 @@ export class Pairing extends DurableObject<Env> {
 			delete meta.blocked[sender];
 			changed = true;
 		}
+		// The push counts of an hour that is over are not kept past it.
+		if (this.pushCounts.roll(now)) changed = true;
 		if (changed) await this.save();
 		this.mailbox.expire(now);
 		if (this.counters.forgetBefore(now) || this.counters.dirty) await this.saveDays();
@@ -478,6 +507,12 @@ export class Pairing extends DurableObject<Env> {
 		switch (message.type) {
 			case "openJoin": {
 				if (message.expires <= now) return refused(ws, "openJoin", "malformed");
+				// Past the minute's windows, the Mac is held off as past any other limit, until the oldest is a minute old.
+				// The times are kept in the record that opening a window writes anyway, so they cost no write of their own and
+				// last when the object leaves memory; one refused writes nothing.
+				const opened = (meta.opened ?? []).filter((time) => now - time < MINUTE);
+				if (opened.length >= this.windowsAMinute) return this.holdOff(ws, opened[0] + MINUTE);
+				meta.opened = [...opened, now];
 				if (meta.window !== null) await this.closeWindow();
 				meta.window = {
 					id: base64url(random(16)),
@@ -515,6 +550,10 @@ export class Pairing extends DurableObject<Env> {
 				return this.put(ws, message, "mac", now);
 			case "take":
 				return this.take(ws, "mac", now);
+			case "push":
+				// At most MAX_WAITING_PUSHES wait their turn; one past that is answered push-later in its turn, kept meanwhile
+				// as no more than its socket.
+				return this.inTurn(this.pushesWaiting < MAX_WAITING_PUSHES ? this.pushStep(ws, message) : laterStep(ws));
 			default:
 				return this.refuse(ws, "malformed");
 		}
@@ -531,9 +570,18 @@ export class Pairing extends DurableObject<Env> {
 			case "take":
 				return this.take(ws, id, now);
 			case "token":
-				device.token = { apns: message.apns, environment: message.environment };
-				await this.save();
+				// The phone gives its token at every connection (apns.ts): written only when it changed.
+				if (device.token?.apns !== message.apns || device.token.environment !== message.environment) {
+					device.token = { apns: message.apns, environment: message.environment };
+					await this.save();
+				}
 				return ok(ws, "token");
+			case "dropToken":
+				if (device.token !== null) {
+					device.token = null;
+					await this.save();
+				}
+				return ok(ws, "dropToken");
 			case "leave": {
 				const meta = this.meta!;
 				if (!(await verifySignature(device.key, message.signature, proofText("leave", meta.pairing, id, attachment.challenge!)))) {
@@ -670,6 +718,8 @@ export class Pairing extends DurableObject<Env> {
 		delete this.devices[id];
 		this.mailbox.forget(id);
 		this.counters.forget(id);
+		// Its push counts go in the same write as its record; only the pairing's count remembers its pushes.
+		this.pushCounts.forget(id);
 		if (this.meta !== null) delete this.meta.blocked[id];
 		for (const [ws, attachment] of this.sockets()) {
 			if (attachment.kind !== "mac" && attachment.device === id) this.refuse(ws, why);
@@ -709,6 +759,7 @@ export class Pairing extends DurableObject<Env> {
 		this.meta = null;
 		this.devices = {};
 		this.counters = new Counters({});
+		this.pushCounts = new PushCounts(undefined);
 		for (const [ws] of this.sockets()) this.refuse(ws, "deleted");
 		await this.ctx.storage.deleteAlarm();
 		await this.ctx.storage.deleteAll();
@@ -733,6 +784,52 @@ export class Pairing extends DurableObject<Env> {
 				send(mac, { offline: { device: attachment.device } });
 			}
 		}
+	}
+
+	// Pushes.
+
+	/**
+	 * The Mac asks for a push to one of its devices (7), on its proved socket as all its requests are: sent through
+	 * Apple's service with the device's token, its content the sealed bytes the Mac gave (apns.ts). Only the Mac can ask
+	 * (6.6). Counted against 6.6's push limits before it is sent, with one write for each push sent and none for one
+	 * refused; a token Apple calls dead is forgotten.
+	 */
+	private async push(ws: WebSocket, message: Push): Promise<void> {
+		const now = Date.now();
+		const device = this.devices[message.device];
+		if (this.meta === null || device?.listed !== true) return refused(ws, "push", "unknown-device");
+		const token = device.token;
+		if (token === null) return refused(ws, "push", "no-token");
+		const settings = readSettings(this.env);
+		const apns = settings === null ? null : this.apns(settings.bundleId);
+		if (apns === null) return refused(ws, "push", "unavailable");
+		const held = apns.held(token, now);
+		if (held !== null) return refused(ws, "push", held);
+		if (!this.pushCounts.allows(message.device, message.kind, now, this.pushLimits)) return refused(ws, "push", "push-limit");
+		const first = this.pushCounts.add(message.device, message.kind, now);
+		await this.ctx.storage.put("pushes", this.pushCounts.stored());
+		// The hour's first push sets the alarm for the hour's end, which clears the counts.
+		if (first) await this.schedule();
+		const outcome = await apns.send(token, message, now);
+		if (outcome === "sent") return ok(ws, "push");
+		// Forgotten only if it is still the token Apple refused: the phone may have given another meanwhile.
+		const still = this.devices[message.device];
+		if (outcome === "token-dead" && still?.token?.apns === token.apns && still.token.environment === token.environment) {
+			still.token = null;
+			await this.save();
+		}
+		return refused(ws, "push", outcome);
+	}
+
+	private inTurn(step: () => Promise<void> | void): Promise<void> {
+		const turn = this.pushing.then(step);
+		this.pushing = turn.catch(() => undefined);
+		return turn;
+	}
+
+	private pushStep(ws: WebSocket, message: Push): () => Promise<void> {
+		this.pushesWaiting += 1;
+		return () => this.push(ws, message).finally(() => (this.pushesWaiting -= 1));
 	}
 
 	// The sockets.
@@ -820,7 +917,11 @@ export class Pairing extends DurableObject<Env> {
 
 	private async save(): Promise<void> {
 		if (this.meta === null) return;
-		await this.ctx.storage.put({ meta: this.meta, devices: this.devices });
+		// The push counts ride along when they changed (a device dropped, an hour over), in the same write.
+		this.pushCounts.roll(Date.now());
+		const record: Record<string, unknown> = { meta: this.meta, devices: this.devices };
+		if (this.pushCounts.dirty) record.pushes = this.pushCounts.stored();
+		await this.ctx.storage.put(record);
 	}
 
 	private async saveDays(): Promise<void> {
@@ -844,6 +945,8 @@ export class Pairing extends DurableObject<Env> {
 			times.push(meta.lastSeen + IDLE_FOR);
 			const expiry = this.mailbox.nextExpiry();
 			if (expiry !== null) times.push(expiry);
+			const pushesEnd = this.pushCounts.ends;
+			if (pushesEnd !== null) times.push(pushesEnd);
 			// The day's counts are kept for the day.
 			if (Object.keys(this.counters.days).length > 0) times.push(Date.parse(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`) + DAY);
 		}
@@ -864,6 +967,11 @@ function send(ws: WebSocket, message: object): void {
 	} catch {
 		// Closed while this was being sent: nothing to tell it.
 	}
+}
+
+/** A push past MAX_WAITING_PUSHES: answered in its turn, holding nothing of it but its socket. */
+function laterStep(ws: WebSocket): () => void {
+	return () => refused(ws, "push", "push-later");
 }
 
 function sendBytes(ws: WebSocket, bytes: Uint8Array): void {

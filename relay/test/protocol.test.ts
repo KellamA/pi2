@@ -23,7 +23,10 @@ describe("the Worker", () => {
 		// The runtime itself refuses a POST that asks for a WebSocket; either way, nothing is opened.
 		expect((await worker.fetch("https://relay.test/v1", { method: "POST", headers: { Upgrade: "websocket" } })).status).not.toBe(101);
 		expect((await worker.fetch("https://relay.test/v1")).status).toBe(426);
-		const response = await worker.fetch("https://relay.test/v1", { headers: { Upgrade: "websocket", "Pi2-Pairing": "not an id" } });
+		// With an address, so that only the pairing's id is wrong.
+		const response = await worker.fetch("https://relay.test/v1", {
+			headers: { Upgrade: "websocket", "Pi2-Pairing": "not an id", "CF-Connecting-IP": newAddress() },
+		});
 		expect(response.status).toBe(400);
 		expect(await response.text()).toBe("");
 	});
