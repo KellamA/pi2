@@ -1,0 +1,34 @@
+// The relay's Worker (docs/iphone.md 5.3, #676). This file is for local runs and tests only: nothing is deployed from
+// it as it is. The deployments' environments, with their settings and minimum builds, are #677's (P9), and every
+// setting README.md lists has no default here, so a relay that is not given them refuses everything.
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "pi2-relay",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-11-01",
+	// Nothing here needs Node's modules, and this date turns them on by default: off, so the runtime is no wider than the
+	// code.
+	"compatibility_flags": ["no_nodejs_compat", "no_nodejs_compat_v2"],
+	// Wrangler's command events off for this project. Not every event of this Wrangler version heeds it, so every script
+	// also runs Wrangler with WRANGLER_SEND_METRICS=false and a throwaway home folder (scripts/isolated.mjs, README.md).
+	"send_metrics": false,
+
+	// Logs off (5.3): no Workers Logs, no invocation logs (which keep a request's URL), and the code writes nothing to the
+	// console. P15 (#683) adds the check in CI that fails if either changes.
+	"observability": {
+		"enabled": false,
+		"logs": { "enabled": false, "invocation_logs": false }
+	},
+
+	"durable_objects": {
+		"bindings": [
+			// One for each pairing, named by its id: its sockets, its devices, its mailbox and its limits.
+			{ "name": "PAIRINGS", "class_name": "Pairing" },
+			// One for each App Attest key, named by its id: the pairing and device it is tied to (README.md, "join").
+			{ "name": "ATTEST_KEYS", "class_name": "AttestKey" },
+			// One for each address that registers, named by a keyed hash of it that changes daily: its count (6.6).
+			{ "name": "ADDRESSES", "class_name": "Address" }
+		]
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["Pairing", "AttestKey", "Address"] }]
+}

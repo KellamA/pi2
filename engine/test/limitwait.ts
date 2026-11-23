@@ -448,7 +448,7 @@ function message(errorMessage: string, provider = "anthropic"): AssistantMessage
 	);
 	assert.match(unfinished("Scout", 12, "model_error", "429 Too Many Requests"), /”\. The provider refused it for its limit, so carrying on works once the limit has reset\. The sub-chat is kept/);
 	assert.doesNotMatch(unfinished("Scout", 12, "model_error", gaveUp), /once the limit has reset/, "pi² said why itself");
-	assert.equal(unfinished("Scout", 12, "aborted", undefined), "Scout did not finish the task: its run was stopped, by the person or with this conversation. The sub-chat is kept as it stopped: to carry on from there, call delegate again with chat: 12.");
+	assert.equal(unfinished("Scout", 12, "aborted", undefined), "Scout did not finish the task: its run was stopped (by the person, by you with sub_chats stop, or with this conversation). The sub-chat is kept as it stopped: to carry on from there, call delegate again with chat: 12.");
 	assert.equal(unfinished("Scout", 12, "turn_limit", undefined), "Scout did not finish the task (turn_limit). The sub-chat is kept as it stopped: to carry on from there, call delegate again with chat: 12.");
 	step("delegate's result for a sub-chat that ended on an error says why, in the provider's words, and how to carry on");
 }
