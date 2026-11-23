@@ -16,6 +16,10 @@ export type Env = {
 	MIN_BUILD_MAC?: string;
 	MIN_BUILD_DEVICE?: string;
 	ADDRESS_KEY?: string;
+	/** The push key (apns.ts), secrets the owner sets with `wrangler secret put`; a relay without them sends no push. */
+	APNS_KEY?: string;
+	APNS_KEY_ID?: string;
+	APNS_TEAM_ID?: string;
 };
 
 export type Settings = {

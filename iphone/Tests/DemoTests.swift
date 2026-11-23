@@ -42,6 +42,10 @@ enum DemoScreens {
             ("Work, the list (#694)", .work(project: project.id)),
             ("Work, a piece of work (#694)", .work(project: project.id, item: 3)),
             ("Work, a piece that is not in the list (#694)", .work(project: project.id, item: 999)),
+            // The demo's projects keep their work in pi², with no repository: the page says it has no pull requests, and
+            // asks the demo nothing.
+            ("A pull request (#695)", .pullRequest(project: project.id, number: 7)),
+            ("A pull request's file (#695)", .pullRequest(project: project.id, number: 7, file: "docs/projects.md")),
         ]
     }
 }
