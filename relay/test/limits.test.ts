@@ -379,6 +379,9 @@ describe("what a pairing costs in writes", () => {
 		mac.client.send({ openJoin: { tokenHash: base64url(random(32)), expires: Date.now() + 60_000 } });
 		await heldOff(mac.client, start + MINUTE);
 		expect(writes.count).toBe(0);
+		// The times are in the pairing's stored record, written with each window, so they last when the object leaves memory.
+		const stored = await runInDurableObject(pairingObject(mac.pairing), async (_: Pairing, state) => (await state.storage.get<{ opened: number[] }>("meta"))!.opened);
+		expect(stored).toEqual(Array.from({ length: 10 }, (_, index) => start + index * 1000));
 		// Its hello is still taken, and a window is still refused until the oldest of the ten is a minute old.
 		const again = await macHello(mac);
 		again.client.send({ openJoin: { tokenHash: base64url(random(32)), expires: Date.now() + 60_000 } });

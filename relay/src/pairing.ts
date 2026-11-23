@@ -76,6 +76,8 @@ type Meta = {
 	window: Window | null;
 	/** Devices that left while the Mac was away, which it is told when it next connects (3.6). */
 	left: string[];
+	/** When the join windows of the last minute were opened, for their limit (`WINDOWS_A_MINUTE`). */
+	opened?: number[];
 };
 
 type Window = { id: string; tokenHash: string; expires: number; tries: number; joins: number };
@@ -162,11 +164,6 @@ export class Pairing extends DurableObject<Env> {
 	private meta: Meta | null = null;
 	private devices: Record<string, Device> = {};
 	private counters = new Counters({});
-	/**
-	 * When the windows of the last minute were opened, in memory only: an object hibernates only after some seconds with
-	 * nothing to do, which leaves a Mac that waits that long between windows well inside the limit anyway.
-	 */
-	private opened: number[] = [];
 	private readonly mailbox: Mailbox;
 
 	constructor(ctx: DurableObjectState, env: Env) {
@@ -493,9 +490,11 @@ export class Pairing extends DurableObject<Env> {
 			case "openJoin": {
 				if (message.expires <= now) return refused(ws, "openJoin", "malformed");
 				// Past the minute's windows, the Mac is held off as past any other limit, until the oldest is a minute old.
-				this.opened = this.opened.filter((time) => now - time < MINUTE);
-				if (this.opened.length >= this.windowsAMinute) return this.holdOff(ws, this.opened[0] + MINUTE);
-				this.opened.push(now);
+				// The times are kept in the record that opening a window writes anyway, so they cost no write of their own and
+				// last when the object leaves memory; one refused writes nothing.
+				const opened = (meta.opened ?? []).filter((time) => now - time < MINUTE);
+				if (opened.length >= this.windowsAMinute) return this.holdOff(ws, opened[0] + MINUTE);
+				meta.opened = [...opened, now];
 				if (meta.window !== null) await this.closeWindow();
 				meta.window = {
 					id: base64url(random(16)),

@@ -1,7 +1,7 @@
 // What the relay counts by address (docs/iphone.md 6.6): every connection to /v1, and registrations. The address is
-// held only as a keyed hash, with a key that changes daily, for the day: each object is named by that hash, counts the
-// address's connections in memory, never in storage, and keeps only the times of the day's registrations, which it
-// deletes a day after its first.
+// held only as a keyed hash, with a key that changes daily, for the day: each object is named by that hash, and keeps
+// only the counts of the address's connections in the last hour (in a few writes a minute at most, never one for each)
+// and the times of the day's registrations, each removed once it has aged out.
 //
 // An address is counted by the group it belongs to: an IPv4 address whole, an IPv6 address by its /64, since a home or
 // a phone network is given a whole /64 and can use any address in it, and an IPv4-mapped IPv6 address as the IPv4
@@ -112,33 +112,80 @@ function readGroups(text: string, last: boolean): number[] | null {
 	return out;
 }
 
+/** The stored mark of a minute's connections: the count itself while small, then the next power of two, at most the limit. */
+function markFor(count: number): number {
+	return Math.min(CONNECTIONS_A_MINUTE, count <= 2 ? count : 2 ** Math.ceil(Math.log2(count)));
+}
+
 export class Address extends DurableObject<Env> {
 	/**
-	 * Connections counted in each clock minute of the last hour, in memory only. An object that sat idle long enough to be
-	 * evicted forgets them, which only an address making few connections can bring about.
+	 * Connections counted in each clock minute of the last hour, by the minute's number. They are kept in storage too,
+	 * since an object with nothing to do leaves memory after some seconds, which an address could otherwise bring about
+	 * to start afresh. What is stored is a mark at or above the count, written before a connection passes it: the count
+	 * itself for a minute's first two, then 4, 8, 16, 32, 64 and the limit. So a minute's connections cost at most eight
+	 * writes however many they are, an object that left memory comes back counting at most twice what was made, and
+	 * nothing is ever counted below what passed.
 	 */
-	private readonly minutes = new Map<number, number>();
+	private minutes = new Map<number, number>();
+	private marks = new Map<number, number>();
+	private loading: Promise<void> | null = null;
+
+	private load(): Promise<void> {
+		this.loading ??= (async () => {
+			const stored = (await this.ctx.storage.get<Record<string, number>>("minutes")) ?? {};
+			for (const [minute, mark] of Object.entries(stored)) {
+				this.minutes.set(Number(minute), mark);
+				this.marks.set(Number(minute), mark);
+			}
+		})();
+		return this.loading;
+	}
 
 	/**
 	 * Counts a connection to /v1 from this address, and a registration if it is one, if they are within the limits. A
-	 * connection refused is not counted, so that people who share an address get in as soon as there is room.
+	 * connection refused is not counted and writes nothing, so that people who share an address get in as soon as there
+	 * is room.
 	 */
 	async admit(registering: boolean): Promise<Admission> {
+		await this.load();
 		const now = Date.now();
 		const refused = this.connectionsRefused(now);
 		if (refused !== null) return { pass: false, until: refused, limit: "connections" };
+		const writes: Record<string, unknown> = {};
 		if (registering) {
 			const times = ((await this.ctx.storage.get<number[]>("times")) ?? []).filter((time) => now - time < DAY);
 			const hour = times.filter((time) => now - time < HOUR);
 			if (times.length >= REGISTRATIONS_A_DAY) return { pass: false, until: times[0] + DAY, limit: "registrations" };
 			if (hour.length >= REGISTRATIONS_AN_HOUR) return { pass: false, until: hour[0] + HOUR, limit: "registrations" };
-			if (times.length === 0) await this.ctx.storage.setAlarm(now + DAY);
 			times.push(now);
-			await this.ctx.storage.put("times", times);
+			writes.times = times;
 		}
 		const minute = Math.floor(now / MINUTE);
-		this.minutes.set(minute, (this.minutes.get(minute) ?? 0) + 1);
+		const count = (this.minutes.get(minute) ?? 0) + 1;
+		this.minutes.set(minute, count);
+		if (count > (this.marks.get(minute) ?? 0)) {
+			this.marks.set(minute, markFor(count));
+			for (const marked of this.marks.keys()) if (!this.minutes.has(marked)) this.marks.delete(marked);
+			writes.minutes = Object.fromEntries(this.marks);
+		}
+		if (Object.keys(writes).length === 0) return { pass: true };
+		// Written before the connection is let through, and the alarm that removes it all once it has aged out set with it
+		// (moved only earlier, so a busy address does not set it again each time).
+		const due = this.agedOut(now, writes.times as number[] | undefined);
+		const alarm = await this.ctx.storage.getAlarm();
+		const moved = alarm === null || alarm > due;
+		if (moved) writes.cleanupAt = due;
+		await this.ctx.storage.put(writes);
+		if (moved) await this.ctx.storage.setAlarm(due);
 		return { pass: true };
+	}
+
+	/** When the oldest of what is kept has aged out: the newest minute an hour on, or the first registration a day on. */
+	private agedOut(now: number, times?: number[]): number {
+		const due: number[] = [];
+		if (this.minutes.size > 0) due.push((Math.max(...this.minutes.keys()) + 61) * MINUTE);
+		if (times !== undefined && times.length > 0) due.push(times[0] + DAY);
+		return due.length > 0 ? Math.min(...due) : now + HOUR;
 	}
 
 	/** Null if a connection may be taken now; else when the next may be. */
@@ -157,7 +204,27 @@ export class Address extends DurableObject<Env> {
 		return (minute + 1) * MINUTE;
 	}
 
+	/**
+	 * Removes what has aged out: the minutes older than the hour, the registrations older than the day; everything once
+	 * nothing is left, and then the object keeps nothing. Otherwise it comes again when the rest will have aged out. An
+	 * object of an earlier day, whose name no address hashes to any more, is emptied so too.
+	 */
 	async alarm(): Promise<void> {
-		await this.ctx.storage.deleteAll();
+		await this.load();
+		const now = Date.now();
+		// The platform never runs an alarm before its time. A test's clock, set apart from the runtime's, can: then it is
+		// left for the next write to set again, rather than set again at once for a time that is already past there.
+		const cleanupAt = await this.ctx.storage.get<number>("cleanupAt");
+		if (cleanupAt !== undefined && now < cleanupAt) return;
+		this.connectionsRefused(now);
+		for (const marked of this.marks.keys()) if (!this.minutes.has(marked)) this.marks.delete(marked);
+		const times = ((await this.ctx.storage.get<number[]>("times")) ?? []).filter((time) => now - time < DAY);
+		if (this.marks.size === 0 && times.length === 0) {
+			await this.ctx.storage.deleteAll();
+			return;
+		}
+		const due = this.agedOut(now, times);
+		await this.ctx.storage.put({ minutes: Object.fromEntries(this.marks), times, cleanupAt: due });
+		await this.ctx.storage.setAlarm(due);
 	}
 }

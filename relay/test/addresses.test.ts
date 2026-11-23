@@ -1,16 +1,18 @@
 // What the relay counts by address (docs/iphone.md 6.6): the group an address is counted in (an IPv6 address by its
-// /64), registrations, and every connection to /v1, counted in memory with nothing written, refused with 429 and
-// `Retry-After`, and refused by the Worker itself while its address is held.
+// /64), registrations, and every connection to /v1, counted in a few writes a minute that last when the object leaves
+// memory, refused with 429 and `Retry-After`, and refused by the Worker itself while its address is held.
 
-import { env, runInDurableObject } from "cloudflare:test";
+import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type Address, addressGroup, addressName, CONNECTIONS_A_MINUTE, CONNECTIONS_AN_HOUR } from "../src/addresses.ts";
+import { type Address, type Admission, addressGroup, addressName, CONNECTIONS_A_MINUTE, CONNECTIONS_AN_HOUR } from "../src/addresses.ts";
 import type { Pairing } from "../src/pairing.ts";
 import { connect, pairingObject, register, worker } from "./helpers.ts";
 
-const NOON = Date.parse("2026-11-20T12:00:00Z");
+// A time after the runtime's own, so that the objects' alarms wait for the test's clock rather than run at once.
+const NOON = Date.parse("2027-06-01T12:00:00Z");
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
 
 beforeEach(() => {
 	vi.useFakeTimers({ toFake: ["Date"] });
@@ -41,8 +43,8 @@ async function addressObject(address: string): Promise<DurableObjectStub<Address
 }
 
 /** Counts the writes the address's object makes from here on, at its storage, and how often it is asked. */
-async function watchAddress(address: string): Promise<{ writes: number; asked: number }> {
-	const watched = { writes: 0, asked: 0 };
+async function watchAddress(address: string): Promise<Watched> {
+	const watched: Watched = { writes: 0, asked: 0, fail: false };
 	await runInDurableObject(await addressObject(address), (instance: Address, state) => {
 		const storage = state.storage as unknown as Record<string, (...args: unknown[]) => unknown>;
 		for (const name of ["put", "delete", "deleteAll", "setAlarm", "deleteAlarm"]) {
@@ -59,6 +61,7 @@ async function watchAddress(address: string): Promise<{ writes: number; asked: n
 			prototype.admit = function (this: object, registering: boolean) {
 				const counts = askedOf.get(this);
 				if (counts !== undefined) counts.asked += 1;
+				if (counts?.fail === true) return Promise.reject(new Error("overloaded"));
 				return admit.call(this, registering);
 			};
 			prototype[WATCHED] = true;
@@ -70,7 +73,22 @@ async function watchAddress(address: string): Promise<{ writes: number; asked: n
 
 const WATCHED = Symbol("watched");
 type Watchable = { admit: (this: object, registering: boolean) => Promise<unknown>; [WATCHED]?: true };
-const askedOf = new WeakMap<object, { asked: number }>();
+/** What `watchAddress` counts; `fail` makes the object's every answer an error, as an overloaded object's. */
+type Watched = { writes: number; asked: number; fail: boolean };
+const askedOf = new WeakMap<object, Watched>();
+
+/**
+ * The address's object as it is after leaving memory: a new instance over the same storage, as the runtime makes when
+ * the next call comes. Gives what it answers to `count` connections.
+ */
+async function afresh(address: string, count: number): Promise<Admission[]> {
+	return runInDurableObject(await addressObject(address), async (instance: Address, state) => {
+		const fresh = new (instance.constructor as new (state: DurableObjectState, env: Cloudflare.Env) => Address)(state, env);
+		const answers: Admission[] = [];
+		for (let index = 0; index < count; index++) answers.push(await fresh.admit(false));
+		return answers;
+	});
+}
 
 /** One connection to the pairing from `address`, as the Worker answers it; a socket it opens is closed again. */
 async function knock(pairing: string | null, address: string | null): Promise<Response> {
@@ -225,7 +243,7 @@ describe("registrations by address", () => {
 });
 
 describe("connections by address", () => {
-	it(`takes ${CONNECTIONS_A_MINUTE} connections a minute from one /64 and writes nothing for them; refuses the next with 429 until the next minute`, async () => {
+	it(`takes ${CONNECTIONS_A_MINUTE} connections a minute from one /64 in eight writes; refuses the next with 429 until the next minute, writing nothing`, async () => {
 		const mac = await register();
 		const host = newPrefix();
 		const watched = await watchAddress(host(0));
@@ -237,7 +255,8 @@ describe("connections by address", () => {
 		expect(refused.headers.get("Retry-After")).toBe("30");
 		// A registration from the same place is a connection too.
 		expect((await knock(null, host(5001))).status).toBe(429);
-		expect(watched.writes).toBe(0);
+		// The minute's marks (1, 2, 4, 8, 16, 32, 64, 120) and the alarm that removes them; nothing for the refused.
+		expect(watched.writes).toBe(9);
 		// Another address is not held back by this one.
 		expect((await knock(mac.pairing, newPrefix()(0))).status).toBe(101);
 		expect((await knock(mac.pairing, newQuad())).status).toBe(101);
@@ -245,7 +264,7 @@ describe("connections by address", () => {
 		vi.setSystemTime(NOON + MINUTE);
 		for (let index = 0; index < CONNECTIONS_A_MINUTE; index++) expect((await knock(mac.pairing, host(index))).status).toBe(101);
 		expect((await knock(mac.pairing, host(0))).status).toBe(429);
-		expect(watched.writes).toBe(0);
+		expect(watched.writes).toBe(17);
 	});
 
 	it("refuses a held address in the Worker itself, without asking its object, until the object's time", async () => {
@@ -282,7 +301,60 @@ describe("connections by address", () => {
 		expect(await object.admit(false)).toEqual({ pass: false, until: NOON + HOUR + MINUTE, limit: "connections" });
 		vi.setSystemTime(NOON + HOUR + MINUTE);
 		expect(await object.admit(false)).toEqual({ pass: true });
-		expect(watched.writes).toBe(0);
+		// Eight writes for each full minute, one for the last minute's one, and the alarm.
+		expect(watched.writes).toBe(11 * 8 + 1 + 1);
+	});
+
+	it("keeps the counts when its object leaves memory, never fewer than were taken and at most twice", async () => {
+		const quad = newQuad();
+		const object = await addressObject(quad);
+		for (let index = 0; index < 33; index++) expect(await object.admit(false)).toEqual({ pass: true });
+		// 33 taken, and 64 stored: a new instance over the same storage takes 56 more this minute, not 120.
+		const answers = await afresh(quad, 57);
+		expect(answers.slice(0, 56).every((answer) => answer.pass)).toBe(true);
+		expect(answers[56]).toEqual({ pass: false, until: NOON + MINUTE, limit: "connections" });
+
+		// An hour's worth: a new instance half an hour on is still refused until the first minute leaves the hour.
+		const other = newQuad();
+		const counted = await addressObject(other);
+		for (let minute = 0; minute < CONNECTIONS_AN_HOUR / CONNECTIONS_A_MINUTE; minute++) {
+			vi.setSystemTime(NOON + 2 * HOUR + minute * MINUTE);
+			for (let index = 0; index < CONNECTIONS_A_MINUTE; index++) expect(await counted.admit(false)).toEqual({ pass: true });
+		}
+		vi.setSystemTime(NOON + 2 * HOUR + 30 * MINUTE);
+		expect(await afresh(other, 1)).toEqual([{ pass: false, until: NOON + 3 * HOUR, limit: "connections" }]);
+	});
+
+	it("removes the counts once they have aged out, the registrations' times a day after, and then everything", async () => {
+		const quad = newQuad();
+		const object = await addressObject(quad);
+		await register(quad);
+		for (let index = 0; index < 5; index++) await object.admit(false);
+		const stored = async () => runInDurableObject(object, async (_: Address, state) => Object.fromEntries(await state.storage.list()));
+		expect(Object.keys(await stored()).sort()).toEqual(["cleanupAt", "minutes", "times"]);
+		// The hour over, the minutes go; the registration's time stays for its day.
+		vi.setSystemTime(NOON + 2 * HOUR);
+		expect(await runDurableObjectAlarm(object)).toBe(true);
+		expect(await stored()).toEqual({ minutes: {}, times: [NOON], cleanupAt: NOON + DAY });
+		vi.setSystemTime(NOON + DAY);
+		expect(await runDurableObjectAlarm(object)).toBe(true);
+		expect(await stored()).toEqual({});
+	});
+
+	it("answers 503 when the address's object does not answer, and takes nothing", async () => {
+		const mac = await register();
+		const quad = newQuad();
+		const watched = await watchAddress(quad);
+		watched.fail = true;
+		const sockets = async () => runInDurableObject(pairingObject(mac.pairing), (_: Pairing, state) => state.getWebSockets().length);
+		const before = await sockets();
+		for (const pairing of [mac.pairing, null]) {
+			const response = await knock(pairing, quad);
+			expect(response.status).toBe(503);
+			expect(response.headers.get("Retry-After")).toBe("60");
+		}
+		expect(watched.asked).toBe(2);
+		expect(await sockets()).toBe(before);
 	});
 
 	it("counts a registration once against both of its limits, with one write of its times", async () => {
