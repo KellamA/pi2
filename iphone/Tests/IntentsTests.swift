@@ -152,6 +152,36 @@ struct IntentsTests {
         #expect(mac.sent.filter { $0.method == "abort" }.compactMap { $0.params["id"] as? Int } == [17, 23, 29])
     }
 
+    // MARK: - The demo mode
+
+    @Test func theDemoAnswersEachIntent() async throws {
+        let session = AppSession()
+        DemoMode.start(session)
+        defer { DemoMode.leave(session) }
+        IntentSessions.register(session)
+        IntentSessions.prompts = IntentSessions.Prompts(confirm: { _ in }, foreground: { _ in })
+        #expect(try await eventually { !session.engine.projects.isEmpty && session.engine.hasLoadedLibrary })
+        #expect(await IntentSessions.reach(session) == .connected(outOfReach: false))
+        let row = try #require(IntentProject.all(in: session).first { $0.conversation != nil })
+
+        let ask = await AskOrchestrator.ask("Who is on call?", of: row, session: session, courier: EngineCourier(session: session))
+        #expect(ask.outcome == .answered)
+        #expect(ask.answer?.hasPrefix("You said: \"Who is on call?\". I am the demo model") == true)
+
+        let needs = WhatNeedsMe.list(session: session, project: nil, reach: .connected(outOfReach: false))
+        #expect(needs.lines.count == session.engine.needs.count)
+        #expect(!needs.lines.isEmpty)
+
+        let runs = StopProject.runs(in: row, session: session)
+        let stop = await StopProject.stop(runs, in: row, session: session, courier: EngineCourier(session: session))
+        #expect(stop.refused == 0)
+        #expect(stop.stopped == runs.count)
+
+        _ = try await AskOrchestratorIntent(message: "Hello", project: IntentProject(row)).perform()
+        _ = try await WhatNeedsMeIntent(project: nil).perform()
+        _ = try await StopProjectIntent(project: IntentProject(row)).perform()
+    }
+
     // MARK: - Not paired, out of reach, locked
 
     @Test func notPairedSaysSo() async throws {
