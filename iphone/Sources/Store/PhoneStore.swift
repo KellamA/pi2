@@ -301,15 +301,18 @@ final class PhoneStore {
         return unsent
     }
 
+    /// The sealed parts keep a date as `Date` holds it, seconds since 2001, so a date read back is the date written: in
+    /// milliseconds since 1970, as version 1 kept them, the sums on the way lost the last bit of about half of all dates
+    /// (#838), and an item read back was not the item written.
     static let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .millisecondsSince1970
+        encoder.dateEncodingStrategy = .deferredToDate
         return encoder
     }()
 
     static let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .millisecondsSince1970
+        decoder.dateDecodingStrategy = .deferredToDate
         return decoder
     }()
 }
