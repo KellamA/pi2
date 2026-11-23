@@ -334,6 +334,8 @@ enum SealedSession {
 				if method == m("method in an item") { ledger.arrived.insert("request item") }
 			}
 		}
+		// As pi² Remote does once it has opened, verified and kept them, so that a repeat is dropped.
+		await mac.remember(macTook.items)
 		_ = try await request(m("method"), .object([("text", s(m("message")))]), presence: false, keep: true)
 
 		// The Mac's way: a receipt and the phone's state, taken by the phone; then another of each, left.
@@ -357,6 +359,7 @@ enum SealedSession {
 		}
 		if let taken = phoneTook.items.first, phoneTook.items.count == 1, try open(taken.item, taken.id).body == receiptBody { ledger.arrived.insert("receipt") }
 		if let taken = phoneTook.state, try open(taken.item, taken.id).body == stateBody { ledger.arrived.insert("state") }
+		await phone.remember(phoneTook.items)
 		let (keptID, keptReceipt) = try macItem(kind: "receipt", number: nil, body: receiptBody)
 		ledger.kept.append(keptReceipt)
 		Check.equal(try await mac.put(keptReceipt, id: keptID, to: .device(device)), .stored, "another receipt, left for the phone")

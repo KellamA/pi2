@@ -417,19 +417,20 @@ export function messageFault(text: string, from: "end" | "relay"): string | null
 }
 
 /**
- * The `User-Agent` RemoteKit's relay client sends on every connection: a fixed text that says nothing of the person,
- * the device or its system (#678's security read, S2, which folded in #819). Pinned here to the client's own value, so
- * that the check fails if the system's (the program's name, CFNetwork's and Darwin's versions) comes back. Null until
- * the client that sends it is merged into this branch; until then every connection fails the check.
+ * What RemoteKit's relay client says of itself on every connection (`RelaySession` in RemoteKit/Relay, #678's security
+ * read, S2, which folded in #819): a `User-Agent` with no program's or system's version, and an `Accept-Language` that
+ * names no locale (URLSession sends one whatever is set, so the client pins it). Pinned here to exactly those, so that
+ * the check fails if the system's own come back: the program's name, CFNetwork's and Darwin's versions, the person's
+ * languages.
  */
-export const USER_AGENT: string | null = null;
+export const USER_AGENT = "pi2-relay-client";
+export const ACCEPT_LANGUAGE = "*";
 
 /**
  * The headers a connection may carry to the relay, each with what it may hold: the WebSocket's own, the pairing's,
- * the two URLSession adds whatever the client asks (the same for everyone), the client's fixed `User-Agent`, and the
- * address the local runtime puts on a request before the Worker sees it. Anything else fails until it is named here:
- * `Accept-Language` among them, which would tell the relay the person's languages. Each value is searched for markers
- * too.
+ * the two URLSession adds whatever the client asks (the same for everyone), the client's fixed `User-Agent` and
+ * `Accept-Language`, and the address the local runtime puts on a request before the Worker sees it. Anything else
+ * fails until it is named here. Each value is searched for markers too.
  */
 export const HEADERS: Record<string, Kind> = {
 	// The WebSocket's handshake (RFC 6455) and HTTP's own.
@@ -444,8 +445,9 @@ export const HEADERS: Record<string, Kind> = {
 	// URLSession's own, the same for everyone.
 	accept: (value) => value === "*/*",
 	"accept-encoding": (value) => typeof value === "string" && /^[a-z]+(?:, [a-z]+)*$/.test(value),
-	// The relay client's own, fixed (USER_AGENT above).
-	"user-agent": (value) => USER_AGENT !== null && value === USER_AGENT,
+	// The relay client's own, fixed (above).
+	"user-agent": (value) => value === USER_AGENT,
+	"accept-language": (value) => value === ACCEPT_LANGUAGE,
 	// The connecting address, which the local runtime sets as Cloudflare does (5.3: the relay knows it, and keeps none).
 	"cf-connecting-ip": (value) => typeof value === "string" && /^[0-9a-f.:]+$/.test(value),
 };
@@ -458,8 +460,9 @@ export function requestFault(event: Extract<Event, { kind: "open" }>): string | 
 		const kind = HEADERS[name.toLowerCase()];
 		if (kind === undefined) return `a header the allow-list does not have: ${name}`;
 		if (!kind(value)) {
-			return name.toLowerCase() === "user-agent"
-				? "a User-Agent that is not the relay client's fixed one (USER_AGENT in scan.ts)"
+			const fixed = { "user-agent": "USER_AGENT", "accept-language": "ACCEPT_LANGUAGE" }[name.toLowerCase()];
+			return fixed !== undefined
+				? `a ${name} that is not the relay client's fixed one (${fixed} in scan.ts)`
 				: `a ${name} header that is not what the allow-list takes`;
 		}
 	}

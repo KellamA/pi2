@@ -74,11 +74,12 @@ TMPDIR="$work/tmp" node "$root/relay/scripts/isolated.mjs" wrangler dev \
 relay_pid=$!
 set +m
 
-# Ready once /v1 answers a request that is not a WebSocket with 426, as the relay does.
+# Ready once /v1 answers a request that is not a WebSocket with 426, as the relay does. With no User-Agent, so that the
+# sealed check, which holds every request the relay is given to the allow-list of its headers, takes this one too.
 ready=""
 for _ in $(seq 1 600); do
 	if ! kill -0 "$relay_pid" 2>/dev/null; then break; fi
-	status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$port/v1" || true)
+	status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 -H 'User-Agent:' "http://127.0.0.1:$port/v1" || true)
 	if [[ $status == 426 ]]; then ready=1; break; fi
 	sleep 0.2
 done
