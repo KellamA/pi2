@@ -196,6 +196,8 @@ struct StoreOutboxTests {
         #expect(StoreMigrations.plan(nil, folder: folder) == .fresh)
         try StoreManifest(version: StoreMigrations.current).write(folder)
         #expect(StoreMigrations.plan(StoreManifest.read(folder), folder: folder) == .upToDate)
+        // Version 1 kept its dates in milliseconds since 1970, which this build would misread (#838).
+        #expect(StoreMigrations.plan(StoreManifest(version: 1), folder: folder) == .discard("The store's version 1 has no way to this build's 2."))
 
         // Written by a newer build: wiped as the store opens.
         try StoreManifest(version: StoreMigrations.current + 1).write(folder)
@@ -208,6 +210,31 @@ struct StoreOutboxTests {
         try folder.write(Data("?".utf8), as: PhoneStore.outboxFile)
         #expect(PhoneStore(folder: folder).lastWipe == .unreadable)
         #expect(!folder.exists)
+    }
+
+    /// An item read back is the item written, its dates to the last bit, whatever the fraction of a second (#838).
+    @Test func anItemReadBackIsTheItemWritten() throws {
+        var written: [OutboxItem] = []
+        for _ in 0..<1_000 {
+            var item = try OutboxItem.make("submit", ["id": 9, "text": "Hello"], at: Date(timeIntervalSinceNow: .random(in: -86_400...86_400))).get()
+            item.state = .inMailbox(Date(timeIntervalSinceNow: .random(in: -86_400...86_400)))
+            written.append(item)
+        }
+        #expect(try PhoneStore.decoder.decode([OutboxItem].self, from: PhoneStore.encoder.encode(written)) == written)
+
+        // And through the store, closed and opened again.
+        let folder = folder()
+        defer { try? folder.remove() }
+        let key = SymmetricKey(size: .bits256)
+        let store = PhoneStore(folder: folder)
+        store.open(key: key)
+        let outbox = Outbox(store: store)
+        for _ in 0..<20 { _ = try outbox.add("submit", ["id": 9, "text": "Carry on"]) }
+        let items = outbox.items
+        store.close()
+        let again = PhoneStore(folder: folder)
+        again.open(key: key)
+        #expect(Outbox(store: again).items == items)
     }
 
     @Test func statesOnlyRise() throws {
