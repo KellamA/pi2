@@ -52,7 +52,7 @@ struct StopProjectIntent: AppIntent {
                 if !runs.isEmpty {
                     try await IntentRun.confirm(self, StopProject.question(runs, in: row, session: session))
                 }
-                reply = await StopProject.stop(runs, in: row, session: session, courier: EngineCourier(session: session))
+                reply = await StopProject.stop(runs, in: row, session: session, courier: IntentEngineCourier(session: session))
             }
         }
         return .result(dialog: IntentDialog("\(reply.dialog)"), view: StopSnippet(reply: reply))

@@ -19,8 +19,8 @@ enum IntentDelivery: Equatable, Sendable {
 ///
 /// The Outbox (#692) keeps what the person writes while the Mac is out of reach by standing in for the Mac on the
 /// session's own client: `AppSession` then runs `CachedTransport`, which answers a request it keeps with
-/// `{ "outbox": <item id> }` and refuses the rest with why. So `EngineCourier` below is the only courier the app needs,
-/// and the Outbox has to offer nothing more than that answer, with the session running it while `.outOfReach`.
+/// `{ "outbox": <item id> }` and refuses the rest with why. So `IntentEngineCourier` below is the only courier the app
+/// needs, and the Outbox has to offer nothing more than that answer, with the session running it while `.outOfReach`.
 @MainActor
 protocol IntentCourier {
     /// Sends the person's message to a conversation, steered into the answer being written when `steer`, else queued.
@@ -31,7 +31,7 @@ protocol IntentCourier {
 
 /// The courier over the session's client, `session.engine`: the requests go exactly as the app's screens send them.
 @MainActor
-struct EngineCourier: IntentCourier {
+struct IntentEngineCourier: IntentCourier {
     let session: AppSession
     private var engine: EngineSession<MessageField> { session.engine }
 

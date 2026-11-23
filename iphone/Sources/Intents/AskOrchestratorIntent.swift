@@ -53,7 +53,7 @@ struct AskOrchestratorIntent: AppIntent {
             case .none(let words):
                 reply = AskOrchestrator.Reply(outcome: .notSent, dialog: words)
             case .project(let row):
-                reply = await AskOrchestrator.ask(message, of: row, session: session, courier: EngineCourier(session: session))
+                reply = await AskOrchestrator.ask(message, of: row, session: session, courier: IntentEngineCourier(session: session))
             }
         }
         return .result(dialog: IntentDialog("\(reply.dialog)"), view: AskSnippet(reply: reply))
