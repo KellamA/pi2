@@ -126,12 +126,48 @@ struct NeedsTests {
 
     // MARK: - A call partly hidden from the phone
 
-    @Test func theMarkIsReadWhereverTheEngineHidAKey() {
-        #expect(!NeedHiddenCall.isPartlyHidden(nil))
-        #expect(!NeedHiddenCall.isPartlyHidden(.object(["command": .string("ls -la")])))
-        #expect(NeedHiddenCall.isPartlyHidden(.object(["command": .string("curl -H 'Bearer [key hidden]' x")])))
-        #expect(NeedHiddenCall.isPartlyHidden(.object(["env": .object(["TOKEN": .array([.string("[key hidden]")])])])))
-        #expect(NeedHiddenCall.isPartlyHidden(.object(["[key hidden]": .string("v")])))
+    @Test func thePlaceholderSaysAKeyWasHiddenWhereverItSits() {
+        #expect(!NeedHiddenCall.isPartlyHidden(arguments: nil))
+        #expect(!NeedHiddenCall.isPartlyHidden(arguments: .object(["command": .string("ls -la")])))
+        #expect(NeedHiddenCall.isPartlyHidden(arguments: .object(["command": .string("curl -H 'Bearer [key hidden]' x")])))
+        #expect(NeedHiddenCall.isPartlyHidden(arguments: .object(["env": .object(["TOKEN": .array([.string("[key hidden]")])])])))
+        #expect(NeedHiddenCall.isPartlyHidden(arguments: .object(["[key hidden]": .string("v")])))
+    }
+
+    @Test func theEnginesMarkAloneMakesACallPartlyHidden() {
+        // A value too deep to send leaves no placeholder the phone could see: the field is the only way to know of it.
+        #expect(NeedHiddenCall.isPartlyHidden(mark: true, arguments: .object(["command": .string("echo plain")])))
+        #expect(NeedHiddenCall.isPartlyHidden(mark: true, arguments: nil))
+        // The placeholder of a value too deep, without the mark, still says so.
+        #expect(NeedHiddenCall.isPartlyHidden(arguments: .object(["args": .string("[too deep to show]")])))
+        #expect(NeedHiddenCall.isPartlyHidden(arguments: .object(["nested": .array([.object(["deep": .string("[too deep to show]")])])])))
+        // Neither the mark nor a placeholder: the call can be answered from the phone.
+        #expect(!NeedHiddenCall.isPartlyHidden(mark: false, arguments: .object(["command": .string("ls")])))
+        // As with a key, a call whose own words hold the placeholder is treated as hidden, and can be allowed on the Mac.
+        #expect(NeedHiddenCall.isPartlyHidden(arguments: .object(["command": .string("echo [too deep to show] as words")])))
+    }
+
+    @Test func theMarkDecodesAndItsAbsenceDecodesAsBefore() throws {
+        // Without the key, as every recording before the mark: not hidden, whichever of the two objects carried it.
+        #expect(try need(id: "n", kind: "approval", at: 1).partHidden == false)
+        #expect(try inboxItem("""
+        {"id":"7","kind":"approval","conversationId":9,"callId":"c","tool":"bash","arguments":{"command":"ls"},"question":null,
+         "title":"T","agentName":"Atlas","rootConversationId":9}
+        """).partHidden == false)
+        // With the mark.
+        #expect(try need("""
+        {"id":"n","projectId":null,"kind":"approval","conversationId":9,"rootConversationId":9,"title":"T","rootTitle":"T",
+         "agentId":null,"agentName":"Atlas","blocking":false,"createdAt":1,"tool":"bash","arguments":{"command":"ls"},"partHidden":true}
+        """).partHidden == true)
+        #expect(try inboxItem("""
+        {"id":"7","kind":"approval","conversationId":9,"callId":"c","tool":"bash","arguments":{"command":"ls"},"question":null,
+         "title":"T","agentName":"Atlas","rootConversationId":9,"partHidden":true}
+        """).partHidden == true)
+        // A value that is not true: no mark.
+        #expect(try inboxItem("""
+        {"id":"7","kind":"approval","conversationId":9,"callId":"c","tool":"bash","arguments":{"command":"ls"},"question":null,
+         "title":"T","agentName":"Atlas","rootConversationId":9,"partHidden":false}
+        """).partHidden == false)
     }
 
     @Test func aHiddenKeyIsAPieceOfItsOwnNotTheCommandsText() {

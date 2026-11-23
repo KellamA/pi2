@@ -136,7 +136,7 @@ struct NeedCard: View {
     }
 
     private var hidden: Bool {
-        NeedHiddenCall.isPartlyHidden(item?.arguments ?? need.arguments)
+        NeedHiddenCall.isPartlyHidden(mark: item?.partHidden ?? need.partHidden, arguments: item?.arguments ?? need.arguments)
     }
 
     @ViewBuilder

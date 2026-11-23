@@ -601,6 +601,60 @@ public struct InboxItem: Codable, Equatable, Identifiable, Sendable {
     public let agentName: String?
     /// The conversation in the sidebar this belongs to; differs from `conversationId` for a subagent.
     public let rootConversationId: Int
+    /// The engine's mark of an approval whose call it partly kept from a device (#776; iphone.md 5.7): a key masked as
+    /// `[key hidden]`, or a value nested too deep to send, which leaves nothing in the call a phone could notice. Such
+    /// an approval can be allowed only on the Mac; a phone reads this and offers Deny only. False, and the key absent,
+    /// when nothing was hidden, so every older recording decodes as before.
+    public var partHidden: Bool = false
+
+    private enum CodingKeys: String, CodingKey {
+        case id, kind, conversationId, callId, tool, arguments, question, site, when, rule, projectSwitch, background
+        case title, agentName, rootConversationId, partHidden
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        kind = try values.decode(String.self, forKey: .kind)
+        conversationId = try values.decode(Int.self, forKey: .conversationId)
+        callId = try values.decode(String.self, forKey: .callId)
+        tool = try values.decode(String.self, forKey: .tool)
+        arguments = try values.decode(JSONValue.self, forKey: .arguments)
+        question = try values.decodeIfPresent(String.self, forKey: .question)
+        site = try values.decodeIfPresent(String.self, forKey: .site)
+        when = try values.decodeIfPresent(String.self, forKey: .when)
+        rule = try values.decodeIfPresent(RuleOffer.self, forKey: .rule)
+        projectSwitch = try values.decodeIfPresent(String.self, forKey: .projectSwitch)
+        background = try values.decodeIfPresent(Bool.self, forKey: .background)
+        title = try values.decode(String.self, forKey: .title)
+        agentName = try values.decodeIfPresent(String.self, forKey: .agentName)
+        rootConversationId = try values.decode(Int.self, forKey: .rootConversationId)
+        // The engine marks only an approval it hid part of, so the key is missing from every older recording, and a
+        // value that is not `true` counts as no mark.
+        partHidden = (try? values.decodeIfPresent(Bool.self, forKey: .partHidden)) ?? false
+    }
+
+    /// The item as the page and a phone read it, with the mark written only when there is one: what every older
+    /// recording and reader holds stays as it was.
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(kind, forKey: .kind)
+        try values.encode(conversationId, forKey: .conversationId)
+        try values.encode(callId, forKey: .callId)
+        try values.encode(tool, forKey: .tool)
+        try values.encode(arguments, forKey: .arguments)
+        try values.encodeIfPresent(question, forKey: .question)
+        try values.encodeIfPresent(site, forKey: .site)
+        try values.encodeIfPresent(when, forKey: .when)
+        try values.encodeIfPresent(rule, forKey: .rule)
+        try values.encodeIfPresent(projectSwitch, forKey: .projectSwitch)
+        try values.encodeIfPresent(background, forKey: .background)
+        try values.encode(title, forKey: .title)
+        try values.encodeIfPresent(agentName, forKey: .agentName)
+        try values.encode(rootConversationId, forKey: .rootConversationId)
+        if partHidden { try values.encode(true, forKey: .partHidden) }
+    }
 
     public var call: ToolCall { ToolCall(callId: callId, name: tool, arguments: arguments) }
 }
