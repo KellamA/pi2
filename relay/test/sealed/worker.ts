@@ -3,6 +3,12 @@
 // and its objects able to read back what they keep. `GET /recording` gives everything the recorder kept and every
 // object the recording names, read back, as JSON (scan.ts's `encode`).
 //
+// It also shows that what the relay would write to the console reaches the output the check reads: each `/recording`
+// writes two canaries made afresh, one with `console.log` and one with `console.debug`, and gives them with the
+// recording, so that check.mjs fails if either is missing from the local runtime's output. `?log=<text>` writes that
+// text with `console.log` too: the planted session's way of planting a marker in the relay's console. This is the test's
+// Worker, never the relay's: sealed.test.ts holds relay/src to writing nothing.
+//
 // Run only by `scripts/relay-protocol-test --sealed`, through scripts/isolated.mjs, on 127.0.0.1, with wrangler.jsonc
 // beside this file. Nothing deploys it: the relay's own wrangler.jsonc names src/index.ts, and check-bundle reads that.
 
@@ -50,7 +56,12 @@ export default {
 				const name = await addressName(settings.addressKey, "127.0.0.1", Date.now());
 				stored.push(await (env.ADDRESSES.get(env.ADDRESSES.idFromName(name)) as unknown as Dumps).dump(name));
 			}
-			return Response.json(encode({ events: recorder.events, stored, pushes: recorder.pushes }));
+			const canaries = { log: `pi2-canary-log-${crypto.randomUUID()}`, debug: `pi2-canary-debug-${crypto.randomUUID()}` };
+			console.log(canaries.log);
+			console.debug(canaries.debug);
+			const planted = url.searchParams.get("log");
+			if (planted !== null) console.log(planted);
+			return Response.json(encode({ events: recorder.events, stored, pushes: recorder.pushes, canaries }));
 		}
 		return recorder.fetch(request, (forwarded) => protocolTest.fetch(forwarded, env));
 	},

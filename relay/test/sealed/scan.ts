@@ -19,6 +19,8 @@ export type Event =
 export type Stored = {
 	object: "pairing" | "attestKey" | "address";
 	name: string;
+	/** The object's id in hex, which names its file in the relay's local state. */
+	id: string;
 	kv: Record<string, unknown>;
 	tables: Record<string, Record<string, unknown>[]>;
 	sockets: unknown[];
@@ -31,7 +33,13 @@ export type Stored = {
  */
 export type Push = { url: string; headers: [string, string][]; body: Uint8Array };
 
-export type Recording = { events: Event[]; stored: Stored[]; pushes: Push[] };
+export type Recording = {
+	events: Event[];
+	stored: Stored[];
+	pushes: Push[];
+	/** What the recording relay wrote to the console as it gave the recording (worker.ts), for check.mjs to find. */
+	canaries?: { log: string; debug: string };
+};
 
 /** A file of the relay's local state, as Wrangler's `--persist-to` left it, read whole. */
 export type File = { path: string; bytes: Uint8Array };
@@ -43,8 +51,16 @@ export type Marker = { place: string; text: string };
 export type Session = {
 	/** Every marker it sent, by place. */
 	markers: Marker[];
-	/** Bytes that must never be seen at all: the ends' private keys, the pairing's secret, the channels' bindings. */
+	/**
+	 * Bytes that must never be seen at all: the ends' private keys, the public keys the relay is never given (the Mac's
+	 * identity, record and channel keys, the phone's presence, record and channel keys), the pairing's secret, the
+	 * channels' bindings, the attestation inside `pair`.
+	 */
 	secrets: Uint8Array[];
+	/** The only keys the relay may be given, by field: the Mac's relay key (`relayKey`), the phone's device key (`deviceKey`). */
+	keys: { relayKey: string[]; deviceKey: string[] };
+	/** The devices' ids the session used, slots and engine's ids: the only ones a Mac's binary message may name. */
+	devices: string[];
 	/** SHA-256, in hex, of every Noise message either end sent: handshakes and transport messages. */
 	noise: string[];
 	/** SHA-256, in hex, of every sealed item either end put or the Mac left as a state. */
@@ -70,6 +86,10 @@ export function forms(text: string): { form: string; bytes: Uint8Array }[] {
 	for (const upper of [false, true]) {
 		const ascii = asciiEscaped(escaped, upper);
 		if (ascii !== escaped) found.push({ form: `JSON \\u${upper ? " (upper)" : ""}`, bytes: encoder.encode(ascii) });
+	}
+	// Latin-1, one byte a character, which V8 uses for a string that fits it, in what it serialises.
+	if ([...text].some((character) => character > "\x7f") && [...text].every((character) => character <= "\xff")) {
+		found.push({ form: "Latin-1", bytes: Uint8Array.from(text, (character) => character.charCodeAt(0)) });
 	}
 	const percent = encodeURIComponent(text);
 	if (percent !== text) found.push({ form: "percent", bytes: encoder.encode(percent) });
@@ -303,8 +323,11 @@ const signature: Kind = isBytes(64);
 const key: Kind = (value) => isBytes(91)(value) && fromBase64url(value as string)![0] === 0x30;
 /** A sealed item: HPKE's encapsulated key (an uncompressed point) first, 81 bytes to 16 KB. */
 const sealed: Kind = (value) => isBytes(undefined, 81, 16 * 1024)(value) && fromBase64url(value as string)![0] === 0x04;
-/** App Attest's attestation object, as the phone sends it at `join`: Apple's, which the relay checks (3.3, 6.6). */
-const attestation: Kind = isBytes(undefined, 1, 32 * 1024);
+/**
+ * App Attest's attestation object, as the phone sends it at `join` (3.3, 6.6). Here always the protocol test's stand-in
+ * (relay/test/protocol/worker.ts): the join's 32-byte client data hash, then the 32-byte key id, and nothing else.
+ */
+const attestation: Kind = isBytes(64);
 /** An App Attest key's id: 32 bytes in standard base64, as `DCAppAttestService` gives it. */
 const attestKeyId: Kind = (value) => typeof value === "string" && /^[A-Za-z0-9+/]{43}=$/.test(value);
 const time: Kind = (value) => Number.isSafeInteger(value) && (value as number) > 0;
@@ -439,23 +462,41 @@ export const HEADERS: Record<string, Kind> = {
 	connection: (value) => value === "Upgrade",
 	"sec-websocket-key": (value) => typeof value === "string" && /^[A-Za-z0-9+/]{22}==$/.test(value),
 	"sec-websocket-version": (value) => value === "13",
-	"sec-websocket-extensions": (value) => typeof value === "string" && /^permessage-deflate(?:; ?[a-z_]+(?:=\d+)?)*$/.test(value),
+	"sec-websocket-extensions": (value) => value === "permessage-deflate",
 	// The pairing, which takes the connection to its object (5.3).
 	"pi2-pairing": pairing,
 	// URLSession's own, the same for everyone.
 	accept: (value) => value === "*/*",
-	"accept-encoding": (value) => typeof value === "string" && /^[a-z]+(?:, [a-z]+)*$/.test(value),
+	"accept-encoding": (value) => value === "br, gzip",
 	// The relay client's own, fixed (above).
 	"user-agent": (value) => value === USER_AGENT,
 	"accept-language": (value) => value === ACCEPT_LANGUAGE,
 	// The connecting address, which the local runtime sets as Cloudflare does (5.3: the relay knows it, and keeps none).
-	"cf-connecting-ip": (value) => typeof value === "string" && /^[0-9a-f.:]+$/.test(value),
+	"cf-connecting-ip": (value) => typeof value === "string" && (isIPv4(value) || isIPv6(value)),
 };
+
+function isIPv4(text: string): boolean {
+	const parts = text.split(".");
+	return parts.length === 4 && parts.every((part) => /^(?:0|[1-9][0-9]{0,2})$/.test(part) && Number(part) <= 255);
+}
+
+function isIPv6(text: string): boolean {
+	if (!/^[0-9a-f:]{2,39}$/.test(text) || (text.match(/::/g) ?? []).length > 1) return false;
+	const groups = text.split(":");
+	return groups.length <= 8 && groups.every((group) => group.length <= 4);
+}
+
+/** The headers a client's connection must carry once taken (101): RemoteKit's client's fixed ones. */
+const REQUIRED = ["user-agent", "accept-language"];
 
 /** Why a connection's request is not one the allow-list takes; null if it is. */
 export function requestFault(event: Extract<Event, { kind: "open" }>): string | null {
 	const url = new URL(event.url);
 	if (url.pathname !== "/v1" || url.search !== "") return "an address that carries more than /v1";
+	if (event.status === 101) {
+		const names = event.headers.map(([name]) => name.toLowerCase());
+		for (const name of REQUIRED) if (!names.includes(name)) return `a connection taken without the relay client's ${name}`;
+	}
 	for (const [name, value] of event.headers) {
 		const kind = HEADERS[name.toLowerCase()];
 		if (kind === undefined) return `a header the allow-list does not have: ${name}`;
@@ -595,6 +636,8 @@ export async function check(recording: Recording, files: File[] | null, session:
 				findings.push({ rule: "control", where: `${where}, from the ${event.from}`, detail: fault });
 				continue;
 			}
+			const keyFault = keysFault(event.text, session.keys);
+			if (keyFault !== null) findings.push({ rule: "key", where: `${where}, from the ${event.from}`, detail: keyFault });
 			for (const item of sealedItems(event.text)) {
 				const hash = await sha256(item);
 				if (!items.has(hash)) findings.push({ rule: "not-sealed", where: `${where}, from the ${event.from}`, detail: "an item that is not one of the session's sealed items" });
@@ -605,6 +648,10 @@ export async function check(recording: Recording, files: File[] | null, session:
 			if (role === undefined) {
 				findings.push({ rule: "not-noise", where, detail: "bytes on a socket that never said what it is" });
 				continue;
+			}
+			if (role === "mac") {
+				const named = `dev_${toBase64(event.bytes.subarray(0, 16)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")}`;
+				if (!session.devices.includes(named)) findings.push({ rule: "not-noise", where: `${where}, from the ${event.from}`, detail: "a Mac's binary message for a device that is not the session's" });
 			}
 			const body = role === "mac" ? event.bytes.subarray(16) : event.bytes;
 			const hash = await sha256(body);
@@ -624,10 +671,18 @@ export async function check(recording: Recording, files: File[] | null, session:
 	if (unseen > 0) findings.push({ rule: "unseen", where: "the recording", detail: `${unseen} of the session's ${session.noise.length} Noise messages did not pass through it both ways` });
 	const unput = session.items.filter((hash) => !passed.items.has(hash)).length;
 	if (unput > 0) findings.push({ rule: "unseen", where: "the recording", detail: `${unput} of the session's ${session.items.length} sealed items were not put through it` });
+	// Everything the mailbox keeps is one of the session's sealed items.
 	const storedItems = new Set<string>();
 	for (const object of recording.stored) {
-		for (const rows of Object.values(object.tables)) {
-			for (const row of rows) if (row.item instanceof Uint8Array) storedItems.add(await sha256(row.item));
+		for (const [table, rows] of Object.entries(object.tables)) {
+			for (const [index, row] of rows.entries()) {
+				if (!(row.item instanceof Uint8Array)) continue;
+				const hash = await sha256(row.item);
+				storedItems.add(hash);
+				if (!items.has(hash) && !session.kept.includes(hash)) {
+					findings.push({ rule: "not-sealed", where: `the ${object.object} object ${object.name}, ${table} row ${index}`, detail: "an item that is not one of the session's sealed items" });
+				}
+			}
 		}
 	}
 	for (const hash of session.kept) {
@@ -635,6 +690,12 @@ export async function check(recording: Recording, files: File[] | null, session:
 	}
 	if (files === null) return findings;
 	if (session.kept.length > 0 && files.length === 0) findings.push({ rule: "unseen", where: "the relay's files", detail: "none were read" });
+	// Every object the relay keeps a file for was read back, and so held to the allow-list.
+	const read = new Set(recording.stored.map((object) => object.id));
+	for (const file of files) {
+		const id = /(?:^|\/)do\/[^/]+\/([0-9a-f]{64})\.sqlite$/.exec(file.path)?.[1];
+		if (id !== undefined && !read.has(id)) findings.push({ rule: "unread", where: `the relay's file ${file.path}`, detail: "an object the read-back did not read" });
+	}
 	const fileText = files.map((file) => latin1(file.bytes)).join("\n");
 	const keptBytes = await keptItemBytes(recording, new Set(session.kept));
 	if (keptBytes.length !== session.kept.length) findings.push({ rule: "unseen", where: "the recording", detail: "an item the session left in the mailbox was not put through it" });
@@ -642,6 +703,17 @@ export async function check(recording: Recording, files: File[] | null, session:
 		if (!fileText.includes(latin1(bytes))) findings.push({ rule: "unseen", where: "the relay's files", detail: "an item the session left in the mailbox is not in them" });
 	}
 	return findings;
+}
+
+/** Why a message names a key that is not the session's own for its field (`relayKey`, `deviceKey`); null if none. */
+function keysFault(text: string, keys: Session["keys"]): string | null {
+	const value = safeParse(text) as Record<string, Record<string, unknown>> | null;
+	const body = value === null ? undefined : Object.values(value)[0];
+	if (typeof body !== "object" || body === null) return null;
+	for (const field of ["relayKey", "deviceKey"] as const) {
+		if (field in body && !keys[field].includes(body[field] as string)) return `a ${field} that is not the session's own`;
+	}
+	return null;
 }
 
 /** The bytes of every sealed item a text message carries (`put`, `state`, `item`). */

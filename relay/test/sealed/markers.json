@@ -14,5 +14,8 @@
 	{ "place": "long line", "text": "marker across a frame boundary 9e03" },
 	{ "place": "request item", "text": "marker answer in a request item 1f55" },
 	{ "place": "receipt", "text": "marker receipt text 2b7d" },
-	{ "place": "state", "text": "marker state body e15a" }
+	{ "place": "state", "text": "marker state body e15a" },
+	{ "place": "home address", "text": "192.168.77.41:52731" },
+	{ "place": "private address", "text": "[fd7a:115c:a1e0::4d1]:52731" },
+	{ "place": "device event", "text": "marker device event: a phone was added 7a3e" }
 ]

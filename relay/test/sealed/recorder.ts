@@ -136,5 +136,5 @@ export async function dump(object: Stored["object"], name: string, ctx: DurableO
 		);
 	}
 	const sockets = ctx.getWebSockets().map((ws) => ws.deserializeAttachment());
-	return { object, name, kv, tables, sockets };
+	return { object, name, id: ctx.id.toString(), kv, tables, sockets };
 }

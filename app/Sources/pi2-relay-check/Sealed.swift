@@ -16,16 +16,18 @@ import RemoteKit
 /// items are left in the mailbox, so that the relay holds them when its storage is read. Pushes: none, since the relay
 /// at this head sends none (P20, #689).
 ///
-/// It writes what the relay may not read, for `relay/test/sealed/check.mjs`: the markers, the ends' private keys, the
-/// pairing's secret and the channels' bindings, and the SHA-256 of every Noise message and sealed item it sent.
+/// It writes what the relay may not read, for `relay/test/sealed/check.mjs`: the markers, the ends' private keys and
+/// the public keys the relay is never given, the pairing's secret, the channels' bindings and `pair`'s attestation; the
+/// two keys it may be given, and the devices' ids; and the SHA-256 of every Noise message and sealed item it sent.
 ///
 /// `--plant` is the check's own test: a second pairing whose phone sends a marker in clear as the channel's bytes and
-/// whose Mac leaves it in clear in an item, which the check must find everywhere it went.
+/// whose Mac leaves it in clear in an item, which the check must find everywhere it went (and in the relay's console,
+/// where check.mjs has the recording relay write it).
 enum SealedSession {
 	/// The places a marker goes, each sent once at least; markers.json gives one marker for each, and no other.
 	static let places = [
 		"device name", "device model", "device system", "Mac name", "method", "method in an item", "message", "transcript", "notification",
-		"secret", "file preview", "project", "long line", "request item", "receipt", "state",
+		"secret", "file preview", "project", "long line", "request item", "receipt", "state", "home address", "private address", "device event",
 	]
 
 	static func run(relay url: URL, markers path: String, out: String) async {
@@ -63,6 +65,9 @@ enum SealedSession {
 		// Used from one task at a time: the session's steps run one after another.
 		var markers: [(String, String)] = []
 		var secrets: [Data] = []
+		var relayKeys: [String] = []
+		var deviceKeys: [String] = []
+		var devices: [String] = []
 		var noise: [Data] = []
 		var items: [Data] = []
 		var kept: [Data] = []
@@ -73,6 +78,8 @@ enum SealedSession {
 			let value: [String: Any] = [
 				"markers": markers.map { ["place": $0.0, "text": $0.1] },
 				"secrets": secrets.map(\.hex),
+				"keys": ["relayKey": relayKeys, "deviceKey": deviceKeys],
+				"devices": devices,
 				"noise": noise.map(digest),
 				"items": items.map(digest),
 				"kept": kept.map(digest),
@@ -155,6 +162,15 @@ enum SealedSession {
 			relayKey.rawRepresentation, identity.rawRepresentation, macChannelKey.rawRepresentation, macRecord.rawRepresentation,
 			deviceKey.rawRepresentation, presenceKey.rawRepresentation, phoneChannelKey.rawRepresentation, phoneRecord.rawRepresentation, secret,
 		]
+		// The public keys the relay is never given, which must not be seen any more than the private ones; and the two it
+		// is given, each only where its field says.
+		ledger.secrets += [
+			identity.publicKey.derRepresentation, macChannelKey.publicKey.rawRepresentation, macRecord.publicKey.derRepresentation,
+			presenceKey.publicKey.derRepresentation, phoneChannelKey.publicKey.rawRepresentation, phoneRecord.publicKey.derRepresentation,
+		]
+		ledger.relayKeys = [PublicKeys.text(relayKey.publicKey)]
+		ledger.deviceKeys = [PublicKeys.text(deviceKey.publicKey)]
+		let addresses = [m("home address"), m("private address")]
 		let macBuild = RelayBuild("200")!
 		let phoneBuild = RelayBuild("3.1")!
 
@@ -178,11 +194,12 @@ enum SealedSession {
 			connector: connector)
 		let linkEvents = Inbox(link.events)
 		let notice = try await macEvents.next("joined") { if case let .phoneJoined(notice) = $0 { notice } else { nil } }
+		ledger.devices.append(notice.slot.text)
 
 		// Pairing: IKpsk2, the phone first, over the joined socket.
 		let payload = try PairingPayload(
 			pairing: pairing, macName: m("Mac name"), channelKey: macChannelKey.publicKey, identityKey: identity.publicKey,
-			recordKey: macRecord.publicKey, secret: secret, relay: url.absoluteString, addresses: [],
+			recordKey: macRecord.publicKey, secret: secret, relay: url.absoluteString, addresses: addresses,
 			expires: Int64(Date().timeIntervalSince1970) + 300)
 		let phoneHandshake = try ChannelHandshake.pairingInitiator(payload: payload, channelKey: phoneChannelKey)
 		let macHandshake = try ChannelHandshake.pairingResponder(pairing: pairing, secret: secret, channelKey: macChannelKey)
@@ -209,8 +226,10 @@ enum SealedSession {
 		let description = DeviceDescription(
 			name: m("device name"), model: m("device model"), system: m("device system"), build: phoneBuild.text, deviceKey: deviceKey.publicKey,
 			presenceKey: presenceKey.publicKey, channelKey: phoneChannelKey.publicKey, recordKey: phoneRecord.publicKey)
+		let pairAttestation = Bytes.random(1_500)
+		ledger.secrets.append(pairAttestation)
 		try await phonePairing.say(.pair(try PairClaim.make(
-			device: description, attestation: Bytes.random(1_500), keyId: macAttestKey.text, pairing: pairing,
+			device: description, attestation: pairAttestation, keyId: macAttestKey.text, pairing: pairing,
 			binding: phonePairing.channel.handshakeHash, deviceKey: deviceKey)))
 		guard case let .pair(claim) = try await macToSlot.hearControl() else { throw RemoteKitError("marker session", "not a claim") }
 		try claim.verify(pairing: pairing, binding: macPairingChannel.handshakeHash, handshakeChannelKey: macPairingChannel.remoteChannelKey)
@@ -220,12 +239,14 @@ enum SealedSession {
 
 		// The Mac adds the phone under the engine's id, closes the window, and answers `paired` on the same socket.
 		let device = DeviceID.random()
+		ledger.devices.append(device.text)
 		try await mac.addDevice(device, deviceKey: claim.device.deviceKey, attestKeyId: macAttestKey)
 		try await mac.closeJoin()
 		let macToDevice = End(channel: macPairingChannel, send: { try await mac.send($0, to: device) }, receive: fromPhone, ledger: ledger)
-		try await macToDevice.say(.paired(try Paired(device: device, pairing: pairing, name: m("Mac name"), addresses: [])))
+		try await macToDevice.say(.paired(try Paired(device: device, pairing: pairing, name: m("Mac name"), addresses: addresses)))
 		guard case let .paired(paired) = try await phonePairing.hearControl() else { throw RemoteKitError("marker session", "not paired") }
 		if paired.device == device, paired.name == m("Mac name") { ledger.arrived.insert("Mac name") }
+		if paired.addresses == addresses { ledger.arrived.formUnion(["home address", "private address"]) }
 		await link.close()
 		_ = try await macEvents.next("offline") { $0 == .offline(device) ? true : nil }
 		print("ok   paired over the relay")
@@ -286,6 +307,7 @@ enum SealedSession {
 			]))])), ["transcript", "file preview"]),
 			(macEnd, phoneEnd, line(.object([("event", s("needs")), ("items", .array([.object([("project", s(m("project"))), ("text", s(m("notification")))])]))])), ["project", "notification"]),
 			(macEnd, phoneEnd, line(.object([("event", s("secret")), ("value", s(m("secret")))])), ["secret"]),
+			(macEnd, phoneEnd, line(.object([("event", s("device")), ("text", s(m("device event"))), ("name", s(m("device name")))])), ["device event"]),
 		]
 		var received: [ObjectIdentifier: UInt64] = [:]
 		for exchange in exchanges {
@@ -296,7 +318,7 @@ enum SealedSession {
 		}
 		// Acks and pings, each way, and the end of the session and of the channel.
 		try await phoneEnd.sayAck(received[ObjectIdentifier(phoneEnd.channel)] ?? 0)
-		Check.equal(try await macEnd.hear(), .ack(3), "the phone's ack reaches the Mac")
+		Check.equal(try await macEnd.hear(), .ack(4), "the phone's ack reaches the Mac")
 		try await macEnd.sayAck(received[ObjectIdentifier(macEnd.channel)] ?? 0)
 		Check.equal(try await phoneEnd.hear(), .ack(2), "the Mac's ack reaches the phone")
 		try await phoneEnd.sayPing()
@@ -392,6 +414,8 @@ enum SealedSession {
 		let connector = URLSessionRelayConnector()
 		let relayKey = P256.Signing.PrivateKey()
 		let deviceKey = P256.Signing.PrivateKey()
+		ledger.relayKeys = [PublicKeys.text(relayKey.publicKey)]
+		ledger.deviceKeys = [PublicKeys.text(deviceKey.publicKey)]
 		let pairing = try await RelayClient.register(relay: url, build: RelayBuild("200")!, relayKey: RelaySigner(relayKey), connector: connector)
 		let mac = try RelayClient(relay: url, role: .mac(pairing), build: RelayBuild("200")!, signer: RelaySigner(relayKey), connector: connector, options: ProtocolTest.options())
 		let macEvents = Inbox(mac.events)
@@ -403,13 +427,15 @@ enum SealedSession {
 		let link = try await RelayClient.join(
 			relay: url, pairing: pairing, build: RelayBuild("3.1")!, deviceKey: deviceKey.publicKey, token: token,
 			attest: { hash in RelayAttestation(attestation: hash + Data(base64Encoded: attestKey.text)!, keyId: attestKey) }, connector: connector)
-		_ = try await macEvents.next("joined") { if case .phoneJoined = $0 { true } else { nil } }
+		let notice = try await macEvents.next("joined") { if case let .phoneJoined(notice) = $0 { notice } else { nil } }
+		ledger.devices.append(notice.slot.text)
 
 		try await link.send(Data(marker.utf8))
 		let bytes = try await macEvents.next("the planted bytes") { if case let .data(_, bytes) = $0 { bytes } else { nil } }
 		Check.equal(bytes, Data(marker.utf8), "the planted bytes pass the relay as they are")
 
 		let device = DeviceID.random()
+		ledger.devices.append(device.text)
 		try await mac.addDevice(device, deviceKey: deviceKey.publicKey, attestKeyId: AttestKeyID(bytes: Bytes.random(32))!)
 		try await mac.closeJoin()
 		// An uncompressed point's first byte and then the marker in clear: the relay takes it for a sealed item.

@@ -14,7 +14,7 @@
 	"send_metrics": false,
 
 	// Logs off (5.3): no Workers Logs, no invocation logs (which keep a request's URL), and the code writes nothing to the
-	// console. test/sealed.test.ts (#683, P15) fails in CI if either changes, here or in an environment.
+	// console. P15 (#683) adds the check in CI that fails if either changes.
 	"observability": {
 		"enabled": false,
 		"logs": { "enabled": false, "invocation_logs": false }
