@@ -15,6 +15,7 @@ enum DemoScript {
     static let features: [[String: DemoAnswer]] = [
         conversations,  // Script/ConversationAnswers.swift (#684): open, close, shown, older, submit, abort
         needs,          // Script/NeedsAnswers.swift (#684): needs.list, needs.answer, inbox.decide, inbox.answer
+        work,           // Script/WorkAnswers.swift (#694): work.list, work.create, work.act, projects.watch
     ]
 
     /// The answers by method. Two features answering the same method is a mistake, which the tests catch.

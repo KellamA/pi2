@@ -260,6 +260,57 @@ struct WorkTests {
         #expect(transport.sent.map { $0.params["tabs"] as? [String] } == [["work"], []])
     }
 
+    @Test func theDemoFilesAndChangesWorkAsTheEngineDoes() async throws {
+        let transport = try #require(DemoTransport.recorded())
+        transport.world.pace = 0.02
+        let session = AppSession()
+        session.start(transport, as: .demo)
+        let engine = session.engine
+        #expect(try await eventually { !engine.projects.isEmpty && engine.extras["work"] != nil && !engine.allAgents.isEmpty })
+        let project = try #require(engine.projects.first { $0.name == "Demo project" })
+        let before = engine.workListing(project).items.count
+        #expect(before > 0)
+
+        // Filing adds an open piece, numbered after the last, and the `work` event brings it.
+        #expect(await WorkRequests.create(engine, project: project.id, title: "  Check the walkthrough slides ", text: "Both decks.") == nil)
+        #expect(try await eventually { engine.workListing(project).items.count == before + 1 })
+        let filed = try #require(engine.workListing(project).items.max { $0.id < $1.id })
+        #expect(filed.title == "Check the walkthrough slides" && filed.state == "open" && filed.text == "Both decks.")
+        #expect(await WorkRequests.create(engine, project: project.id, title: " ", text: "") == "title must be 1 to 200 characters")
+
+        // The person's actions, each from the states the table allows.
+        #expect(await WorkRequests.act(engine, project: project.id, item: filed.id, "note", ["text": "Friday at ten."]) == nil)
+        #expect(await WorkRequests.act(engine, project: project.id, item: filed.id, "classify", ["class": "cloud"]) == nil)
+        #expect(await WorkRequests.act(engine, project: project.id, item: filed.id, "resume") == "#\(filed.id) is open. Take or assign it first.")
+        #expect(await WorkRequests.act(engine, project: project.id, item: filed.id, "close", ["as": "dropped"]) == nil)
+        #expect(try await eventually { engine.workListing(project).item(filed.id)?.state == "dropped" })
+        let dropped = try #require(engine.workListing(project).item(filed.id))
+        #expect(dropped.notes.map(\.text) == ["Friday at ten."] && dropped.notes.first?.agentId == nil)
+        #expect(dropped.modelClass == "cloud")
+        #expect(await WorkRequests.act(engine, project: project.id, item: filed.id, "close", ["as": "done"]) == "#\(filed.id) is dropped. Reopen it first.")
+        #expect(await WorkRequests.act(engine, project: project.id, item: filed.id, "reopen") == nil)
+        #expect(await WorkRequests.act(engine, project: project.id, item: 999, "note", ["text": "x"]) == "Unknown work item: #999")
+        #expect(await WorkRequests.act(engine, project: project.id, item: filed.id, "take") == "The person cannot use take. Ask the agent holding the work, or use release or close.")
+
+        // Held work goes back to open with nobody on it.
+        let held = try #require(engine.workListing(project).items.first { $0.state == "waiting" })
+        #expect(await WorkRequests.act(engine, project: project.id, item: held.id, "release") == nil)
+        #expect(try await eventually { engine.workListing(project).item(held.id)?.state == "open" })
+        #expect(engine.workListing(project).item(held.id)?.holderAgentId == nil)
+
+        // Giving work to an agent starts it in a sub-chat, which the demo cannot make: it says so, and changes nothing.
+        let agent = try #require(engine.workAgents(project).first)
+        let given = await WorkRequests.assign(engine, project: project.id, item: filed.id, agent: agent.id)
+        guard case .refused(let words) = given else { Issue.record("assign was not refused: \(given)"); return }
+        #expect(words.hasPrefix("The demo does not start agents"))
+        #expect(engine.workListing(project).item(filed.id)?.state == "open")
+
+        // Watching the Work tab is answered, and everything the screens sent was.
+        _ = try await engine.call("projects.watch", ["projectId": project.id, "tabs": ["work"]])
+        #expect(transport.world.unanswered.isEmpty)
+        #expect(DemoScript.answeredTwice.isEmpty)
+    }
+
     @Test func wordsReadAsTheMacs() {
         let now = Date(timeIntervalSince1970: 1_795_359_600)
         #expect(WorkTime.ago(now.addingTimeInterval(-20), now: now) == "just now")

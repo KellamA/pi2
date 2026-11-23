@@ -29,6 +29,9 @@ enum DemoScreens {
             ("An agent's conversation (#687)", .conversation(agent)),
             ("Needs you, every project (#686)", .needs()),
             ("Needs you, one project (#686)", .needs(project: project.id)),
+            ("Work, the list (#694)", .work(project: project.id)),
+            ("Work, a piece of work (#694)", .work(project: project.id, item: 3)),
+            ("Work, a piece that is not in the list (#694)", .work(project: project.id, item: 999)),
         ]
     }
 }
