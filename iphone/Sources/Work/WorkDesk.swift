@@ -68,3 +68,23 @@ final class WorkDesk {
         problem = await WorkRequests.settle(engine, project: project, intent: write.intent, happened: happened)
     }
 }
+
+/// That a project's work shows, told to the engine through the hub's `projects.watch` (`HubTabWatch`, as the Mac's Work
+/// tab tells its `ProjectTabWatch`), so that the engine reads an attached repository's listing again while it does. The
+/// list and a piece opened from it are two screens, and the next appears before the last goes, so each counts itself in
+/// and out here, and the hub's watch hears only the first in and the last out.
+@MainActor
+enum WorkWatch {
+    private static var showing: [String: Int] = [:]
+
+    static func shows(_ project: String, engine: EngineSession<MessageField>) {
+        showing[project, default: 0] += 1
+        if showing[project] == 1 { HubTabWatch.shared.shows(project, tab: .work, engine: engine) }
+    }
+
+    static func hides(_ project: String, engine: EngineSession<MessageField>) {
+        guard let count = showing[project], count > 0 else { return }
+        showing[project] = count - 1
+        if count == 1 { HubTabWatch.shared.hides(project, tab: .work, engine: engine) }
+    }
+}

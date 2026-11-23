@@ -41,6 +41,8 @@ struct WorkListScreen: View {
                 }
             }
             .workHeldStart(desk: desk, engine: session.engine, project: project.id)
+            .onAppear { WorkWatch.shows(project.id, engine: session.engine) }
+            .onDisappear { WorkWatch.hides(project.id, engine: session.engine) }
             .modifier(WorkScreenChrome(placement: placement, title: "Work") {
                 Button("New \(listing.noun == "issue" ? "Issue" : "Work")", systemImage: "plus", action: beginFiling)
                     .disabled(listing.troubled)

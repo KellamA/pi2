@@ -239,6 +239,27 @@ struct WorkTests {
         #expect(desk.sending.isEmpty)
     }
 
+    @Test func theWorkTabIsWatchedFromTheFirstScreenInToTheLastOut() async throws {
+        let transport = WorkRecordingTransport(refusal: nil)
+        let session = AppSession()
+        session.start(transport, as: .connected(.home))
+        let engine = session.engine
+        #expect(try await eventually { engine.status == .connected })
+
+        // The list, then a piece pushed over it, which appears before the list goes.
+        WorkWatch.shows("w-1", engine: engine)
+        WorkWatch.shows("w-1", engine: engine)
+        WorkWatch.hides("w-1", engine: engine)
+        #expect(HubTabWatch.shared.parameters["projectId"] as? String == "w-1")
+        #expect(HubTabWatch.shared.parameters["tabs"] as? [String] == ["work"])
+        WorkWatch.hides("w-1", engine: engine)
+        WorkWatch.hides("w-1", engine: engine)
+        #expect(HubTabWatch.shared.parameters["projectId"] is NSNull)
+        #expect(try await eventually { transport.sent.count == 2 })
+        #expect(transport.sent.map(\.method) == ["projects.watch", "projects.watch"])
+        #expect(transport.sent.map { $0.params["tabs"] as? [String] } == [["work"], []])
+    }
+
     @Test func wordsReadAsTheMacs() {
         let now = Date(timeIntervalSince1970: 1_795_359_600)
         #expect(WorkTime.ago(now.addingTimeInterval(-20), now: now) == "just now")
