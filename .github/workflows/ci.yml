@@ -53,6 +53,8 @@ jobs:
               # Checked by the Linux job Scripts (tests), or by nothing else in CI (rerun-if-no-runner).
               scripts/issue | scripts/issue-hook | scripts/test-issue | scripts/test-issue-hook) ;;
               scripts/test-auto-merge | scripts/auto-merge | scripts/rerun-if-no-runner | scripts/test-docs-lists) ;;
+              # The relay: checked by the Linux job Relay (tests) alone.
+              relay/*) ;;
               # Copied into the app's Info.plist by app/build.sh, which drops white space: checked here for what
               # could break that.
               app/VERSION)
@@ -137,6 +139,29 @@ jobs:
       - run: scripts/test-docs-lists
       # scripts/check-protected-targets against package descriptions made in the test, one for each tampering (#674).
       - run: scripts/test-check-protected-targets
+
+  relay:
+    name: Relay (tests)
+    # The relay (relay/, #676): its type-check, its tests inside workerd, Cloudflare's Workers runtime, on the runner
+    # with no account, and the check that its bundle's App Attest verifier is the engine's own file. Deploys nothing.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: relay
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: relay/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run check-bundle
 
   app:
     name: App (build)
