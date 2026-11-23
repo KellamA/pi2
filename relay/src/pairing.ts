@@ -9,6 +9,7 @@
 // within ten seconds is closed.
 
 import { DurableObject } from "cloudflare:workers";
+import { type Apns, apnsFor, PUSH_LIMITS, PushCounts, type PushHour, type PushLimits } from "./apns.ts";
 import { verifyAttestation } from "./attest.ts";
 import { base64url, concat, fromBase64url, random, same } from "./bytes.ts";
 import { publicKeyBytes, sha256, verifySignature } from "./crypto.ts";
@@ -25,6 +26,7 @@ import {
 	type Message,
 	PAIRING_HEADER,
 	proofText,
+	type Push,
 	type Put,
 	readMessage,
 	ROUTE_HEADER,
@@ -134,6 +136,10 @@ const CLOSE: Record<Why, number> = {
 	deleted: 4008,
 	"window-ended": 4008,
 	replaced: 4009,
+	"no-token": 4002,
+	"token-dead": 4002,
+	"push-limit": 4002,
+	"push-later": 4002,
 };
 
 export class Pairing extends DurableObject<Env> {
@@ -149,6 +155,14 @@ export class Pairing extends DurableObject<Env> {
 	keyObject(keyId: string): Pick<DurableObjectStub<import("./claims.ts").AttestKey>, "tie" | "retie" | "untie"> {
 		return this.env.ATTEST_KEYS.get(this.env.ATTEST_KEYS.idFromName(keyId));
 	}
+
+	/** Apple's push service with the deployment's push key (apns.ts). Tests stand in Apple's service (test/apns.ts); nothing else does. */
+	apns: (topic: string) => Apns | null = (topic) => apnsFor(this.env, topic);
+	/** 6.6's push limits; tests make them smaller. */
+	pushLimits: PushLimits = PUSH_LIMITS;
+	private pushCounts: PushCounts | null = null;
+	/** The pushes in hand, one at a time, so that the Mac's answers come in the order it asked. */
+	private pushing: Promise<void> = Promise.resolve();
 
 	private meta: Meta | null = null;
 	private devices: Record<string, Device> = {};
@@ -515,6 +529,11 @@ export class Pairing extends DurableObject<Env> {
 				return this.put(ws, message, "mac", now);
 			case "take":
 				return this.take(ws, "mac", now);
+			case "push": {
+				const turn = this.pushing.then(() => this.push(ws, message));
+				this.pushing = turn.catch(() => undefined);
+				return turn;
+			}
 			default:
 				return this.refuse(ws, "malformed");
 		}
@@ -531,9 +550,18 @@ export class Pairing extends DurableObject<Env> {
 			case "take":
 				return this.take(ws, id, now);
 			case "token":
-				device.token = { apns: message.apns, environment: message.environment };
-				await this.save();
+				// The phone gives its token at every connection (apns.ts): written only when it changed.
+				if (device.token?.apns !== message.apns || device.token.environment !== message.environment) {
+					device.token = { apns: message.apns, environment: message.environment };
+					await this.save();
+				}
 				return ok(ws, "token");
+			case "dropToken":
+				if (device.token !== null) {
+					device.token = null;
+					await this.save();
+				}
+				return ok(ws, "dropToken");
 			case "leave": {
 				const meta = this.meta!;
 				if (!(await verifySignature(device.key, message.signature, proofText("leave", meta.pairing, id, attachment.challenge!)))) {
@@ -733,6 +761,39 @@ export class Pairing extends DurableObject<Env> {
 				send(mac, { offline: { device: attachment.device } });
 			}
 		}
+	}
+
+	// Pushes.
+
+	/**
+	 * The Mac asks for a push to one of its devices (7), on its proved socket as all its requests are: sent through
+	 * Apple's service with the device's token, its content the sealed bytes the Mac gave (apns.ts). Only the Mac can ask
+	 * (6.6). Counted against 6.6's push limits before it is sent, with one write for each push sent and none for one
+	 * refused; a token Apple calls dead is forgotten.
+	 */
+	private async push(ws: WebSocket, message: Push): Promise<void> {
+		const now = Date.now();
+		const device = this.devices[message.device];
+		if (this.meta === null || device?.listed !== true) return refused(ws, "push", "unknown-device");
+		const token = device.token;
+		if (token === null) return refused(ws, "push", "no-token");
+		const settings = readSettings(this.env);
+		const apns = settings === null ? null : this.apns(settings.bundleId);
+		if (apns === null) return refused(ws, "push", "unavailable");
+		const held = apns.held(token, now);
+		if (held !== null) return refused(ws, "push", held);
+		this.pushCounts ??= new PushCounts(await this.ctx.storage.get<PushHour>("pushes"));
+		if (!this.pushCounts.allows(message.device, message.kind, now, this.pushLimits)) return refused(ws, "push", "push-limit");
+		await this.ctx.storage.put("pushes", this.pushCounts.add(message.device, message.kind, now, (id) => this.devices[id]?.listed === true));
+		const outcome = await apns.send(token, message, now);
+		if (outcome === "sent") return ok(ws, "push");
+		// Forgotten only if it is still the token Apple refused: the phone may have given another meanwhile.
+		const still = this.devices[message.device];
+		if (outcome === "token-dead" && still?.token?.apns === token.apns && still.token.environment === token.environment) {
+			still.token = null;
+			await this.save();
+		}
+		return refused(ws, "push", outcome);
 	}
 
 	// The sockets.

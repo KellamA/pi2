@@ -350,7 +350,8 @@ The same keys, the same handshake, the same messages and the same checks hold on
 |---|---|---|
 | The pairing's id, the Mac's relay public key | To know the Mac | Until deleted, or 60 days with no connection |
 | Each device's id, device public key, App Attest key id | To know a device | Until removed |
-| Each device's push token and its environment | To send pushes | Until removed or replaced |
+| Each device's push token and its environment | To send pushes | Until removed, replaced or dropped by the phone, or Apple says it is no longer good ([relay/README.md](../relay/README.md#pushes)) |
+| Each device's pushes this hour, and the pairing's | The push limits ([6.6](#66-abuse-and-cost)) | The hour |
 | The join window's token hash and expiry | Pairing | Five minutes |
 | **The mailbox**: for the Mac, up to 200 sealed items, 1 MB in all, each at most 16 KB, and at most 50 items and 256 KB from any one device; for each device, the latest sealed state and up to 100 sealed items | So that what one end writes while the other is away is not lost: the phone's answers while the Mac sleeps; needs, receipts and the last state while the phone is unreachable | 24 hours each, one hour for an item marked `presence` (a `"face"` request), then deleted; an item is deleted once taken |
 | Counters for the limits ([6.6](#66-abuse-and-cost)) | Limits | One day |
@@ -526,7 +527,7 @@ pi² does the rest: the relay's code and its configuration in `relay/`; a workfl
 | Messages | 100 a second; 300,000 a day |
 | Data | 2 MB a second; 500 MB a day |
 | Mailbox | As [5.3](#53-the-relay) |
-| Pushes | 120 alerts an hour per device, 60 background pushes, 60 Live Activity updates |
+| Pushes | 120 alerts an hour per device, 60 background pushes, 60 Live Activity updates; five times each for the pairing as a whole |
 
 **Bounding the bill**: a spending limit on the Cloudflare account and an e-mail alert;[^cfspend] the relay answers "busy" rather than failing when a limit is reached.
 
