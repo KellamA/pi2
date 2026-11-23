@@ -178,6 +178,23 @@ struct PullRequestTests {
         #expect(PullRequestSamples("nonsense", now: Date()) == nil)
     }
 
+    // MARK: - In the demo mode
+
+    @Test func theDemosProjectsHaveNoPullRequestsAndAskTheDemoNothing() async throws {
+        let transport = try #require(DemoTransport.recorded())
+        transport.world.pace = 0.02
+        let session = AppSession()
+        session.start(transport, as: .demo)
+        #expect(try await eventually { !session.engine.projects.isEmpty && session.engine.hasLoadedLibrary })
+        guard PullRequestSamples.current == nil else { return }
+        for project in session.engine.projects {
+            let source = PullRequestSource(session.engine, project: project.id, number: 7, store: PullRequestStore())
+            #expect(source.state == .noRepository(project.name))
+            #expect(!source.readsDiff)
+        }
+        #expect(transport.world.unanswered.isEmpty)
+    }
+
     // MARK: - Against the recorded session
 
     @Test func theRecordingsProjectsHaveNoPullRequestsAndItsEngineRefusesTheDiff() async throws {
