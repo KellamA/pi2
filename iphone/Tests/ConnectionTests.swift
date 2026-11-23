@@ -307,6 +307,23 @@ struct ConnectionTests {
         #expect(try paired.store.load() != nil && (try paired.keys.keys()) != nil)
     }
 
+    @Test func unpairingDoesNotWaitForTheRelaysAnswer() async throws {
+        let paired = try await Self.paired()
+        defer { paired.mac.stop() }
+        var routes = PairingTests.routes()
+        routes.relayConnector = LyingRelay(.readyThenSilent)
+        var record = paired.record
+        record.relay = "wss://relay.example.dev/v1"
+        let connection = try RemoteConnection(record: record, keys: try #require(try paired.keys.keys()), keyStore: paired.keys, store: paired.store, routes: routes)
+        connection.start()
+        #expect(await Wait.until { connection.connection == .connected(.direct, relayReachable: true) }, "the relay says it is ready")
+        let started = ContinuousClock.now
+        await connection.unpairHere()
+        #expect(ContinuousClock.now - started < .seconds(2), "a leave the relay never answers holds nothing up")
+        #expect(connection.connection == .notPaired)
+        #expect(try paired.store.load() == nil && (try paired.keys.keys()) == nil)
+    }
+
     @Test func everyProblemHasWordsOfItsOwn() {
         let problems: [ConnectionProblem] = [.update, .suspended, .presence, .clock, .faceID(.sessionNotOpen), .macNotProved, .relaySaid("left"), .relaySaid("update-required"), .relaySaid("new-word")]
         let words = problems.map(\.words)

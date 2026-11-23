@@ -13,6 +13,8 @@ final class LyingRelay: RelayConnector {
         case refuse(String)
         /// Ready, then sends this text, as if it were a message for this end.
         case readyThenSay(String)
+        /// Ready, then answers nothing, a leave among it.
+        case readyThenSilent
     }
 
     let script: Script
@@ -51,6 +53,8 @@ final class LyingSocket: RelaySocket {
             case let .readyThenSay(lie):
                 frames.push(.text(JSON.text(.object([("ready", .object([("mac", .bool(true)), ("mail", .integer(0))]))]))))
                 frames.push(.text(lie))
+            case .readyThenSilent:
+                frames.push(.text(JSON.text(.object([("ready", .object([("mac", .bool(true)), ("mail", .integer(0))]))]))))
             }
         }
     }

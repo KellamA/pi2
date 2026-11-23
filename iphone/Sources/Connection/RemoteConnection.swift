@@ -108,19 +108,19 @@ final class RemoteConnection {
     }
 
     /// "Unpair this iPhone" from the phone's side, and the first step of pairing again (3.3, 3.6): the relay is told
-    /// `leave`, signed with the device key, if it can be reached within a few seconds; then the session ends and the
-    /// keys and the record are deleted. `devices.forgetSelf`, which revokes the phone on the Mac, is a request of the
-    /// engine's the app sends through its client before this, while attached.
+    /// `leave`, signed with the device key, if it is connected; the session ends and the keys and the record are
+    /// deleted at once, without waiting for the relay's answer (`leave` has a deadline of its own and may end `lost`).
+    /// The relay's client is handed to the leave, which stops it once answered or not. `devices.forgetSelf`, which
+    /// revokes the phone on the Mac, is a request of the engine's the app sends through its client before this.
     func unpairHere() async {
         if let relay, relay.status.ready {
+            // The leave keeps the client; `stop` below must not close its socket under it.
+            self.relay = nil
             let client = relay.client
-            let leaving = Task { try await client.leave() }
-            let timeout = Task {
-                try? await Task.sleep(for: .seconds(5))
-                leaving.cancel()
+            Task {
+                try? await client.leave()
+                await client.stop()
             }
-            _ = try? await leaving.value
-            timeout.cancel()
         }
         stop()
         unpair()
