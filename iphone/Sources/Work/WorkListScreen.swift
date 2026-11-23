@@ -55,21 +55,16 @@ struct WorkListScreen: View {
     @ViewBuilder
     private var content: some View {
         if listing.firstRead {
-            if listing.troubled {
-                ContentUnavailableView("Nothing was read", systemImage: "exclamationmark.triangle",
-                                       description: Text(listing.troubleWords() ?? ""))
-            } else {
-                VStack(spacing: 12) {
-                    ProgressView()
-                    Text(loadingWords)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                .padding(24)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .accessibilityElement(children: .combine)
+            VStack(spacing: 12) {
+                ProgressView()
+                Text(loadingWords)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
             }
+            .padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityElement(children: .combine)
         } else {
             let sections = listing.sections(filter)
             let list = List {
@@ -165,6 +160,8 @@ struct WorkListScreen: View {
             }
         }
         .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 10)
+        // A bar that stays put while the list scrolls: at the largest sizes it would take the screen from the list.
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }
     }
@@ -199,7 +196,7 @@ struct WorkListScreen: View {
         switch filter {
         case .open:
             if listing.onGitHub {
-                ContentUnavailableView("Nothing open", systemImage: "checklist", description: Text(listing.troubled
+                ContentUnavailableView(listing.troubled ? "Nothing was read" : "Nothing open", systemImage: "checklist", description: Text(listing.troubled
                     ? "When GitHub answers, this project's issues and pull requests show here."
                     : "This repository has no open issues and no open pull requests. The agents file and work on them with their work tool."))
             } else {

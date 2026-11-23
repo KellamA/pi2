@@ -23,7 +23,7 @@ struct WorkGiveSheet: View {
                             dismiss()
                             give(agent)
                         } label: {
-                            HStack(spacing: 12) {
+                            HStack(alignment: .top, spacing: 12) {
                                 AgentMark(agent: agent)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(agent.name)
@@ -118,7 +118,7 @@ struct WorkComposer: View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("Title", text: $title, prompt: Text("Title of the \(noun)"), axis: .vertical)
+                    TextField("Title", text: $title, prompt: Text("Title"), axis: .vertical)
                         .font(.body.weight(.medium))
                         .focused($titleFocused)
                         .accessibilityLabel("Title")
