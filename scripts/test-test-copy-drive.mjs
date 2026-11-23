@@ -1,7 +1,7 @@
 // Protocol checks with stand-ins for the app and engine. Nothing is launched except the script under test.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,9 +11,12 @@ import { setTimeout as sleep } from 'node:timers/promises';
 const folder = mkdtempSync(join(tmpdir(), 'pi2-drive-'));
 const path = join(folder, 'engine.sock');
 const script = join(import.meta.dirname, 'test-copy-drive.mjs');
+// The child's own waits (30 seconds for a window command, 10 for attached) bound a healthy run; this ceiling only
+// guards a hang. A heavily loaded CI runner can take well over four seconds to start Node and answer, which once
+// failed the show check by chance (#860), so it is a minute and not a race against the runner's load.
 const run = (command, target, ...args) => new Promise(resolve => {
 	const env = { ...process.env, TEST_COPY_KEY_FILE: keyFile };
-	execFile(process.execPath, [script, command, target, 'test-7', ...args], { timeout: 4000, env }, (error, out, err) => {
+	execFile(process.execPath, [script, command, target, 'test-7', ...args], { timeout: 60_000, env }, (error, out, err) => {
 		resolve([error?.code ?? 0, out.trim(), err.trim()]);
 	});
 });
@@ -111,6 +114,13 @@ try {
 	assert.deepEqual(requests, Array.from({ length: 2 }, () => ({ id: 1, method: 'test-copy.fillProject', params: {} })));
 
 	const control = join(folder, 'control');
+	// As the copy's own writer (TestCopyControl's answer): written whole under a temporary name and renamed into
+	// place, so the reader never finds a half-written response.json (#860).
+	const answer = (dir, reply) => {
+		const file = join(control, dir, 'response.json.tmp');
+		writeFileSync(file, JSON.stringify(reply));
+		renameSync(file, join(control, dir, 'response.json'));
+	};
 	for (const [command, args, fields, reply] of [
 		['show', ['project:Demo project#agent:Atlas', '--hub', 'board-folded'],
 			{ show: 'project:Demo project#agent:Atlas', hub: 'board-folded' }, { result: 'Recorded project:Demo project#agent:Atlas (board-folded)' }],
@@ -135,7 +145,9 @@ try {
 		['choose', ['/outside'], { paths: ['/outside'] }, { error: 'path outside allowed roots' }],
 	]) {
 		const pending = run(command, control, '321', ...args);
-		const deadline = performance.now() + 3000;
+		// 60 seconds, not the 3 the poll needs: a loaded runner can take that long to start the child, and only a
+		// request that never comes should reach the deadline (#860).
+		const deadline = performance.now() + 60_000;
 		let received;
 		while (performance.now() < deadline) {
 			try {
@@ -143,7 +155,7 @@ try {
 				if (dir) {
 					const request = JSON.parse(readFileSync(join(control, dir, 'request.json'), 'utf8'));
 					assert.deepEqual(request, { pid: 321, command, ...fields });
-					writeFileSync(join(control, dir, 'response.json'), JSON.stringify(reply));
+					answer(dir, reply);
 					received = true;
 					break;
 				}
@@ -155,24 +167,49 @@ try {
 		assert.deepEqual(readdirSync(control), []);
 	}
 	// The windows attached to one, for shot (#779): printed as the copy gives them, for the script to read.
-	for (const [reply, answer] of [[{ result: '17551 17552' }, [0, '17551 17552', '']], [{ result: '' }, [0, '', '']],
+	for (const [reply, expected] of [[{ result: '17551 17552' }, [0, '17551 17552', '']], [{ result: '' }, [0, '', '']],
 		[{ error: 'the copy has no window 17550' }, [1, '', 'test-copy: the copy has no window 17550']]]) {
 		const pending = run('attached', control, '321', '17550');
-		const deadline = performance.now() + 3000;
+		const deadline = performance.now() + 60_000;
 		let received;
 		while (performance.now() < deadline && !received) {
 			const [dir] = readdirSync(control);
 			try {
 				if (dir) {
 					assert.deepEqual(JSON.parse(readFileSync(join(control, dir, 'request.json'), 'utf8')), { pid: 321, command: 'attached', window: 17550 });
-					writeFileSync(join(control, dir, 'response.json'), JSON.stringify(reply));
+					answer(dir, reply);
 					received = true;
 				}
 			} catch (error) { if (error.code !== 'ENOENT') throw error; }
 			if (!received) await sleep(20);
 		}
 		assert.ok(received, 'no attached request reached the stand-in window');
-		assert.deepEqual(await pending, answer);
+		assert.deepEqual(await pending, expected);
+	}
+	// A writer that does not rename its answer into place can have the reader find response.json before all of it is
+	// written (#860): the reader keeps reading a file that does not parse yet and answers once the rest is there.
+	{
+		const pending = run('attached', control, '321', '17550');
+		const deadline = performance.now() + 60_000;
+		let written = false;
+		while (performance.now() < deadline && !written) {
+			const [dir] = readdirSync(control);
+			try {
+				if (dir) {
+					assert.deepEqual(JSON.parse(readFileSync(join(control, dir, 'request.json'), 'utf8')), { pid: 321, command: 'attached', window: 17550 });
+					const half = '{"result":"17551 175';
+					const file = join(control, dir, 'response.json');
+					writeFileSync(file, half); // deliberately not atomic: the answer half written
+					await sleep(300); // the writer still writing it
+					appendFileSync(file, '52"}'); // the rest of it
+					written = true;
+				}
+			} catch (error) { if (error.code !== 'ENOENT') throw error; }
+			if (!written) await sleep(20);
+		}
+		assert.ok(written, 'no attached request reached the stand-in window for the half-written answer');
+		assert.deepEqual(await pending, [0, '17551 17552', '']);
+		assert.deepEqual(readdirSync(control), []);
 	}
 	assert.deepEqual(await run('attached', control, '321', 'x'), [1, '', 'test-copy: window must be a positive integer']);
 	assert.deepEqual(await run('show', control, '321', '0'), [1, '', 'test-copy: conversation must be a positive integer']);

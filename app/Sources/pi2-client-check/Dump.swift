@@ -7,6 +7,12 @@ import Foundation
 /// the same text whether they are compiled into this program or come from `PiModels`.
 enum Dump {
     static func text(_ value: Any) -> String {
+        // Unwrap an optional before the cast below: an Optional holding a Computed passes it, writing the computed part twice (#867).
+        let mirror = Mirror(reflecting: value)
+        if mirror.displayStyle == .optional {
+            guard let wrapped = mirror.children.first else { return "nil" }
+            return text(wrapped.value)
+        }
         if let computed = value as? Computed {
             return plain(value) + " => {" + computed.computed.map { "\($0.0): \(text($0.1))" }.joined(separator: ", ") + "}"
         }

@@ -2,31 +2,73 @@
 import CryptoKit
 import Foundation
 
+/// The secret the home tag is made from (iphone.md 5.4, #845): 32 random bytes the Mac makes, sent to a phone only inside
+/// the channel, in `paired` at pairing and in the `homeKey` line on an attached channel after a revocation. Nobody who
+/// only read the pairing payload holds it, and a revoked phone does not hold the one made after its revocation.
+///
+/// Its description and mirror show no bytes; it is compared in a time that depends on its length alone.
+public struct HomeKey: Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
+	/// A home key's length in bytes.
+	public static let length = 32
+
+	private let bytes: Data
+
+	/// A new key, from the system's generator: the Mac's side makes one when it pairs its first device, and a new one
+	/// each time it revokes a device.
+	public static func random() -> HomeKey { HomeKey(checked: Bytes.random(length)) }
+
+	/// A key as kept (in the phone's Keychain, or where the Mac keeps the pairing): exactly 32 bytes, or nil.
+	public init?(rawRepresentation: Data) {
+		guard rawRepresentation.count == Self.length else { return nil }
+		bytes = Data(rawRepresentation)
+	}
+
+	private init(checked: Data) { bytes = checked }
+
+	/// The key's bytes, to keep it.
+	public var rawRepresentation: Data { bytes }
+
+	public static func == (lhs: HomeKey, rhs: HomeKey) -> Bool { Bytes.constantTimeEqual(lhs.bytes, rhs.bytes) }
+
+	public var description: String { "home key" }
+
+	public var debugDescription: String { description }
+
+	public var customMirror: Mirror { Mirror(self, children: [], displayStyle: .struct) }
+
+	/// The key as it is written in a line: base64url.
+	var text: String { Base64URL.encode(bytes) }
+
+	/// The key in a line's field: exactly 32 bytes of base64url.
+	static func read(_ fields: Fields, _ key: String) throws -> HomeKey {
+		HomeKey(checked: try fields.bytes(key, count: length))
+	}
+}
+
 /// The tag in the home path's Bonjour TXT record (iphone.md 5.4), `t=<tag>` beside `v=2`: a paired phone recognises its
 /// Mac by it on any network, and nobody else learns the pairing's id from it, which would follow the Mac from network to
 /// network and name it at the relay.
 ///
-/// The key is SHA-256 of `pi2-tag`, a zero byte, the Mac's channel key (its 32 raw public bytes), a zero byte and the
-/// pairing's id as text; the tag is HMAC-SHA256 under that key of the UTC day, `YYYY-MM-DD`, its first 8 bytes written as
-/// 16 lower-case hexadecimal digits. The phone has the channel key and the pairing's id from the pairing payload; the
-/// relay, which knows the pairing's id, never sees the channel key. It is a mark to recognise, not a proof: a phone that
-/// finds it still makes the KK handshake, which only the Mac's channel key answers (remotekit.md, "The home tag").
+/// The key is SHA-256 of `pi2-tag`, a zero byte, the home key (its 32 bytes), a zero byte and the pairing's id as text;
+/// the tag is HMAC-SHA256 under that key of the UTC day, `YYYY-MM-DD`, its first 8 bytes written as 16 lower-case
+/// hexadecimal digits. The home key is a secret the Mac sends only inside the channel, so neither someone who read the
+/// pairing payload nor a phone revoked since the key was last made can work the tag out. It is a mark to recognise, not a
+/// proof: a phone that finds it still makes the KK handshake, which only the Mac's channel key answers (remotekit.md,
+/// "The home tag").
 public enum HomeTag {
 	/// A tag's length in hexadecimal digits: 8 bytes.
 	public static let length = 16
 
 	/// The tag pi² Remote advertises on `date`'s UTC day.
-	public static func tag(macChannelKey: Curve25519.KeyAgreement.PublicKey, pairing: PairingID, date: Date) -> String {
-		tag(key: key(macChannelKey: macChannelKey, pairing: pairing), day: day(date))
+	public static func tag(key: HomeKey, pairing: PairingID, date: Date) -> String {
+		tag(key: tagKey(key, pairing: pairing), day: day(date))
 	}
 
 	/// The phone's check of the tag in a TXT record: whether it is its Mac's for the UTC day before `now`, the day of
 	/// `now` or the day after, so that clocks up to a day apart still meet. All three are compared, each in a time that
 	/// depends on the lengths alone.
-	public static func recognises(
-		_ advertised: String, macChannelKey: Curve25519.KeyAgreement.PublicKey, pairing: PairingID, now: Date = Date()
-	) -> Bool {
-		let key = key(macChannelKey: macChannelKey, pairing: pairing)
+	public static func recognises(_ advertised: String, key: HomeKey, pairing: PairingID, now: Date = Date()) -> Bool {
+		let key = tagKey(key, pairing: pairing)
 		let given = Array(advertised.utf8)
 		var found = false
 		for offset in [-1.0, 0, 1] {
@@ -67,10 +109,10 @@ public enum HomeTag {
 		return String(repeating: "0", count: max(0, count - text.count)) + text
 	}
 
-	private static func key(macChannelKey: Curve25519.KeyAgreement.PublicKey, pairing: PairingID) -> SymmetricKey {
+	private static func tagKey(_ key: HomeKey, pairing: PairingID) -> SymmetricKey {
 		var material = Data("pi2-tag".utf8)
 		material.append(0)
-		material.append(macChannelKey.rawRepresentation)
+		material.append(key.rawRepresentation)
 		material.append(0)
 		material.append(contentsOf: pairing.text.utf8)
 		return SymmetricKey(data: SHA256.hash(data: material))

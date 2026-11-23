@@ -59,7 +59,7 @@ The phone's view marks the page for a narrow screen and touch before anything is
 
 `index.html` asks for the device's width as its viewport, which the Mac's web view ignores. The Mac's view never marks the page, so none of these rules reaches the Mac at any width: its narrowest pane is 319 points (`HubLayout.minimumWidth`), narrower than any iPhone iOS 18 runs on (375 to 440 in portrait), so the rules could not have been chosen by width without changing the Mac. `pi2-transcript-check` draws the page at 390 points as the phone's view marks it, and at 319 as the Mac draws it ([development.md](development.md#the-page-loaded-ahead)).
 
-What the phone's bridge does with the page's messages is the phone app's (P18): none of them may become a request to the engine.
+What the phone's bridge does with the page's messages is the phone app's (P18): none of them may become a request to the engine but two reads of the same conversation when the page asks, each checked against what the conversation holds: `conversation.older` and `conversation.image` ([iphone.md section 8](iphone.md#8-the-shared-package)).
 
 ## Files on this Mac
 

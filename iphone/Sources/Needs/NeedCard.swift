@@ -136,7 +136,7 @@ struct NeedCard: View {
     }
 
     private var hidden: Bool {
-        NeedHiddenCall.isPartlyHidden(item?.arguments ?? need.arguments)
+        NeedHiddenCall.isPartlyHidden(mark: (item?.isPartlyHidden ?? false) || need.isPartlyHidden, arguments: item?.arguments ?? need.arguments)
     }
 
     @ViewBuilder
@@ -534,22 +534,7 @@ struct NeedAgentMark: View {
             .font(.system(size: side * 0.5, weight: .semibold))
             .foregroundStyle(.black.opacity(0.75))
             .frame(width: side, height: side)
-            .background(Self.fill(color), in: Circle())
+            .background(AgentColor.color(color), in: Circle())
             .accessibilityHidden(true)
-    }
-
-    /// The Mac's agent colours (`AgentColor` in the Mac app), soft enough for dark lettering in both appearances.
-    static func fill(_ name: String?) -> Color {
-        let hex: UInt32 = switch name {
-        case "blue": 0x9FC5FF
-        case "teal": 0x7FD8C4
-        case "green": 0xA8E39A
-        case "yellow": 0xF5D77A
-        case "orange": 0xFFB37A
-        case "pink": 0xFFA8C8
-        case "gray": 0xC3C5D0
-        default: 0xB9A6FF
-        }
-        return Color(red: Double(hex >> 16 & 0xFF) / 255, green: Double(hex >> 8 & 0xFF) / 255, blue: Double(hex & 0xFF) / 255)
     }
 }

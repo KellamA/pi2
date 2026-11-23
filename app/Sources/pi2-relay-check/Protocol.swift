@@ -56,7 +56,7 @@ enum ProtocolTest {
 		let stranger = try RelayClient(relay: url, role: .mac(pairing), build: mac, signer: RelaySigner(P256.Signing.PrivateKey()), connector: connector, options: options())
 		let strangerEvents = Inbox(stranger.events)
 		await stranger.start()
-		Check.equal(try await strangerEvents.next("stopped") { if case let .stopped(why) = $0 { why } else { nil } }, .refused(.signature), "a Mac with another key is refused")
+		Check.equal(try await strangerEvents.next("stopped") { (event: RelayEvent) -> RelayStop? in if case let .stopped(why) = event { why } else { nil } }, RelayStop.refused(.signature), "a Mac with another key is refused")
 		// A second copy holding the relay key is refused, and the connected Mac is told.
 		let copy = try RelayClient(relay: url, role: .mac(pairing), build: mac, signer: RelaySigner(relayKey), connector: connector, options: options())
 		let copyEvents = Inbox(copy.events)
@@ -89,9 +89,9 @@ enum ProtocolTest {
 
 		// The channel's bytes on the joined socket, both ways.
 		try await link.send(Data("pair".utf8))
-		Check.equal(try await macEvents.next("bytes from the joined phone") { if case let .data(from, bytes) = $0 { RelayEvent.data(from: from, bytes) } else { nil } }, .data(from: link.slot, Data("pair".utf8)), "a joined phone's bytes reach the Mac under its slot")
+		Check.equal(try await macEvents.next("bytes from the joined phone") { (event: RelayEvent) -> RelayEvent? in if case let .data(from, bytes) = event { RelayEvent.data(from: from, bytes) } else { nil } }, RelayEvent.data(from: link.slot, Data("pair".utf8)), "a joined phone's bytes reach the Mac under its slot")
 		try await macClient.send(Data("challenge".utf8), to: link.slot)
-		Check.equal(try await linkEvents.next("bytes to the joined phone") { if case let .data(bytes) = $0 { bytes } else { nil } }, Data("challenge".utf8), "the Mac's bytes reach the joined phone")
+		Check.equal(try await linkEvents.next("bytes to the joined phone") { (event: RelayLinkEvent) -> Data? in if case let .data(bytes) = event { bytes } else { nil } }, Data("challenge".utf8), "the Mac's bytes reach the joined phone")
 
 		// The Mac adds it under the engine's id, with its own App Attest key, then closes the window.
 		let device = DeviceID.random()
@@ -101,9 +101,9 @@ enum ProtocolTest {
 		try await macClient.addDevice(device, deviceKey: deviceKey.publicKey, attestKeyId: AttestKeyID(bytes: Bytes.random(32))!)
 		try await macClient.closeJoin()
 		try await macClient.send(Data("paired".utf8), to: device)
-		Check.equal(try await linkEvents.next("bytes under the engine's id") { if case let .data(bytes) = $0 { bytes } else { nil } }, Data("paired".utf8), "the same socket carries on under the engine's id, past closeJoin")
+		Check.equal(try await linkEvents.next("bytes under the engine's id") { (event: RelayLinkEvent) -> Data? in if case let .data(bytes) = event { bytes } else { nil } }, Data("paired".utf8), "the same socket carries on under the engine's id, past closeJoin")
 		try await link.send(Data("thanks".utf8))
-		Check.equal(try await macEvents.next("bytes from the added phone") { if case let .data(from, bytes) = $0 { RelayEvent.data(from: from, bytes) } else { nil } }, .data(from: device, Data("thanks".utf8)), "and its bytes reach the Mac under it")
+		Check.equal(try await macEvents.next("bytes from the added phone") { (event: RelayEvent) -> RelayEvent? in if case let .data(from, bytes) = event { RelayEvent.data(from: from, bytes) } else { nil } }, RelayEvent.data(from: device, Data("thanks".utf8)), "and its bytes reach the Mac under it")
 		await link.close()
 		_ = try await macEvents.next("offline") { $0 == .offline(device) ? true : nil }
 
@@ -174,25 +174,25 @@ enum ProtocolTest {
 		// Leaving, and what is left after.
 		try await phoneClient.leave()
 		_ = try await macEvents.next("left") { $0 == .left(device) ? true : nil }
-		Check.equal(try await phoneEvents.next("stopped") { if case let .stopped(why) = $0 { why } else { nil } }, .refused(.left), "a phone that left stops")
+		Check.equal(try await phoneEvents.next("stopped") { (event: RelayEvent) -> RelayStop? in if case let .stopped(why) = event { why } else { nil } }, RelayStop.refused(.left), "a phone that left stops")
 		try await macClient.removeDevice(device)
 		let gone = try RelayClient(relay: url, role: .device(pairing, device), build: phone, signer: RelaySigner(deviceKey), connector: connector, options: options())
 		let goneEvents = Inbox(gone.events)
 		await gone.start()
-		Check.equal(try await goneEvents.next("stopped") { if case let .stopped(why) = $0 { why } else { nil } }, .refused(.notListed), "a phone no longer listed is refused, and stops")
+		Check.equal(try await goneEvents.next("stopped") { (event: RelayEvent) -> RelayStop? in if case let .stopped(why) = event { why } else { nil } }, RelayStop.refused(.notListed), "a phone no longer listed is refused, and stops")
 
 		// A web page's Origin is refused: the client's connections, which all passed, sent none.
 		let origin = try RelayClient(relay: url, role: .mac(pairing), build: mac, signer: RelaySigner(relayKey), connector: OriginConnector(), options: options())
 		let originEvents = Inbox(origin.events)
 		await origin.start()
-		Check.equal(try await originEvents.next("stopped") { if case let .stopped(why) = $0 { why } else { nil } }, .http(403), "a connection with an Origin is refused with 403")
+		Check.equal(try await originEvents.next("stopped") { (event: RelayEvent) -> RelayStop? in if case let .stopped(why) = event { why } else { nil } }, RelayStop.http(403), "a connection with an Origin is refused with 403")
 
 		// The test Worker answers 400 to a connection without the client's two fixed headers (User-Agent: pi2-relay-client,
 		// Accept-Language: *), so every connection above carried them; one with URLSession's own is refused.
 		let plain = try RelayClient(relay: url, role: .mac(pairing), build: mac, signer: RelaySigner(relayKey), connector: OriginConnector(origin: false), options: options())
 		let plainEvents = Inbox(plain.events)
 		await plain.start()
-		Check.equal(try await plainEvents.next("stopped") { if case let .stopped(why) = $0 { why } else { nil } }, .http(400), "a connection with URLSession's own headers, not the client's, is refused")
+		Check.equal(try await plainEvents.next("stopped") { (event: RelayEvent) -> RelayStop? in if case let .stopped(why) = event { why } else { nil } }, RelayStop.http(400), "a connection with URLSession's own headers, not the client's, is refused")
 
 		// A redirect is not followed: the client stops with the 302, where following it would have connected.
 		var redirect = URLComponents(url: url, resolvingAgainstBaseURL: false)!
@@ -200,15 +200,15 @@ enum ProtocolTest {
 		let redirected = try RelayClient(relay: redirect.url!, role: .mac(pairing), build: mac, signer: RelaySigner(relayKey), options: options())
 		let redirectedEvents = Inbox(redirected.events)
 		await redirected.start()
-		Check.equal(try await redirectedEvents.next("stopped") { if case let .stopped(why) = $0 { why } else { nil } }, .http(302), "a redirect is not followed")
+		Check.equal(try await redirectedEvents.next("stopped") { (event: RelayEvent) -> RelayStop? in if case let .stopped(why) = event { why } else { nil } }, RelayStop.http(302), "a redirect is not followed")
 
 		// Deleting the pairing.
 		try await macClient.deletePairing()
-		Check.equal(try await macEvents.next("stopped") { if case let .stopped(why) = $0 { why } else { nil } }, .refused(.deleted), "the Mac's client stops once its pairing is deleted")
+		Check.equal(try await macEvents.next("stopped") { (event: RelayEvent) -> RelayStop? in if case let .stopped(why) = event { why } else { nil } }, RelayStop.refused(.deleted), "the Mac's client stops once its pairing is deleted")
 		let late = try RelayClient(relay: url, role: .mac(pairing), build: mac, signer: RelaySigner(relayKey), connector: connector, options: options())
 		let lateEvents = Inbox(late.events)
 		await late.start()
-		Check.equal(try await lateEvents.next("stopped") { if case let .stopped(why) = $0 { why } else { nil } }, .refused(.unknownPairing), "a deleted pairing is unknown")
+		Check.equal(try await lateEvents.next("stopped") { (event: RelayEvent) -> RelayStop? in if case let .stopped(why) = event { why } else { nil } }, RelayStop.refused(.unknownPairing), "a deleted pairing is unknown")
 	}
 }
 
