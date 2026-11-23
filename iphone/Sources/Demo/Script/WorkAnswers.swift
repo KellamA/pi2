@@ -4,8 +4,8 @@ import Foundation
 /// A project's work in the demo (#694), as the engine answers it for a list pi² keeps (`engine/src/work.ts`): `work.list`,
 /// filing with `work.create`, and the person's actions of the state table with `work.act` (release, resume, close,
 /// reopen, note, edit, classify), each checked as `checkWorkTransition` checks it and made as `workTransition` makes it,
-/// then the `work` event sent whole. Also `projects.watch` (`engine/src/github.ts`), which the hub's Now tab and the Work
-/// screens send while they show, and which only keeps a repository's listing fresh: the demo's projects have none.
+/// then the `work` event sent whole. `projects.watch`, which the Work screens send while they show, is answered with the
+/// project's other requests (`Script/ProjectAnswers.swift`).
 ///
 /// Giving work to an agent (`assign`) starts the agent in a new sub-chat of the orchestrator's conversation, and the demo's
 /// world cannot make a conversation yet, so it refuses that one plainly rather than claim the work with no agent on it.
@@ -58,15 +58,6 @@ extension DemoScript {
                 DemoWork.save(project, items, world: world)
             }
             return ["item": item]
-        },
-        "projects.watch": { request, world in
-            if request.params["projectId"] is NSNull { return [:] }
-            if let tabs = request.params["tabs"] as? [Any], tabs.isEmpty { return [:] }
-            _ = try DemoWork.project(request, world: world)
-            guard let tabs = request.params["tabs"] as? [String], tabs.allSatisfy({ $0 == "now" || $0 == "work" }) else {
-                throw DemoRefusal("tabs must be a list of now and work")
-            }
-            return [:]
         },
     ]
 }

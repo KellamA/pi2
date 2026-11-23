@@ -139,6 +139,7 @@ try {
 	await assert.rejects(create("Too much", { text: "a".repeat(20_001) }), /20,000/);
 	await assert.rejects(call("list", { states: ["all"] }), /states must/);
 	refusal(await socket.tool(parent, "pull_request"), /kept by pi², which has no pull requests/);
+	refusal(await socket.tool(parent, "update_pull_request", { id: 1, text: "New text" }), /kept by pi², which has no pull requests/);
 	step("greeting order, project-only tools, validation, and no GitHub fallback");
 
 	const id = await create("  Race  ", { text: "Work description", class: "local" });

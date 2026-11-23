@@ -292,6 +292,15 @@ switch (key) {
 		done(url);
 		break;
 	}
+	case "pr edit":
+		withState((state) => {
+			const pull = find(repoIn(state), positional[0], "pr");
+			if (flags.title !== undefined) pull.title = flags.title;
+			if (flags.body !== undefined) pull.body = flags.body;
+			pull.updatedAt = now();
+		});
+		done(`${urlOf(repoName, "pull", positional[0])}`);
+		break;
 	case "pr merge":
 		withState((state) => {
 			const repo = repoIn(state);
