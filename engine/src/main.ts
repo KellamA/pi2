@@ -899,8 +899,8 @@ async function handOverToOrchestrator(projectId: string, agent: AgentProfile, ch
 // ---- Requests
 
 const handlers: Record<string, (params: Params, client: Client) => Promise<unknown>> = {
-	// A device is told no path of the Mac's (docs/iphone.md 5.7), nor its upkeep. `backup`: whether the last backup did not
-	// finish, for Settings › Storage (backup.ts, #792).
+	// `backup`: whether the last backup did not finish, for Settings › Storage (backup.ts, #792). A device is told no path of
+	// the Mac's, and nothing of its upkeep (docs/iphone.md 5.7).
 	"engine.info": async (_params, client) =>
 		client.device !== undefined ? { build, pid: process.pid } : { build, main: engineMain, pid: process.pid, backup: backupStatus(home) },
 	/** Whether this connection may act for the person (#504): the app asks once it has connected. */
