@@ -126,21 +126,26 @@ public struct RelayBackoff: Sendable, Equatable {
 	}
 }
 
-/// What the client reports as it goes.
+/// What the client reports as it goes. Past `RelayOptions.eventBuffer` unread events are dropped, the `disconnected`
+/// that follows an overflow among them, so a caller takes any `connecting`, `macReady` or `deviceReady` to mean that the
+/// socket before is gone, whether or not it was told.
 public enum RelayEvent: Equatable, Sendable {
-	/// Opening a socket; `attempt` counts the attempts since the last steady connection.
+	/// Opening a socket; `attempt` counts the attempts since the last steady connection. Any socket before is gone.
 	case connecting(attempt: Int)
-	/// The Mac is connected and proved. What `ready` lists is the relay's word: a hint (remotekit.md).
+	/// The Mac is connected and proved, on a new socket: any before is gone. What `ready` lists is the relay's word: a
+	/// hint (remotekit.md).
 	case macReady(RelayMacReady)
-	/// The phone is connected and proved. Whether the Mac is there, and the count of mail, are the relay's word.
+	/// The phone is connected and proved, on a new socket: any before is gone. Whether the Mac is there, and the count of
+	/// mail, are the relay's word.
 	case deviceReady(macOnline: Bool, mail: Int)
 	/// The channel's bytes: to the Mac, under the device's id; to a phone, as from the Mac. The id is the relay's word:
 	/// only the channel of that device proves who sent them (its handshake's prologue names the device), so the bytes go
 	/// to that device's channel and nowhere else, and a failure there touches no other device.
 	case data(from: DeviceID?, Data)
-	/// The relay says a device connected: a hint it can forge.
+	/// The relay says a device connected: a hint it can forge. Only for a device `ready` listed, a `joined` named or
+	/// `addDevice` added, and only when it changes.
 	case online(DeviceID)
-	/// The relay says a device went: a hint it can forge.
+	/// The relay says a device went: a hint it can forge. As `online`.
 	case offline(DeviceID)
 	/// The relay says a phone joined the window. Its key and App Attest key id are the relay's word: `addDevice` sends
 	/// the engine's, from the claim the engine verified, never these.
@@ -269,13 +274,21 @@ public actor RelayClient {
 	private var pending: Pending?
 	private var requestBusy = false
 	private var requestQueue: [CheckedContinuation<Void, Never>] = []
-	private var endWaiters: [CheckedContinuation<RelayStop?, Never>] = []
+	private var endWaiters: [Int: CheckedContinuation<RelayStop?, Never>] = [:]
+	private var nextWaiter = 0
 	private var memory: RelayItemMemory
 	private var overflowed = false
 	/// Whether `mail` was reported and no `take` came after.
 	private var mailReported = false
-	/// What was last reported of each device's presence, and of the Mac's, so that a repeat is not reported again.
+	/// What was last reported of each device's presence, and of the Mac's, so that a repeat is not reported again; kept
+	/// only for the devices the client knows of (`known`).
 	private var presence: [DeviceID: Bool] = [:]
+	/// The devices the Mac's client takes notices of: those a `ready` listed, a `joined` named or `addDevice` added, the
+	/// latest `RelayClient.knownDevices`. A presence notice naming any other is not read, so that a relay naming new ids
+	/// cannot grow what the client holds.
+	private var known: [DeviceID] = []
+	/// The most devices known at once: five listed, and the slots of the windows opened while connected.
+	public static let knownDevices = 64
 	private var macPresence: Bool?
 	/// Why the client stopped, once it has: also for a caller whose events were past the bound when it stopped.
 	public private(set) var stopReason: RelayStop?
@@ -317,8 +330,13 @@ public actor RelayClient {
 
 	/// Remembers items its user has opened, verified and kept, so that the relay handing one over again is dropped as a
 	/// repeat for 25 hours. **This is the caller's to do**, after `SealedItem.openRequest` or `openMacItem` took the item
-	/// and it is kept: an item the relay made up is never remembered, so it cannot push a real one out. Answers false if
-	/// the memory is full of ids younger than 25 hours and could not take them all.
+	/// and it is kept: an item the relay made up is never remembered, so it cannot push a real one out. Remember before
+	/// the next `take` (a repeat across two takes before it is not caught), and save `itemMemory` after each call, so that
+	/// a relaunch remembers too.
+	///
+	/// Answers false if the memory is full of ids younger than 25 hours and could not take them all. The caller does
+	/// nothing about it: those items are only not guarded against a repeat, and the other checks still hold (the engine's
+	/// nonces for requests, rising numbers for states, the age limit for the Mac's items).
 	@discardableResult
 	public func remember(_ items: [RelayMailItem]) -> Bool {
 		let now = options.clock.now()
@@ -350,6 +368,7 @@ public actor RelayClient {
 	public func addDevice(_ device: DeviceID, deviceKey: P256.Signing.PublicKey, attestKeyId: AttestKeyID) async throws {
 		try requireMac()
 		try await expectOK(.addDevice(device, deviceKey: deviceKey, attestKeyId: attestKeyId), .addDevice)
+		know(device)
 	}
 
 	/// Removes a device's slot, its mailbox and push token; the relay closes its socket at once (3.6). A device already
@@ -372,7 +391,7 @@ public actor RelayClient {
 	}
 
 	/// Sends the channel's bytes to a device; the relay puts nothing round them but takes the id off. If the device is not
-	/// connected, the relay says so with an `offline` event.
+	/// connected, the relay answers `offline`, which the client reports only if it last reported the device online.
 	public func send(_ bytes: Data, to device: DeviceID) async throws {
 		try requireMac()
 		guard let deviceBytes = Base64URL.decode(String(device.text.dropFirst(4)), count: 16) else { throw RelayClientError.invalid(RemoteKitError("relay data", "not a device")) }
@@ -381,7 +400,8 @@ public actor RelayClient {
 
 	// MARK: A phone's requests
 
-	/// Sends the channel's bytes to the Mac. If the Mac is not connected, the relay says so with `macOnline(false)`.
+	/// Sends the channel's bytes to the Mac. If the Mac is not connected, the relay answers `macOnline(false)`, which the
+	/// client reports only if it last reported the Mac online.
 	public func send(_ bytes: Data) async throws {
 		try requireDevice()
 		try await sendBinary(bytes, body: bytes.count)
@@ -394,7 +414,8 @@ public actor RelayClient {
 	}
 
 	/// Removes this phone from the pairing at the relay (3.6), signed with the device key over this connection's
-	/// challenge. The relay closes the socket, and the client stops with `left`.
+	/// challenge. The relay closes the socket, and the client stops with `left`. Throws `lost` if no answer came within
+	/// `RelayOptions.answerWithin`. The phone's Unpair does not wait on it: its keys are deleted either way (3.6).
 	public func leave() async throws {
 		guard case let .device(pairing, device) = role else { throw RelayClientError.wrongEnd }
 		guard !finished else { throw RelayClientError.stopped }
@@ -412,8 +433,18 @@ public actor RelayClient {
 			return
 		}
 		guard sentOn == generation else { throw RelayClientError.disconnected }
-		let stop = await withCheckedContinuation { endWaiters.append($0) }
-		guard stop == .refused(.left) else { throw RelayClientError.disconnected }
+		nextWaiter += 1
+		let waiter = nextWaiter
+		let clock = options.clock
+		let within = options.answerWithin
+		let deadline = Task {
+			guard (try? await clock.sleep(milliseconds: within)) != nil else { return }
+			self.endWaiter(waiter)
+		}
+		defer { deadline.cancel() }
+		let stop = await withCheckedContinuation { endWaiters[waiter] = $0 }
+		if stop == .refused(.left) { return }
+		throw finished || sentOn != generation ? RelayClientError.disconnected : RelayClientError.lost
 	}
 
 	// MARK: Both ends' mailbox
@@ -609,7 +640,10 @@ public actor RelayClient {
 						ready = true
 						readyAt = options.clock.now()
 						resetReported()
-						for device in info.devices { presence[device.device] = device.online }
+						for device in info.devices {
+							know(device.device)
+							presence[device.device] = device.online
+						}
 						post(.macReady(info))
 					case let (.deviceReady(macOnline, mail), _?) where role.end == .device:
 						ready = true
@@ -676,10 +710,14 @@ public actor RelayClient {
 			post(.mail)
 		case let .online(device), let .offline(device):
 			let online = if case .online = message { true } else { false }
+			// Only of a device the client knows: an id the relay made up is not held.
+			guard known.contains(device) else { throw Unreadable() }
 			guard presence[device] != online else { return }
 			presence[device] = online
 			post(online ? .online(device) : .offline(device))
-		case let .phoneJoined(notice): post(.phoneJoined(notice))
+		case let .phoneJoined(notice):
+			know(notice.slot)
+			post(.phoneJoined(notice))
 		case let .left(device):
 			presence[device] = nil
 			post(.left(device))
@@ -713,6 +751,18 @@ public actor RelayClient {
 			overflowed = true
 			socket.close()
 		}
+	}
+
+	/// Takes notices of `device` from now on; the earliest known goes past `knownDevices`.
+	private func know(_ device: DeviceID) {
+		guard !known.contains(device) else { return }
+		known.append(device)
+		if known.count > Self.knownDevices { presence[known.removeFirst()] = nil }
+	}
+
+	/// A `leave` that went unanswered.
+	private func endWaiter(_ waiter: Int) {
+		endWaiters.removeValue(forKey: waiter)?.resume(returning: nil)
 	}
 
 	private func resetReported() {
@@ -800,8 +850,8 @@ public actor RelayClient {
 
 	private func resumeEndWaiters(_ reason: RelayStop?) {
 		let waiters = endWaiters
-		endWaiters = []
-		for waiter in waiters { waiter.resume(returning: reason) }
+		endWaiters = [:]
+		for waiter in waiters.values { waiter.resume(returning: reason) }
 	}
 
 	// MARK: Requests

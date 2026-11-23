@@ -187,6 +187,13 @@ enum ProtocolTest {
 		await origin.start()
 		Check.equal(try await originEvents.next("stopped") { if case let .stopped(why) = $0 { why } else { nil } }, .http(403), "a connection with an Origin is refused with 403")
 
+		// The test Worker answers 400 to a connection without the client's two fixed headers (User-Agent: pi2-relay-client,
+		// Accept-Language: *), so every connection above carried them; one with URLSession's own is refused.
+		let plain = try RelayClient(relay: url, role: .mac(pairing), build: mac, signer: RelaySigner(relayKey), connector: OriginConnector(origin: false), options: options())
+		let plainEvents = Inbox(plain.events)
+		await plain.start()
+		Check.equal(try await plainEvents.next("stopped") { if case let .stopped(why) = $0 { why } else { nil } }, .http(400), "a connection with URLSession's own headers, not the client's, is refused")
+
 		// A redirect is not followed: the client stops with the 302, where following it would have connected.
 		var redirect = URLComponents(url: url, resolvingAgainstBaseURL: false)!
 		redirect.path = "/redirect"
@@ -222,10 +229,15 @@ final class TrackingConnector: RelayConnector {
 }
 
 /// A connection as a web page's would be, with an `Origin`, which the relay must refuse.
+/// Or, with `origin` false, one with URLSession's own headers, which name the system and its locale.
 final class OriginConnector: RelayConnector {
+	let origin: Bool
+
+	init(origin: Bool = true) { self.origin = origin }
+
 	func connect(to url: URL, pairing: PairingID?) async throws -> any RelaySocket {
 		var request = URLRequest(url: url)
-		request.setValue("https://example.com", forHTTPHeaderField: "Origin")
+		if origin { request.setValue("https://example.com", forHTTPHeaderField: "Origin") }
 		if let pairing { request.setValue(pairing.text, forHTTPHeaderField: "Pi2-Pairing") }
 		let task = URLSession(configuration: .ephemeral).webSocketTask(with: request)
 		task.resume()
