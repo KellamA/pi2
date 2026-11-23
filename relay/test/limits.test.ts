@@ -29,7 +29,8 @@ import {
 } from "./helpers.ts";
 
 const NOON = Date.parse("2026-11-20T12:00:00Z");
-const HOUR = 60 * 60 * 1000;
+const MINUTE = 60 * 1000;
+const HOUR = 60 * MINUTE;
 
 beforeEach(() => {
 	vi.useFakeTimers({ toFake: ["Date"] });
@@ -296,6 +297,10 @@ describe("limits", () => {
 describe("what a pairing costs in writes", () => {
 	it("holds off a pending pairing's Mac opening and closing windows after a small allowance, and its writes with it", async () => {
 		const mac = await register();
+		// The allowance alone, without the minute's windows.
+		await runInDurableObject(pairingObject(mac.pairing), (instance: Pairing) => {
+			instance.windowsAMinute = Number.POSITIVE_INFINITY;
+		});
 		const writes = await countStorageWrites(mac.pairing);
 		let client = mac.client;
 		let taken = 0;
@@ -358,6 +363,66 @@ describe("what a pairing costs in writes", () => {
 		expect(await mac.client.json()).toEqual({ ok: { what: "closeJoin" } });
 		for (let index = 0; index < 50; index++) mac.client.sendBytes(prefixed(device, [index]));
 		for (let index = 0; index < 50; index++) expect([...(await joining.client.bytes())]).toEqual([index]);
+	});
+
+	it("takes ten join windows a minute, a pairing and its retries with room, and holds the Mac off at the eleventh, writing nothing for it", async () => {
+		const mac = await register();
+		await addPhone(mac);
+		// The window the phone was paired in a minute old.
+		const start = NOON + MINUTE;
+		for (let index = 0; index < 10; index++) {
+			vi.setSystemTime(start + index * 1000);
+			await openWindow(mac);
+		}
+		vi.setSystemTime(start + 10_000);
+		const writes = await countStorageWrites(mac.pairing);
+		mac.client.send({ openJoin: { tokenHash: base64url(random(32)), expires: Date.now() + 60_000 } });
+		await heldOff(mac.client, start + MINUTE);
+		expect(writes.count).toBe(0);
+		// The times are in the pairing's stored record, written with each window, so they last when the object leaves memory.
+		const stored = await runInDurableObject(pairingObject(mac.pairing), async (_: Pairing, state) => (await state.storage.get<{ opened: number[] }>("meta"))!.opened);
+		expect(stored).toEqual(Array.from({ length: 10 }, (_, index) => start + index * 1000));
+		// Its hello is still taken, and a window is still refused until the oldest of the ten is a minute old.
+		const again = await macHello(mac);
+		again.client.send({ openJoin: { tokenHash: base64url(random(32)), expires: Date.now() + 60_000 } });
+		await heldOff(again.client, start + MINUTE);
+		vi.setSystemTime(start + MINUTE);
+		const later = await macHello(mac);
+		await openWindow(mac, later.client);
+	});
+
+	it("lets a paired Mac that spends its whole allowance on opening and closing windows write a few dozen times, not hundreds a second", async () => {
+		const mac = await register();
+		await addPhone(mac);
+		const start = NOON + MINUTE;
+		vi.setSystemTime(start);
+		const writes = await countStorageWrites(mac.pairing);
+		let client = mac.client;
+		let closed = false;
+		let opened = 0;
+		for (let second = 0; second < 5; second++) {
+			vi.setSystemTime(start + second * 1000);
+			if (closed) client = (await macHello(mac)).client;
+			closed = false;
+			for (let index = 0; index < LIMITS.messagesPerSecond; index++) {
+				client.send(index % 2 === 0 ? { openJoin: { tokenHash: base64url(random(32)), expires: Date.now() + 60_000 } } : { closeJoin: {} });
+			}
+			// Every message answered, or the socket held off.
+			for (let answered = 0; answered < LIMITS.messagesPerSecond; ) {
+				const message = await client.next();
+				if (typeof message === "object" && "closed" in message) {
+					closed = true;
+					break;
+				}
+				if (typeof message !== "string" || !message.startsWith('{"ok"')) continue;
+				answered += 1;
+				if (message === '{"ok":{"what":"openJoin"}}') opened += 1;
+			}
+		}
+		expect(opened).toBe(10);
+		// Each window opened and closed is a few writes (the record when it opens and closes, the alarm when it moves
+		// earlier), and the reconnects and the day's counts a few more; without the minute's limit, 250 windows.
+		expect(writes.count).toBeLessThanOrEqual(40);
 	});
 
 	it("writes at most a handful of times for 50 reconnects of a phone in a minute", async () => {
