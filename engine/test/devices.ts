@@ -23,7 +23,8 @@ import { createModels } from "@earendil-works/pi-ai";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { allowsHiddenApproval, checkDeviceLists, deviceLogged, HIDDEN_FROM_THE_PHONE, deviceMay, devicePlacement, type DeviceSession, ONLY_FROM_THE_HELPER, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID, PERSON_REQUESTS } from "../src/answers.ts";
-import { checkRequestItem, type Device, DeviceLog, Devices, devicesState, flushDeviceLog, fromBase64url, hidesSomething, logDevice, macNameNow, PART_HIDDEN, shownName, TOO_DEEP, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
+import { checkRequestItem, type Device, deviceRequests, DeviceLog, Devices, devicesState, flushDeviceLog, fromBase64url, hidesSomething, logDevice, macNameNow, pairClaim, PART_HIDDEN, remoteHooks, shownName, TOO_DEEP, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
+import type { Client } from "../src/clients.ts";
 import { ANSWER_NOT_SENT, forDevice, SESSION_OVER } from "../src/remote.ts";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
@@ -450,6 +451,40 @@ class Phone {
 	assert.ok((await stored()).some((entry) => entry.summary === "at the stop"), "what waits is written at a clean stop (main.ts calls flushDeviceLog)");
 	await harness.close(context);
 	step(`the devices' log: a method it does not know is "unknown", every field cut short, refusals made one entry with a count, one device's flood of ${flood} pushes out neither another's entries nor its own pairing, and entries wait in memory but for urgent ones and a stop`);
+}
+
+// ---- A pairing whose device cannot be saved: the phone is told, not left waiting (3.3 step 8)
+
+{
+	process.env.PI2_APP_ATTEST_STAND_IN = "1";
+	process.env.PI2_APP_ATTEST_TEAM = "ABCDE12345";
+	const harness = await Harness.open(await openNodeSqliteStorage(join(mkdtempSync(join(work, "save-")), "session.sqlite")), { registry: createRegistry(), models: createModels() }, context);
+	const pairing = b64url(randomBytes(16));
+	await harness.commit(async (tx) => {
+		const doc = await tx.doc(Devices);
+		Object.assign(doc, { pairing, relay: "ws://127.0.0.1:9/v1", macKeys: { identity: spki(p256().publicKey), channel: b64url(randomBytes(32)), record: spki(p256().publicKey), relay: spki(p256().publicKey), secureEnclave: false } });
+		doc.remote = { ...doc.remote, preview: true, on: true };
+	}, context);
+	await wireDevices({ harness, context, log: () => {}, release: false, names: { conversation: () => undefined, project: () => undefined } });
+	const told: any[] = [];
+	Object.assign(remoteHooks, { toHelper: (event: unknown) => told.push(event), ready: async () => ({ addresses: [] }), addresses: () => [], changed: () => {} });
+	const client = { socket: { write: () => true, destroyed: false, destroy: () => {} }, subscriptions: new Map(), shown: new Set() } as unknown as Client;
+	const { payload } = (await deviceRequests["devices.pairStart"]!({}, client)) as { payload: string };
+	const secret = Buffer.from(new URL(payload).searchParams.get("s")!, "base64url");
+	const binding = randomBytes(32);
+	const challenge = randomBytes(32);
+	const { claim } = await pairClaim({ claim: new Phone("Unsaved iPhone").claim(pairing, binding, challenge), binding: b64url(binding), challenge: b64url(challenge), path: "relay" });
+	const digits = String(createHmac("sha256", secret).update(Buffer.concat([Buffer.from("pi2-digits"), Buffer.from([0]), binding])).digest().readUInt32BE(0) % 1_000_000).padStart(6, "0");
+	const commit = harness.commit.bind(harness);
+	(harness as unknown as { commit: () => Promise<never> }).commit = async () => {
+		throw new Error("The disk is full.");
+	};
+	await assert.rejects(deviceRequests["devices.pairConfirm"]!({ digits }, client), /The disk is full/);
+	(harness as unknown as { commit: typeof commit }).commit = commit;
+	assert.deepEqual(told.filter((event) => event.kind === "pairRefused" || event.kind === "paired"), [{ kind: "pairRefused", claim, why: "The Mac could not save the pairing. Start again." }], "the phone is refused, and told nothing else");
+	assert.equal(devicesState().devices.length, 0, "and nothing was paired");
+	await harness.close(context);
+	step("a pairing whose device cannot be saved is refused to the phone, not left without an answer");
 }
 
 // ---- A real engine, and this test as its pi² Remote

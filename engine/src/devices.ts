@@ -1097,8 +1097,13 @@ async function pairConfirm(params: Params): Promise<{ device: string }> {
 			if (replaced !== null) for (const old of doc.devices) if (old.id === replaced) forget(old, now);
 			doc.devices.push(device);
 		});
+	} catch (error) {
+		// Nothing was stored: the phone waiting on its pairing channel is told so, rather than left without an answer.
+		remoteHooks.toHelper({ kind: "pairRefused", claim: claim.id, why: "The Mac could not save the pairing. Start again." });
+		throw error;
 	} finally {
 		saving -= 1;
+		remoteHooks.changed();
 	}
 	if (replaced !== null) {
 		remoteHooks.toHelper({ kind: "revoke", device: replaced });
