@@ -20,6 +20,7 @@ enum DemoScript {
                         // search
         projects,       // Script/ProjectAnswers.swift (#685, #688): projects.set, .rename, .archive, .startFresh, .watch
         usage,          // Script/UsageAnswers.swift (#697): usage.setBudget, limits.refresh
+        work,           // Script/WorkAnswers.swift (#694): work.list, work.create, work.act
         conversationsScreens, // Script/ConversationsAnswers.swift (#698): conversation.rename, .delete, settings.setAutoArchive,
                         // background.output, .stop, projects.unarchive, .restoreConversation
     ]

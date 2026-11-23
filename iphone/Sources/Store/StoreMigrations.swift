@@ -2,12 +2,14 @@ import Foundation
 
 /// The store's versions, and how a store of an older one is brought up to this build's.
 ///
-/// Version 1 is the first: the manifest, the sealed cache and the sealed Outbox. Each later version adds one step to
-/// `steps`, from the version before it, and raises `current`. What the store keeps is a copy of what the Mac holds, and
+/// Version 1 is the first: the manifest, the sealed cache and the sealed Outbox. Version 2 keeps the sealed parts' dates
+/// as seconds since 2001, which read back exactly, where version 1 kept milliseconds since 1970 (#838); it has no step
+/// from version 1, whose dates would be misread, so a store of version 1 is wiped. Each version after it adds one step
+/// to `steps`, from the version before it, and raises `current`. What the store keeps is a copy of what the Mac holds, and
 /// what the person wrote while it was away, so a store this build cannot read is never guessed at: it is wiped, as
 /// one written by a newer build (after the app was put back to an older one) is, and the Mac sends its state again.
 enum StoreMigrations {
-    static let current = 1
+    static let current = 2
 
     /// What to do with the folder as it was found.
     enum Plan: Equatable {
