@@ -34,7 +34,7 @@ import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { USER_ENTRY_KIND, userContent, userEntryData, validateAttachments } from "./attachments.ts";
 import { backupStatus, createBackup, restoreBackup, tidyBackups } from "./backup.ts";
 import { appBundle, AppCheck, checkDeviceLists, checkRequestClasses, forTheHelper, ONLY_FROM_THE_HELPER, personOnly } from "./answers.ts";
-import { deviceRequests, devicesClientGone, wireDevices } from "./devices.ts";
+import { deviceRequests, devicesClientGone, hidesSomething, wireDevices } from "./devices.ts";
 import { helperRequests, stopRemote, wireRemote } from "./remote.ts";
 import { backgroundForSubChat, hasRunningCommands } from "./background.ts";
 import { bashForSubChat } from "./commands.ts";
@@ -1720,7 +1720,10 @@ if (stopWhenStarted) await stop();
 markReady();
 // pi² Remote, the engine's own child, and the device sessions it carries (remote.ts): the phone's door opens only now,
 // with the engine ready and the person's PATH set, as the socket's does just below.
-wireRemote({ log, bundle: appBundle(engineMain, build, process.env), handlers, greet, drop: dropClient, approvalSwitch: (id) => inbox.get(id)?.projectSwitch ?? null });
+wireRemote({ log, bundle: appBundle(engineMain, build, process.env), handlers, greet, drop: dropClient, approvalSwitch: (id) => inbox.get(id)?.projectSwitch ?? null, approvalHidden: (id) => {
+	const item = inbox.get(id);
+	return item !== undefined && item.kind === "approval" && hidesSomething(item);
+} });
 server.listen(socketPath, () => {
 	log(`listening on ${socketPath}`);
 	harness.resume(); // continue any run the last process left unfinished

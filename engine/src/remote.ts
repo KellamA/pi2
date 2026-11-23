@@ -36,7 +36,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import type { Socket } from "node:net";
 import { join } from "node:path";
-import { type DevicePath, deviceLogged, deviceMay, forTheHelper, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID } from "./answers.ts";
+import { allowsHiddenApproval, type DevicePath, deviceLogged, deviceMay, forTheHelper, HIDDEN_FROM_THE_PHONE, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID } from "./answers.ts";
 import { type Client, clients, send, type Wire } from "./clients.ts";
 import {
 	attachChallenge,
@@ -79,6 +79,8 @@ type RemoteParts = {
 	/** What main.ts does when a connection goes: its subscriptions stopped, features told. */
 	drop: (client: Client) => void;
 	approvalSwitch: (id: string) => SwitchName | null;
+	/** Whether a device's copy of the approval waiting under an id hides part of it (answers.ts, `approvalHidden`). */
+	approvalHidden: (id: string) => boolean;
 };
 
 let log: RemoteParts["log"];
@@ -87,6 +89,7 @@ let handlers: RemoteParts["handlers"];
 let greet: RemoteParts["greet"];
 let drop: RemoteParts["drop"];
 let approvalSwitch: RemoteParts["approvalSwitch"];
+let approvalHidden: RemoteParts["approvalHidden"];
 
 type Helper = { child: ChildProcess; wire: Socket; hello: { addresses: string[] } | null; stopping: boolean };
 let helper: Helper | null = null;
@@ -122,7 +125,7 @@ function bound(session: Session): void {
 }
 
 export function wireRemote(parts: RemoteParts): void {
-	({ log, bundle, handlers, greet, drop, approvalSwitch } = parts);
+	({ log, bundle, handlers, greet, drop, approvalSwitch, approvalHidden } = parts);
 	Object.assign(remoteHooks, {
 		changed: reconsider,
 		toHelper,
@@ -521,7 +524,9 @@ let droppedSaid = 0;
 /**
  * A line as a device may be sent it, or null for none (5.7). The line is read whole: an event on the list, or an answer
  * (`id` with `result` or `error`), and nothing else; endpoints by name only; then every string in it, the keys of its
- * objects too, masked of key shapes before it is written again. Anything that goes wrong drops the line: a line is
+ * objects too, masked of key shapes before it is written again, and what is nested too deep replaced by a marker
+ * (devices.ts, `maskValue`), so that one deep call does not keep a whole list from the phone. Anything that still goes
+ * wrong drops the line, but an answer, which is answered with an error, so that no request goes unanswered: a line is
  * never sent unmasked, and never throws into what wrote it.
  */
 export function forDevice(line: string): string | null {
@@ -540,9 +545,14 @@ export function forDevice(line: string): string | null {
 			droppedSaid = now;
 			log?.("remote: a line was not sent to a device, since it could not be made fit for one:", error instanceof Error ? error.message : error);
 		}
-		return null;
+		// Every answer starts with its id (`send` writes `{ id, … }`); a device's ids are its own numbers and strings.
+		const id = /^\{"id":(-?\d{1,16}|"[A-Za-z0-9_.:-]{0,64}"|null)[,}]/.exec(line)?.[1];
+		return id === undefined ? null : `{"id":${id},"error":${JSON.stringify(ANSWER_NOT_SENT)}}`;
 	}
 }
+
+/** What a device is answered when the answer itself could not be made fit to send it. */
+export const ANSWER_NOT_SENT = "The answer could not be sent to the phone. Look on the Mac.";
 
 /** Endpoints by name only: their addresses often carry a token typed outside the secret fields (5.7). */
 function endpointsByName(message: Record<string, unknown>): void {
@@ -581,14 +591,15 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
 		reply({ error: "Request parameters must be an object" });
 		return;
 	}
-	const answer = deviceMay(method, params as Params, { path: session.path, approvalSwitch });
+	const gate = { path: session.path, approvalSwitch, approvalHidden };
+	const answer = deviceMay(method, params as Params, gate);
 	const summary = summarize(method, params as Params);
 	const record = (outcome: "done" | "refused" | "failed", why?: string) =>
 		void logDevice({ device: device.id, path: session.path, method, summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }).catch((error) =>
 			log("devices: the log could not be written:", error instanceof Error ? error.message : error),
 		);
 	if (answer === "no" || !Object.hasOwn(handlers, method)) {
-		const why = answer === "no" ? ONLY_ON_THE_MAC : `Unknown method: ${method}`;
+		const why = answer !== "no" ? `Unknown method: ${method}` : allowsHiddenApproval(method, params as Params, gate) ? HIDDEN_FROM_THE_PHONE : ONLY_ON_THE_MAC;
 		reply({ error: why });
 		record("refused", why);
 		return;

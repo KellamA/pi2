@@ -279,7 +279,22 @@ export type DeviceSession = {
 	path: DevicePath;
 	/** The project switch an approval waiting under `id` asked for, or null for none (or no such approval). */
 	approvalSwitch: (id: string) => SwitchName | null;
+	/**
+	 * Whether the device's copy of the approval waiting under `id` hides part of the call (masked, or too deep), judged
+	 * from the engine's own record of it: then the phone did not see the whole call, and may not allow it.
+	 */
+	approvalHidden: (id: string) => boolean;
 };
+
+/** What a device is told when it would allow an approval it was not shown whole. */
+export const HIDDEN_FROM_THE_PHONE = "Answer this on the Mac: part of this call is hidden from the phone.";
+
+/** Whether `method` with `params` allows an approval part of which the device was not shown. Denying stays open. */
+export function allowsHiddenApproval(method: string, params: Params, session: DeviceSession): boolean {
+	const answer = params.answer as Params | null | undefined;
+	const decision = method === "inbox.decide" ? params.decision : method === "needs.answer" && typeof answer === "object" && answer?.kind === "approval" ? answer.decision : "deny";
+	return decision !== "deny" && typeof params.id === "string" && session.approvalHidden(params.id);
+}
 
 type Params = Record<string, unknown>;
 
@@ -558,7 +573,7 @@ export function forTheHelper(method: string): boolean {
  * table does not hold is "no". From the mailbox, only what its row lets wait there (5.3).
  */
 export function deviceMay(method: string, params: Params, session: DeviceSession): DeviceAnswer {
-	if (FOR_THE_HELPER.has(method)) return "no";
+	if (FOR_THE_HELPER.has(method) || allowsHiddenApproval(method, params, session)) return "no";
 	if (Object.hasOwn(WITH_FACE_ID, method)) return session.path === "mailbox" ? "no" : "face";
 	if (!Object.hasOwn(FROM_A_DEVICE, method)) return "no";
 	const row = FROM_A_DEVICE[method]!;
