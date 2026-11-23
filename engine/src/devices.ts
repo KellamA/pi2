@@ -17,10 +17,9 @@ import { createHash, createHmac, createPublicKey, type KeyObject, randomBytes, t
 import { hostname } from "node:os";
 import type { Context } from "@earendil-works/chord/context";
 import { defineDoc, type Harness } from "@earendil-works/pi-durable";
-import { type DevicePath, deviceMay, devicePlacement, ONLY_ON_THE_MAC } from "./answers.ts";
+import { type DevicePath, deviceMay, type DeviceSession, devicePlacement, ONLY_ON_THE_MAC } from "./answers.ts";
 import { AppAttestError, type AppAttestEnvironment, type AppAttestResult, verifyAttestation } from "./appattest.ts";
 import type { Client } from "./clients.ts";
-import type { SwitchName } from "./projects.ts";
 import { testSwitch } from "./testswitches.ts";
 
 // ---- The records (3.2, 4.3, 4.4)
@@ -433,22 +432,34 @@ const upper: Run = (c) => c >= 65 && c <= 90;
 const digit: Run = (c) => c >= 48 && c <= 57;
 const ALNUM: Run = (c) => upper(c) || digit(c) || (c >= 97 && c <= 122);
 const TOKEN: Run = (c) => ALNUM(c) || c === 95 || c === 45;
-const KEY_SHAPES: { start: RegExp; run: Run; least: number }[] = [
+/** At the start of a word, or after a colour code: for prefixes some word could end with. */
+const WORD_START = String.raw`(?:(?<![A-Za-z0-9_-])|(?<=\u001b\[[0-9;]{0,16}m))`;
+/** `keep`: the prefix is shown, and only the run after it hidden (a webhook's address, whose secret is its path). */
+const KEY_SHAPES: { start: RegExp; run: Run; least: number; keep?: true }[] = [
 	// Prefixes no word has: wherever they stand, after a letter, a colour code or anything else.
 	{ start: /sk-ant-/g, run: TOKEN, least: 16 },
+	{ start: /gsk_/g, run: ALNUM, least: 20 },
+	{ start: /xai-/g, run: ALNUM, least: 20 },
+	{ start: /whsec_/g, run: (c) => ALNUM(c) || c === 43 || c === 47 || c === 61, least: 20 },
+	{ start: /(?:sk|rk)_test_/g, run: ALNUM, least: 20 },
+	{ start: /ya29\./g, run: TOKEN, least: 20 },
+	{ start: /https:\/\/hooks\.slack\.com\/services\//g, run: (c) => TOKEN(c) || c === 47, least: 10, keep: true },
 	{ start: /sk-(?:proj|svcacct|or-v1)-/g, run: TOKEN, least: 16 },
 	{ start: /gh[pousr]_/g, run: ALNUM, least: 30 },
 	{ start: /github_pat_/g, run: (c) => ALNUM(c) || c === 95, least: 30 },
 	{ start: /glpat-/g, run: TOKEN, least: 20 },
 	{ start: /xox[abposr]-/g, run: (c) => ALNUM(c) || c === 45, least: 10 },
-	{ start: /AKIA/g, run: (c) => upper(c) || digit(c), least: 16 },
+	// An AWS access key id: AKIA (long-lived) or ASIA (temporary) and 16 upper-case letters and digits, starting a word.
+	{ start: new RegExp(`${WORD_START}(?:AKIA|ASIA)`, "g"), run: (c) => upper(c) || digit(c), least: 16 },
 	{ start: /AIza/g, run: TOKEN, least: 35 },
 	{ start: /hf_/g, run: ALNUM, least: 30 },
 	{ start: /(?:sk|rk|pk)_live_/g, run: ALNUM, least: 20 },
 	{ start: /npm_/g, run: ALNUM, least: 36 },
 	// `sk-` alone ends words ("desk-"), so it must start one, or follow a colour code.
-	{ start: /(?:(?<![A-Za-z0-9_-])|(?<=\u001b\[[0-9;]{0,16}m))sk-/g, run: TOKEN, least: 20 },
+	{ start: new RegExp(`${WORD_START}sk-`, "g"), run: TOKEN, least: 20 },
 ];
+// Not caught: JSON web tokens (`eyJ…`), of which most a transcript shows are harmless (an id token's claims, a test's
+// fixture), and whose prefix is only base64 of `{"`.
 const PEM_BEGIN = /-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----/g;
 const PEM_END = /-----END [A-Z ]{0,40}PRIVATE KEY-----/y;
 export const KEY_HIDDEN = "[key hidden]";
@@ -456,25 +467,36 @@ export const KEY_HIDDEN = "[key hidden]";
 /** `text` with every key-shaped string in it replaced by KEY_HIDDEN. */
 export function maskKeys(text: string): string {
 	const spans: [number, number][] = [];
-	for (const { start, run, least } of KEY_SHAPES) {
+	for (const { start, run, least, keep } of KEY_SHAPES) {
 		start.lastIndex = 0;
 		for (let found = start.exec(text); found !== null; found = start.exec(text)) {
-			let end = found.index + found[0].length;
+			const after = found.index + found[0].length;
+			let end = after;
 			while (end < text.length && run(text.charCodeAt(end))) end++;
-			if (end - (found.index + found[0].length) >= least) spans.push([found.index, end]);
+			if (end - after >= least) spans.push([keep === true ? after : found.index, end]);
 			start.lastIndex = Math.max(end, found.index + 1);
 		}
 	}
+	// A private key: its header, then only a body that is a key's, lines of base64 of 16 characters or more with white
+	// space between, and the end line with it when it follows directly. The first character that cannot be a key's ends
+	// it, so a header standing in a command hides nothing of the command around it.
+	const base64: Run = (c) => ALNUM(c) || c === 43 || c === 47 || c === 61;
+	const space: Run = (c) => c === 32 || c === 9 || c === 10 || c === 13;
 	PEM_BEGIN.lastIndex = 0;
 	for (let found = PEM_BEGIN.exec(text); found !== null; found = PEM_BEGIN.exec(text)) {
-		// To its end line, or, with none, to the end of the text: a key cut short is hidden too.
-		let end = text.length;
-		for (let at = text.indexOf("-----END ", found.index); at !== -1; at = text.indexOf("-----END ", at + 1)) {
-			PEM_END.lastIndex = at;
+		let end = found.index + found[0].length;
+		for (;;) {
+			let from = end;
+			while (from < text.length && space(text.charCodeAt(from))) from++;
+			PEM_END.lastIndex = from;
 			if (PEM_END.test(text)) {
 				end = PEM_END.lastIndex;
 				break;
 			}
+			let to = from;
+			while (to < text.length && base64(text.charCodeAt(to))) to++;
+			if (to - from < 16) break;
+			end = to;
 		}
 		spans.push([found.index, end]);
 		PEM_BEGIN.lastIndex = end;
@@ -491,19 +513,59 @@ export function maskKeys(text: string): string {
 	return out + text.slice(at);
 }
 
+/** What stands in a device's copy for a value nested deeper than it is walked. */
+export const TOO_DEEP = "[too deep to show]";
+const MAX_DEPTH = 256;
 /**
- * `value`, a decoded JSON value, with every string in it masked, the keys of its objects included. Masking the strings
- * rather than the JSON text is what makes it hold: in the text a key after a line break follows `\n`, and one after a
- * colour code follows `\u001b[32m`.
+ * Set beside an approval a device is sent when masking hid part of it, or part was too deep: the phone does not show
+ * the whole call, and the engine takes no allowing answer to it from a device (`approvalHidden`, answers.ts).
  */
-export function maskValue(value: unknown): unknown {
-	if (typeof value === "string") return maskKeys(value);
-	if (Array.isArray(value)) return value.map(maskValue);
+export const PART_HIDDEN = "partHidden";
+
+/**
+ * `value`, a decoded JSON value, with every string in it masked, the keys of its objects included, and what is nested
+ * deeper than 256 levels replaced by TOO_DEEP. Masking the strings rather than the JSON text is what makes it hold: in
+ * the text a key after a line break follows `\n`, and one after a colour code follows `\u001b[32m`. `masking.hidden` is
+ * set when anything was hidden; an approval (an object of kind "approval" with an id) also gets PART_HIDDEN.
+ */
+export function maskValue(value: unknown, masking: { hidden: boolean } = { hidden: false }, depth = 0): unknown {
+	if (typeof value === "string") {
+		const masked = maskKeys(value);
+		if (masked !== value) masking.hidden = true;
+		return masked;
+	}
 	if (typeof value !== "object" || value === null) return value;
+	if (depth >= MAX_DEPTH) {
+		masking.hidden = true;
+		return TOO_DEEP;
+	}
+	if (Array.isArray(value)) return value.map((item) => maskValue(item, masking, depth + 1));
+	const record = value as Record<string, unknown>;
+	const approval = record.kind === "approval" && typeof record.id === "string";
+	const own = approval ? { hidden: false } : masking;
 	// No prototype: a key `__proto__` stays a key.
 	const out: Record<string, unknown> = Object.create(null);
-	for (const [key, item] of Object.entries(value)) out[maskKeys(key)] = maskValue(item);
+	for (const [key, item] of Object.entries(record)) {
+		const name = maskKeys(key);
+		if (name !== key) own.hidden = true;
+		out[name] = maskValue(item, own, depth + 1);
+	}
+	if (approval && own.hidden) {
+		out[PART_HIDDEN] = true;
+		masking.hidden = true;
+	}
 	return out;
+}
+
+/** Whether a device's copy of `value` would hide anything of it: then a device may not allow it (answers.ts). */
+export function hidesSomething(value: unknown): boolean {
+	const masking = { hidden: false };
+	try {
+		maskValue(value, masking);
+	} catch {
+		return true;
+	}
+	return masking.hidden;
 }
 
 // ---- The devices' log (4.4)
@@ -1180,7 +1242,7 @@ export const ITEM_TOO_OLD_FACE = "Not sent: more than an hour passed before your
  * mailbox, `at` at most a day old (an hour for one that widens) and not ahead of the Mac's clock by more than five
  * minutes, and its nonce never taken before, stored before this answers, after a restart too.
  */
-export async function checkRequestItem(device: string, item: unknown, approvalSwitch: (id: string) => SwitchName | null, now = Date.now()): Promise<{ method: string; params: Params; widens: boolean }> {
+export async function checkRequestItem(device: string, item: unknown, approvals: Omit<DeviceSession, "path">, now = Date.now()): Promise<{ method: string; params: Params; widens: boolean }> {
 	if (!remoteOn()) throw new Error("Reach from an iPhone is off on this Mac.");
 	const record = pairedDevice(device);
 	if (record === undefined) throw new Error("No such device is paired with this Mac.");
@@ -1214,7 +1276,7 @@ export async function checkRequestItem(device: string, item: unknown, approvalSw
 	if (signed.method !== request.method || JSON.stringify(signed.params) !== JSON.stringify(request.params)) return refuse("The item's request is not the one signed.");
 	const method = request.method;
 	const params = request.params as Params;
-	const answer = deviceMay(method, params, { path: "mailbox", approvalSwitch });
+	const answer = deviceMay(method, params, { path: "mailbox", ...approvals });
 	if (answer === "no") return refuse(ONLY_ON_THE_MAC);
 	const nonce = signed.nonce;
 	if (fromBase64url(nonce, 16) === null) return refuse("The item's nonce is not one.");
