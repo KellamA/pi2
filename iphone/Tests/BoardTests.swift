@@ -163,6 +163,47 @@ struct BoardTests {
         #expect(!sent.contains { $0.method.hasPrefix("variables.") })
     }
 
+    @Test func theDemoAnswersTheBoardAsTheEngineDoes() async throws {
+        let transport = try #require(DemoTransport.recorded())
+        transport.world.pace = 0.02
+        let session = AppSession()
+        session.start(transport, as: .demo)
+        let engine = session.engine
+        #expect(try await eventually { !engine.projects.isEmpty && !engine.projectRules.isEmpty && engine.extras["memory"] != nil })
+        let project = try #require(engine.projects.first { $0.name == "Demo project" })
+        let before = BoardData(engine).rules(project.id)
+
+        // A rule added, moved to the top, rebound, then removed: each comes back in the `projectRules` event.
+        #expect(await BoardRequests.addRule(engine, project: project.id, text: "Say what you checked.", binds: .everyone) == nil)
+        #expect(try await eventually { BoardData(engine).rules(project.id).count == before.count + 1 })
+        let added = try #require(BoardData(engine).rules(project.id).last)
+        #expect(added.text == "Say what you checked." && added.addedBy == .person)
+        #expect(await BoardRequests.moveRule(engine, project: project.id, rule: added.id, to: 0) == nil)
+        #expect(await BoardRequests.bindRule(engine, project: project.id, rule: added.id, binds: .orchestrator) == nil)
+        #expect(try await eventually { BoardData(engine).rules(project.id).first.map { $0.id == added.id && $0.binds == .orchestrator } == true })
+        #expect(await BoardRequests.moveRule(engine, project: project.id, rule: added.id, to: 99)?.hasPrefix("to must be a whole number") == true)
+        #expect(await BoardRequests.removeRule(engine, project: project.id, rule: added.id) == nil)
+        #expect(try await eventually { BoardData(engine).rules(project.id) == before })
+
+        // A note added, shared and deleted.
+        let notes = BoardData(engine).notes(project.id)
+        #expect(await BoardRequests.addNote(engine, project: project.id, text: "Friday at ten.") == nil)
+        #expect(try await eventually { BoardData(engine).notes(project.id).count == notes.count + 1 })
+        if let shared = notes.first(where: { $0.audience != nil }) {
+            #expect(await BoardRequests.shareNote(engine, project: project.id, note: shared.id) == nil)
+            #expect(try await eventually { BoardData(engine).notes(project.id).first { $0.id == shared.id }?.audience == nil })
+        }
+        #expect(await BoardRequests.addNote(engine, project: project.id, text: "  ") == "Write the note first")
+
+        // The memory switch, and Allow everything: off is answered, on is the Mac's alone.
+        #expect(await BoardRequests.setMemory(engine, agent: project.orchestratorId, on: false) == nil)
+        #expect(try await eventually { !BoardData(engine).memoryEnabled(project.orchestratorId) })
+        #expect(await BoardRequests.allowEverythingOff(engine, agent: project.orchestratorId) == nil)
+        let on = try? await engine.call("agents.allowEverything", ["id": project.orchestratorId, "on": true])
+        #expect(on == nil)
+        #expect(transport.world.unanswered.isEmpty)
+    }
+
     @Test func aRequestWithNoConnectionSaysSo() async {
         let engine = EngineSession<MessageField>()
         #expect(await BoardRequests.deleteNote(engine, project: "p", note: "n1") == "The engine is not running yet.")

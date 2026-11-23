@@ -19,6 +19,8 @@ enum DemoScript {
         library,        // Script/LibraryAnswers.swift (#685, #687): conversation.create (a chat), .pin, .archive, .unarchive,
                         // search
         projects,       // Script/ProjectAnswers.swift (#685, #688): projects.set, .rename, .archive, .startFresh, .watch
+        board,          // Script/BoardAnswers.swift (#696): projects.rules.*, memory.add/.edit/.delete/.setEnabled,
+                        // agents.allowEverything (off), branches.refresh
     ]
 
     /// The answers by method. Two features answering the same method is a mistake, which the tests catch.
