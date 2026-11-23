@@ -95,7 +95,7 @@ export function recordWork(tx: Tx, operation: WorkOperation): Promise<number | u
 }
 
 /** A pull request of an attached repository (docs/projects.md, 3.11): github.ts reads and acts on them. */
-export type PullAction = "pull_request" | "review" | "merge" | "send_back";
+export type PullAction = "pull_request" | "update_pull_request" | "review" | "merge" | "send_back";
 
 /**
  * What an assignment on GitHub needs of this file (github.ts): the admission check of #464, in a commit of its own before
@@ -165,7 +165,7 @@ const table: Record<WorkAction, Row> = {
 	classify: { from: states, to: "same", holder: "same", agent: "orchestrator", person: true },
 };
 
-const pullActions: string[] = ["pull_request", "review", "merge", "send_back"] satisfies PullAction[];
+const pullActions: string[] = ["pull_request", "update_pull_request", "review", "merge", "send_back"] satisfies PullAction[];
 const retained = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 const conversationId = (id: number): ConversationId => id as unknown as ConversationId;
 const numberId = (id: unknown): number => {
@@ -970,13 +970,13 @@ export const work: Feature = (host, engine) => {
 
 	const tool = defineTool({
 		name: "work",
-		description: "Keep this project's work list. Use list or show to read it (list answers a line an item, and on GitHub a line an open pull request, the merged and closed ones only when states asks for them; show one item's text and notes); file, take, release, note, wait, block, resume or finish to keep it up to date. Only the orchestrator can assign, close, reopen, edit or classify work. When the work list is a GitHub repository's issues: pull_request opens a pull request from the branch this conversation's folder is on (with id, it fixes that issue), and review posts what you found on pull request id; only the orchestrator can merge a pull request or send_back one to the conversation that opened it. A long text, such as a pull request's body, can be written to a file and given as text_file; a path given as text is refused.",
+		description: "Keep this project's work list. Use list or show to read it (list answers a line an item, and on GitHub a line an open pull request, the merged and closed ones only when states asks for them; show one item's text and notes); file, take, release, note, wait, block, resume or finish to keep it up to date. Only the orchestrator can assign, close, reopen, edit or classify work. When the work list is a GitHub repository's issues: pull_request opens a pull request from the branch this conversation's folder is on (with id, it fixes that issue); update_pull_request replaces the text, and the title if given, of open pull request id that this conversation opened with pull_request, keeping the line naming its agent, its Fixes lines and pi²'s marker (use it, never gh pr edit, on a pull request the tool opened; the orchestrator may update any the tool opened); review posts what you found on pull request id; only the orchestrator can merge a pull request or send_back one to the conversation that opened it. A long text, such as a pull request's body, can be written to a file and given as text_file; a path given as text is refused.",
 		parameters: obj({
-			action: str({ description: "list, show, file, take, assign, release, wait, block, resume, finish, close, reopen, note, edit, classify, pull_request, review, merge, or send_back" }),
-			id: opt(int({ description: "Work item number (on GitHub, the issue's); for review, merge and send_back, the pull request's" })),
-			text: opt(str({ description: "Note, reason for wait or block, result of finish, the work's text for file or edit, the finding for review, the reason for send_back, or a pull request's body" })),
+			action: str({ description: "list, show, file, take, assign, release, wait, block, resume, finish, close, reopen, note, edit, classify, pull_request, update_pull_request, review, merge, or send_back" }),
+			id: opt(int({ description: "Work item number (on GitHub, the issue's); for update_pull_request, review, merge and send_back, the pull request's" })),
+			text: opt(str({ description: "Note, reason for wait or block, result of finish, the work's text for file or edit, the finding for review, the reason for send_back, or a pull request's body for pull_request or update_pull_request" })),
 			text_file: opt(str({ description: "In place of text: a file whose contents are the text, in the conversation's folder or beginning with `$PI2_SCRATCH` for its scratch folder, as the file tools take a path" })),
-			title: opt(str({ description: "Work title for file or edit; sub-chat title for assign; pull request title for pull_request" })),
+			title: opt(str({ description: "Work title for file or edit; sub-chat title for assign; pull request title for pull_request, or a new one for update_pull_request" })),
 			states: opt(arr(str(), { description: "States to list; defaults to open, in_progress, waiting and blocked. On GitHub, open also lists the open pull requests, and merged and closed list those pull requests, newest first, 30 at a time" })),
 			cursor: opt(str({ description: "list: where the merged and closed pull requests go on, from the previous list's answer; keep its states" })),
 			class: opt(str({ description: "local or cloud, for file or classify" })),
