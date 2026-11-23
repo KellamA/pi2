@@ -67,9 +67,9 @@ final class ManualClock: RelayClock, Sendable {
 	}
 
 	/// Waits, in real time, until something sleeps until `deadline`: so that moving the clock wakes it.
-	func waitForSleeper(until deadline: Int64, seconds: Double = 10) async throws {
+	func waitForSleeper(until deadline: Int64, count: Int = 1, seconds: Double = 10) async throws {
 		let limit = Date().addingTimeInterval(seconds)
-		while !state.withLock({ $0.sleepers.contains { $0.deadline == deadline } }) {
+		while state.withLock({ $0.sleepers.filter { $0.deadline == deadline }.count }) < count {
 			guard Date() < limit else { throw Timeout(what: "a sleeper until \(deadline)") }
 			try await Task.sleep(for: .milliseconds(2))
 		}
