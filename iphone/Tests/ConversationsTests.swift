@@ -338,6 +338,43 @@ struct ConversationsTests {
         #expect(await ConversationsRequests.restorePlan(engine, conversation: 25) == .failure(ConversationsProblem("This conversation is not of a deleted project.")))
     }
 
+    @Test func theDemoAnswersTheScreensRequestsAsTheEngine() async throws {
+        let transport = try #require(DemoTransport.recorded())
+        transport.world.pace = 0.02
+        let session = AppSession()
+        session.start(transport, as: .demo)
+        let engine = session.engine
+        #expect(try await eventually { !engine.projects.isEmpty && engine.hasLoadedLibrary })
+        let project = try #require(engine.projects.first { $0.name == "Demo project" })
+        let conversation = try #require(engine.rootConversations.first { $0.projectId == project.id && $0.id != project.conversation }?.id)
+
+        #expect(await ConversationsRequests.rename(engine, conversation: conversation, title: "  Renamed in the demo  ") == nil)
+        #expect(try await eventually { engine.conversations.first { $0.id == conversation }?.title == "Renamed in the demo" })
+        #expect(await ConversationsRequests.archive(engine, conversation: conversation) == nil)
+        #expect(try await eventually { engine.archived.contains { $0.id == conversation } })
+        #expect(await ConversationsRequests.delete(engine, conversation: conversation) == nil)
+        #expect(try await eventually { !engine.archived.contains { $0.id == conversation } && !engine.conversations.contains { $0.id == conversation } })
+        #expect(await ConversationsRequests.rename(engine, conversation: conversation, title: "Gone") == "Unknown conversation: \(conversation)")
+
+        #expect(await ConversationsRequests.setAutoArchive(engine, days: 30) == nil)
+        #expect(try await eventually { engine.autoArchiveDays == 30 })
+        #expect(await ConversationsRequests.setAutoArchive(engine, days: 0) == "Choose a whole number of days from 1 to 3650, or never")
+        #expect(await ConversationsRequests.setAutoArchive(engine, days: nil) == nil)
+        #expect(try await eventually { engine.autoArchiveDays == nil })
+
+        #expect(await ConversationsRequests.unarchiveProject(engine, project: project.id) == nil)
+        #expect(await ConversationsRequests.unarchiveProject(engine, project: "p-none") == "Unknown project: p-none")
+        let orchestrator = try #require(project.conversation)
+        #expect(await ConversationsRequests.restorePlan(engine, conversation: orchestrator) == .failure(ConversationsProblem("This conversation is not of a deleted project.")))
+        #expect(await ConversationsRequests.stopCommand(engine, command: "bg-1") == "That command is no longer running")
+        // What the engine does not have yet, the demo refuses as it refuses anything it does not do.
+        guard case .failure(let failure) = await ConversationsRequests.folders(engine) else {
+            Issue.record("The demo answered projects.folders")
+            return
+        }
+        #expect(failure.message.hasPrefix("The demo does not do projects.folders"))
+    }
+
     @Test func theRecordingRefusesWhatItDoesNotAnswerAndTheScreenSaysSo() async throws {
         let session = try await replaySession()
         guard case .failure(let failure) = await ConversationsRequests.folders(session.engine) else {
