@@ -165,6 +165,8 @@ let state: DevicesState = Devices.definition.initial();
  * the engine starts and works as before. Nothing is written over what could not be read.
  */
 let unreadable: string | null = null;
+/** Devices being saved by `pairConfirm`: pi² Remote is wanted meanwhile, to tell the phone. */
+let saving = 0;
 export const remoteHooks: RemoteHooks = {
 	changed: () => {},
 	toHelper: () => {},
@@ -273,7 +275,7 @@ export function activeDevices(): Device[] {
 
 /** Whether pi² Remote should run (5.5): the preview and remote access on, and a device paired or a pairing open. */
 export function helperWanted(): boolean {
-	return unreadable === null && state.remote.preview && state.remote.on && (activeDevices().length > 0 || window !== null);
+	return unreadable === null && state.remote.preview && state.remote.on && (activeDevices().length > 0 || window !== null || saving > 0);
 }
 
 /** Whether devices may pair and attach at all: the preview (decision 19) and remote access on. */
@@ -626,28 +628,49 @@ const MAX_PER_DEVICE = MAX_LOG / MAX_DEVICES;
 /** Refusals of the same request for the same reason, from the same device and path, within this, are one entry. */
 const COALESCE_MS = 60_000;
 
-/** How often the refusals counted in memory are added to their entry. */
+/** How long new entries wait in memory before they are written together. */
 const FLUSH_MS = 2_000;
-/** The refusal entries written this last minute, by device, path, method and why: refusals like them since, not written yet. */
-const refusalsWritten = new Map<string, { at: number; more: number; lastAt: number; flush?: ReturnType<typeof setTimeout> }>();
+/** Entries made and not yet written: the next write takes them all, at most FLUSH_MS after the first. */
+const pendingLog: DeviceLogEntry[] = [];
+/**
+ * The refusal entries made this last minute, by device, path, method and why, with how many like them came since and
+ * are not yet written. While its entry waits in `pendingLog`, a repeat adds to the entry itself.
+ */
+const refusalsMade = new Map<string, { entry: DeviceLogEntry; more: number; lastAt: number }>();
+let flushTimer: ReturnType<typeof setTimeout> | undefined;
+let flushing: Promise<void> = Promise.resolve();
 
-/** Adds the refusals counted in memory to their entry. */
-async function flushRefusal(key: string): Promise<void> {
-	const written = refusalsWritten.get(key);
-	if (written === undefined || written.more === 0) return;
-	const { at, more, lastAt } = written;
-	written.more = 0;
-	written.flush = undefined;
-	const [device, path, method, why] = JSON.parse(key) as [string, string, string, string | null];
+/** Writes what waits in memory, in one commit, after any write already under way. */
+export function flushDeviceLog(): Promise<void> {
+	clearTimeout(flushTimer);
+	flushTimer = undefined;
+	flushing = flushing.then(writePending, writePending);
+	return flushing;
+}
+
+async function writePending(): Promise<void> {
+	const entries = pendingLog.splice(0);
+	const counts = [...refusalsMade.values()].filter((one) => one.more > 0 && !entries.includes(one.entry)).map((one) => ({ ...one }));
+	for (const one of refusalsMade.values()) if (!entries.includes(one.entry)) one.more = 0;
+	if (entries.length === 0 && counts.length === 0) return;
+	const now = Date.now();
 	await harness.commit(async (tx) => {
-		const entries = (await tx.doc(DeviceLog)).entries;
-		for (let i = entries.length - 1; i >= 0; i--) {
-			const one = entries[i]!;
-			if (one.at !== at || one.device !== device || one.path !== path || one.method !== method || (one.why ?? null) !== why || one.outcome !== "refused") continue;
-			one.count = (one.count ?? 1) + more;
-			one.lastAt = lastAt;
-			return;
+		const doc = await tx.doc(DeviceLog);
+		for (const { entry, more, lastAt } of counts) {
+			const stored = doc.entries.findLast((one) => one.at === entry.at && one.device === entry.device && one.path === entry.path && one.method === entry.method && one.why === entry.why && one.outcome === "refused");
+			if (stored === undefined) continue;
+			stored.count = (stored.count ?? 1) + more;
+			stored.lastAt = lastAt;
 		}
+		let kept = [...doc.entries, ...entries].filter((one) => now - (one.lastAt ?? one.at) < KEPT);
+		for (const device of new Set(entries.map((one) => one.device))) {
+			const mine = kept.filter((one) => one.device === device && !LOG_KEPT.has(one.method));
+			if (mine.length <= MAX_PER_DEVICE) continue;
+			const dropped = new Set(mine.slice(0, mine.length - MAX_PER_DEVICE));
+			kept = kept.filter((one) => !dropped.has(one));
+		}
+		// Past every device's share (a device removed after 90 days leaves its entries to theirs), the oldest go first.
+		doc.entries = kept.length > MAX_LOG ? kept.slice(kept.length - MAX_LOG) : kept;
 	}, context);
 }
 
@@ -657,48 +680,57 @@ function loggedMethod(method: string): string {
 }
 
 /**
- * Adds an entry to the devices' log: its method one the engine knows, its summary and why masked and cut short. A
- * refusal like one of the device's from the last minute adds to that entry's `count` instead. Each device keeps its own
- * newest 2,000 entries, so that no device pushes out another's, and its pairing and suspension stay their 90 days.
+ * Adds an entry to the devices' log: its method one the engine knows, its summary and why masked and cut short. Each
+ * device keeps its own newest 2,000 entries, so that no device pushes out another's, and its pairing and suspension stay
+ * their 90 days.
+ *
+ * Off the request's path: a commit rewrites the whole log (some 6 MB full) and holds the engine's one thread while it
+ * does, so entries wait in memory and are written together at most two seconds after the first. `urgent` writes them
+ * at once, and resolves once they are stored: for what must outlive a crash (a pairing, a suspension and the refusal
+ * that made it, a request that widens). A clean stop writes what waits (`flushDeviceLog`). A refusal like one of the
+ * device's from the last minute adds to that entry's `count` instead of making one.
  */
-export async function logDevice(entry: Omit<DeviceLogEntry, "at"> & { at?: number }): Promise<void> {
+export async function logDevice(entry: Omit<DeviceLogEntry, "at"> & { at?: number }, urgent = false): Promise<void> {
 	if (unreadable !== null) return;
 	const at = entry.at ?? Date.now();
 	const method = loggedMethod(entry.method);
 	const why = entry.why === undefined ? undefined : clip(maskKeys(entry.why), MAX_WHY);
 	const made: DeviceLogEntry = { ...entry, at, method, summary: clip(maskKeys(entry.summary), MAX_SUMMARY), ...(why === undefined ? {} : { why }) };
-	// The same refusal from the same device within a minute of its entry, however others came between, is counted in
-	// memory and added to that entry once every few seconds: a device that sends refused requests as fast as it can
-	// writes one entry for each kind a minute, and costs the engine no write for each.
 	const key = JSON.stringify([made.device, made.path, made.method, made.why ?? null]);
-	if (made.outcome === "refused") {
-		const written = refusalsWritten.get(key);
-		if (written !== undefined && at - written.at < COALESCE_MS) {
-			written.more += 1;
-			written.lastAt = at;
-			written.flush ??= setTimeout(() => void flushRefusal(key).catch((error) => log("devices: the log could not be written:", error instanceof Error ? error.message : error)), FLUSH_MS);
-			return;
+	const known = made.outcome === "refused" ? refusalsMade.get(key) : undefined;
+	if (known !== undefined && at - known.entry.at < COALESCE_MS) {
+		if (pendingLog.includes(known.entry)) {
+			known.entry.count = (known.entry.count ?? 1) + 1;
+			known.entry.lastAt = at;
+		} else {
+			known.more += 1;
+			known.lastAt = at;
 		}
-		for (const [old, one] of refusalsWritten) if (at - one.at >= COALESCE_MS && one.flush === undefined) refusalsWritten.delete(old);
-		refusalsWritten.set(key, { at, more: 0, lastAt: at });
+	} else {
+		if (made.outcome === "refused") {
+			for (const [old, one] of refusalsMade) if (at - one.entry.at >= COALESCE_MS && one.more === 0) refusalsMade.delete(old);
+			refusalsMade.set(key, { entry: made, more: 0, lastAt: at });
+		}
+		pendingLog.push(made);
 	}
-	await harness.commit(async (tx) => {
-		const doc = await tx.doc(DeviceLog);
-		const entries = doc.entries;
-		entries.push(made);
-		let kept = entries.filter((one) => at - (one.lastAt ?? one.at) < KEPT);
-		const mine = kept.filter((one) => one.device === made.device && !LOG_KEPT.has(one.method));
-		if (mine.length > MAX_PER_DEVICE) {
-			const dropped = new Set(mine.slice(0, mine.length - MAX_PER_DEVICE));
-			kept = kept.filter((one) => !dropped.has(one));
-		}
-		// Past every device's share (a device removed after 90 days leaves its entries to theirs), the oldest go first.
-		doc.entries = kept.length > MAX_LOG ? kept.slice(kept.length - MAX_LOG) : kept;
-	}, context);
+	if (urgent) return flushDeviceLog();
+	if (flushTimer === undefined) {
+		flushTimer = setTimeout(() => void flushDeviceLog().catch((error) => log("devices: the log could not be written:", error instanceof Error ? error.message : error)), FLUSH_MS);
+		flushTimer.unref();
+	}
 }
 
+/** The log as the Devices page and a device read it: what is stored and what waits in memory, together. */
 async function logEntries(device: string | null, before: number | undefined, count = 200): Promise<DeviceLogEntry[]> {
-	const entries = (await harness.snapshot(DeviceLog, context))?.entries ?? [];
+	const stored = ((await harness.snapshot(DeviceLog, context))?.entries ?? []).map((entry) => ({ ...entry }));
+	for (const one of refusalsMade.values()) {
+		if (one.more === 0) continue;
+		const entry = stored.findLast((e) => e.at === one.entry.at && e.device === one.entry.device && e.method === one.entry.method && e.why === one.entry.why && e.outcome === "refused");
+		if (entry === undefined) continue;
+		entry.count = (entry.count ?? 1) + one.more;
+		entry.lastAt = one.lastAt;
+	}
+	const entries = [...stored, ...pendingLog.map((entry) => ({ ...entry }))];
 	return entries.filter((entry) => (device === null || entry.device === device) && (before === undefined || entry.at < before)).slice(-count).reverse();
 }
 
@@ -1056,11 +1088,18 @@ async function pairConfirm(params: Params): Promise<{ device: string }> {
 	// The claim is spent, and the window closed, before anything is stored: it pairs once, and no claim can come
 	// while the device is saved.
 	open.claim = null;
-	closeWindow(null);
-	await change((doc) => {
-		if (replaced !== null) for (const old of doc.devices) if (old.id === replaced) forget(old, now);
-		doc.devices.push(device);
-	});
+	// pi² Remote stays wanted while the device is saved, however long the disk takes: with no device paired yet, the
+	// window's closing would otherwise leave it unwanted, and stopped two seconds later with `paired` still to send.
+	saving += 1;
+	try {
+		closeWindow(null);
+		await change((doc) => {
+			if (replaced !== null) for (const old of doc.devices) if (old.id === replaced) forget(old, now);
+			doc.devices.push(device);
+		});
+	} finally {
+		saving -= 1;
+	}
 	if (replaced !== null) {
 		remoteHooks.closeSessions(replaced, "replaced");
 		remoteHooks.toHelper({ kind: "revoke", device: replaced });
@@ -1071,7 +1110,7 @@ async function pairConfirm(params: Params): Promise<{ device: string }> {
 		device: { id: device.id, deviceKey: device.deviceKey, presenceKey: device.presenceKey, channelKey: device.channelKey, recordKey: device.recordKey, attestKeyId: device.attestKeyId },
 		paired: { device: device.id, pairing: state.pairing, name: macName(), addresses },
 	});
-	await logDevice({ device: device.id, path: claim.path, method: "pair", summary: summarize("pair", {}), presence: false, outcome: "done" });
+	await logDevice({ device: device.id, path: claim.path, method: "pair", summary: summarize("pair", {}), presence: false, outcome: "done" }, true);
 	notify("paired", device.id, `${device.name} was paired with this Mac.`);
 	return { device: device.id };
 }
@@ -1160,7 +1199,7 @@ async function suspend(device: Device, path: DevicePath): Promise<void> {
 	failures.delete(device.id);
 	remoteHooks.closeSessions(device.id, "suspended");
 	const why = `${SUSPEND_AFTER} refused presence signatures or attaches in ten minutes`;
-	await logDevice({ device: device.id, path, method: "suspend", summary: summarize("suspend", {}), presence: false, outcome: "done", why });
+	await logDevice({ device: device.id, path, method: "suspend", summary: summarize("suspend", {}), presence: false, outcome: "done", why }, true);
 	notify("suspended", device.id, `${device.name} was suspended after ${why}. Resume it on the Devices page if it was you.`);
 }
 

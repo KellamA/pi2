@@ -605,15 +605,21 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
 		return;
 	}
 	const logged = deviceLogged(method, params as Params);
+	// A request that widens is on disk before it is answered (4.4): the log keeps the rest in memory a moment.
+	const widens = answer === "face";
+	const writeLog = (outcome: "done" | "failed", why?: string) =>
+		logDevice({ device: device.id, path: session.path, method, summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }, widens).catch((error) =>
+			log("devices: the log could not be written:", error instanceof Error ? error.message : error),
+		);
 	try {
 		const result = await handlers[method]!(params as Params, session.client);
+		if (logged) await writeLog("done");
 		reply({ result });
-		if (logged) record("done");
-		if (answer === "face") notify("widening", device.id, `${device.name}: ${summary}`);
+		if (widens) notify("widening", device.id, `${device.name}: ${summary}`);
 	} catch (error) {
 		const refused = refusal(error);
+		if (logged) await writeLog("failed", refused.error);
 		reply(refused);
-		if (logged) record("failed", refused.error);
-		if (answer === "face") notify("widening", device.id, `${device.name} tried: ${summary}`);
+		if (widens) notify("widening", device.id, `${device.name} tried: ${summary}`);
 	}
 }

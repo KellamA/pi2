@@ -23,7 +23,7 @@ import { createModels } from "@earendil-works/pi-ai";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { allowsHiddenApproval, checkDeviceLists, deviceLogged, HIDDEN_FROM_THE_PHONE, deviceMay, devicePlacement, type DeviceSession, ONLY_FROM_THE_HELPER, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID, PERSON_REQUESTS } from "../src/answers.ts";
-import { checkRequestItem, type Device, DeviceLog, Devices, devicesState, fromBase64url, hidesSomething, logDevice, macNameNow, PART_HIDDEN, shownName, TOO_DEEP, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
+import { checkRequestItem, type Device, DeviceLog, Devices, devicesState, flushDeviceLog, fromBase64url, hidesSomething, logDevice, macNameNow, PART_HIDDEN, shownName, TOO_DEEP, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
 import { ANSWER_NOT_SENT, forDevice, SESSION_OVER } from "../src/remote.ts";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
@@ -359,7 +359,10 @@ class Phone {
 	assert.equal(macNameNow(), "Kim's Mac", "the Mac's name the payload and a phone are given, stripped");
 	const none = () => null;
 	const take = (item: unknown, now?: number) => checkRequestItem(phone.id, item, { approvalSwitch: none, approvalHidden: () => false }, now);
-	const logged = async () => (await harness.snapshot(DeviceLog, context))?.entries.length ?? 0;
+	const logged = async () => {
+		await flushDeviceLog();
+		return (await harness.snapshot(DeviceLog, context))?.entries.length ?? 0;
+	};
 	const suspended = () => devicesState().devices.find((one) => one.id === phone.id)!.suspendedAt !== null;
 	// What the relay could hand pi² Remote "from" the device, with none of its keys: refused, and nothing written or counted.
 	const stranger = new Phone();
@@ -401,6 +404,7 @@ class Phone {
 	await logDevice({ device: other, path: "relay", method: "submit", summary: "Sent a message", presence: true, outcome: "done" });
 	await logDevice({ device: phone.id, path: "relay", method: "pair", summary: "Paired", presence: false, outcome: "done" });
 	await logDevice({ device: phone.id, path: "relay", method: "x".repeat(5_000), summary: "y".repeat(5_000), presence: true, outcome: "refused", why: "z".repeat(5_000) });
+	await flushDeviceLog();
 	let entries = (await harness.snapshot(DeviceLog, context))!.entries;
 	const oversized = entries.at(-1)!;
 	assert.equal(oversized.method, "unknown", "a method no list places is logged under one name, never its text");
@@ -418,14 +422,34 @@ class Phone {
 	assert.deepEqual(entries.slice(-2).map((entry) => entry.method), ["providers.setKey", "mcp.save"], "30 refusals each of two kinds, in turn, within a minute: two entries");
 	const flood = 2_050;
 	const began = performance.now();
+	// Off the request's path: entries wait in memory and are written together, so a flood costs a handful of writes.
+	const commit = harness.commit.bind(harness);
+	let commits = 0;
+	(harness as unknown as { commit: typeof commit }).commit = ((...given: Parameters<typeof commit>) => {
+		commits += 1;
+		return commit(...given);
+	}) as typeof commit;
 	for (let i = 0; i < flood; i++) await logDevice({ device: phone.id, path: "relay", method: "submit", summary: `Sent a message ${i}`, presence: true, outcome: "done" });
-	console.log(`    ${flood} entries from one device in ${Math.round(performance.now() - began)} ms`);
+	assert.ok(commits <= 2, `${flood} entries made with ${commits} writes`);
+	await flushDeviceLog();
+	console.log(`    ${flood} entries from one device in ${Math.round(performance.now() - began)} ms, ${commits} writes`);
 	entries = (await harness.snapshot(DeviceLog, context))!.entries;
 	assert.ok(entries.some((entry) => entry.device === other), "another device's entry stays");
 	assert.ok(entries.some((entry) => entry.device === phone.id && entry.method === "pair"), "and the pairing");
 	assert.equal(entries.filter((entry) => entry.device === phone.id && entry.method !== "pair").length, 2_000, "one device keeps its own newest 2,000");
+	const stored = async () => (await harness.snapshot(DeviceLog, context))!.entries;
+	commits = 0;
+	for (let i = 0; i < 200; i++) await logDevice({ device: other, path: "relay", method: "submit", summary: `ordinary ${i}`, presence: true, outcome: "done" });
+	assert.ok(commits <= 1, `200 ordinary requests wait in memory: ${commits} writes`);
+	await logDevice({ device: other, path: "relay", method: "usage.setBudget", summary: "widening", presence: true, outcome: "done" }, true);
+	assert.ok(commits <= 2, `and are written with the next urgent one: ${commits} writes in all`);
+	assert.ok((await stored()).some((entry) => entry.summary === "widening") && (await stored()).filter((entry) => entry.summary.startsWith("ordinary ")).length === 200, "a widening request is on disk when logDevice resolves, the waiting ones with it");
+	await logDevice({ device: other, path: "relay", method: "submit", summary: "at the stop", presence: true, outcome: "done" });
+	assert.ok(!(await stored()).some((entry) => entry.summary === "at the stop"));
+	await flushDeviceLog();
+	assert.ok((await stored()).some((entry) => entry.summary === "at the stop"), "what waits is written at a clean stop (main.ts calls flushDeviceLog)");
 	await harness.close(context);
-	step(`the devices' log: a method it does not know is "unknown", every field cut short, refusals made one entry with a count, and one device's flood of ${flood} pushes out neither another's entries nor its own pairing`);
+	step(`the devices' log: a method it does not know is "unknown", every field cut short, refusals made one entry with a count, one device's flood of ${flood} pushes out neither another's entries nor its own pairing, and entries wait in memory but for urgent ones and a stop`);
 }
 
 // ---- A real engine, and this test as its pi² Remote
