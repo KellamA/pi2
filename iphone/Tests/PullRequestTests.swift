@@ -57,12 +57,12 @@ struct PullRequestTests {
            "checks":"none","failingChecks":[],"mergeable":"unknown","findings":[],"openedBy":null,"work":null,"partial":true}],
          "unknown":[{"intent":"i-1","summary":"merging pull request #6","at":1700000000000}]}}}
         """)
-        let listing = try #require(PullRequestListing.of(event, project: "p-1"))
-        #expect(PullRequestListing.of(event, project: "p-2") == nil)
+        let listing = try #require(GitHubWork.of(event, project: "p-1"))
+        #expect(GitHubWork.of(event, project: "p-2") == nil)
         #expect(listing.reading && !listing.troubled && !listing.firstRead)
         let pull = try #require(listing.pull(7))
         #expect(pull.stateWords == "Draft")
-        #expect(pull.checksWords == "1 check failing")
+        #expect(pull.pageChecksWords == "1 check failing")
         #expect(pull.failingChecks.map(\.name) == ["App"])
         #expect(pull.openedBy == 31 && pull.work == 5 && pull.mergeable == "no")
         #expect(pull.findingsNewestFirst.map(\.agentName) == ["Forge", "Scout"])
@@ -72,12 +72,12 @@ struct PullRequestTests {
     }
 
     @Test func aReadThatWentWrongSaysWhat() throws {
-        let unreachable = PullRequestListing(try value(#"{"state":"unreachable","readAt":0,"pulls":[]}"#))
+        let unreachable = GitHubWork(try value(#"{"state":"unreachable","readAt":0,"pulls":[]}"#))
         #expect(unreachable.troubled && !unreachable.firstRead)
         #expect(unreachable.troubleWords()?.hasPrefix("GitHub cannot be reached from your Mac. Nothing has been read yet") == true)
-        let missing = PullRequestListing(try value(#"{"state":"signed_out","error":"gh: command not found","pulls":[]}"#))
+        let missing = GitHubWork(try value(#"{"state":"signed_out","error":"gh: command not found","pulls":[]}"#))
         #expect(missing.troubleWords()?.contains("gh is not installed") == true)
-        let loading = PullRequestListing(try value(#"{"state":"loading","pulls":[]}"#))
+        let loading = GitHubWork(try value(#"{"state":"loading","pulls":[]}"#))
         #expect(loading.firstRead && loading.troubleWords() == nil)
     }
 
@@ -189,7 +189,11 @@ struct PullRequestTests {
         guard PullRequestSamples.current == nil else { return }
         for project in session.engine.projects {
             let source = PullRequestSource(session.engine, project: project.id, number: 7, store: PullRequestStore())
-            #expect(source.state == .noRepository(project.name))
+            guard case .noRepository(let name) = source.state else {
+                Issue.record("a demo project's work is kept by pi², so it has no repository: \(source.state)")
+                return
+            }
+            #expect(name == project.name)
             #expect(!source.readsDiff)
         }
         #expect(transport.world.unanswered.isEmpty)
@@ -206,9 +210,16 @@ struct PullRequestTests {
         // Its work is kept by pi²: no repository, so no pull request, and the screen says so rather than waiting.
         let source = PullRequestSource(session.engine, project: demo.id, number: 7, store: PullRequestStore())
         if PullRequestSamples.current == nil {
-            #expect(source.state == .noRepository("Demo project"))
+            guard case .noRepository(let name) = source.state else {
+                Issue.record("the recording's project has no repository: \(source.state)")
+                return
+            }
+            #expect(name == "Demo project")
             #expect(!source.readsDiff)
-            #expect(PullRequestSource(session.engine, project: "p-none", number: 7, store: PullRequestStore()).state == .noProject)
+            guard case .noProject = PullRequestSource(session.engine, project: "p-none", number: 7, store: PullRequestStore()).state else {
+                Issue.record("a project the Mac does not have: not a wait")
+                return
+            }
         }
 
         // Asked anyway, the recording refuses the diff, and the store keeps its words for the screen.

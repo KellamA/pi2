@@ -221,7 +221,7 @@ enum Hostile {
 		let slot = DeviceID.random()
 		socket.say(#"{"joined":{"device":"\#(slot.text)","deviceKey":"\#(Formats.keyText)","keyId":"\#(Formats.keyID.text)"}}"#)
 		socket.say(#"{"online":{"device":"\#(slot.text)"}}"#)
-		Check.equal(try await rig.events.next("online") { if case let .online(device) = $0 { device } else { nil } }, slot, "a joined slot's presence is reported")
+		Check.equal(try await rig.events.next("online") { (event: RelayEvent) -> DeviceID? in if case let .online(device) = event { device } else { nil } }, slot, "a joined slot's presence is reported")
 		// Ids the relay makes up, many of them: none is reported or held, and the socket is opened again at the first.
 		for _ in 0..<10_000 { socket.say(#"{"online":{"device":"\#(DeviceID.random().text)"}}"#) }
 		Check.equal(try await Sessions.disconnected(rig).0, .unreadable, "a notice naming a device the client does not know is not read")
@@ -254,7 +254,7 @@ enum Hostile {
 			if index % 16 == 0, index <= 48 { try await busy.client.send(Data([1]), to: Formats.device) }
 		}
 		busySocket.say(#"{"online":{"device":"dev_EBESExQVFhcYGRobHB0eHw"}}"#)
-		Check.equal(try await busy.events.next("online") { if case let .online(device) = $0 { device } else { nil } }, Formats.device, "a device in use stays known past the cap of slots joined")
+		Check.equal(try await busy.events.next("online") { (event: RelayEvent) -> DeviceID? in if case let .online(device) = event { device } else { nil } }, Formats.device, "a device in use stays known past the cap of slots joined")
 		await busy.client.stop()
 	}
 

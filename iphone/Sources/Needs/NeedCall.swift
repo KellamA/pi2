@@ -78,22 +78,24 @@ struct NeedCall: Equatable, Sendable {
 enum NeedHiddenCall {
     /// What the engine puts in place of a key it does not send a phone (`KEY_HIDDEN` in `engine/src/devices.ts`).
     static let keyHidden = "[key hidden]"
+    /// What it puts in place of a value nested too deep to send (`TOO_DEEP` there).
+    static let tooDeep = "[too deep to show]"
 
     /// Whether part of this approval's call was hidden from the phone. **The one place that reads the mark.**
     ///
-    /// The engine is to mark such an approval itself (#776; the field's name is not settled, and `NeedItem` and
-    /// `InboxItem` in PiModels do not carry it yet). Until they do, this reads what the phone can see of the masking: the
-    /// placeholder anywhere in the call, a key of its arguments included. That errs on the safe side: a call whose own
-    /// text holds the placeholder is treated as hidden, and can be allowed on the Mac. When the field arrives, read it
-    /// here, beside the placeholder.
-    static func isPartlyHidden(_ arguments: JSONValue?) -> Bool {
+    /// The engine marks such an approval itself (#776, #809): `partHidden` on the `NeedItem` and the `InboxItem` it was
+    /// sent in. A value too deep to send leaves nothing in the call the phone could see, so the field is the only way
+    /// to know of it; a key masked in the call still shows its placeholder, so that is read beside the field. That errs
+    /// on the safe side: a call whose own text holds a placeholder is treated as hidden, and can be allowed on the Mac.
+    static func isPartlyHidden(mark: Bool = false, arguments: JSONValue?) -> Bool {
+        if mark { return true }
         guard let arguments else { return false }
         return holdsPlaceholder(arguments)
     }
 
     private static func holdsPlaceholder(_ value: JSONValue) -> Bool {
         switch value {
-        case .string(let text): text.contains(keyHidden)
+        case .string(let text): text.contains(keyHidden) || text.contains(tooDeep)
         case .array(let values): values.contains(where: holdsPlaceholder)
         case .object(let object): object.contains { key, value in key.contains(keyHidden) || holdsPlaceholder(value) }
         default: false
