@@ -1,28 +1,15 @@
 import SwiftUI
 import UIKit
 
-/// The colours the conversation's screen draws with beyond the system's own: the accent and the agents' colours, as
-/// the Mac's `PiStyle` and `AgentColor` have them, so that an agent looks the same on both. (They are the Mac's to
-/// share: until a shared target carries them for both, this keeps the same values.)
+/// The colours the conversation's screen draws with beyond the system's own and the app's shared ones
+/// (`UIColor.pi2Accent`, `AgentColor` in `App/Shared/`): what is written on the accent, as the Mac's `PiStyle` has it.
 enum ConversationColors {
-    /// pi²'s accent, as the first screen's mark and the Mac draw it.
-    static let accent = UIColor { $0.userInterfaceStyle == .dark ? rgb(0x8B93FF) : rgb(0x5B62E8) }
     /// What is written on the accent.
     static let onAccent = UIColor { $0.userInterfaceStyle == .dark ? rgb(0x10112A) : rgb(0xFFFFFF) }
 
-    /// An agent's colour by the name the engine gives it: soft pastels with dark lettering.
+    /// An agent's colour by the name the engine gives it, the app's shared pastels (`AgentColor`).
     static func agent(_ name: String?) -> UIColor {
-        let hex: UInt32 = switch name {
-        case "blue": 0x9FC5FF
-        case "teal": 0x7FD8C4
-        case "green": 0xA8E39A
-        case "yellow": 0xF5D77A
-        case "orange": 0xFFB37A
-        case "pink": 0xFFA8C8
-        case "gray": 0xC3C5D0
-        default: 0xB9A6FF
-        }
-        return rgb(hex)
+        UIColor(AgentColor.color(name))
     }
 
     static func rgb(_ hex: UInt32) -> UIColor {
@@ -38,7 +25,7 @@ enum ConversationPalette {
             ("window", .systemBackground), ("panel", .secondarySystemBackground), ("card", .secondarySystemBackground),
             ("card2", .systemGray5), ("line", .separator), ("line2", .opaqueSeparator),
             ("tx", .label), ("tx2", .secondaryLabel), ("tx3", .tertiaryLabel),
-            ("acc", ConversationColors.accent), ("ok", .systemGreen), ("warn", .systemOrange), ("bad", .systemRed),
+            ("acc", UIColor.pi2Accent), ("ok", .systemGreen), ("warn", .systemOrange), ("bad", .systemRed),
             ("on-acc", ConversationColors.onAccent),
         ]
         var result = ["appearance": traits.userInterfaceStyle == .dark ? "dark" : "light"]
@@ -59,9 +46,4 @@ enum ConversationPalette {
             ? "rgb(\(byte(red)), \(byte(green)), \(byte(blue)))"
             : String(format: "rgba(%d, %d, %d, %.3f)", byte(red), byte(green), byte(blue), a)
     }
-}
-
-extension Color {
-    /// pi²'s accent (`ConversationColors.accent`).
-    static let conversationAccent = Color(uiColor: ConversationColors.accent)
 }
