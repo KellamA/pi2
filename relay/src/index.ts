@@ -4,11 +4,12 @@
 // The address carries no id, since a platform's request logs keep URLs (5.3). A connection names its pairing in the
 // `Pi2-Pairing` header, only so that it reaches the right object; the pairing's object takes nothing on its word, and
 // its first message, `hello`, names the pairing again. A connection without the header is a Mac that registers a new
-// pairing: the Worker counts it against its address's limit and gives it a new id.
+// pairing: the Worker gives it a new id. Every connection is counted against its address first (addresses.ts), a
+// registration against the registrations' limit too, before any pairing's object is woken.
 //
 // Logs are off (wrangler.jsonc), and nothing here or in the objects writes to the console.
 
-import { Address, addressName } from "./addresses.ts";
+import { Address, type Admission, addressGroup, addressName } from "./addresses.ts";
 import { base64url, random } from "./bytes.ts";
 import { AttestKey } from "./claims.ts";
 import { Pairing } from "./pairing.ts";
@@ -30,16 +31,30 @@ export default {
 		if (settings === null) return new Response(null, { status: 503 });
 
 		const named = request.headers.get(PAIRING_HEADER);
-		if (named !== null) {
-			if (!isPairingId(named)) return new Response(null, { status: 400 });
-			return env.PAIRINGS.get(env.PAIRINGS.idFromName(named)).fetch(forward("hello", named));
+		if (named !== null && !isPairingId(named)) return new Response(null, { status: 400 });
+
+		// Cloudflare sets the connecting address on every request that reaches the Worker, and overwrites a client's own;
+		// one without an address that reads as one is no client's, and nothing can be counted for it, so nothing is taken.
+		const group = addressGroup(request.headers.get("CF-Connecting-IP"));
+		if (group === null) return new Response(null, { status: 400 });
+		const now = Date.now();
+		const name = await addressName(settings.addressKey, group, now);
+		const until = held.get(name);
+		if (until !== undefined && until > now) return tooMany(until, now);
+		let admission: Admission;
+		try {
+			admission = await env.ADDRESSES.get(env.ADDRESSES.idFromName(name)).admit(named === null);
+		} catch {
+			// The address's object did not answer, most likely overloaded by that same address: refused, rather than
+			// taken uncounted, which is what such a flood would be after.
+			return new Response(null, { status: 503, headers: { "Retry-After": "60" } });
+		}
+		if (!admission.pass) {
+			if (admission.limit === "connections") hold(name, admission.until);
+			return tooMany(admission.until, now);
 		}
 
-		// A registration. Cloudflare sets the connecting address; without one, nothing can be counted, so nothing is taken.
-		const address = request.headers.get("CF-Connecting-IP");
-		if (address === null || address === "") return new Response(null, { status: 400 });
-		const limit = env.ADDRESSES.get(env.ADDRESSES.idFromName(await addressName(settings.addressKey, address, Date.now())));
-		if (!(await limit.register())) return new Response(null, { status: 429 });
+		if (named !== null) return env.PAIRINGS.get(env.PAIRINGS.idFromName(named)).fetch(forward("hello", named));
 		const pairing = base64url(random(16));
 		return env.PAIRINGS.get(env.PAIRINGS.idFromName(pairing)).fetch(forward("register", pairing));
 	},
@@ -48,4 +63,27 @@ export default {
 /** A request for the object made afresh, carrying nothing of the client's but that it asks for a WebSocket. */
 function forward(route: "hello" | "register", pairing: string): Request {
 	return new Request("https://pairing.invalid/v1", { headers: { Upgrade: "websocket", [ROUTE_HEADER]: route, [PAIRING_HEADER]: pairing } });
+}
+
+/**
+ * Addresses past their connections' limit, by their object's name, and until when, as this isolate last heard from the
+ * objects: a flood from one address is refused here, without a call to its object each time. Only ever a refusal, and
+ * only until the object's own time, so it is never more lenient than the object. Bounded, the oldest forgotten first.
+ */
+const held = new Map<string, number>();
+const MAX_HELD = 1024;
+
+function hold(name: string, until: number): void {
+	held.delete(name);
+	if (held.size >= MAX_HELD) {
+		const now = Date.now();
+		for (const [other, time] of held) if (time <= now) held.delete(other);
+		if (held.size >= MAX_HELD) held.delete(held.keys().next().value!);
+	}
+	held.set(name, until);
+}
+
+/** 429 with the seconds until the address may come back (pi² Remote waits a minute at least either way). */
+function tooMany(until: number, now: number): Response {
+	return new Response(null, { status: 429, headers: { "Retry-After": String(Math.max(1, Math.ceil((until - now) / 1000))) } });
 }

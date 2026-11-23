@@ -15,6 +15,40 @@ enum Route: Hashable, Sendable {
     case conversation(Int)
     /// What needs the person, of one project or of all (#686, `Needs/`).
     case needs(project: String? = nil)
+
+    /// A project's work list, the hub's Work tab, opened at a piece of work by its number, or the list (#694, `Work/`).
+    case work(project: String, item: Int? = nil)
+    /// A pull request by its number, opened from Work: its checks, findings and files, or one file's diff by its path in
+    /// the repository (#695, `PullRequest/`).
+    case pullRequest(project: String, number: Int, file: String? = nil)
+    /// One of a project's board pages that its hub's More tab lists (#696, `Board/`).
+    case board(project: String, page: BoardPage)
+    /// An agent's page by its id: a project's agent, or a template with no project (#696, `Board/`).
+    case agent(String, project: String? = nil)
+    /// The templates, listed and edited as agents, from More on the projects list (#696, `Board/`).
+    case templates
+    /// A project's settings and limits, from its hub's More tab (#697, `Settings/`).
+    case projectSettings(String)
+    /// The app's settings a phone may change, from More on the projects list (#697, `Settings/`).
+    case settings
+    /// The schedules, from More on the projects list (#697, `Settings/`).
+    case schedules
+    /// Usage and limits: the plan's windows and today's spending (#697, `Usage/`).
+    case usage
+    /// A project's conversations other than the orchestrator's (its agents' and their sub-chats), or with no project
+    /// the conversations outside projects, chats among them (#698, `Conversations/`).
+    case conversations(project: String? = nil)
+    /// The archive (#698, `Conversations/`).
+    case archive
+    /// The background commands, opened at one's output by its id, or the list (#698, `Conversations/`).
+    case backgroundCommands(output: String? = nil)
+    /// A new project, from a folder the Mac offers (#698, `Conversations/`).
+    case newProject
+}
+
+/// The board's pages a project's hub lists under More (docs/design/iphone.md, "A project's hub"), besides its settings.
+enum BoardPage: String, CaseIterable, Hashable, Sendable {
+    case agents, rules, notes, branches
 }
 
 /// The tabs of a project's hub (docs/design/iphone.md, "A project's hub"): Chat · Now · Work · More.
@@ -71,6 +105,19 @@ struct RouteView: View {
         case .dashboard(let project): DashboardView(projectID: project)
         case .conversation(let id): ConversationView(conversationID: id)
         case .needs(let project): NeedsView(projectID: project)
+        case .work(let project, let item): WorkView(projectID: project, itemID: item)
+        case .pullRequest(let project, let number, let file): PullRequestView(projectID: project, number: number, file: file)
+        case .board(let project, let page): BoardView(projectID: project, page: page)
+        case .agent(let id, let project): BoardAgentView(agentID: id, projectID: project)
+        case .templates: BoardTemplatesView()
+        case .projectSettings(let project): ProjectSettingsView(projectID: project)
+        case .settings: SettingsView()
+        case .schedules: SchedulesView()
+        case .usage: UsageView()
+        case .conversations(let project): ConversationsView(projectID: project)
+        case .archive: ArchiveView()
+        case .backgroundCommands(let output): BackgroundCommandsView(commandID: output)
+        case .newProject: NewProjectView()
         }
     }
 }

@@ -8,6 +8,14 @@ struct FaceIDCheckScreen: View {
     @State private var report: FaceIDCheck.Report?
 
     var body: some View {
+        if let request = PresenceDebug.requested {
+            PresenceDebugScreen(request: request)
+        } else {
+            check
+        }
+    }
+
+    private var check: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 Text("This makes a key in the Secure Enclave that only Face ID can use, asks Face ID once, signs \(FaceIDCheck.signatures) different messages under that one Face ID, then ends the Face ID and tries once more. It keeps nothing.")
