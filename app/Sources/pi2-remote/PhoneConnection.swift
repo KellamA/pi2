@@ -42,6 +42,8 @@ final class PhoneConnection: @unchecked Sendable {
 	private unowned let remote: Remote
 	private let io: SocketIO
 	let peer: IPAddress
+	/// The source it is counted under while it waits to authenticate, as it was when it was admitted.
+	let admissionKey: IPAddress
 	/// The interface it came by, when that matters (a peer in the shared address space, D2).
 	let arrivedOn: String?
 	let acceptedAt = ContinuousClock.now
@@ -63,9 +65,10 @@ final class PhoneConnection: @unchecked Sendable {
 	private var receivedBytesSinceAck = 0
 	private var ackScheduled = false
 
-	init(remote: Remote, descriptor: Int32, peer: IPAddress, arrivedOn: String? = nil) {
+	init(remote: Remote, descriptor: Int32, peer: IPAddress, admissionKey: IPAddress, arrivedOn: String? = nil) {
 		self.remote = remote
 		self.peer = peer
+		self.admissionKey = admissionKey
 		self.arrivedOn = arrivedOn
 		io = SocketIO(descriptor: descriptor, queue: remote.queue)
 	}
@@ -388,7 +391,7 @@ final class PhoneConnection: @unchecked Sendable {
 		deadline = nil
 		if admitted {
 			admitted = false
-			remote.admission.release(peer)
+			remote.admission.release(key: admissionKey)
 		}
 	}
 
@@ -507,7 +510,7 @@ final class PhoneConnection: @unchecked Sendable {
 		deadline?.cancel()
 		if admitted {
 			admitted = false
-			remote.admission.release(peer)
+			remote.admission.release(key: admissionKey)
 		}
 		if awaitingClaimerProof { wrongTry("the claimer closed the connection before its first message") }
 		if claimerProven, !claimReported { wrongTry("a claimer holding the code ended without a claim pi² Remote could pass on") }

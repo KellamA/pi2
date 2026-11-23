@@ -154,12 +154,19 @@ package final class Admission: @unchecked Sendable {
 	/// network shares (#675's security read B, D1-a). Given, for the check.
 	private var localPrefixes: [(IPAddress, Int)]
 	private var prefixesRead: TimeInterval
-	private let fixedPrefixes: Bool
+	private var fixedPrefixes: Bool
 
 	package init(localPrefixes: [(IPAddress, Int)]? = nil) {
 		self.localPrefixes = localPrefixes ?? MacAddresses.prefixes()
 		fixedPrefixes = localPrefixes != nil
 		prefixesRead = Date().timeIntervalSince1970
+	}
+
+	/// The Mac's prefixes from now on, as if read from its interfaces: for the check, which changes them between an
+	/// `admit` and its `release`.
+	package func setPrefixes(_ prefixes: [(IPAddress, Int)]) {
+		localPrefixes = prefixes
+		fixedPrefixes = true
 	}
 
 	/// What the limits count `source` as (`IPAddress.limitKey`), with the Mac's own prefixes as they are now.
@@ -175,17 +182,20 @@ package final class Admission: @unchecked Sendable {
 	package var pendingCount: Int { pending.values.reduce(0, +) }
 
 	/// A new connection from `source`, before it authenticates: taken, or which limit it is over.
-	package func admit(_ source: IPAddress) -> Admit {
-		let key = sourceKey(source)
+	package func admit(_ source: IPAddress) -> Admit { admit(key: sourceKey(source)) }
+
+	/// The same, for a source's key as `sourceKey` gave it: the caller keeps that key and releases by it, since the
+	/// Mac's prefixes, and so a source's key, can change while the connection waits (a network joined or left, a VPN
+	/// up or down; #675's security read B, D1-a2).
+	package func admit(key: IPAddress) -> Admit {
 		guard pending[key, default: 0] < Self.maxPendingPerSource else { return .sourceFull }
 		guard pendingCount < Self.maxPending else { return .allFull }
 		pending[key, default: 0] += 1
 		return .taken
 	}
 
-	/// The connection from `source` authenticated, or closed.
-	package func release(_ source: IPAddress) {
-		let key = sourceKey(source)
+	/// The connection admitted under `key` authenticated, or closed.
+	package func release(key: IPAddress) {
 		guard let count = pending[key] else { return }
 		pending[key] = count > 1 ? count - 1 : nil
 	}

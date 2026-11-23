@@ -43,7 +43,7 @@ enum Units {
 		Check.expect(taken == Admission.maxPendingPerSource && gate.admit(a) == .sourceFull, "at most \(Admission.maxPendingPerSource) connections wait to authenticate from one address", "\(taken)")
 		taken = (0 ..< 10).filter { _ in gate.admit(b) == .taken }.count
 		Check.expect(gate.pendingCount == Admission.maxPending && gate.admit(IPAddress("192.168.1.9")!) == .allFull, "at most \(Admission.maxPending) wait in all", "\(gate.pendingCount)")
-		gate.release(a)
+		gate.release(key: gate.sourceKey(a))
 		Check.expect(gate.admit(a) == .taken, "a connection that authenticated or closed makes room")
 		// The Mac's own prefixes, given: a global /64 of its LAN.
 		let six = Admission(localPrefixes: [(IPAddress("2001:db8:aa:1::5")!, 64)])
@@ -54,8 +54,17 @@ enum Units {
 		for (what, prefix) in [("the Mac's own on-link prefix", "2001:db8:aa:1::"), ("link-local", "fe80::"), ("unique-local", "fd12:3456:789a:1::")] {
 			let hosts = (1 ... 6).map { IPAddress("\(prefix)\($0)")! }
 			Check.expect(hosts.map { lan.admit($0) }.allSatisfy { $0 == .taken || $0 == .allFull }, "IPv6 hosts on the Mac's own link (\(what)) are each a source of their own (#675's security read B, D1-a)")
-			for host in hosts { lan.release(host) }
+			for host in hosts { lan.release(key: lan.sourceKey(host)) }
 		}
+		// The Mac's prefixes change while a connection waits (it left the network): its slot is still released (D1-a2).
+		let moving = Admission(localPrefixes: [(IPAddress("2001:db8:aa:1::5")!, 64)])
+		let phone = IPAddress("2001:db8:aa:1::42")!
+		let held = moving.sourceKey(phone)
+		Check.expect(moving.admit(key: held) == .taken && moving.pendingCount == 1, "a phone on the Mac's own prefix waits under its own address")
+		moving.setPrefixes([])
+		Check.expect(moving.sourceKey(phone) != held, "the Mac leaves that network: the same address would now be counted by its /64")
+		moving.release(key: held)
+		Check.expect(moving.pendingCount == 0, "and the waiting slot is released by the key it was admitted under, so none leaks")
 		Check.expect(IPAddress("fe80::1")!.limitKey(localPrefixes: []) == IPAddress("fe80::1") && IPAddress("fd00::7")!.limitKey(localPrefixes: []) == IPAddress("fd00::7"), "link-local and unique-local are counted by address")
 		Check.expect(IPAddress("2001:db8:aa:1::9")!.limitKey(localPrefixes: [(IPAddress("2001:db8:aa:1::5")!, 64)]) == IPAddress("2001:db8:aa:1::9"), "an address in a prefix the Mac has is counted by itself")
 		Check.expect(contains(IPAddress("10.1.2.3")!, in: IPAddress("10.1.0.0")!, length: 16) && !contains(IPAddress("10.2.2.3")!, in: IPAddress("10.1.0.0")!, length: 16) && contains(IPAddress("2001:db8::1")!, in: IPAddress("2001:db8::")!, length: 33), "prefixes are matched bit by bit")

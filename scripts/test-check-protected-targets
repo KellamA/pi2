@@ -173,6 +173,12 @@ if run "$T/good.json" "$T/testable"; then passed=$((passed + 1)); else failed=$(
 rm -rf "$T/testable"; cp -R "$T/tree" "$T/testable"
 printf '// a /* here\n@testable import RemoteKit\n' >"$T/testable/app/Sources/pi2/Remote.swift"
 if run "$T/good.json" "$T/testable"; then failed=$((failed + 1)); echo "FAIL @testable import after a line comment naming /*: was taken"; else passed=$((passed + 1)); fi
+# A comment's opening inside a string, plain, raw or multi-line, opens nothing: the import after it is code.
+for text in 'let a = "/*"\n@testable import RemoteKit\nlet b = "*/"' 'let a = #"/* \" "#\n@testable import RemoteKit\nlet b = "*/"' 'let a = """\n/*\n"""\n@testable import RemoteKit\nlet b = "*/"' 'let a = "\\"/*"\n@testable import RemoteKit\nlet b = "*/"'; do
+	rm -rf "$T/testable"; cp -R "$T/tree" "$T/testable"
+	printf "$text\n" >"$T/testable/app/Sources/pi2/Remote.swift"
+	if run "$T/good.json" "$T/testable"; then failed=$((failed + 1)); echo "FAIL @testable import after a string holding /*: was taken: $text"; else passed=$((passed + 1)); fi
+done
 # And a line comment's marker inside a block comment comments nothing out.
 rm -rf "$T/testable"; cp -R "$T/tree" "$T/testable"
 printf '/* a\n @testable import RemoteKit\n*/\nimport RemoteKit\n' >"$T/testable/app/Sources/pi2/Remote.swift"

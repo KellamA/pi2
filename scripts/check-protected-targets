@@ -166,11 +166,13 @@ done < <(grep -rlE --include='*.swift' --exclude-dir=.build --exclude-dir=.git '
 # Read with line comments taken out, lines joined and block comments taken out, so that an attribute on a line of its
 # own or a comment between the words counts; an import of one declaration (`import struct pi2_remote.Startup`) too.
 while IFS= read -r file; do
-	# Comments read as Swift reads them, from the start: a line comment to its line's end, a block comment to its own
-	# end, block comments nested, and neither opening inside the other.
+	# Comments and strings read as Swift reads them, from the start: a line comment to its line's end, a block comment
+	# to its own end, block comments nested, and neither opening inside the other or inside a string (plain, raw or
+	# multi-line), which is taken out whole.
 	if perl -0777 -ne 'my $o = ""; my $d = 0; pos($_) = 0;
 		while (pos($_) < length) {
 			if ($d) { m{\G(/\*|\*/|.)}gcs; $d++ if $1 eq "/*"; $d-- if $1 eq "*/" }
+			elsif (m{\G(#*)"""(?s:.*?)"""\1}gc || m{\G(#+)".*?"\1}gc || m{\G"(?:\\.|[^"\\\n])*"}gc) { $o .= q{""} }
 			else { m{\G(//[^\n]*|/\*|.)}gcs; if ($1 eq "/*") { $d = 1; $o .= " " } elsif (substr($1, 0, 2) eq "//") { $o .= " " } else { $o .= $1 } }
 		}
 		$o =~ s/\n/ /g; print $o' "$file" |

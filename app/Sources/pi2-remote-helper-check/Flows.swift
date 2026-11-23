@@ -224,6 +224,21 @@ enum Flows {
 		Check.expect(back?.params["macKeys"]?["relay"]?.stringValue == firstRelay, "back to the first relay, its own key again")
 		engine.event("settings", [("relay", .string("ws://127.0.0.1:9/v1")), ("switches", switches)])
 		Check.expect(engine.quiet(for: 1), "the same address again says nothing")
+		// A relay key that cannot be made (the data folder cannot be written): the relay path is off, the rest carries on.
+		chmod(home.path, 0o500)
+		engine.event("settings", [("relay", .string("ws://127.0.0.1:11/v1")), ("switches", switches)])
+		let unmade = engine.request("remote.hello")
+		if let unmade { engine.answer(unmade.id) }
+		let off = engine.request("remote.state")
+		if let off { engine.answer(off.id) }
+		chmod(home.path, 0o700)
+		Check.expect(unmade != nil && child.running, "a relay key that cannot be made does not stop pi² Remote: it says hello again")
+		Check.expect(off?.params["relay"]?["available"]?.boolValue == false && off?.params["relay"]?["why"]?.stringValue?.contains("relay path is off") == true, "and tells the engine the relay path is off, and why", off.map { JSON.text($0.params) } ?? "nothing")
+		Check.expect(Phone(port: mac.port) != nil, "while the home path still answers")
+		engine.event("settings", [("relay", .string("ws://127.0.0.1:9/v1")), ("switches", switches)])
+		let restored = engine.request("remote.hello")
+		if let restored { engine.answer(restored.id) }
+		Check.expect(restored?.params["macKeys"]?["relay"]?.stringValue == firstRelay, "back to a relay whose key it has: that key again")
 
 		Check.section("Find on this network off and on: the engine hears of the new port (#675's security read B, M5)")
 		let homeOff = JSONValue.object([("on", .bool(true)), ("relay", .bool(true)), ("home", .bool(false)), ("direct", .bool(false)), ("preview", .bool(true))])

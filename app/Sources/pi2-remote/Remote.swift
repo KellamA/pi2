@@ -159,21 +159,33 @@ package final class Remote: @unchecked Sendable {
 
 	/// `remote.hello`: the Mac's public keys, with the relay key of the relay in use, the pairing and the addresses. Said
 	/// again when the relay's address changes, since each relay has a key of its own; the engine takes the new one.
+	///
+	/// A relay key that cannot be read or made concerns the relay path alone (#675's security read B): pi² Remote carries
+	/// on with the home and direct paths, the relay path off (`relayKey` nil, which #678's client reads), and says why in
+	/// `remote.state`. `remote.hello` must name a relay key, so it names one made for this run alone and kept nowhere,
+	/// which signs nothing: the engine can show the relay as off, once it reads `relay` in `remote.state` (#776).
 	private func hello() {
+		var unavailable: String?
 		do {
 			relayKey = try vault.relayKey(for: relay)
 		} catch {
-			log("the relay key could not be read or made: \(error); stopping")
-			exit(1)
+			relayKey = nil
+			unavailable = "the relay key for this address could not be read or made (\(error)); the relay path is off, home and direct carry on"
+			log(unavailable!)
 		}
 		addresses = listener?.addresses ?? []
+		let shown = relayKey ?? .software(P256.Signing.PrivateKey())
 		let hello: [(String, JSONValue)] = [
-			("macKeys", keys.report(relay: relayKey!)), ("pairing", pairing.map { .string($0.text) } ?? .null), ("addresses", .array(addresses.map(JSONValue.string))),
+			("macKeys", keys.report(relay: shown)), ("pairing", pairing.map { .string($0.text) } ?? .null), ("addresses", .array(addresses.map(JSONValue.string))),
 		]
 		engine.request("remote.hello", .object(hello)) { result in
 			if case let .failure(refusal) = result {
 				log("the engine refused remote.hello: \(refusal); stopping")
 				exit(1)
+			}
+			// After the hello, which the engine takes `remote.state` only after.
+			if let unavailable {
+				self.engine.request("remote.state", .object([("relay", .object([("available", .bool(false)), ("why", .string(Log.oneLine(unavailable)))]))]))
 			}
 			log("said hello: \(self.devices.count) device(s) on pi² Remote's own list, keys in \(self.vault.name)")
 		}
@@ -280,10 +292,12 @@ package final class Remote: @unchecked Sendable {
 		}
 		// Too many waiting: the oldest that has sent no first message yet goes, from the same source if that source is
 		// over its share, so that a stranger holding idle connections cannot keep a phone out (D1).
+		// The key it is counted under, kept with the connection and released by (D1-a2).
+		let key = admission.sourceKey(peer)
 		while true {
-			let admitted = admission.admit(peer)
+			let admitted = admission.admit(key: key)
 			if admitted == .taken { break }
-			let idle = connections.values.filter { $0.waitingForFirstMessage && (admitted == .allFull || admission.sourceKey($0.peer) == admission.sourceKey(peer)) }
+			let idle = connections.values.filter { $0.waitingForFirstMessage && (admitted == .allFull || $0.admissionKey == key) }
 			guard let oldest = idle.min(by: { $0.acceptedAt < $1.acceptedAt }) else {
 				Seldom.shared.say("pending", "a connection from \(peer) refused: \(admission.pendingCount) wait to authenticate already")
 				close(descriptor)
@@ -291,7 +305,7 @@ package final class Remote: @unchecked Sendable {
 			}
 			oldest.end()
 		}
-		let connection = PhoneConnection(remote: self, descriptor: descriptor, peer: peer, arrivedOn: arrivedOn)
+		let connection = PhoneConnection(remote: self, descriptor: descriptor, peer: peer, admissionKey: key, arrivedOn: arrivedOn)
 		connections[ObjectIdentifier(connection)] = connection
 		connection.start()
 	}
