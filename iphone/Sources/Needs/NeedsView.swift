@@ -4,7 +4,8 @@ import SwiftUI
 
 /// What needs the person: every card waiting, newest first, answered in place (docs/design/iphone.md, "A card that needs
 /// the person"; docs/iphone.md P17). Drawn as a screen of its own, and inline at the top of the projects list
-/// (`RouteView(.needs(), placement: .inline)`), where it draws its own header and nothing at all when nothing waits.
+/// (`RouteView(.needs(), placement: .inline)`), where it draws the cards alone, under the header the screen around it
+/// draws ("Needs you · N"), and nothing at all when nothing waits.
 /// A card whose call is taller than its box opens on a screen of its own, with the whole call.
 struct NeedsView: View {
     /// The project whose cards it shows, as `ProjectRow.id`; nil for every project's.
@@ -87,11 +88,6 @@ struct NeedsView: View {
     private var inline: some View {
         if !needs.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Needs you · \(needs.count)")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .accessibilityAddTraits(.isHeader)
-                    .accessibilityLabel("Needs you, \(needs.count)")
                 cards
             }
         }

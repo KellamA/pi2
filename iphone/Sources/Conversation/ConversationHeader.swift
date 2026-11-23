@@ -17,7 +17,7 @@ struct ConversationHeader: View {
                 .font(.footnote.weight(.bold))
                 .foregroundStyle(Color(white: 0.07))
                 .frame(width: 26, height: 26)
-                .background(Color(uiColor: ConversationColors.agent(color)), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .background(AgentColor.color(color), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 0) {
                 Text(name)

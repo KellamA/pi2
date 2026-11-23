@@ -171,7 +171,9 @@ struct IntentsTests {
         #expect(ask.answer?.hasPrefix("You said: \"Who is on call?\". I am the demo model") == true)
 
         let needs = WhatNeedsMe.list(session: session, project: nil, reach: .connected(outOfReach: false))
-        #expect(needs.lines.count == session.engine.needs.count)
+        // The demo has a card of every kind (#684), more than the snippet shows: the rest are counted.
+        #expect(needs.lines.count == min(session.engine.needs.count, WhatNeedsMe.shown))
+        #expect(needs.lines.count + needs.more == session.engine.needs.count)
         #expect(!needs.lines.isEmpty)
 
         let runs = StopProject.runs(in: row, session: session)
