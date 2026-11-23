@@ -1,75 +1,15 @@
 import PiModels
 import SwiftUI
 
-/// One piece of work as the engine's `work` event sends it (docs/projects.md, 3.11): a task for the project, in the list
-/// pi² itself keeps for a project with no GitHub repository attached.
-struct WorkPiece: Identifiable, Equatable {
-    struct Note: Equatable {
-        let at: Date
-        /// The agent that wrote it; nil for the person.
-        let agentId: String?
-        let text: String
-    }
+// What the Work tab reads of the engine's `work` event — `WorkPiece`, `ProjectWork` and `WorkLimit` — is in PiModels
+// (Work.swift, #828), shared with the iPhone app; what stays here is the tab's own view state.
 
-    let id: Int
-    let title: String
-    let text: String
-    /// Where it is, and who has it: what a change on its way shows at once (`showing`), before the engine answers.
-    private(set) var state: String
-    /// The class of model the work needs (docs/issue-classes.md); nil when not classified.
-    let modelClass: String?
-    /// The agent working on it, and the sub-chat it works in; nil when nobody has it.
-    private(set) var holderAgentId: String?
-    private(set) var holderConversation: Int?
-    let notes: [Note]
-    /// What finishing it said was done.
-    let result: String?
-    let updatedAt: Date
-    /// GitHub only: the issue's address.
-    let url: String?
-    /// GitHub only: only what its row shows was read, a closed issue's until it is opened (#599).
-    let partial: Bool
-
-    init?(_ value: JSONValue?) {
-        guard let value, let id = value["id"]?.intValue, let title = value["title"]?.stringValue else { return nil }
-        var written = 0.0
-        if case .number(let milliseconds)? = value["updatedAt"] { written = milliseconds }
-        let taken = value["takenBy"]
-        self.id = id
-        self.title = title
-        text = value["text"]?.stringValue ?? ""
-        state = value["state"]?.stringValue ?? "open"
-        modelClass = value["class"]?.stringValue
-        holderAgentId = taken?["agentId"]?.stringValue
-        holderConversation = taken?["conversationId"]?.intValue
-        notes = (value["notes"]?.arrayValue ?? []).compactMap { note in
-            guard let text = note["text"]?.stringValue else { return nil }
-            var at = 0.0
-            if case .number(let milliseconds)? = note["at"] { at = milliseconds }
-            return WorkPiece.Note(
-                at: Date(timeIntervalSince1970: at / 1000),
-                agentId: note["by"]?["agentId"]?.stringValue, text: text
-            )
-        }
-        result = value["result"]?.stringValue
-        updatedAt = Date(timeIntervalSince1970: written / 1000)
-        url = value["url"]?.stringValue
-        partial = value["partial"] == .bool(true)
-    }
-
-    /// The piece as it will be once the change on its way is made: shown at once, until the engine says how it went.
+extension WorkPiece {
+    /// The piece as it will be once the change on its way is made: shown at once, until the engine says how it went
+    /// (#599). `WorkPending` is this app's own view state, so the reading that takes it stays here with it.
     func showing(_ pending: WorkPending?) -> WorkPiece {
         guard let pending, let state = pending.state else { return self }
-        var shown = self
-        shown.state = state
-        if pending.letsGo {
-            shown.holderAgentId = nil
-            shown.holderConversation = nil
-        } else if let agent = pending.holderAgentId {
-            shown.holderAgentId = agent
-            shown.holderConversation = nil
-        }
-        return shown
+        return showing(state: state, holderAgentId: pending.holderAgentId, letsGo: pending.letsGo)
     }
 }
 
@@ -95,66 +35,6 @@ struct WorkPending: Equatable {
         case "edit": WorkPending(word: "Saving")
         case "note": WorkPending(word: "Adding a note")
         default: WorkPending(word: "Working")
-        }
-    }
-}
-
-/// The work of one project, from the `work` event's `projects` (docs/projects.md, 4.3), grouped by state in the order the
-/// state table lists them (3.11), with the empty groups left out.
-struct ProjectWork {
-    /// The states in the table's order, with the words the tab shows for each.
-    static let groups: [(state: String, name: String)] = [
-        ("open", "Open"), ("in_progress", "In progress"), ("waiting", "Waiting"),
-        ("blocked", "Blocked"), ("done", "Done"), ("dropped", "Dropped"),
-    ]
-
-    let items: [WorkPiece]
-
-    init(_ value: JSONValue?) {
-        items = (value?.arrayValue ?? []).compactMap(WorkPiece.init)
-    }
-
-    init(pieces: [WorkPiece]) {
-        items = pieces
-    }
-
-    /// The groups with something in them, each newest-changed first.
-    var grouped: [(state: String, name: String, items: [WorkPiece])] {
-        ProjectWork.groups.compactMap { group in
-            let inState = items.filter { $0.state == group.state }.sorted { $0.updatedAt > $1.updatedAt }
-            return inState.isEmpty ? nil : (group.state, group.name, inState)
-        }
-    }
-
-    /// The word the tab shows for a state; a state it does not know reads as the engine sent it.
-    static func name(of state: String) -> String {
-        groups.first { $0.state == state }?.name ?? state
-    }
-}
-
-/// What the project's limit was when the engine refused to start an agent (docs/projects.md, 8.3), with the opaque id of
-/// that reading, for confirming the one start it refused.
-struct WorkLimit: Equatable {
-    let id: String
-    /// "planShare" or "dailySpend".
-    let kind: String
-    /// What was over, as the engine read it.
-    let reason: String
-
-    init?(_ value: JSONValue?) {
-        guard let id = value?["id"]?.stringValue, let kind = value?["limit"]?.stringValue,
-              let reason = value?["reason"]?.stringValue else { return nil }
-        self.id = id
-        self.kind = kind
-        self.reason = reason
-    }
-
-    /// The limit as the person reads its name.
-    var name: String {
-        switch kind {
-        case "dailySpend": "daily spending limit"
-        case "planShare": "plan share limit"
-        default: "limit"
         }
     }
 }

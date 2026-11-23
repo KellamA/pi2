@@ -40,6 +40,7 @@ for line in session.split(separator: "\n", omittingEmptySubsequences: true) {
 }
 replay.writeOpen()
 replay.writeFormats()
+replay.writeWorkReadings()
 let output = replay.lines.joined(separator: "\n") + "\n"
 
 // The session must hold what it is meant to, or the comparison proves little.
