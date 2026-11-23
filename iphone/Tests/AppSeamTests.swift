@@ -48,6 +48,24 @@ struct AppSeamTests {
             (.conversation(9), ConversationView.self),
             (.needs(), NeedsView.self),
             (.needs(project: "p-1"), NeedsView.self),
+            (.work(project: "p-1"), WorkView.self),
+            (.work(project: "p-1", item: 12), WorkView.self),
+            (.pullRequest(project: "p-1", number: 7), PullRequestView.self),
+            (.pullRequest(project: "p-1", number: 7, file: "a/b.swift"), PullRequestView.self),
+            (.board(project: "p-1", page: .rules), BoardView.self),
+            (.agent("forge", project: "p-1"), BoardAgentView.self),
+            (.agent("forge"), BoardAgentView.self),
+            (.templates, BoardTemplatesView.self),
+            (.projectSettings("p-1"), ProjectSettingsView.self),
+            (.settings, SettingsView.self),
+            (.schedules, SchedulesView.self),
+            (.usage, UsageView.self),
+            (.conversations(), ConversationsView.self),
+            (.conversations(project: "p-1"), ConversationsView.self),
+            (.archive, ArchiveView.self),
+            (.backgroundCommands(), BackgroundCommandsView.self),
+            (.backgroundCommands(output: "bg-1"), BackgroundCommandsView.self),
+            (.newProject, NewProjectView.self),
         ]
         for (route, expected) in routes {
             let view = RouteView.view(for: route)
@@ -57,6 +75,20 @@ struct AppSeamTests {
         #expect(hub?.projectID == "p-1")
         #expect(hub?.tab == .now)
         #expect((RouteView.view(for: .conversation(9)) as? ConversationView)?.conversationID == 9)
+
+        // What each route carries reaches its view's initialiser.
+        let work = RouteView.view(for: .work(project: "p-1", item: 12)) as? WorkView
+        #expect(work?.projectID == "p-1" && work?.itemID == 12)
+        let pull = RouteView.view(for: .pullRequest(project: "p-1", number: 7, file: "a/b.swift")) as? PullRequestView
+        #expect(pull?.projectID == "p-1" && pull?.number == 7 && pull?.file == "a/b.swift")
+        let board = RouteView.view(for: .board(project: "p-1", page: .rules)) as? BoardView
+        #expect(board?.projectID == "p-1" && board?.page == .rules)
+        let agent = RouteView.view(for: .agent("forge", project: "p-1")) as? BoardAgentView
+        #expect(agent?.agentID == "forge" && agent?.projectID == "p-1")
+        #expect((RouteView.view(for: .agent("forge")) as? BoardAgentView)?.projectID == nil)
+        #expect((RouteView.view(for: .projectSettings("p-1")) as? ProjectSettingsView)?.projectID == "p-1")
+        #expect((RouteView.view(for: .conversations(project: "p-1")) as? ConversationsView)?.projectID == "p-1")
+        #expect((RouteView.view(for: .backgroundCommands(output: "bg-1")) as? BackgroundCommandsView)?.commandID == "bg-1")
     }
 
     @Test func openingRoutesMovesThePath() {
@@ -85,5 +117,40 @@ struct AppSeamTests {
         #expect(DebugLaunch.route("conversation:9", projects: []) == .conversation(9))
         #expect(DebugLaunch.route("needs:Demo project 2", projects: projects) == .needs(project: id))
         #expect(DebugLaunch.connection(named: "home-relay-down") == .connected(.home, relayReachable: false))
+
+        // The next screens' words.
+        let shown: [(String, Route?)] = [
+            ("work:Demo project 2", .work(project: id)),
+            ("work:Demo project 2#12", .work(project: id, item: 12)),
+            ("work:Demo project 2#twelve", nil),
+            ("work:Nowhere", nil),
+            ("pull-request:Demo project 2#7", .pullRequest(project: id, number: 7)),
+            ("pull-request:\(id)#7:app/Sources/a b.swift", .pullRequest(project: id, number: 7, file: "app/Sources/a b.swift")),
+            ("pull-request:Demo project 2", nil),
+            ("board:Demo project 2", .board(project: id, page: .agents)),
+            ("board:Demo project 2#branches", .board(project: id, page: .branches)),
+            ("board:Demo project 2#settings", nil),
+            ("agent:forge", .agent("forge")),
+            ("agent:Demo project 2#forge", .agent("forge", project: id)),
+            ("agent:Nowhere#forge", nil),
+            ("agent:", nil),
+            ("templates", .templates),
+            ("project-settings:Demo project 2", .projectSettings(id)),
+            ("project-settings", nil),
+            ("settings", .settings),
+            ("schedules", .schedules),
+            ("usage", .usage),
+            ("usage:x", nil),
+            ("conversations", .conversations()),
+            ("conversations:Demo project 2", .conversations(project: id)),
+            ("archive", .archive),
+            ("background-commands", .backgroundCommands()),
+            ("background-commands:bg-1", .backgroundCommands(output: "bg-1")),
+            ("new-project", .newProject),
+            ("nothing", nil),
+        ]
+        for (text, route) in shown {
+            #expect(DebugLaunch.route(text, projects: projects) == route, "\(text)")
+        }
     }
 }

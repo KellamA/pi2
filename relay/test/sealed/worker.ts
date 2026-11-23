@@ -12,7 +12,7 @@
 // Run only by `scripts/relay-protocol-test --sealed`, through scripts/isolated.mjs, on 127.0.0.1, with wrangler.jsonc
 // beside this file. Nothing deploys it: the relay's own wrangler.jsonc names src/index.ts, and check-bundle reads that.
 
-import { Address as RelayAddress, addressName } from "../../src/addresses.ts";
+import { addressGroup, addressName, Address as RelayAddress } from "../../src/addresses.ts";
 import { AttestKey as RelayAttestKey } from "../../src/claims.ts";
 import { type Env, readSettings } from "../../src/settings.ts";
 import protocolTest, { Pairing as ProtocolPairing } from "../protocol/worker.ts";
@@ -49,11 +49,11 @@ export default {
 			const stored: Stored[] = [];
 			for (const name of pairings) stored.push(await (env.PAIRINGS.get(env.PAIRINGS.idFromName(name)) as unknown as Dumps).dump(name));
 			for (const name of attestKeys) stored.push(await (env.ATTEST_KEYS.get(env.ATTEST_KEYS.idFromName(name)) as unknown as Dumps).dump(name));
-			// Registrations are counted under a keyed hash of the address and the day (README.md): the protocol test's
-			// worker gives every connection 127.0.0.1.
+			// Connections and registrations are counted under a keyed hash of the address's group and the day
+			// (README.md): every connection here comes from 127.0.0.1.
 			const settings = readSettings(env);
 			if (settings !== null) {
-				const name = await addressName(settings.addressKey, "127.0.0.1", Date.now());
+				const name = await addressName(settings.addressKey, addressGroup("127.0.0.1")!, Date.now());
 				stored.push(await (env.ADDRESSES.get(env.ADDRESSES.idFromName(name)) as unknown as Dumps).dump(name));
 			}
 			const canaries = { log: `pi2-canary-log-${crypto.randomUUID()}`, debug: `pi2-canary-debug-${crypto.randomUUID()}` };

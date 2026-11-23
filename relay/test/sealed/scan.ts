@@ -519,6 +519,8 @@ const META: Fields = {
 	blocked: (value) => typeof value === "object" && value !== null && Object.entries(value).every(([end, until]) => (end === "mac" || device(end)) && time(until)),
 	window: (value) => value === null || shape({ id: isBytes(16), tokenHash: bytes32, expires: time, tries: count, joins: count })(value),
 	left: list(device),
+	/** When the join windows of the last minute were opened, for their limit. */
+	"opened?": list(time),
 };
 const DEVICE: Fields = {
 	key,
@@ -543,7 +545,15 @@ const STORED: Record<Stored["object"], { kv: Record<string, Kind>; tables: Recor
 		},
 	},
 	attestKey: { kv: { tie: shape({ pairing, device, until: time }) }, tables: {} },
-	address: { kv: { times: list(time) }, tables: {} },
+	// Connections counted in each minute of the last hour, by the minute's number; registrations' times; when it all goes.
+	address: {
+		kv: {
+			minutes: (value) => typeof value === "object" && value !== null && Object.entries(value).every(([minute, mark]) => /^\d{1,12}$/.test(minute) && count(mark)),
+			times: list(time),
+			cleanupAt: time,
+		},
+		tables: {},
+	},
 };
 function storedSealed(value: unknown): boolean {
 	return value instanceof Uint8Array && value.length >= 81 && value.length <= 16 * 1024 && value[0] === 0x04;

@@ -13,7 +13,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import appAttest from "../../engine/src/appattest.ts?raw";
 import wrangler from "../wrangler.jsonc?raw";
 import protocolWrangler from "./protocol/wrangler.jsonc?raw";
-import deployment from "./sealed/fixtures/deployment.jsonc?raw";
 import sealedWrangler from "./sealed/wrangler.jsonc?raw";
 import { base64url, concat, fromBase64url, random, utf8 } from "../src/bytes.ts";
 import { sha256 } from "../src/crypto.ts";
@@ -140,14 +139,13 @@ function logsFaults(config: any): string[] {
 
 describe("the relay logs nothing", () => {
 	it("keeps Workers Logs, invocation logs, traces, Issues, Logpush and tail Workers off, in every environment of its configuration", () => {
+		// With the deployments' environments (#821, P9), which inherit the top level's.
 		expect(logsFaults(jsonc(wrangler))).toEqual([]);
-		// The deployments' configuration as #821 (P9) has it: environments that inherit the top level's.
-		expect(logsFaults(jsonc(deployment))).toEqual([]);
-		expect(Object.keys(jsonc(deployment).env)).toEqual(["development", "production"]);
+		expect(Object.keys(jsonc(wrangler).env)).toEqual(["development", "production"]);
 	});
 
 	it("refuses a configuration that turns any of them on, here or in an environment, or says what it does not know", () => {
-		const base = () => jsonc(deployment);
+		const base = () => jsonc(wrangler);
 		const changed: [string, (config: any) => void][] = [
 			["logs on in an environment", (config) => (config.env.production.observability = { enabled: true })],
 			["Workers Logs on", (config) => (config.observability.logs.enabled = true)],
@@ -171,19 +169,15 @@ describe("the relay logs nothing", () => {
 	});
 
 	it("runs its tests on the relay's own runtime settings and objects: the test configurations' copies match", () => {
-		// Their logs are held to being off, not to the relay's very block, which the deployments' adds to (#821).
-		const matches = (relayText: string) => {
-			const relay = jsonc(relayText);
-			for (const [name, text] of [["protocol", protocolWrangler], ["sealed", sealedWrangler]]) {
-				const copy = jsonc(text);
-				for (const key of ["compatibility_date", "compatibility_flags", "send_metrics", "durable_objects", "migrations"]) {
-					expect(copy[key], `test/${name}/wrangler.jsonc: ${key}`).toEqual(relay[key]);
-				}
-				expect(logsFaults(copy), `test/${name}/wrangler.jsonc`).toEqual([]);
+		// Their logs are held to being off, not to the relay's very block, which says more (traces, Issues).
+		const relay = jsonc(wrangler);
+		for (const [name, text] of [["protocol", protocolWrangler], ["sealed", sealedWrangler]]) {
+			const copy = jsonc(text);
+			for (const key of ["compatibility_date", "compatibility_flags", "send_metrics", "durable_objects", "migrations"]) {
+				expect(copy[key], `test/${name}/wrangler.jsonc: ${key}`).toEqual(relay[key]);
 			}
-		};
-		matches(wrangler);
-		matches(deployment);
+			expect(logsFaults(copy), `test/${name}/wrangler.jsonc`).toEqual([]);
+		}
 	});
 
 	it("has no use of the console in its code, nor in the verifier it bundles", () => {
@@ -234,8 +228,9 @@ async function answer(client: Client): Promise<any> {
 async function through(recorder: Recorder, pairing?: string): Promise<Client> {
 	// As RemoteKit's client sends them (USER_AGENT and ACCEPT_LANGUAGE in scan.ts).
 	const headers: Record<string, string> = { Upgrade: "websocket", "User-Agent": "pi2-relay-client", "Accept-Language": "*" };
+	// Every connection is counted against its address (src/addresses.ts), so each carries one, as Cloudflare sets it.
+	headers["CF-Connecting-IP"] = newAddress();
 	if (pairing !== undefined) headers["Pi2-Pairing"] = pairing;
-	else headers["CF-Connecting-IP"] = newAddress();
 	const response = await recorder.fetch(new Request("https://relay.test/v1", { headers }), (request) => worker.fetch(request.url, { method: request.method, headers: request.headers }));
 	expect(response.status).toBe(101);
 	return new Client(response.webSocket!);
