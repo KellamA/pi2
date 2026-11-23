@@ -160,10 +160,20 @@ for key in PI2_HOME PI2_KEYCHAIN_SERVICE PI2_SHOW PI2_HUB PI2_TEST_COPY PI2_LOGI
 	expect "--env does not allow" start test-8 --env "$key=value"
 done
 expect "--env repeats PI2_DEMO_COST" start test-8 --env PI2_DEMO_COST=1 --env PI2_DEMO_COST=2
-for key in PI2_DEMO_PICTURES PI2_DEMO_TEXT_MODEL PI2_DEMO_COST PI2_DEMO_TOKENS_PER_SECOND PI2_GH \
+for key in PI2_DEMO_PICTURES PI2_DEMO_TEXT_MODEL PI2_DEMO_COST PI2_DEMO_TOKENS_PER_SECOND PI2_DEMO_COMPACTION_GATE PI2_GH \
 	PI2_REMOTE_STAND_IN PI2_APP_ATTEST_STAND_IN PI2_APP_ATTEST_TEAM; do
 	expect "unknown option --bogus" start test-8 --env "$key=explicit value=with equals" --bogus
 done
+# start --fill seeds the data folder before the first start (#779): what it takes, checked before anything is made.
+expect "--fill needs a number of entries" start test-8 --fill
+expect "--fill needs a number of entries" start test-8 --fill bogus
+expect "--fill needs a number of entries" start test-8 --fill 0
+expect "--fill needs a number of entries" start test-8 --fill project:
+expect "--fill makes at most 10000 entries" start test-8 --fill 10001
+expect "--fill project:<count> makes 1 to 8" start test-8 --fill project:9
+expect "--fill project:<count> makes 1 to 8" start test-8 --fill project:0
+expect "--fill takes one line" start test-8 --fill $'project:One\nTwo'
+expect "unknown option --bogus" start test-8 --fill 600 --fill project --fill project:Sample --fill project:3 --bogus
 expect "unknown option --bogus" start test-8 --env PI2_DEMO_COST= --env PI2_DEMO_TEXT_MODEL=1 --bogus
 expect "--hub needs both" start test-8 --hub bogus
 expect "unknown option --bogus" start test-8 --show 'project:Demo project#notes' --hub conversation-folded --bogus
@@ -172,6 +182,9 @@ expect "--menu needs the label" start test-8 --menu ""
 expect "--menu takes one line" start test-8 --menu $'Atlas\nForge'
 expect "unknown option --bogus" start test-8 --menu "Fix the login bug" --bogus
 rmdir "$root/app/build/test-copies/test-7" "$root/app/build/test-copies"
+# The stand-in build names no Node, which --fill needs to start the copy's engine before the app; refused before the
+# suffix is claimed.
+expect "does not say which Node runs its engine" start test-8 --fill 600
 
 expect "no copy named test-7 was started from this checkout" send test-7 8 hello
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" send test-7 8 hello
@@ -223,6 +236,24 @@ elif ! grep -qF "printf '{\n\t\"onboarded\": true\n}\n' >\"\$DATA/settings.json\
 	failures=$((failures + 1))
 else
 	echo "ok: test-copy start marks the welcome done as the engine reads it"
+fi
+
+# The demo switches start --env passes are honoured only by a development engine, which needs every one of them to be
+# fenced through testSwitch (engine/src/testswitches.ts, #720); PI2_GH alone is read by every engine (#779).
+allowed=$(sed -n 's/^		\(PI2_[A-Z0-9_|]*\)) ;;$/\1/p' "$script" | tr '|' ' ')
+unfenced=""
+for key in $allowed; do
+	[[ $key == PI2_GH ]] && continue
+	grep -qF "	\"$key\"," "$(dirname -- "$script")/../engine/src/testswitches.ts" || unfenced+=" $key"
+done
+if [[ -z $allowed || $allowed != *PI2_DEMO_COMPACTION_GATE* ]]; then
+	echo "FAIL: could not read test-copy's allowlist of --env names, or it lacks PI2_DEMO_COMPACTION_GATE"
+	failures=$((failures + 1))
+elif [[ -n $unfenced ]]; then
+	echo "FAIL: test-copy start --env allows switches that are not in TEST_SWITCHES (engine/src/testswitches.ts):$unfenced"
+	failures=$((failures + 1))
+else
+	echo "ok: every demo switch start --env allows is a test switch the engine fences"
 fi
 
 # start --menu prints the file the app writes for PI2_MENU, by a name each keeps for itself.
@@ -303,49 +334,136 @@ else
 	failures=$((failures + 1))
 fi
 
+# A responder standing in for the copy's app: answers the next request in its control folder with $1.
+respond() {
+	local answer=$1
+	(
+		local deadline=$((SECONDS + 20)) answered=0 d
+		while ((SECONDS < deadline && !answered)); do
+			for d in "$data"/test-copy-control/request-*/; do
+				[[ -f $d/request.json && ! -f $d/response.json ]] || continue
+				printf '%s' "$answer" >"$d/response.json"
+				answered=1
+			done
+			((answered)) || sleep 0.05
+		done
+	) &
+	RESPONDER_PID=$!
+}
+
 # Use the recorded stand-in app above. No real permission query or capture is made: the commands below first
-# refuse permission, then simulate an absent window, a window whose image isn't ready, and a replacement window.
+# refuse permission, then simulate an absent window, a window whose image isn't ready, and a replacement window;
+# then a window with a sheet attached, which the copy names, and an open menu (#779).
 mkdir "$T/bin"
 cat >"$T/bin/osascript" <<'SH'
 #!/bin/bash
-[[ $1 == -l && $2 == JavaScript && $3 == - && $4 == window && $5 == "$SHOT_APP_PID" && $6 == 'Late window' ]] || exit 1
-if [[ $SHOT_ALLOWED == no ]]; then
-	echo not-permitted
-elif [[ ! -e $SHOT_LOG ]]; then
-	echo waiting >"$SHOT_LOG"
-else
-	case $(<"$SHOT_LOG") in
-		waiting) echo 100 ;;
-		'waiting
+[[ $1 == -l && $2 == JavaScript && $3 == - ]] || exit 1
+case $4 in
+	window)
+		[[ $5 == "$SHOT_APP_PID" && $6 == 'Late window' ]] || exit 1
+		if [[ $SHOT_ALLOWED == no ]]; then
+			echo not-permitted
+		elif [[ $SHOT_SHEET == yes ]]; then
+			echo 101
+		elif [[ ! -e $SHOT_LOG ]]; then
+			echo waiting >"$SHOT_LOG"
+		else
+			case $(<"$SHOT_LOG") in
+				waiting) echo 100 ;;
+				'waiting
 100') echo 101 ;;
-		*) exit 1 ;;
-	esac
-fi
+				*) exit 1 ;;
+			esac
+		fi ;;
+	# Front to back, as the window server lists them: the sheet over its window.
+	bounds)
+		[[ $5 == "$SHOT_APP_PID" ]] || exit 1
+		shift 5
+		[[ " $* " == *' 102 '* ]] && echo '102 1760 1250 410 304'
+		for id in 101 100; do [[ " $* " == *" $id "* ]] && echo "$id 1500 1130 1120 740"; done
+		exit 0 ;;
+	menus)
+		[[ $5 == "$SHOT_APP_PID" ]] || exit 1
+		[[ $SHOT_ALLOWED == no ]] && { echo not-permitted; exit 0; }
+		[[ $SHOT_MENU == open ]] && printf '%s\n' '201 1590 1043 279 208' '200 1665 1118 129 58'
+		exit 0 ;;
+	composite)
+		echo "${@:5}" >>"$SHOT_LOG"
+		printf 'composited picture' >"$5"
+		echo written ;;
+	*) exit 1 ;;
+esac
 SH
 cat >"$T/bin/screencapture" <<'SH'
 #!/bin/bash
-[[ $1 == -x && $2 == -o && $3 == -l && $(<"$SHOT_DEST") == original ]] || exit 1
-case $4 in
-	100) echo 100 >>"$SHOT_LOG"; printf partial >"$5"; echo 'could not create image from window' >&2; exit 1 ;;
-	101) echo 101 >>"$SHOT_LOG"; printf 'stand-in picture' >"$5" ;;
+# Each window by itself (-a): with its sheets, a parked window cannot be captured (#779).
+[[ $1 == -x && $2 == -o && $3 == -a && $4 == -l && $(<"$SHOT_DEST") == original ]] || exit 1
+case $5 in
+	100) echo 100 >>"$SHOT_LOG"; printf partial >"$6"; echo 'could not create image from window' >&2; exit 1 ;;
+	101|102|200|201) echo "$5" >>"$SHOT_LOG"; printf 'stand-in picture' >"$6" ;;
 	*) exit 1 ;;
 esac
 SH
 chmod +x "$T/bin/osascript" "$T/bin/screencapture"
 shot_dest="$root/shot.png"
 printf original >"$shot_dest"
-PATH="$T/bin:$PATH" SHOT_APP_PID=$$ SHOT_DEST="$shot_dest" SHOT_LOG="$T/shot.log" SHOT_ALLOWED=no \
+data="$T/home/Library/Application Support/pi2-test-7"
+PATH="$T/bin:$PATH" HOME="$T/home" SHOT_APP_PID=$$ SHOT_DEST="$shot_dest" SHOT_LOG="$T/shot.log" SHOT_ALLOWED=no \
 	expect "screen capture is not allowed" shot test-7 "$shot_dest" --window 'Late window'
-out=$(PATH="$T/bin:$PATH" SHOT_APP_PID=$$ SHOT_DEST="$shot_dest" SHOT_LOG="$T/shot.log" SHOT_ALLOWED=yes \
+PATH="$T/bin:$PATH" HOME="$T/home" SHOT_APP_PID=$$ SHOT_DEST="$shot_dest" SHOT_LOG="$T/shot.log" SHOT_ALLOWED=no \
+	expect "screen capture is not allowed" shot test-7 "$shot_dest" --menu
+expect "give --menu or --window, not both" shot test-7 "$shot_dest" --menu --window 'Late window'
+# A copy that cannot say which windows are attached (no window control folder, as in a build before #779): the window
+# alone, as before, saying so.
+out=$(PATH="$T/bin:$PATH" HOME="$T/home" SHOT_APP_PID=$$ SHOT_DEST="$shot_dest" SHOT_LOG="$T/shot.log" SHOT_ALLOWED=yes \
 	"$copy" shot test-7 "$shot_dest" --window 'Late window' 2>&1)
 status=$?
-if ((status == 0)) && [[ $out == *'Captured window 101'* && $(<"$T/shot.log") == $'waiting\n100\n101' &&
+if ((status == 0)) && [[ $out == *'Captured window 101'* && $out == *'capturing the window alone'* &&
+	$(<"$T/shot.log") == $'waiting\n100\n101' &&
 	$(<"$shot_dest") == 'stand-in picture' && -z $(find "$root" -name '.test-copy-shot.*' -print) ]]; then
 	echo "ok: test-copy shot waits for the named window and retries a capture that isn't ready"
 else
 	echo "FAIL: test-copy shot did not publish and clean up a retried capture (exit $status): $out"
 	failures=$((failures + 1))
 fi
+# A sheet the copy names as attached to the window: each captured alone, then drawn back to front where they sit, on a
+# canvas of the window's bounds.
+printf original >"$shot_dest"
+rm -f "$T/shot.log"
+mkdir -p "$data/test-copy-control"
+respond '{"result":"102"}'
+out=$(PATH="$T/bin:$PATH" HOME="$T/home" SHOT_APP_PID=$$ SHOT_DEST="$shot_dest" SHOT_LOG="$T/shot.log" SHOT_ALLOWED=yes SHOT_SHEET=yes \
+	"$copy" shot test-7 "$shot_dest" --window 'Late window' 2>&1)
+status=$?
+kill "$RESPONDER_PID" 2>/dev/null
+composite=$(sed -n 3p "$T/shot.log" 2>/dev/null)
+if ((status == 0)) && [[ $out == *'Captured window 101'*'with the 1 window(s) attached to it drawn where they sit'* &&
+	$(sed -n 1,2p "$T/shot.log") == $'101\n102' && $composite == *' 1500 1130 1120 740 '*'/101.png 1500 1130 1120 740 '*'/102.png 1760 1250 410 304' &&
+	$(<"$shot_dest") == 'composited picture' && -z $(find "$root" -name '.test-copy-shot.*' -print) ]]; then
+	echo "ok: test-copy shot draws a sheet the copy names over its window, where it sits"
+else
+	echo "FAIL: test-copy shot with a sheet (exit $status): $out"
+	echo "  log: $(tr '\n' '|' <"$T/shot.log" 2>/dev/null)"
+	failures=$((failures + 1))
+fi
+# --menu: refused with no menu open, after a short wait; an open menu's windows captured and put together.
+PATH="$T/bin:$PATH" HOME="$T/home" SHOT_APP_PID=$$ SHOT_DEST="$shot_dest" SHOT_LOG="$T/shot.log" SHOT_ALLOWED=yes SHOT_MENU=closed \
+	expect "the copy has no menu open" shot test-7 "$shot_dest" --menu
+printf original >"$shot_dest"
+rm -f "$T/shot.log"
+out=$(PATH="$T/bin:$PATH" HOME="$T/home" SHOT_APP_PID=$$ SHOT_DEST="$shot_dest" SHOT_LOG="$T/shot.log" SHOT_ALLOWED=yes SHOT_MENU=open \
+	"$copy" shot test-7 "$shot_dest" --menu 2>&1)
+status=$?
+composite=$(sed -n 3p "$T/shot.log" 2>/dev/null)
+if ((status == 0)) && [[ $out == *'Captured the open menu of pi² test-7 (2 window(s): 201 200)'* &&
+	$(sed -n 1,2p "$T/shot.log") == $'200\n201' && $composite == *' 1590 1043 279 208 '*'/200.png 1665 1118 129 58 '*'/201.png 1590 1043 279 208' &&
+	$(<"$shot_dest") == 'composited picture' ]]; then
+	echo "ok: test-copy shot --menu captures the copy's open menu"
+else
+	echo "FAIL: test-copy shot --menu (exit $status): $out"
+	failures=$((failures + 1))
+fi
+rm -rf -- "$data"
 
 # Saved test variables must pass the same allowlist on reopen: no edited state can supply PI2_HOME.
 printf '%s\n' 'test_env=PI2_HOME=elsewhere' >"$root/app/build/test-copies/test-7/state"
@@ -510,7 +628,7 @@ answers() {
 rm -- "$data"
 mkdir -p "$data/test-copy-control"
 # A stand-in app process that really runs from the copy's bundle, so the recorded checks pass. macOS kills a
-copied binary without a signature, so sign it ad hoc, as test-copy itself signs a copied bundle.
+# copied binary without a signature, so sign it ad hoc, as test-copy itself signs a copied bundle.
 mkdir -p "$saved/Contents/MacOS"
 cp /bin/sleep "$saved/Contents/MacOS/pi2"
 codesign --force --sign - "$saved/Contents/MacOS/pi2" >/dev/null 2>&1
@@ -546,22 +664,6 @@ PATH="$T/bin:$PATH" CAN_CLICK_APP=yes HOME="$T/home" \
 	expect "refusing a symlink for the copy's window control folder" can-click test-7
 rm -- "$data/test-copy-control"
 mkdir -p "$data/test-copy-control"
-# A responder standing in for the copy's app: answers the expose request in its control folder.
-respond() {
-	local answer=$1
-	(
-		local deadline=$((SECONDS + 20)) answered=0 d
-		while ((SECONDS < deadline && !answered)); do
-			for d in "$data"/test-copy-control/request-*/; do
-				[[ -f $d/request.json && ! -f $d/response.json ]] || continue
-				printf '%s' "$answer" >"$d/response.json"
-				answered=1
-			done
-			((answered)) || sleep 0.05
-		done
-	) &
-	RESPONDER_PID=$!
-}
 raised='Raised the parked main window within its own level, and the app gives it to accessibility, where the computer tool looks for it'
 respond "{\"result\":\"$raised\"}"
 PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=yes HOME="$T/home" \

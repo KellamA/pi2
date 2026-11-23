@@ -3,8 +3,15 @@ import PackageDescription
 
 let package = Package(
     name: "pi2",
-    // iOS for the targets the iPhone app shares with the Mac app (docs/iphone.md section 8): PiModels and EngineKit so far.
+    // iOS for the targets the iPhone app shares with the Mac app (docs/iphone.md section 8): PiModels, EngineKit and RemoteKit so far.
     platforms: [.macOS(.v15), .iOS(.v18)],
+    // What the iPhone app's Xcode project (iphone/pi2.xcodeproj, #680) links from this package as a local package: Xcode
+    // links only a package's products, never its bare targets. The Mac app's build is unchanged by them.
+    products: [
+        .library(name: "PiModels", targets: ["PiModels"]),
+        .library(name: "EngineKit", targets: ["EngineKit"]),
+        .library(name: "TranscriptKit", targets: ["TranscriptKit"]),
+    ],
     dependencies: [
         // Updates for release builds. build.sh copies the framework into the app.
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.1"),
@@ -32,7 +39,8 @@ let package = Package(
         .target(name: "FileLinkKit", path: "Sources/FileLinkKit"),
         // The conversation page's web view, and the page loaded ahead for the next pane (#441). Its own module so
         // pi2-transcript-check can check them. PI2_DEVELOPMENT as for the app: the web inspector and drawing when hidden.
-        .target(name: "TranscriptKit", path: "Sources/TranscriptKit", swiftSettings: [.define("PI2_DEVELOPMENT", .when(configuration: .debug))]),
+        // Where the page is and its messages are shared with the iPhone app (docs/iphone.md section 8, #671).
+        .target(name: "TranscriptKit", dependencies: ["PiModels"], path: "Sources/TranscriptKit", swiftSettings: [.define("PI2_DEVELOPMENT", .when(configuration: .debug))]),
         // Whether the process at the other end of a connection to the engine's socket is the app (#504). Its own module
         // so pi2-peer-check can check it.
         .target(name: "PeerKit", path: "Sources/PeerKit"),
@@ -43,6 +51,10 @@ let package = Package(
         // conversations and messages on their way, shared by the Mac app and the iPhone app (docs/iphone.md section 8,
         // #670). Foundation, Observation, Network and CryptoKit alone, so that it builds for iOS too.
         .target(name: "EngineKit", dependencies: ["PiModels"], path: "Sources/EngineKit"),
+        // The channel between a phone and pi² Remote, and sealing (#674, docs/iphone.md 5.2, 5.3): Noise, framing, HPKE
+        // items signed by their writer, the pairing payload, pair, attach and presence. CryptoKit only, nothing of the Mac
+        // app's: pi² Remote and the iPhone app share it. Relay/ is the relay's client (#678).
+        .target(name: "RemoteKit", path: "Sources/RemoteKit"),
         .executableTarget(
             name: "pi2",
             dependencies: ["ComputerKit", "BrowserKit", "PaneKit", "ComposeKit", "LoginItemKit", "PiStyle", "WindowKit", "MenuKit", "FileLinkKit", "TranscriptKit", "PiModels", "EngineKit", .product(name: "Sparkle", package: "Sparkle")],
@@ -84,5 +96,14 @@ let package = Package(
         // into EngineKit (#670): a recorded session played to the client, and what the views read compared with what they
         // read before.
         .executableTarget(name: "pi2-client-check", dependencies: ["PiModels", "EngineKit"], path: "Sources/pi2-client-check", exclude: ["Fixture"]),
+        // Checks RemoteKit against the published Noise and HPKE test vectors in vectors/, and runs a pairing and a
+        // connection between two ends of its own, in memory. Touches no key store and no network.
+        .executableTarget(name: "pi2-remote-check", dependencies: ["RemoteKit"], path: "Sources/pi2-remote-check", exclude: ["vectors"]),
+        // Runs every parser in RemoteKit that reads bytes from the network against mutated and random input, from a fixed
+        // seed for a bounded time (#674).
+        .executableTarget(name: "pi2-remote-fuzz", dependencies: ["RemoteKit"], path: "Sources/pi2-remote-fuzz"),
+        // Checks RemoteKit's relay client (#678): its messages, and the client against a relay of its own in memory; with
+        // --relay, the protocol test against the relay itself on this computer (scripts/relay-protocol-test).
+        .executableTarget(name: "pi2-relay-check", dependencies: ["RemoteKit"], path: "Sources/pi2-relay-check"),
     ]
 )

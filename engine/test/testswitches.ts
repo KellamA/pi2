@@ -85,6 +85,7 @@ const SWITCHES: Record<string, string> = {
 	PI2_APP_ATTEST_STAND_IN: "1",
 	PI2_APP_ATTEST_TEAM: "ABCDE12345",
 	PI2_UNPLACED_HANDLER: "",
+	PI2_DEVICE_SESSION_MS: "86400000",
 	// The tunings, at their usual values.
 	PI2_AWAKE_GRACE_MS: "60000",
 	PI2_AWAKE_POLL_MS: "30000",

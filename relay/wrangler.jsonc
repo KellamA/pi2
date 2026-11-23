@@ -1,0 +1,112 @@
+// The relay's Worker (docs/iphone.md 5.3, #676), and its two deployments (#677, P9): `development`, for development
+// builds and the sandbox push environment, and `production`, for TestFlight builds and later (9.1). The top level is
+// for local runs and tests only, and has no settings, so a relay deployed from it refuses everything. Nothing deploys
+// from here but the owner: through .github/workflows/relay.yml, which waits for their approval, or by hand
+// (docs/relay.md, "Deploying"), always through scripts/deploy.mjs.
+//
+// What a deployment needs that is not here: its two secrets, `APP_ATTEST_TEAM_ID` and `ADDRESS_KEY`, which the owner
+// adds in Cloudflare's dashboard (README.md, "Settings"); and, for production, its custom domain, which the per-address
+// rate limit needs (docs/relay.md).
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "pi2-relay",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-11-01",
+	// Nothing here needs Node's modules, and this date turns them on by default: off, so the runtime is no wider than the
+	// code.
+	"compatibility_flags": ["no_nodejs_compat", "no_nodejs_compat_v2"],
+	// Wrangler's command events off for this project. Not every event of this Wrangler version heeds it, so every script
+	// also runs Wrangler with WRANGLER_SEND_METRICS=false and a throwaway home folder (scripts/isolated.mjs, README.md).
+	"send_metrics": false,
+	// Nor the names and versions of the packages the bundle uses, which a deploy would otherwise send.
+	"dependencies_instrumentation": { "enabled": false },
+	// The deployments' variables are this file's alone: a deploy removes any added in the dashboard. Secrets stay.
+	"keep_vars": false,
+
+	// Logs off (5.3): no Workers Logs, no invocation logs (which keep a request's URL), no traces, no Issues (which keep
+	// an exception's text), no Logpush, and the code writes nothing to the console. Each is written out, so that a deploy
+	// says so rather than leaving whatever the dashboard has. P15 (#683) adds the check in CI that fails if either changes. Every environment inherits
+	// these; tail consumers, which an environment does not inherit, are written out empty in each.
+	"observability": {
+		"enabled": false,
+		"logs": { "enabled": false, "invocation_logs": false },
+		"traces": { "enabled": false },
+		"issues": { "enabled": false }
+	},
+	"logpush": false,
+	// No source maps uploaded: with logs off nothing would use them.
+	"upload_source_maps": false,
+
+	// No address but the ones an environment names: no workers.dev address unless it says so, and never version or
+	// preview addresses, which would reach the relay round the production domain's rate limit.
+	"workers_dev": false,
+	"preview_urls": false,
+
+	"durable_objects": {
+		"bindings": [
+			// One for each pairing, named by its id: its sockets, its devices, its mailbox and its limits.
+			{ "name": "PAIRINGS", "class_name": "Pairing" },
+			// One for each App Attest key, named by its id: the pairing and device it is tied to (README.md, "join").
+			{ "name": "ATTEST_KEYS", "class_name": "AttestKey" },
+			// One for each address that registers, named by a keyed hash of it that changes daily: its count (6.6).
+			{ "name": "ADDRESSES", "class_name": "Address" }
+		]
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["Pairing", "AttestKey", "Address"] }],
+
+	"env": {
+		// The development relay: development builds of pi² for iPhone, signed for development, and App Attest's
+		// development environment. At its workers.dev address, which needs no domain. Has no rate limit per address in
+		// front of it (a workers.dev address has no rules of the owner's), which is why the production relay is on a
+		// domain of its own.
+		"development": {
+			"name": "pi2-relay-development",
+			"workers_dev": true,
+			"preview_urls": false,
+			"vars": {
+				"APP_ATTEST_BUNDLE_ID": "dev.pi2.ios",
+				"APP_ATTEST_ENVIRONMENTS": "development",
+				"APP_ATTEST_CATEGORIES": "3,none",
+				// The lowest build of pi² Remote (the Mac's build number) and of pi² for iPhone (its CFBundleVersion) the
+				// relay takes. 1 takes every build there is. Raising them shuts out every older build (docs/relay.md).
+				"MIN_BUILD_MAC": "1",
+				"MIN_BUILD_DEVICE": "1"
+			},
+			"durable_objects": {
+				"bindings": [
+					{ "name": "PAIRINGS", "class_name": "Pairing" },
+					{ "name": "ATTEST_KEYS", "class_name": "AttestKey" },
+					{ "name": "ADDRESSES", "class_name": "Address" }
+				]
+			},
+			"tail_consumers": [],
+			"streaming_tail_consumers": []
+		},
+
+		// The production relay: TestFlight builds and later, App Attest's production environment. Deployed only once
+		// #712's settings are made (docs/iphone.md 12.3), and only to a custom domain: add it here, as
+		// `"routes": [{ "pattern": "relay.<domain>", "custom_domain": true }]`, in the pull request that gives it.
+		// scripts/deploy.mjs refuses to deploy production without one.
+		"production": {
+			"name": "pi2-relay-production",
+			"workers_dev": false,
+			"preview_urls": false,
+			"vars": {
+				"APP_ATTEST_BUNDLE_ID": "dev.pi2.ios",
+				"APP_ATTEST_ENVIRONMENTS": "production",
+				"APP_ATTEST_CATEGORIES": "2,4,none",
+				"MIN_BUILD_MAC": "1",
+				"MIN_BUILD_DEVICE": "1"
+			},
+			"durable_objects": {
+				"bindings": [
+					{ "name": "PAIRINGS", "class_name": "Pairing" },
+					{ "name": "ATTEST_KEYS", "class_name": "AttestKey" },
+					{ "name": "ADDRESSES", "class_name": "Address" }
+				]
+			},
+			"tail_consumers": [],
+			"streaming_tail_consumers": []
+		}
+	}
+}

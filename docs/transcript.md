@@ -14,13 +14,18 @@ app/Web/transcript/        the page: plain HTML, CSS and JavaScript, no build st
   history.js               entries put above those on screen, without moving them (PiHistory)
   transcript.js            state, rows, scrolling, the bridge
 app/Web/test/              node --test: the five modules above, with a small fake DOM
-app/Sources/TranscriptKit/
-  TranscriptWebKitView.swift  the web view: loading, navigation policy, menu, drops
-  SparePage.swift          the page loaded ahead for the next pane, where it waits, and the pane it moves into
+app/Sources/TranscriptKit/ shared with the iPhone app (iphone.md section 8), but for the two Mac files
+  TranscriptLoading.swift  the page's loading: configuration, navigation policy, which messages are the page's, the layout's mark
+  TranscriptAction.swift   checking the page's messages
+  TranscriptMessages.swift sending the page a message, and waiting for it to draw
+  TranscriptPage.swift     where the page is in the bundle
+  TranscriptWebKitView.swift  the Mac's web view: menu, drops, focus (macOS only)
+  SparePage.swift          the page loaded ahead for the next pane, where it waits, and the pane it moves into (macOS only)
+  TranscriptUIKitView.swift   the phone's web view (iOS only)
 app/Sources/PiModels/
   TranscriptFeed.swift     what the page is sent, and only what changed since last time
 app/Sources/pi2/
-  TranscriptPage.swift     where the page is in the bundle, the palette, and checking the page's messages
+  TranscriptPage.swift     the page loaded ahead for the app's panes, and the palette
   TranscriptWeb.swift      the SwiftUI view, and the bridge to the engine
 ```
 
@@ -42,6 +47,19 @@ The page keeps the conversation as the app sends it: entries by ID, tool results
 - Hovering over the end of a turn shows Copy (the turn's Markdown) and Fork from here, and, for a turn of 1,500 characters or more, Save as a File… (the same Markdown, as `answer.md`); hovering over a message of the person's shows Copy. A chat has its own controls there instead of Fork from here ([below](#a-chats-controls)).
 - **Saving as a file** (#286): a code block's Save… offers `code.<ending>` for its language (`code.py`, `code.sh`; `code.txt` for one it does not know), an open tool output's Save… its file's name when its label is one (`notes.md`) or `output.txt`, an edit's `changes.diff`. A picture opened larger has Save…, which saves it as the engine has it. A document `write_document` wrote has, at the end of its line, **Open**, which opens it in the app the person uses for that kind of file, and **Save a Copy…**: a chat's documents are kept in the data folder, where the person would not find them. Each asks the app, which shows a save panel; the page only offers a name, and names a picture or a document by the entry that holds it, never by a path.
 - The page follows new content while the reader is at the bottom. Scrolling up stops that, and a "Jump to latest" button appears. Sending a message brings the reader back.
+
+## On a phone
+
+The iPhone app shows the same page (#671, [iphone.md section 8](iphone.md#8-the-shared-package)), in `TranscriptUIKitView`, which loads it as the Mac's view does (`TranscriptLoading`: nothing kept on disk, no windows, one navigation, messages only from the page itself) and adds what a phone needs: no data detectors, link previews or WebKit's long-press menus, and word to its bridge when the appearance changes, for the palette. The page is in the phone app's bundle, never loaded from the Mac or the network.
+
+The phone's view marks the page for a narrow screen and touch before anything is drawn: a script the view adds (not the page's, so its Content-Security-Policy does not refuse it) gives the root element the classes `narrow` and `touch` (`TranscriptLayout.phone`). The rules for them are at the end of `transcript.css`, each under `html.narrow` or `html.touch`:
+
+- **Narrow**: a margin of 16 points, text at 15 pixels, bubbles to 88% of the column, a card's note under its title rather than beside it, tighter tables and code. A table or a code block wider than the screen scrolls sideways inside itself, as on the Mac.
+- **Touch**: what a pointer shows by hovering is shown: a message's Copy, Edit and Try Again, in the flow under it, and each tool row's chevron. Every control is at least 32 points either way (a tool row is one, its chevron in it). A question's answer field has 16-pixel text, so taking the keyboard does not zoom the page.
+
+`index.html` asks for the device's width as its viewport, which the Mac's web view ignores. The Mac's view never marks the page, so none of these rules reaches the Mac at any width: its narrowest pane is 319 points (`HubLayout.minimumWidth`), narrower than any iPhone iOS 18 runs on (375 to 440 in portrait), so the rules could not have been chosen by width without changing the Mac. `pi2-transcript-check` draws the page at 390 points as the phone's view marks it, and at 319 as the Mac draws it ([development.md](development.md#the-page-loaded-ahead)).
+
+What the phone's bridge does with the page's messages is the phone app's (P18): none of them may become a request to the engine but two reads of the same conversation when the page asks, each checked against what the conversation holds: `conversation.older` and `conversation.image` ([iphone.md section 8](iphone.md#8-the-shared-package)).
 
 ## Files on this Mac
 
@@ -179,7 +197,7 @@ cd app/Web && node --test test/
 
 covers the Markdown renderer (including hostile HTML, link schemes, links to files and paths written as code, attribute escaping, half-arrived Markdown, tables, nested lists, fences, pathological input), the tool summaries and diffs, what a selection copies as, a chat's versions, sources and models (`chat.test.mjs`), and how older entries are put in front, which row is kept in place while they are, when the page asks for more and which turn is cut short (`history.test.mjs`). CI runs it.
 
-`pi2-transcript-check` loads the real page in `TranscriptKit`'s web view and checks the page loaded ahead: handed over clean, showing only what it is sent next, ready once loaded when taken early, let go when its process ends, and moved into its pane without leaving the window ([development.md](development.md#the-page-loaded-ahead)). CI runs it too.
+`pi2-transcript-check` loads the real page in `TranscriptKit`'s web view and checks the page loaded ahead: handed over clean, showing only what it is sent next, ready once loaded when taken early, let go when its process ends, and moved into its pane without leaving the window. It also draws the page [on a phone](#on-a-phone)'s 390 points and in the Mac's narrowest pane ([development.md](development.md#the-page-loaded-ahead)). CI runs it too.
 
 For #440 a throwaway WebKit harness loaded the page offscreen and fed it a window of 300 entries starting in the middle of a turn, then two older parts as the page asked for them: the row on screen moved 0.0 px at each step (0.33 px with the earlier rounding), the page asked only near the top, the cut turn's Copy asked for the part with its start and then copied the whole turn, and the line went once nothing older was left. In a throwaway copy, a conversation of 1,310 entries opened at its newest 300 and came in three requests of about 250 KB (12 to 15 ms each in the engine) as Home was pressed, down to its first message.
 

@@ -21,7 +21,7 @@
 //   answer to a claim), `revoke`, and `sessionClosed`. #689 (P20) adds `push` here.
 //
 // pi² Remote's requests: `remote.hello` (the Mac's public keys, the pairing, the Mac's addresses), `remote.state` (the
-// same when they change), `remote.pairClaim` and `remote.pairWrong` (pairing, 3.3), `remote.attachBegin` and
+// same when they change), `remote.pairClaim`, `remote.pairWrong` and `remote.pairRefused` (pairing, 3.3), `remote.attachBegin` and
 // `remote.attach` (3.4: an attach or a resume, signed by the device key and the presence key), and
 // `remote.sessionEnd` (the phone's session ended, 4.5). `remote.mailboxIn` (#678, P10) is added here, and checks each
 // item with `checkRequestItem` in devices.ts.
@@ -36,7 +36,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import type { Socket } from "node:net";
 import { join } from "node:path";
-import { type DevicePath, deviceLogged, deviceMay, forTheHelper, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID } from "./answers.ts";
+import { allowsHiddenApproval, type DevicePath, deviceLogged, deviceMay, forTheHelper, HIDDEN_FROM_THE_PHONE, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID } from "./answers.ts";
 import { type Client, clients, send, type Wire } from "./clients.ts";
 import {
 	attachChallenge,
@@ -50,12 +50,15 @@ import {
 	logDevice,
 	macNameNow,
 	MINIMUM_PHONE_BUILD,
-	maskKeys,
+	maskValue,
+	shownName,
 	notify,
 	p256Key,
 	pairClaim,
 	pairedDevice,
+	pairRefusedByHelper,
 	pairWrong,
+	helperGone,
 	activeDevices,
 	remoteHooks,
 	sessionsChanged,
@@ -77,6 +80,8 @@ type RemoteParts = {
 	/** What main.ts does when a connection goes: its subscriptions stopped, features told. */
 	drop: (client: Client) => void;
 	approvalSwitch: (id: string) => SwitchName | null;
+	/** Whether a device's copy of the approval waiting under an id hides part of it (answers.ts, `approvalHidden`). */
+	approvalHidden: (id: string) => boolean;
 };
 
 let log: RemoteParts["log"];
@@ -85,6 +90,7 @@ let handlers: RemoteParts["handlers"];
 let greet: RemoteParts["greet"];
 let drop: RemoteParts["drop"];
 let approvalSwitch: RemoteParts["approvalSwitch"];
+let approvalHidden: RemoteParts["approvalHidden"];
 
 type Helper = { child: ChildProcess; wire: Socket; hello: { addresses: string[] } | null; stopping: boolean };
 let helper: Helper | null = null;
@@ -96,11 +102,31 @@ let stops: number[] = [];
 const waiters = new Set<{ resolve: (hello: { addresses: string[] }) => void }>();
 let saidMissing = false;
 
-type Session = { id: string; device: string; path: Exclude<DevicePath, "mailbox">; since: number; client: Client; closed: boolean };
+type Session = { id: string; device: string; path: Exclude<DevicePath, "mailbox">; since: number; client: Client; closed: boolean; limit?: ReturnType<typeof setTimeout> };
 const sessions = new Map<string, Session>();
 
+/**
+ * The engine's own bound on a session, whatever pi² Remote does: a session ends when the helper's connection closes,
+ * and at the latest a day after its last attach or resume with a presence signature. A channel lasts at most a day
+ * and is then made again (5.2), and every new channel is a resume with a new presence signature (5.8, decision 28),
+ * so a day is the longest a session can rightly go without one. `PI2_DEVICE_SESSION_MS`, a development engine's test
+ * switch, shortens it for the tests.
+ */
+const SESSION_LIMIT_MS = (() => {
+	const given = Number(testSwitch("PI2_DEVICE_SESSION_MS"));
+	return Number.isSafeInteger(given) && given > 0 ? given : 86_400_000;
+})();
+export const SESSION_OVER = "The session reached its limit. Open pi² with Face ID again.";
+
+/** Starts the session's bound again from now: at an attach or a resume, each signed under Face ID. */
+function bound(session: Session): void {
+	clearTimeout(session.limit);
+	session.limit = setTimeout(() => closeSession(session.id, SESSION_OVER), SESSION_LIMIT_MS);
+	session.limit.unref();
+}
+
 export function wireRemote(parts: RemoteParts): void {
-	({ log, bundle, handlers, greet, drop, approvalSwitch } = parts);
+	({ log, bundle, handlers, greet, drop, approvalSwitch, approvalHidden } = parts);
 	Object.assign(remoteHooks, {
 		changed: reconsider,
 		toHelper,
@@ -116,6 +142,7 @@ export function wireRemote(parts: RemoteParts): void {
 			const record = pairedDevice(device);
 			if (record !== undefined) for (const session of sessions.values()) if (session.device === device) send(session.client, deviceEvent(record));
 		},
+		addresses: () => (helper?.hello == null ? null : helper.hello.addresses),
 	} satisfies typeof remoteHooks);
 	reconsider();
 }
@@ -143,6 +170,14 @@ function helperProgram(): { command: string; args: string[] } | null {
 }
 
 let stopTimer: ReturnType<typeof setTimeout> | undefined;
+/** The longest line pi² Remote takes from a phone (#675): two pictures of 5 MB in base64, with the message's text. */
+export const MAX_PHONE_LINE = 16 * 1024 * 1024;
+/**
+ * The longest line taken from pi² Remote, in characters: a phone's line, at most MAX_PHONE_LINE bytes, so as many
+ * characters or fewer, in its session's wrapping (`{"session":…,"message":…}`), with room to spare. pi² Remote's own
+ * requests are far smaller.
+ */
+export const MAX_HELPER_LINE = MAX_PHONE_LINE + 64 * 1024;
 
 /**
  * Starts or stops pi² Remote as `helperWanted` says. It is stopped a moment after it is no longer wanted, not at once:
@@ -187,16 +222,26 @@ function startHelper(): void {
 	log("remote: started pi² Remote, process", child.pid);
 	const unfinished: string[] = [];
 	wire.setEncoding("utf8");
+	let held = 0;
 	wire.on("data", (chunk: string) => {
 		let start = 0;
 		for (let newline = chunk.indexOf("\n"); ; newline = chunk.indexOf("\n", start)) {
 			if (newline === -1) {
 				if (start < chunk.length) unfinished.push(chunk.slice(start));
+				held += chunk.length - start;
+				// A line longer than any a phone may send stops pi² Remote, as a crash does: it faces the network.
+				if (held > MAX_HELPER_LINE && !current.stopping) {
+					log(`remote: pi² Remote sent a line longer than ${MAX_HELPER_LINE} characters, and was stopped`);
+					unfinished.length = 0;
+					wire.destroy();
+					current.child.kill("SIGKILL");
+				}
 				break;
 			}
 			unfinished.push(chunk.slice(start, newline));
 			const line = unfinished.join("");
 			unfinished.length = 0;
+			held = 0;
 			start = newline + 1;
 			if (line.trim() !== "") heard(current, line);
 		}
@@ -226,6 +271,7 @@ function gone(current: Helper): void {
 	helper = null;
 	current.wire.destroy();
 	for (const session of [...sessions.values()]) closeSession(session.id, "pi² Remote stopped");
+	helperGone();
 	sessionsChanged();
 	if (stopping || current.stopping) {
 		reconsider();
@@ -351,6 +397,10 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 		pairWrong();
 		return {};
 	},
+	"remote.pairRefused": async (_current, params) => {
+		pairRefusedByHelper(params.why);
+		return {};
+	},
 	"remote.attachBegin": async (_current, params) => {
 		if (Object.keys(params).some((key) => key !== "session")) throw new Error("remote.attachBegin takes a session to resume, or nothing.");
 		return attachChallenge();
@@ -363,6 +413,7 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 		if (resumed) {
 			session = resuming;
 			session.path = attached.path;
+			bound(session);
 		} else {
 			session = openSession(attached.device, attached.path);
 			// The greeting goes once pi² Remote has the session's id, which this answer gives it: after the answer.
@@ -392,6 +443,7 @@ function openSession(device: Device, path: Session["path"]): Session {
 	session.client = { socket: deviceWire(session), subscriptions: new Map(), shown: new Set(), device: { id: device.id, session: id } };
 	sessions.set(id, session);
 	clients.add(session.client);
+	bound(session);
 	return session;
 }
 
@@ -401,6 +453,7 @@ function closeSession(id: string, why: string): void {
 	if (session === undefined) return;
 	sessions.delete(id);
 	session.closed = true;
+	clearTimeout(session.limit);
 	drop(session.client);
 	toHelper({ kind: "sessionClosed", session: id, why });
 	sessionsChanged();
@@ -422,7 +475,8 @@ function deviceEvent(device: Device) {
 	return {
 		event: "device",
 		id: device.id,
-		name: device.name,
+		// Stored shown already (devices.ts); stripped again, so a record from before reads back as a phone shows it.
+		name: shownName(device.name, "iPhone"),
 		pairing: state.pairing,
 		mac: { name: macNameNow() },
 		addresses: helper?.hello?.addresses ?? [],
@@ -451,36 +505,86 @@ function deviceWire(session: Session): Wire {
 	};
 }
 
-/** What is never sent in a device session (5.7): the app's host roles, sign-ins, the Mac's upkeep, pairing and keys. */
-export const NEVER_TO_A_DEVICE: ReadonlySet<string> = new Set(["computer", "browser", "auth", "local", "local.progress", "mcp", "devices", "remote"]);
+/**
+ * The events a device is sent (5.7), by name: an allow-list, so that an event added later reaches no phone until it is
+ * named here. Never `computer`, `browser`, `auth`, `local`, `local.progress`, `local.running`, `mcp`, `devices` or
+ * `remote` (the app's host roles, sign-ins, the Mac's upkeep, pairing and keys), nor `pictures`, `look` and
+ * `priority`, settings a phone cannot change.
+ */
+export const TO_A_DEVICE: ReadonlySet<string> = new Set([
+	"library",
+	"agents",
+	"inbox",
+	"activity",
+	"projects",
+	"needs",
+	"reports",
+	"background",
+	"schedules",
+	"recovery",
+	"usage",
+	"providers",
+	"conversation",
+	"conversation.older",
+	"chat",
+	"compactionSettings",
+	"agentDefault",
+	"work",
+	"wakes",
+	"limits",
+	"projectRules",
+	"memory",
+	"github",
+	"coauthor",
+	"branches",
+	"awake",
+	"device",
+]);
 
-/** A line as a device may be sent it, or null for none (5.7). */
+/** When a line could not be made fit for a device, said in engine.log at most once a minute. */
+let droppedSaid = 0;
+
+/**
+ * A line as a device may be sent it, or null for none (5.7). The line is read whole: an event on the list, or an answer
+ * (`id` with `result` or `error`), and nothing else; endpoints by name only; then every string in it, the keys of its
+ * objects too, masked of key shapes before it is written again, and what is nested too deep replaced by a marker
+ * (devices.ts, `maskValue`), so that one deep call does not keep a whole list from the phone. Anything that still goes
+ * wrong drops the line, but an answer, which is answered with an error, so that no request goes unanswered: a line is
+ * never sent unmasked, and never throws into what wrote it.
+ */
 export function forDevice(line: string): string | null {
-	let event = /^\{"event":"([^"\\]*)"/.exec(line)?.[1];
-	if (event === undefined && !line.startsWith('{"id":')) {
-		try {
-			const parsed = JSON.parse(line) as { event?: unknown };
-			if (typeof parsed?.event === "string") event = parsed.event;
-		} catch {
-			return null;
+	try {
+		const message: unknown = JSON.parse(line);
+		if (typeof message !== "object" || message === null || Array.isArray(message)) return null;
+		const fields = message as Record<string, unknown>;
+		if (Object.hasOwn(fields, "event")) {
+			if (typeof fields.event !== "string" || !TO_A_DEVICE.has(fields.event)) return null;
+			if (fields.event === "providers") endpointsByName(fields);
+		} else if (!Object.hasOwn(fields, "id") || !(Object.hasOwn(fields, "result") || Object.hasOwn(fields, "error"))) return null;
+		return JSON.stringify(maskValue(fields));
+	} catch (error) {
+		const now = Date.now();
+		if (now - droppedSaid > 60_000) {
+			droppedSaid = now;
+			log?.("remote: a line was not sent to a device, since it could not be made fit for one:", error instanceof Error ? error.message : error);
 		}
+		// Every answer starts with its id (`send` writes `{ id, … }`); a device's ids are its own numbers and strings.
+		const id = /^\{"id":(-?\d{1,16}|"[A-Za-z0-9_.:-]{0,64}"|null)[,}]/.exec(line)?.[1];
+		return id === undefined ? null : `{"id":${id},"error":${JSON.stringify(ANSWER_NOT_SENT)}}`;
 	}
-	let out = line;
-	if (event !== undefined) {
-		if (NEVER_TO_A_DEVICE.has(event)) return null;
-		if (event === "providers") out = providersForDevice(line);
-	}
-	return maskKeys(out);
 }
 
+/** What a device is answered when the answer itself could not be made fit to send it. */
+export const ANSWER_NOT_SENT = "The answer could not be sent to the phone. Look on the Mac.";
+
 /** Endpoints by name only: their addresses often carry a token typed outside the secret fields (5.7). */
-function providersForDevice(line: string): string {
-	const message = JSON.parse(line) as { providers?: { endpoint?: { id?: unknown; name?: unknown } | null; ask?: { can?: boolean; url?: unknown } | null }[] };
-	for (const provider of message.providers ?? []) {
+function endpointsByName(message: Record<string, unknown>): void {
+	const providers = Array.isArray(message.providers) ? (message.providers as { endpoint?: { id?: unknown; name?: unknown } | null; ask?: { can?: boolean; url?: unknown } | null }[]) : [];
+	for (const provider of providers) {
+		if (typeof provider !== "object" || provider === null) continue;
 		if (provider.endpoint != null) provider.endpoint = { id: provider.endpoint.id, name: provider.endpoint.name };
 		if (provider.ask?.can === true) provider.ask = { can: true, url: null };
 	}
-	return JSON.stringify(message);
 }
 
 /** A device's line in a session: refused outside one, checked against its table, handled as from the app, logged. */
@@ -489,7 +593,10 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
 	const request = (typeof message === "object" && message !== null && !Array.isArray(message) ? message : {}) as { id?: unknown; method?: unknown; params?: unknown };
 	const reply = (body: Record<string, unknown>) => {
 		if (session !== undefined) send(session.client, { id: request.id ?? null, ...body });
-		else write(helper, `${JSON.stringify({ session: id, message: { id: request.id ?? null, ...body } })}\n`);
+		else {
+			const out = forDevice(JSON.stringify({ id: request.id ?? null, ...body }));
+			if (out !== null) write(helper, `{"session":${JSON.stringify(id)},"message":${out}}\n`);
+		}
 	};
 	const device = session === undefined ? undefined : pairedDevice(session.device);
 	if (session === undefined || device === undefined || device.suspendedAt !== null) {
@@ -507,28 +614,35 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
 		reply({ error: "Request parameters must be an object" });
 		return;
 	}
-	const answer = deviceMay(method, params as Params, { path: session.path, approvalSwitch });
+	const gate = { path: session.path, approvalSwitch, approvalHidden };
+	const answer = deviceMay(method, params as Params, gate);
 	const summary = summarize(method, params as Params);
 	const record = (outcome: "done" | "refused" | "failed", why?: string) =>
 		void logDevice({ device: device.id, path: session.path, method, summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }).catch((error) =>
 			log("devices: the log could not be written:", error instanceof Error ? error.message : error),
 		);
 	if (answer === "no" || !Object.hasOwn(handlers, method)) {
-		const why = answer === "no" ? ONLY_ON_THE_MAC : `Unknown method: ${method}`;
+		const why = answer !== "no" ? `Unknown method: ${method}` : allowsHiddenApproval(method, params as Params, gate) ? HIDDEN_FROM_THE_PHONE : ONLY_ON_THE_MAC;
 		reply({ error: why });
 		record("refused", why);
 		return;
 	}
 	const logged = deviceLogged(method, params as Params);
+	// A request that widens is on disk before it is answered (4.4): the log keeps the rest in memory a moment.
+	const widens = answer === "face";
+	const writeLog = (outcome: "done" | "failed", why?: string) =>
+		logDevice({ device: device.id, path: session.path, method, summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }, widens).catch((error) =>
+			log("devices: the log could not be written:", error instanceof Error ? error.message : error),
+		);
 	try {
 		const result = await handlers[method]!(params as Params, session.client);
+		if (logged) await writeLog("done");
 		reply({ result });
-		if (logged) record("done");
-		if (answer === "face") notify("widening", device.id, `${device.name}: ${summary}`);
+		if (widens) notify("widening", device.id, `${device.name}: ${summary}`);
 	} catch (error) {
 		const refused = refusal(error);
+		if (logged) await writeLog("failed", refused.error);
 		reply(refused);
-		if (logged) record("failed", refused.error);
-		if (answer === "face") notify("widening", device.id, `${device.name} tried: ${summary}`);
+		if (widens) notify("widening", device.id, `${device.name} tried: ${summary}`);
 	}
 }

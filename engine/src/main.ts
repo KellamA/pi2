@@ -32,9 +32,9 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { USER_ENTRY_KIND, userContent, userEntryData, validateAttachments } from "./attachments.ts";
-import { createBackup, restoreBackup } from "./backup.ts";
+import { backupStatus, createBackup, restoreBackup, tidyBackups } from "./backup.ts";
 import { appBundle, AppCheck, checkDeviceLists, checkRequestClasses, forTheHelper, ONLY_FROM_THE_HELPER, personOnly } from "./answers.ts";
-import { deviceRequests, devicesClientGone, wireDevices } from "./devices.ts";
+import { deviceRequests, devicesClientGone, flushDeviceLog, hidesSomething, wireDevices } from "./devices.ts";
 import { helperRequests, stopRemote, wireRemote } from "./remote.ts";
 import { backgroundForSubChat, hasRunningCommands } from "./background.ts";
 import { bashForSubChat } from "./commands.ts";
@@ -198,6 +198,7 @@ const pathReady = adoptLoginPath(log, process.env, undefined, undefined, stopLog
 const runningMarker = join(home, "engine.running");
 const stoppedUncleanly = existsSync(runningMarker);
 writeFileSync(runningMarker, String(Date.now()));
+tidyBackups(home, log); // copies an engine on this data folder stopped while making (#792)
 
 // ---- Models, tools, harness
 
@@ -898,7 +899,10 @@ async function handOverToOrchestrator(projectId: string, agent: AgentProfile, ch
 // ---- Requests
 
 const handlers: Record<string, (params: Params, client: Client) => Promise<unknown>> = {
-	"engine.info": async () => ({ build, main: engineMain, pid: process.pid }),
+	// `backup`: whether the last backup did not finish, for Settings › Storage (backup.ts, #792). A device is told no path of
+	// the Mac's, and nothing of its upkeep (docs/iphone.md 5.7).
+	"engine.info": async (_params, client) =>
+		client.device !== undefined ? { build, pid: process.pid } : { build, main: engineMain, pid: process.pid, backup: backupStatus(home) },
 	/** Whether this connection may act for the person (#504): the app asks once it has connected. */
 	"connection.mayAnswer": async (_params, client) => {
 		const { allowed, why } = await mayAnswer(client);
@@ -1635,8 +1639,6 @@ function dropClient(client: Client): boolean {
 	return true;
 }
 
-// pi² Remote, the engine's own child, and the device sessions it carries (remote.ts).
-wireRemote({ log, bundle: appBundle(engineMain, build, process.env), handlers, greet, drop: dropClient, approvalSwitch: (id) => inbox.get(id)?.projectSwitch ?? null });
 
 rmSync(socketPath, { force: true }); // a socket file a killed engine left behind
 const server = createServer((socket) => {
@@ -1716,6 +1718,12 @@ phase = "running";
 if (stopWhenStarted) await stop();
 // Tool calls the last engine left, or anything started early, are decided only from here on (see `Host.ready`).
 markReady();
+// pi² Remote, the engine's own child, and the device sessions it carries (remote.ts): the phone's door opens only now,
+// with the engine ready and the person's PATH set, as the socket's does just below.
+wireRemote({ log, bundle: appBundle(engineMain, build, process.env), handlers, greet, drop: dropClient, approvalSwitch: (id) => inbox.get(id)?.projectSwitch ?? null, approvalHidden: (id) => {
+	const item = inbox.get(id);
+	return item !== undefined && item.kind === "approval" && hidesSomething(item);
+} });
 server.listen(socketPath, () => {
 	log(`listening on ${socketPath}`);
 	harness.resume(); // continue any run the last process left unfinished
@@ -1752,6 +1760,8 @@ async function stop(): Promise<void> {
 	// What features left running (background commands) goes with the engine.
 	await Promise.all(host.features.map((feature) => feature.stopping?.().catch((error) => log("a feature did not stop cleanly:", error instanceof Error ? error.message : error))));
 	await mcp.stop();
+	// What the devices' log keeps in memory a moment, written before the store closes.
+	await flushDeviceLog().catch((error) => log("devices: the log could not be written at stop:", error instanceof Error ? error.message : error));
 	await harness.close(context);
 	rmSync(socketPath, { force: true });
 	rmSync(runningMarker, { force: true });

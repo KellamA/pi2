@@ -66,8 +66,15 @@ extension BranchStatus {
         } else if state != "missing", branch != nil {
             lines.append("Not pushed anywhere yet")
         }
-        if state == "merged", let base { lines.append("Everything on it is on \(base)") }
-        else if let unmerged, let base, unmerged > 0 { lines.append("\(unmerged) commit\(unmerged == 1 ? "" : "s") not on \(base) yet") }
+        // Merged is on what the worktree was made from, or on the default branch as last fetched (#778).
+        if state == "merged", let into = containedIn ?? base { lines.append("Everything on it is on \(into)") }
+        else if branch == nil, let into = containedIn { lines.append("Its commit is on \(into), so removing it loses nothing") }
+        else if let unmerged, let base, unmerged > 0 {
+            if let into = containedIn { lines.append("Everything on it is on \(into)") }
+            else if let defaultBranch, let unmergedDefault {
+                lines.append("\(unmerged) commit\(unmerged == 1 ? "" : "s") not on \(base), \(unmergedDefault) not on \(defaultBranch) yet")
+            } else { lines.append("\(unmerged) commit\(unmerged == 1 ? "" : "s") not on \(base) yet") }
+        }
         return lines
     }
 
@@ -369,7 +376,7 @@ private struct WorktreeDialogsModifier: ViewModifier {
                     let dirty = removing.status.changes > 0 || removing.status.conflicts > 0
                     Text(dirty
                         ? "It has \(removing.status.changes + removing.status.conflicts) uncommitted changes, which would be lost. Commit them first to keep them. The branch is kept."
-                        : "The conversation goes back to the folder it worked in before. A branch with commits that are not merged is kept either way.")
+                        : "The conversation goes back to the folder it worked in before. A branch is deleted only when everything on it is on what it was made from or on the default branch, and no other worktree has it checked out; otherwise it is kept either way.")
                 }
             }
     }

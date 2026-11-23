@@ -31,7 +31,10 @@
 //   back to the listed controls only where the hit test found nothing in the window; and that the action acts on what
 //   its approval card named, or is refused once that no longer holds (#770);
 // - the size and direction of the wheel event (as AppKit decodes it, without posting it), and how actual movement
-//   is reported.
+//   is reported;
+// - that a window is pictured alone, without the windows attached to it, at its own frame's size, so that a sheet's
+//   controls are where the picture has them, and that a picture at another window's proportions is refused (#798).
+//   Whether ScreenCaptureKit then draws a sheet by itself takes a live capture, in a test copy.
 //
 //   cd app && swift build --product pi2-computer-check && .build/debug/pi2-computer-check
 //
@@ -42,6 +45,7 @@
 import AppKit
 import ComputerKit
 import CoreGraphics
+import ScreenCaptureKit
 import SwiftUI
 
 setlinebuf(stdout)
@@ -753,6 +757,36 @@ Task { @MainActor in
         check("report a scrollbar-only change as a fraction", Scrolling.movement(before: anchors, after: [nil, nil], oldValue: 0.5, newValue: 0.625) == .fraction(0.125))
         check("distinguish no measured movement from no measurement", Scrolling.movement(before: anchors, after: anchors, oldValue: 1, newValue: 1) == .still
               && Scrolling.movement(before: anchors, after: [nil, nil], oldValue: nil, newValue: nil) == .unknown)
+    }
+
+    await group("a window's picture is that window alone, at its own frame, so a point read off it is the point clicked (#798)") {
+        // What #793 saw: a Models sheet of 520×592 points over Settings, its Done button listed at (952,1124), and a
+        // picture of Settings with the sheet over it, scaled into the sheet's size, Done elsewhere in it. ScreenCaptureKit
+        // draws a window with the windows attached to it unless told not to; a parked copy's sheet was not drawn at all.
+        // Whether it honours that for a sheet is for a live capture (docs/development.md); this checks what is asked of it.
+        let parent = CGRect(x: 1760, y: 1154, width: 660, height: 680)
+        let sheet = CGRect(x: parent.minX + 70, y: parent.minY + 28, width: 520, height: 592)
+        let done = CGPoint(x: sheet.minX + 476, y: sheet.minY + 562)
+        let asked = WindowCapture.configuration(for: sheet)
+        check("the window is pictured without the windows attached to it", !asked.includeChildWindows)
+        check("without its shadow or the pointer", asked.ignoreShadowsSingleWindow && !asked.showsCursor)
+        check("at its own frame's size, at two pixels a point", asked.width == 1040 && asked.height == 1184, "asked for \(asked.width)×\(asked.height)")
+        // The controls are listed as the look lists them: their place in the window's frame, at the picture's scale.
+        let scale = CGFloat(asked.width) / sheet.width
+        let listed = CGPoint(x: ((done.x - sheet.minX) * scale).rounded(), y: ((done.y - sheet.minY) * scale).rounded())
+        check("a control is listed where it is in that picture", listed == CGPoint(x: 952, y: 1124)
+              && CGRect(x: 0, y: 0, width: asked.width, height: asked.height).contains(listed), "listed at \(listed)")
+        check("and the picture's point is the control's point on the screen",
+              CGPoint(x: sheet.minX + listed.x / scale, y: sheet.minY + listed.y / scale) == done)
+        check("a picture that came back at the sheet's size, or a pixel off by rounding, is taken",
+              WindowCapture.fits(CGSize(width: 1040, height: 1184), frame: sheet) && WindowCapture.fits(CGSize(width: 1040, height: 1185), frame: sheet))
+        check("one at the parent's proportions is refused, rather than listing controls off it",
+              !WindowCapture.fits(CGSize(width: 1320, height: 1360), frame: sheet) && !WindowCapture.fits(CGSize(width: 1040, height: 1071), frame: sheet))
+        let wide = WindowCapture.configuration(for: CGRect(x: 0, y: 0, width: 2000, height: 1000))
+        check("a window wider than the limit is pictured at one scale on both axes", wide.width == 1280 && wide.height == 640
+              && WindowCapture.fits(CGSize(width: wide.width, height: wide.height), frame: CGRect(x: 0, y: 0, width: 2000, height: 1000)),
+              "asked for \(wide.width)×\(wide.height)")
+        check("nothing is taken for a window with no size", !WindowCapture.fits(CGSize(width: 1, height: 1), frame: .zero))
     }
 
     print(failures == 0 ? "all checks passed" : "\(failures) checks failed")

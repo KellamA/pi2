@@ -570,6 +570,69 @@ try {
 	assert.match(widgets().pulls.find((one) => one.number === fromFileNumber).comments.at(-1).body, /\n\n\*\*Approved\.\*\* Looks right\.\n\n<!-- pi2:/);
 	step("a pull request's body and a finding from a file, with the agent's line and the home folder as ~; refused: a path as the text, both given, a file outside the two folders");
 
+	// ---- An open pull request's text replaced, keeping what opening added: its agent's line, Fixes and marker (#823)
+	const fromFilePull = () => widgets().pulls.find((one) => one.number === fromFileNumber);
+	const openingMarker = /<!-- pi2:[0-9a-f]{16} -->$/.exec(fromFilePull().body)![0];
+	const prEdits = () => calls().filter(({ args }) => args[0] === "pr" && args[1] === "edit").length;
+	const pullUrl = `https://github.com/example/widgets/pull/${fromFileNumber}`;
+	writeFileSync(join(scratch, "pr-update.md"), `What changed, in ${homeFolder}/widgets.\n\nTested by hand, and the suite passed while CI ran.\n`);
+	const updated = await client.work(worker, "update_pull_request", { id: fromFileNumber, title: "From a file, tested", text_file: "$PI2_SCRATCH/pr-update.md" });
+	assert.equal(said(updated), `Updated the title and text of pull request #${fromFileNumber} “From a file, tested”, keeping the line naming its agent, Fixes #${pathy.id} and pi²'s marker: ${pullUrl}`);
+	assert.equal(typeof updated.details?.change, "number", "a change with no Undo");
+	assert.equal(fromFilePull().title, "From a file, tested");
+	assert.equal(fromFilePull().body, `*From Worker, an agent of the pi² project “Widgets”.*\n\nWhat changed, in ~/widgets.\n\nTested by hand, and the suite passed while CI ran.\n\nFixes #${pathy.id}\n\n${openingMarker}`);
+	const listedUpdate = await client.until("the update listed", () => client.github(projectId)?.pulls?.find((one: any) => one.number === fromFileNumber && one.title === "From a file, tested"));
+	assert.deepEqual([listedUpdate.work, listedUpdate.openedBy], [pathy.id, { conversationId: worker }], "it still fixes its issue, and is still the worker's");
+	// The orchestrator may update it too: the line still names the agent that opened it, and a text that closes the issue in
+	// its own words is not given a second Fixes line.
+	const rewritten = await client.work(fresh, "update_pull_request", { id: fromFileNumber, text: `Rewritten by the orchestrator. Closes #${pathy.id}.` });
+	assert.equal(said(rewritten), `Updated the text of pull request #${fromFileNumber} “From a file, tested”, keeping the line naming its agent, Fixes #${pathy.id} and pi²'s marker: ${pullUrl}`);
+	assert.equal(fromFilePull().body, `*From Worker, an agent of the pi² project “Widgets”.*\n\nRewritten by the orchestrator. Closes #${pathy.id}.\n\n${openingMarker}`);
+	// The title alone leaves the text as it is; the same again changes nothing.
+	const textBefore = fromFilePull().body;
+	assert.equal(said(await client.work(worker, "update_pull_request", { id: fromFileNumber, title: "From a file" })), `Updated the title of pull request #${fromFileNumber} “From a file”: ${pullUrl}`);
+	assert.deepEqual([fromFilePull().title, fromFilePull().body], ["From a file", textBefore]);
+	const editsMade = prEdits();
+	assert.equal(editsMade, 3, "one gh pr edit for each change");
+	assert.equal(said(await client.work(worker, "update_pull_request", { id: fromFileNumber, title: "From a file" })), `Pull request #${fromFileNumber} “From a file” already says that: nothing changed.`);
+
+	// Refused, with nothing edited: another agent's conversation, a merged and a closed one, one with no marker, one whose
+	// marker this project has no record of (the orchestrator's too), no text or title, no number, and a list kept by pi².
+	let byHand = 0;
+	let foreign = 0;
+	changeStandIn((whole) => {
+		const repo = whole.repos["example/widgets"];
+		repo.pulls.find((one: any) => one.number === 3).state = "CLOSED";
+		const at = new Date().toISOString();
+		for (const [name, body] of [["by-hand", "Made on GitHub by hand."], ["foreign", "From another pi².\n\n<!-- pi2:0123456789abcdef -->"]] as const) {
+			const number = repo.next;
+			repo.next = number + 1;
+			if (name === "by-hand") byHand = number;
+			else foreign = number;
+			repo.pulls.push({
+				number, title: name, url: `https://github.com/example/widgets/pull/${number}`, headRefName: name, headRepositoryOwner: { login: "example" }, isCrossRepository: false,
+				baseRefName: "main", author: { login: "stand-in" }, state: "OPEN", isDraft: false, statusCheckRollup: [], mergeable: "MERGEABLE", body, comments: [],
+				createdAt: at, updatedAt: at, closedAt: null, mergedAt: null,
+			});
+		}
+	});
+	const bodies = () => JSON.stringify(widgets().pulls.map((one) => [one.number, one.title, one.body]));
+	const bodiesBefore = bodies();
+	refusal(await client.work(reviewer, "update_pull_request", { id: fromFileNumber, text: "Mine now" }), new RegExp(`^Only conversation ${worker}, which opened pull request #${fromFileNumber}, or the orchestrator can update it\\. Tell the orchestrator in your report\\.$`));
+	refusal(await client.work(worker, "update_pull_request", { id: 2, text: "Too late" }), /^Pull request #2 is merged, so its text stays as it is\.$/);
+	refusal(await client.work(worker, "update_pull_request", { id: 3, text: "Too late" }), /^Pull request #3 is closed, so its text stays as it is\.$/);
+	refusal(await client.work(worker, "update_pull_request", { id: byHand, text: "Not the tool's" }), new RegExp(`^Pull request #${byHand} was not opened with the work tool: its text has no pi² marker, so there is nothing of the tool's to keep\\. Edit it on GitHub, or with gh pr edit\\.$`));
+	refusal(await client.work(fresh, "update_pull_request", { id: foreign, text: "Not this project's" }), new RegExp(`^Pull request #${foreign} was not opened by this project's work tool: pi² has no record of it, so update_pull_request leaves it alone\\.`));
+	refusal(await client.work(worker, "update_pull_request", { id: fromFileNumber }), /^Give the pull request's new text, in text or text_file, or a new title\.$/);
+	refusal(await client.work(worker, "update_pull_request", { text: "Which one?" }), /^id must be the pull request's number$/);
+	await client.call("conversation.open", { id: localWorker });
+	refusal(await client.work(localWorker, "update_pull_request", { id: 1, text: "None here" }), /^This project's work is kept by pi², which has no pull requests\.$/);
+	assert.equal(prEdits(), editsMade, "no gh pr edit for a refusal");
+	assert.equal(bodies(), bodiesBefore, "every pull request as it was");
+	// Open again, as the lists of merged and closed pull requests below count it.
+	changeStandIn((whole) => void (whole.repos["example/widgets"].pulls.find((one: any) => one.number === 3).state = "OPEN"));
+	step("update_pull_request replaces an open pull request's text and title, keeping its agent's line, Fixes and marker, for its own conversation and the orchestrator; refused: another's, merged, closed, no marker, no record, nothing given, no number, no pull requests");
+
 	// ---- A first read reads everything, and what is closed comes brief until it is opened (#599)
 	const secondFolder = realpathSync(mkdtempSync(join(tmpdir(), "pi2-github-anew-")));
 	const { id: anew } = await client.call("projects.create", { folder: secondFolder, name: "Widgets anew" });
@@ -592,6 +655,63 @@ try {
 	await client.call("projects.archive", { id: anew });
 	rmSync(secondFolder, { recursive: true, force: true });
 	step("a first read reads everything, what is closed comes brief, and github.show reads one whole into the listing");
+
+	// ---- The tool's list leaves merged and closed pull requests out unless asked for, then gives them a page at a time (#790)
+	const added: number[] = [];
+	changeStandIn((whole) => {
+		const repo = whole.repos["example/widgets"];
+		const at = new Date().toISOString();
+		for (let i = 0; i < 35; i++) {
+			const number = repo.next;
+			repo.next = number + 1;
+			added.push(number);
+			repo.pulls.push({
+				number, title: `Ended ${i}`, url: `https://github.com/example/widgets/pull/${number}`, headRefName: `ended-${i}`, headRepositoryOwner: { login: "example" }, isCrossRepository: false,
+				baseRefName: "main", author: { login: "stand-in" }, state: i === 0 ? "CLOSED" : "MERGED", isDraft: false, statusCheckRollup: [], mergeable: "UNKNOWN", body: "", comments: [],
+				createdAt: at, updatedAt: at, closedAt: at, mergedAt: i === 0 ? null : at,
+			});
+		}
+	});
+	await client.call("work.act", { projectId, id: 1, action: "note", text: "Read the ended pull requests" });
+	const listedPulls: any[] = await client.until("the ended pull requests listed", () => {
+		const pulls = client.github(projectId)?.pulls ?? [];
+		return added.every((number) => pulls.some((one: any) => one.number === number)) && pulls;
+	});
+	const openPulls = listedPulls.filter((one) => one.state === "open").map((one) => one.number).sort((a, b) => b - a);
+	const endedPulls = listedPulls.filter((one) => one.state !== "open").map((one) => one.number).sort((a, b) => b - a);
+	assert.ok(openPulls.length > 0 && endedPulls.length > 35, `${openPulls.length} open, ${endedPulls.length} ended`);
+	const pullRows = (text: string) => [...text.matchAll(/^#(\d+) pull request (open|merged|closed)\b/gm)].map((match) => ({ number: Number(match[1]), state: match[2] }));
+	const itemRows = (text: string) => [...text.matchAll(/^#(\d+) (?!pull request)/gm)].length;
+
+	const board = said(await client.work(reviewer, "list"));
+	assert.deepEqual(pullRows(board).map((row) => row.number), openPulls, "the open pull requests only, by default");
+	assert.ok(pullRows(board).every((row) => row.state === "open"));
+	assert.match(board, new RegExp(`^\\d+ items?: .* ${listedPulls.length} pull requests, ${openPulls.length} of them open\\.$`, "m"), "the count of them all, as before");
+	assert.match(board, new RegExp(`^${endedPulls.length} merged or closed in the last seven days are left out: list with states \\["merged", "closed"\\] for them\\.$`, "m"));
+	assert.equal(board.split("\n").length, itemRows(board) + openPulls.length + 3, "a line an item, a line an open pull request, the count, what is left out and when it was read");
+
+	const first = said(await client.work(reviewer, "list", { states: ["merged", "closed"] }));
+	assert.deepEqual(pullRows(first).map((row) => row.number), endedPulls.slice(0, 30), "the newest thirty, newest first");
+	assert.equal(itemRows(first), 0, "no items: none is merged or closed");
+	const more = new RegExp(`^${endedPulls.length - 30} more pull requests merged or closed: list again with the same states and cursor "${endedPulls[29]}"\\.$`, "m");
+	assert.match(first, more);
+	assert.doesNotMatch(first, /left out/);
+	const rest = said(await client.work(reviewer, "list", { states: ["merged", "closed"], cursor: String(endedPulls[29]) }));
+	assert.deepEqual(pullRows(rest).map((row) => row.number), endedPulls.slice(30), "the rest from the cursor");
+	assert.doesNotMatch(rest, / more pull requests /);
+	assert.match(rest, new RegExp(`^0 items\\. ${listedPulls.length} pull requests, ${openPulls.length} of them open\\.$`, "m"));
+	const mergedOnly = said(await client.work(reviewer, "list", { states: ["open", "merged"] }));
+	const mergedRows = pullRows(mergedOnly);
+	assert.deepEqual(mergedRows.filter((row) => row.state === "open").map((row) => row.number), openPulls, "open with the open ones");
+	assert.ok(mergedRows.some((row) => row.state === "merged") && !mergedRows.some((row) => row.state === "closed"), "merged without the closed one");
+	assert.ok(itemRows(mergedOnly) > 0, "and the open items");
+	assert.match(mergedOnly, /^1 merged or closed in the last seven days is left out: /m);
+	refusal(await client.work(reviewer, "list", { cursor: "5" }), /^cursor goes on through merged and closed pull requests/);
+	refusal(await client.work(reviewer, "list", { states: ["merged"], cursor: "#5" }), /^cursor must be the one a list gave/);
+	refusal(await client.work(reviewer, "list", { states: ["shipped"] }), /^states must be a list of work states \(.*\), or of pull requests' states, merged and closed$/);
+	await client.call("conversation.open", { id: localParent });
+	refusal(await client.work(localParent, "list", { states: ["merged"] }), /^merged and closed are states of pull requests, and this project's work is kept by pi², which has none\.$/);
+	step("the tool's list gives the open pull requests and the count of all; merged and closed ones when asked, thirty at a time, newest first, with a cursor");
 
 	// ---- Detaching
 	await client.call("github.detach", { projectId });
