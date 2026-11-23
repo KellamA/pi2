@@ -18,6 +18,7 @@ Read only the sections that apply to your work. Before you build, run or test an
 | Measuring speed | [Measuring under load](#measuring-under-load), [Measuring the app's speed](#measuring-the-apps-speed) |
 | The iPhone app | [Building the iPhone app](#building-the-iphone-app); a screen of it: [iphone-app.md](iphone-app.md) (the session, the routes, whose folder is whose, drawing a screen with data in it); the contract is [iphone.md](iphone.md) |
 | Repository scripts, checks and merging | [CI](#ci) |
+| The relay | [Relay tests](#relay-tests), and [relay/README.md](../relay/README.md) |
 
 ## Requirements
 
@@ -336,6 +337,14 @@ cd app && swift build --product pi2-client-check && .build/debug/pi2-client-chec
 
 A change that alters what a model reads or works out on purpose writes the file again with `--write`, and says so in its pull request; a move must not need it. CI runs it after building the app (#761).
 
+### Relay tests
+
+The relay (`relay/`, [iphone.md 5.3](iphone.md#53-the-relay), #676) has a package of its own, with its own lockfile, and tests that run inside Cloudflare's Workers runtime on this computer, with no Cloudflare account and nothing deployed. [relay/README.md](../relay/README.md) says what each checks, and how the relay builds the engine's App Attest verifier into its bundle.
+
+```bash
+cd relay && npm ci && npm run check && npm test && npm run check-bundle
+```
+
 ### Trying changes in a throwaway copy
 
 A development build already runs on a data folder of its own, so trying a change in it does not touch your own data. To start again from an empty folder, give it another:
@@ -552,7 +561,7 @@ What a CI job for the phone would run (the workflow is #681's, and `.github/work
 
 ## CI
 
-Every pull request, and every push to `main`, runs `.github/workflows/ci.yml`. Five of its checks are required before a pull request can merge: `Engine (type-check and tests)` (`npm run check` and `npm run test:macos`) and `App (build)` (the builds and checks above, and `scripts/test-test-copy`), both on macOS, and on Linux `Engine (Linux tests)` (`npm run test:linux`), `Transcript page (tests)` (the conversation page's tests, the release notes' extraction and the changelog entries) and `Scripts (tests)` (`scripts/test-issue`, `scripts/test-issue-hook`, `scripts/test-auto-merge`, `scripts/test-docs-lists` and `scripts/test-check-protected-targets`). Linux runners start in seconds; GitHub has fewer macOS runners, and a plan can run only a few macOS jobs at once, so the macOS jobs are where a pull request waits.
+Every pull request, and every push to `main`, runs `.github/workflows/ci.yml`. Five of its checks are required before a pull request can merge: `Engine (type-check and tests)` (`npm run check` and `npm run test:macos`) and `App (build)` (the builds and checks above, and `scripts/test-test-copy`), both on macOS, and on Linux `Engine (Linux tests)` (`npm run test:linux`), `Transcript page (tests)` (the conversation page's tests, the release notes' extraction and the changelog entries) and `Scripts (tests)` (`scripts/test-issue`, `scripts/test-issue-hook`, `scripts/test-auto-merge`, `scripts/test-docs-lists` and `scripts/test-check-protected-targets`). `Relay (tests)` runs on Linux too, on every pull request (the relay's type-check, tests and bundle check, [Relay tests](#relay-tests)); it is not one of the required checks. Linux runners start in seconds; GitHub has fewer macOS runners, and a plan can run only a few macOS jobs at once, so the macOS jobs are where a pull request waits.
 
 The engine's CI partition is in `engine/scripts/test-platform.ts`. `npm test` still runs the whole suite on a Mac. Both take their list from `engine/scripts/test-files.ts`, and both check afterwards that every file in it reported. The partition discovers the same files automatically: only files verified unchanged on Linux are in its list; a new test stays on macOS until verified. Both halves together cover the whole suite. `credentialsplatform.ts` runs on both deliberately: on macOS it checks that the file store cannot be created, on Linux it checks persistence, permissions and read/modify/delete.
 
@@ -561,7 +570,7 @@ The engine's CI partition is in `engine/scripts/test-platform.ts`. `npm test` st
 
 For tests on other systems **only**, the engine uses `test-credentials.json` inside its data folder in place of the Keychain credential store. These are plain-text fake credentials: use only a throwaway `PI2_HOME` and stand-in providers. This is not a supported way to run pi²; the app, agents' variables and process recovery still need macOS. Selection is by `process.platform`, never an environment variable or setting. On macOS the engine always uses Keychain, and even calling the test-store factory directly refuses to create a file. No sign-ins on a Mac can fall back to it if Keychain fails.
 
-- **A pull request that changes only what no macOS job reads skips them.** A first job, `Which jobs the change needs`, lists the files the commit being tested changes from `main`. If they are all in `docs/` or `changelog.d/` (whose entries the Linux job checks), or are `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `SECURITY.md`, `CLAUDE.md`, `app/VERSION` (which it checks is a single version), or the scripts that `Scripts (tests)` checks on Linux (`scripts/issue`, `scripts/issue-hook`, `scripts/auto-merge` and their tests, and `scripts/test-docs-lists`) or that no CI job tests (`scripts/rerun-if-no-runner`), the two macOS jobs are skipped, and a skipped job reports its required check as passed. Anything else runs them, and so does any doubt: they run unless that job says they need not, so they run if it fails. A push to `main` always runs them. If a macOS job starts reading one of those files, take it off the list in `ci.yml`.
+- **A pull request that changes only what no macOS job reads skips them.** A first job, `Which jobs the change needs`, lists the files the commit being tested changes from `main`. If they are all in `docs/`, `changelog.d/` (whose entries the Linux job checks) or `relay/` (which only `Relay (tests)` reads), or are `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `SECURITY.md`, `CLAUDE.md`, `app/VERSION` (which it checks is a single version), or the scripts that `Scripts (tests)` checks on Linux (`scripts/issue`, `scripts/issue-hook`, `scripts/auto-merge` and their tests, and `scripts/test-docs-lists`) or that no CI job tests (`scripts/rerun-if-no-runner`), the two macOS jobs are skipped, and a skipped job reports its required check as passed. Anything else runs them, and so does any doubt: they run unless that job says they need not, so they run if it fails. A push to `main` always runs them. If a macOS job starts reading one of those files, take it off the list in `ci.yml`.
 - **A job no runner took is run again by itself.** GitHub cancels a job that no runner picked up in time, with the annotation "The job was not acquired by Runner of type hosted even after multiple attempts", and the check counts as failed. `.github/workflows/rerun.yml` runs after CI and after Release, and `scripts/rerun-if-no-runner` runs the failed jobs again, up to the run's fourth attempt, but only when every job that did not pass ended that way: cancelled, never started, with that annotation, in the newest run on its branch. A real failure, a job cancelled for another reason, or one beside it, is left for a person. `scripts/rerun-if-no-runner <run-id> --dry-run` says what it would do with a run. To run a job again yourself: `gh run rerun <run-id> --failed`.
 
 ## Working on pi² with pi²
@@ -580,6 +589,7 @@ See [architecture.md](architecture.md) for how the pieces fit. In short:
 
 - `engine/src` is the engine; `engine/test` its tests.
 - `iphone/` is pi² for iPhone, one Xcode project ([Building the iPhone app](#building-the-iphone-app)).
+- `relay/` is the relay, a Cloudflare Worker with its own package and tests ([Relay tests](#relay-tests)).
 - `scripts/` holds the repository's scripts: `test-copy` for throwaway copies, `iphone-sim` for the iPhone app in a simulator, `issue` and `auto-merge` for the work, and `readme-pictures/`, the kit that stages the README's pictures ([Retaking the README's pictures](#retaking-the-readmes-pictures)).
 - `app/Sources/pi2` is the app: one file per area, listed under [The app](architecture.md#the-app). `EngineClient.swift` is the Mac's side of the connection to the engine, over the client in `app/Sources/EngineKit`; `Theme.swift` the app's shared pieces, over `app/Sources/PiStyle`, which holds the palette, tags, buttons and the spinner.
 - `app/Sources/ComputerKit` is the part of computer use that touches the screen. See [computer-use.md](computer-use.md).
