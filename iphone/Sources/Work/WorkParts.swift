@@ -140,7 +140,9 @@ struct WorkItemRow: View {
                     .accessibilityLabel("Give \(noun) #\(item.id) to an agent")
             }
         }
-        .accessibilityAction(named: "Give to an agent") { if canGive { give() } }
+        .accessibilityActions {
+            if canGive { Button("Give to an agent", action: give) }
+        }
     }
 
     @ViewBuilder
