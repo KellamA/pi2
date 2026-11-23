@@ -175,8 +175,9 @@ export class Address extends DurableObject<Env> {
 		const alarm = await this.ctx.storage.getAlarm();
 		const moved = alarm === null || alarm > due;
 		if (moved) writes.cleanupAt = due;
-		await this.ctx.storage.put(writes);
+		// The alarm first, so that nothing is ever stored with no alarm to remove it.
 		if (moved) await this.ctx.storage.setAlarm(due);
+		await this.ctx.storage.put(writes);
 		return { pass: true };
 	}
 
@@ -212,10 +213,10 @@ export class Address extends DurableObject<Env> {
 	async alarm(): Promise<void> {
 		await this.load();
 		const now = Date.now();
-		// The platform never runs an alarm before its time. A test's clock, set apart from the runtime's, can: then it is
-		// left for the next write to set again, rather than set again at once for a time that is already past there.
+		// The platform never runs an alarm before its time; one that runs early all the same (a test's clock, set apart from
+		// the runtime's) sets itself again for that time, so that what is stored always has an alarm to remove it.
 		const cleanupAt = await this.ctx.storage.get<number>("cleanupAt");
-		if (cleanupAt !== undefined && now < cleanupAt) return;
+		if (cleanupAt !== undefined && now < cleanupAt) return this.ctx.storage.setAlarm(cleanupAt);
 		this.connectionsRefused(now);
 		for (const marked of this.marks.keys()) if (!this.minutes.has(marked)) this.marks.delete(marked);
 		const times = ((await this.ctx.storage.get<number[]>("times")) ?? []).filter((time) => now - time < DAY);
@@ -224,7 +225,8 @@ export class Address extends DurableObject<Env> {
 			return;
 		}
 		const due = this.agedOut(now, times);
-		await this.ctx.storage.put({ minutes: Object.fromEntries(this.marks), times, cleanupAt: due });
+		// The alarm first, as above.
 		await this.ctx.storage.setAlarm(due);
+		await this.ctx.storage.put({ minutes: Object.fromEntries(this.marks), times, cleanupAt: due });
 	}
 }

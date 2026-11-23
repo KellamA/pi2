@@ -332,6 +332,11 @@ describe("connections by address", () => {
 		for (let index = 0; index < 5; index++) await object.admit(false);
 		const stored = async () => runInDurableObject(object, async (_: Address, state) => Object.fromEntries(await state.storage.list()));
 		expect(Object.keys(await stored()).sort()).toEqual(["cleanupAt", "minutes", "times"]);
+		// Run before its time, the alarm removes nothing and sets itself again for that time.
+		vi.setSystemTime(NOON + 30 * MINUTE);
+		expect(await runDurableObjectAlarm(object)).toBe(true);
+		expect(await runInDurableObject(object, (_: Address, state) => state.storage.getAlarm())).toBe(NOON + 61 * MINUTE);
+		expect(Object.keys(await stored()).sort()).toEqual(["cleanupAt", "minutes", "times"]);
 		// The hour over, the minutes go; the registration's time stays for its day.
 		vi.setSystemTime(NOON + 2 * HOUR);
 		expect(await runDurableObjectAlarm(object)).toBe(true);
