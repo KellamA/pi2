@@ -103,3 +103,11 @@ session.start(try #require(ReplayTransport.recording()), as: .connected(.home))
 ```
 
 Run them all with `xcodebuild test` and the same arguments as `build` above, or one suite with `-only-testing:pi2Tests/NeedsTests`. No test may depend on how fast the Mac is: wait for a condition with a generous limit, never for a fixed time.
+
+## Shortcuts and Siri
+
+`Intents/` (#701) holds the App Intents: **Ask an Orchestrator**, **What Needs Me** and **Stop a Project**, each with `authenticationPolicy = .requiresAuthentication` ([iphone.md 4.5](iphone.md#45-a-stolen-or-unlocked-phone-the-owners-choice)), a project as an `AppEntity` (`IntentProject`) read from `session.engine.projects`, and `PiShortcuts`, the phrases. They send what the Mac's screens send, through the same client: `submit` as the Dashboard's strip does, `abort` for each of the project's agent runs as Stop All does, and they read what needs the person from the client's `needs`.
+
+- **The session.** App Intents run in the app's process, which iOS starts in the background for one, running `Pi2App.init` but drawing no scene. `App/` is to register its session there, once: `IntentSessions.register(session, isOpen: { … })`, where `isOpen` says whether a session Face ID opened is open, once `AppSession` keeps one. While it is closed, an intent opens pi² in the foreground for Face ID before it sends or reads anything (iOS 26 and later; before, it asks the person to open pi²). Until `App/` registers one, an intent makes a session as `Pi2App.init` does.
+- **The Mac out of reach.** An intent sends through `IntentCourier`; its one courier, `EngineCourier`, sends on `session.engine` and reads the Outbox's answer `{ "outbox": <id> }` (#692's `CachedTransport`, run by the session while `.outOfReach`) as kept for later, which the intent says: the message waits in the mailbox and the answer comes later. Without it, the intent says nothing was sent.
+- **Tests.** `IntentsTests.swift` calls each intent's `perform()` and what it says in each state, on the recording, in the demo mode, and on stand-ins for a Mac that answers and for the Outbox. `IntentSessions.prompts` stands in for the system's confirmation and its opening of the app, which a test cannot answer.
