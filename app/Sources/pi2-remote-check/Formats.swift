@@ -11,6 +11,8 @@ enum Formats {
 		payload()
 		lines()
 		refusedLine()
+		homeKeyLines()
+		directions()
 		homeTag()
 	}
 
@@ -211,7 +213,7 @@ enum Formats {
 			(#"{"attached":{"session":"s1","resume":1}}"#, "resume that is not true or false"),
 			(#"{"sessionEnd":{"x":1}}"#, "a sessionEnd that is not empty"),
 			(#"{"id":1,"method":"projects.list"}"#, "an engine line"),
-			(#"{"paired":{"device":"x","pairing":"y","name":"n","addresses":[]}}"#, "ids of no form"),
+			(#"{"paired":{"device":"x","pairing":"y","name":"n","addresses":[],"homeKey":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}}"#, "ids of no form"),
 			(#"{"challenge":"AAAA","mac":{"signed":"{}","signature":"AAAA"}}"#, "a challenge that is not 32 bytes"),
 			(#"{"attach":{"signed":"{}","signature":"AAAA","presence":"AAAA"}}"#, "signatures that are not 64 bytes"),
 			("{}", "no member"),
@@ -268,53 +270,168 @@ enum Formats {
 		Check.that((try? ControlLine.parse(Data(#"{"refused":{"reason":"\#(longest)"}}"#.utf8))) != nil, "a reason of 32 letters is read")
 	}
 
-	/// The home path's Bonjour tag (#815): the test value of remotekit.md, the UTC day, the three days the phone takes,
-	/// and another pairing's or key's tag.
+	/// The home key in `paired` and in the `homeKey` line (#845): exactly 32 bytes of base64url, never missing, and
+	/// nothing beside it.
+	static func homeKeyLines() {
+		Check.section("The home key in paired and in homeKey")
+		guard let key = HomeKey(rawRepresentation: Data(0..<32)) else { return Check.that(false, "the home key's test key") }
+		let keyText = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+		let written = ControlLine.homeKey(key).line
+		Check.that(written == Data(#"{"homeKey":{"key":"\#(keyText)"}}"#.utf8), "homeKey is written as remotekit.md says")
+		if case let .homeKey(read)? = try? ControlLine.parse(written) {
+			Check.that(read == key, "homeKey reads back as its key")
+		} else {
+			Check.that(false, "homeKey reads")
+		}
+		let short = Base64URL.encode(Data(0..<31))
+		let long = Base64URL.encode(Data(0..<33))
+		for (text, why) in [
+			(#"{"homeKey":{}}"#, "no key"),
+			(#"{"homeKey":{"key":"\#(short)"}}"#, "a key of 31 bytes"),
+			(#"{"homeKey":{"key":"\#(long)"}}"#, "a key of 33 bytes"),
+			(#"{"homeKey":{"key":""}}"#, "an empty key"),
+			(#"{"homeKey":{"key":"\#(keyText)="}}"#, "a key with padding"),
+			(#"{"homeKey":{"key":"\#(Data(0..<32).base64EncodedString())"}}"#, "a key in base64's other alphabet"),
+			(#"{"homeKey":{"key":null}}"#, "a key that is null"),
+			(#"{"homeKey":{"key":[0,1,2]}}"#, "a key that is not text"),
+			(#"{"homeKey":{"key":"\#(keyText)","pairing":"AQEBAQEBAQEBAQEBAQEBAQ"}}"#, "a field beside the key"),
+			(#"{"homeKey":{"key":"\#(keyText)","key":"\#(keyText)"}}"#, "the key twice"),
+			(#"{"homeKey":"\#(keyText)"}"#, "a key that is not in an object"),
+			(#"{"homeKey":{"key":"\#(keyText)"},"x":1}"#, "a second member"),
+		] {
+			Check.refuses("a homeKey line with \(why)") { _ = try ControlLine.parse(Data(text.utf8)) }
+		}
+
+		// In paired, the key is a field like the others: required, and exactly 32 bytes.
+		guard let device = DeviceID("dev_" + Base64URL.encode(Data(repeating: 3, count: 16))), let pairing = PairingID("AQEBAQEBAQEBAQEBAQEBAQ"),
+			let paired = try? Paired(device: device, pairing: pairing, name: "Mac", addresses: ["10.0.0.1:1"], homeKey: key)
+		else { return Check.that(false, "a paired to read") }
+		let pairedText = String(decoding: ControlLine.paired(paired).line, as: UTF8.self)
+		Check.that(pairedText == #"{"paired":{"device":"\#(device.text)","pairing":"\#(pairing.text)","name":"Mac","addresses":["10.0.0.1:1"],"homeKey":"\#(keyText)"}}"#,
+			"paired is written with its home key, as remotekit.md says")
+		if case let .paired(read)? = try? ControlLine.parse(Data(pairedText.utf8)) {
+			Check.that(read == paired && read.homeKey == key, "paired reads back with its home key")
+		} else {
+			Check.that(false, "paired reads")
+		}
+		let withoutKey = pairedText.replacingOccurrences(of: #","homeKey":"\#(keyText)""#, with: "")
+		Check.that(withoutKey != pairedText, "the check can take the home key out of paired")
+		Check.refuses("a paired without its home key") { _ = try ControlLine.parse(Data(withoutKey.utf8)) }
+		for (replacement, why) in [(#""\#(short)""#, "of 31 bytes"), (#""\#(long)""#, "of 33 bytes"), ("null", "that is null"), (#""""#, "that is empty")] {
+			let changed = pairedText.replacingOccurrences(of: #""\#(keyText)""#, with: replacement)
+			Check.refuses("a paired with a home key \(why)") { _ = try ControlLine.parse(Data(changed.utf8)) }
+		}
+		let twice = pairedText.replacingOccurrences(of: #""}}"#, with: #"","homeKey":"\#(keyText)"}}"#)
+		Check.refuses("a paired with its home key twice") { _ = try ControlLine.parse(Data(twice.utf8)) }
+		Check.that(!String(describing: paired).contains(keyText) && !String(reflecting: paired).contains(keyText), "a paired's description shows no home key")
+	}
+
+	/// Every channel line has one writer (#845): read as from the other end, it is refused.
+	static func directions() {
+		Check.section("Which end sends each line")
+		do {
+			let identity = P256.Signing.PrivateKey()
+			let deviceKey = P256.Signing.PrivateKey()
+			let presenceKey = P256.Signing.PrivateKey()
+			let pairing = PairingID.random()
+			let device = DeviceID.random()
+			let binding = Bytes.random(32)
+			let description = DeviceDescription(
+				name: "Phone", model: "iPhone 17", system: "iOS 27.1", build: "1.0", deviceKey: deviceKey.publicKey, presenceKey: presenceKey.publicKey,
+				channelKey: Curve25519.KeyAgreement.PrivateKey().publicKey, recordKey: P256.KeyAgreement.PrivateKey().publicKey)
+			let lines: [(ControlLine, ControlLine.Side, String)] = [
+				(.mac(try MacProof.make(challenge: Bytes.random(32), pairing: pairing, binding: binding, identity: identity)), .mac, "the Mac's proof"),
+				(.paired(try Paired(device: device, pairing: pairing, name: "Mac", addresses: [], homeKey: HomeKey.random())), .mac, "paired"),
+				(.attached(Attached(session: SessionID("s1")!, resume: false)), .mac, "attached"),
+				(.revoked(try Revocation.make(pairing: pairing, device: device, identity: identity)), .mac, "revoked"),
+				(.refused(Refusal(.update)), .mac, "refused"),
+				(.homeKey(HomeKey.random()), .mac, "homeKey"),
+				(.pair(try PairClaim.make(device: description, attestation: nil, keyId: nil, pairing: pairing, binding: binding, deviceKey: deviceKey)), .phone, "pair"),
+				(.attach(try AttachClaim.make(
+					pairing: pairing, device: device, session: nil, received: nil, binding: binding, challenge: Bytes.random(32), build: "1.0",
+					deviceKey: deviceKey, presenceKey: presenceKey)), .phone, "attach"),
+				(.sessionEnd, .phone, "sessionEnd"),
+			]
+			for (line, side, name) in lines {
+				let other: ControlLine.Side = side == .mac ? .phone : .mac
+				Check.that(line.sender == side, "\(name) is sent by the \(side == .mac ? "Mac" : "phone")")
+				Check.that((try? ControlLine.parse(line.line, from: side))?.line == line.line, "\(name) is read from the \(side == .mac ? "Mac" : "phone")")
+				Check.refuses("\(name) read as from the \(other == .mac ? "Mac" : "phone")") { _ = try ControlLine.parse(line.line, from: other) }
+			}
+			Check.refuses("a line read from the Mac that is no line at all") { _ = try ControlLine.parse(Data(#"{"id":1,"result":{}}"#.utf8), from: .mac) }
+		} catch {
+			Check.that(false, "directions: \(error)")
+		}
+	}
+
+	/// The home path's Bonjour tag (#815) and its secret key (#845): the key's form, the test value of remotekit.md, the
+	/// UTC day, the three days the phone takes, and another pairing's or key's tag.
 	static func homeTag() {
 		Check.section("The home tag")
-		guard let key = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: Data(repeating: 7, count: 32)),
+		guard let key = HomeKey(rawRepresentation: Data(0..<32)),
 			let pairing = PairingID("AQEBAQEBAQEBAQEBAQEBAQ"), let other = PairingID(Base64URL.encode(Data(repeating: 2, count: 16)))
 		else { return Check.that(false, "the home tag's test keys") }
+
+		// The key: 32 random bytes the Mac makes, kept and read back as they are, and no other length.
+		let made = HomeKey.random()
+		Check.that(made.rawRepresentation.count == HomeKey.length && HomeKey.length == 32, "a home key the Mac makes is 32 bytes")
+		Check.that(made != HomeKey.random(), "each home key made is another")
+		Check.that(HomeKey(rawRepresentation: made.rawRepresentation) == made, "a home key kept reads back as itself")
+		Check.that(HomeKey(rawRepresentation: Data(repeating: 1, count: 31)) == nil && HomeKey(rawRepresentation: Data(repeating: 1, count: 33)) == nil
+			&& HomeKey(rawRepresentation: Data()) == nil, "a home key of 31, 33 or no bytes is refused")
+		var dumped = ""
+		dump(made, to: &dumped)
+		let forms = [made.rawRepresentation.hex, made.rawRepresentation.base64EncodedString(), Base64URL.encode(made.rawRepresentation)]
+		Check.that(!([dumped, String(describing: made), String(reflecting: made)].contains { text in forms.contains { text.contains($0) } }) && !dumped.contains(" bytes"),
+			"a home key's description and dump show none of its bytes")
+		// #820's bytes, the Mac's channel key 32 bytes of 7, as the key give #820's tag: the label, the pairing and the day
+		// are as they were, and only where the key comes from changed.
+		if let old = HomeKey(rawRepresentation: Data(repeating: 7, count: 32)), let first = PairingID("AQEBAQEBAQEBAQEBAQEBAQ") {
+			Check.that(HomeTag.tag(key: old, pairing: first, date: Date(timeIntervalSince1970: 1_795_000_000)) == "c6b71440d4d049db",
+				"with #820's bytes as its key, the tag is #820's: only the key changed")
+		}
+
 		// 2026-11-18T11:06:40Z.
 		let date = Date(timeIntervalSince1970: 1_795_000_000)
-		let tag = HomeTag.tag(macChannelKey: key, pairing: pairing, date: date)
-		Check.that(tag == "c6b71440d4d049db", "the tag is remotekit.md's test value, worked out apart in Node")
+		let tag = HomeTag.tag(key: key, pairing: pairing, date: date)
+		Check.that(tag == "3871f8b1b7ba63ee", "the tag is remotekit.md's test value, worked out apart in Node")
 		Check.that(tag.utf8.count == HomeTag.length && tag.utf8.allSatisfy { (0x30...0x39).contains($0) || (0x61...0x66).contains($0) },
 			"a tag is 16 lower-case hexadecimal digits")
 		let startOfDay = Date(timeIntervalSince1970: 1_794_960_000)
 		let endOfDay = Date(timeIntervalSince1970: 1_795_046_399)
-		Check.that(HomeTag.tag(macChannelKey: key, pairing: pairing, date: startOfDay) == tag && HomeTag.tag(macChannelKey: key, pairing: pairing, date: endOfDay) == tag,
+		Check.that(HomeTag.tag(key: key, pairing: pairing, date: startOfDay) == tag && HomeTag.tag(key: key, pairing: pairing, date: endOfDay) == tag,
 			"one tag from 00:00:00 to 23:59:59 UTC")
-		let before = HomeTag.tag(macChannelKey: key, pairing: pairing, date: startOfDay.addingTimeInterval(-1))
-		let after = HomeTag.tag(macChannelKey: key, pairing: pairing, date: endOfDay.addingTimeInterval(1))
-		Check.that(before == "56b9f25c56ee5161", "the day before's tag is remotekit.md's")
-		Check.that(after == "174c8f2e0a1b3cb3", "the day after's tag is remotekit.md's")
-		Check.that(HomeTag.tag(macChannelKey: key, pairing: other, date: date) == "3b505b5d165f5394", "another pairing's tag is remotekit.md's")
-		Check.that(HomeTag.tag(macChannelKey: key, pairing: other, date: date) != tag, "another pairing gives another tag")
-		let otherKey = Curve25519.KeyAgreement.PrivateKey().publicKey
-		Check.that(HomeTag.tag(macChannelKey: otherKey, pairing: pairing, date: date) != tag, "another Mac's channel key gives another tag")
+		let before = HomeTag.tag(key: key, pairing: pairing, date: startOfDay.addingTimeInterval(-1))
+		let after = HomeTag.tag(key: key, pairing: pairing, date: endOfDay.addingTimeInterval(1))
+		Check.that(before == "2d62232fb4b8fae6", "the day before's tag is remotekit.md's")
+		Check.that(after == "5729f00f52d9eea9", "the day after's tag is remotekit.md's")
+		Check.that(HomeTag.tag(key: key, pairing: other, date: date) == "65d50404a02ece2b", "another pairing's tag is remotekit.md's")
+		Check.that(HomeTag.tag(key: key, pairing: other, date: date) != tag, "another pairing gives another tag")
+		let otherKey = HomeKey.random()
+		Check.that(HomeTag.tag(key: otherKey, pairing: pairing, date: date) != tag, "another home key gives another tag")
+		Check.that(!HomeTag.recognises(tag, key: otherKey, pairing: pairing, now: date), "and a phone holding another key, as a revoked one does once the key was made again, does not take the tag")
 		Check.that(!tag.contains(pairing.text) && !tag.contains(Base64URL.encode(key.rawRepresentation)), "a tag holds neither the pairing's id nor the key")
 
 		// The phone takes the day before, the day and the day after, by its own clock, and nothing further.
-		Check.that(HomeTag.recognises(tag, macChannelKey: key, pairing: pairing, now: date), "the phone recognises the day's tag")
-		Check.that(HomeTag.recognises(before, macChannelKey: key, pairing: pairing, now: date), "and the day before's, from a Mac whose clock is behind")
-		Check.that(HomeTag.recognises(after, macChannelKey: key, pairing: pairing, now: date), "and the day after's, from a Mac whose clock is ahead")
-		let twoBefore = HomeTag.tag(macChannelKey: key, pairing: pairing, date: date.addingTimeInterval(-2 * 86_400))
-		let twoAfter = HomeTag.tag(macChannelKey: key, pairing: pairing, date: date.addingTimeInterval(2 * 86_400))
-		Check.that(!HomeTag.recognises(twoBefore, macChannelKey: key, pairing: pairing, now: date) && !HomeTag.recognises(twoAfter, macChannelKey: key, pairing: pairing, now: date),
+		Check.that(HomeTag.recognises(tag, key: key, pairing: pairing, now: date), "the phone recognises the day's tag")
+		Check.that(HomeTag.recognises(before, key: key, pairing: pairing, now: date), "and the day before's, from a Mac whose clock is behind")
+		Check.that(HomeTag.recognises(after, key: key, pairing: pairing, now: date), "and the day after's, from a Mac whose clock is ahead")
+		let twoBefore = HomeTag.tag(key: key, pairing: pairing, date: date.addingTimeInterval(-2 * 86_400))
+		let twoAfter = HomeTag.tag(key: key, pairing: pairing, date: date.addingTimeInterval(2 * 86_400))
+		Check.that(!HomeTag.recognises(twoBefore, key: key, pairing: pairing, now: date) && !HomeTag.recognises(twoAfter, key: key, pairing: pairing, now: date),
 			"but not two days before or after")
-		Check.that(!HomeTag.recognises(tag, macChannelKey: key, pairing: other, now: date), "nor another pairing's tag")
-		Check.that(!HomeTag.recognises(tag.uppercased(), macChannelKey: key, pairing: pairing, now: date), "nor the tag in capitals")
-		Check.that(!HomeTag.recognises(String(tag.dropLast()), macChannelKey: key, pairing: pairing, now: date) && !HomeTag.recognises(tag + "0", macChannelKey: key, pairing: pairing, now: date)
-			&& !HomeTag.recognises("", macChannelKey: key, pairing: pairing, now: date), "nor one a digit short or long, nor nothing")
+		Check.that(!HomeTag.recognises(tag, key: key, pairing: other, now: date), "nor another pairing's tag")
+		Check.that(!HomeTag.recognises(tag.uppercased(), key: key, pairing: pairing, now: date), "nor the tag in capitals")
+		Check.that(!HomeTag.recognises(String(tag.dropLast()), key: key, pairing: pairing, now: date) && !HomeTag.recognises(tag + "0", key: key, pairing: pairing, now: date)
+			&& !HomeTag.recognises("", key: key, pairing: pairing, now: date), "nor one a digit short or long, nor nothing")
 		// Compared in constant time: a tag that differs in its first digit and one that differs in its last are refused
 		// alike; the comparison is Bytes.constantTimeEqual, which `bytes()` checks.
 		var first = Array(tag.utf8)
 		first[0] = first[0] == 0x30 ? 0x31 : 0x30
 		var last = Array(tag.utf8)
 		last[15] = last[15] == 0x30 ? 0x31 : 0x30
-		Check.that(!HomeTag.recognises(String(decoding: first, as: UTF8.self), macChannelKey: key, pairing: pairing, now: date)
-			&& !HomeTag.recognises(String(decoding: last, as: UTF8.self), macChannelKey: key, pairing: pairing, now: date), "nor one a digit off, first or last")
+		Check.that(!HomeTag.recognises(String(decoding: first, as: UTF8.self), key: key, pairing: pairing, now: date)
+			&& !HomeTag.recognises(String(decoding: last, as: UTF8.self), key: key, pairing: pairing, now: date), "nor one a digit off, first or last")
 
 		// The day is the UTC day, written as remotekit.md says, at the edges of days, months, leap years and the range.
 		for (seconds, day) in [
