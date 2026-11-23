@@ -4,8 +4,9 @@ import SwiftUI
 
 /// A project's hub: the orchestrator's conversation, with the tab bar Chat · Now · Work · More, which is the Mac's board
 /// on a phone (docs/design/iphone.md, "A project's hub"). The Chat tab draws the orchestrator's conversation through its
-/// route; Now is the Mac's Now tab; Work and More are the issues that build them (#694; #696 and #697). A badge on Now
-/// counts what needs the person in the project.
+/// route; Now is the Mac's Now tab; Work draws the project's work list through its route, inline; More lists the board's
+/// pages, the project's settings and its other conversations, each opened by its route. A badge on Now counts what needs
+/// the person in the project.
 struct HubView: View {
     /// The project's id, as `ProjectRow.id`.
     let projectID: String
@@ -51,14 +52,11 @@ struct HubView: View {
             }
             .badge(needs)
             Tab("Work", systemImage: "checklist", value: HubTab.work) {
-                FeaturePlaceholder(screen: "Work", issue: 694, details: ["The project's work list, a piece of work, giving it to an agent, filing"])
-                    .environment(\.placement, .inline)
+                RouteView(.work(project: project.id, item: nil), placement: .inline)
                     .frame(maxHeight: .infinity)
             }
             Tab("More", systemImage: "ellipsis", value: HubTab.more) {
-                FeaturePlaceholder(screen: "More", issue: 696, details: ["Agents, Rules, Notes, Branches: #696", "The project's settings and limits: #697"])
-                    .environment(\.placement, .inline)
-                    .frame(maxHeight: .infinity)
+                HubMoreTab(project: project)
             }
         }
     }
