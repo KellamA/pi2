@@ -13,8 +13,12 @@ import Foundation
 enum DemoScript {
     /// Every feature's answers. A screen's issue that needs one more adds its table here, in a line of its own.
     static let features: [[String: DemoAnswer]] = [
-        conversations,  // Script/ConversationAnswers.swift (#684): open, close, shown, older, submit, abort
-        needs,          // Script/NeedsAnswers.swift (#684): needs.list, needs.answer, inbox.decide, inbox.answer
+        conversations,  // Script/ConversationAnswers.swift (#684, #687): open, close, shown, older, submit, abort, withdraw,
+                        // continue, conversation.image
+        needs,          // Script/NeedsAnswers.swift (#684, #686): needs.list, needs.answer, inbox.decide, inbox.answer
+        library,        // Script/LibraryAnswers.swift (#685, #687): conversation.create (a chat), .pin, .archive, .unarchive,
+                        // search
+        projects,       // Script/ProjectAnswers.swift (#685, #688): projects.set, .rename, .archive, .startFresh, .watch
     ]
 
     /// The answers by method. Two features answering the same method is a mistake, which the tests catch.
