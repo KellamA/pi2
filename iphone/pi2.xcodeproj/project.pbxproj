@@ -271,10 +271,12 @@
 			buildSettings = {
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "pi²";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSCameraUsageDescription = "pi² uses the camera to scan the pairing code your Mac shows, and to take a photo you add to a message. Nothing is recorded or kept unless you send it.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "Face ID opens pi², so that only you can answer for your Mac from this iPhone.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "pi² finds your Mac on this network, to reach it directly when you are at home.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "pi² listens only while you dictate a message, to turn what you say into its text. The sound is not kept or sent to your Mac.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "pi² reads only the photos you choose, to add them to a message for your Mac.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "pi² turns what you say into the text of a message, with Apple's speech recognition. Only the text goes to your Mac, and only when you send it.";
@@ -301,10 +303,12 @@
 				ENABLE_PREVIEWS = YES;
 				EXCLUDED_SOURCE_FILE_NAMES = session.jsonl;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "pi²";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSCameraUsageDescription = "pi² uses the camera to scan the pairing code your Mac shows, and to take a photo you add to a message. Nothing is recorded or kept unless you send it.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "Face ID opens pi², so that only you can answer for your Mac from this iPhone.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "pi² finds your Mac on this network, to reach it directly when you are at home.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "pi² listens only while you dictate a message, to turn what you say into its text. The sound is not kept or sent to your Mac.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "pi² reads only the photos you choose, to add them to a message for your Mac.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "pi² turns what you say into the text of a message, with Apple's speech recognition. Only the text goes to your Mac, and only when you send it.";
