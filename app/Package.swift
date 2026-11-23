@@ -113,5 +113,8 @@ let package = Package(
         // limits, and, with --engine, a phone of its own pairing and attaching over loopback through a real engine in a
         // temporary folder. Touches no Keychain, advertises nothing, listens on 127.0.0.1 alone.
         .executableTarget(name: "pi2-remote-helper-check", dependencies: ["pi2-remote", "RemoteKit"], path: "Sources/pi2-remote-helper-check"),
+        // Checks RemoteKit's relay client (#678): its messages, and the client against a relay of its own in memory; with
+        // --relay, the protocol test against the relay itself on this computer (scripts/relay-protocol-test).
+        .executableTarget(name: "pi2-relay-check", dependencies: ["RemoteKit"], path: "Sources/pi2-relay-check"),
     ]
 )

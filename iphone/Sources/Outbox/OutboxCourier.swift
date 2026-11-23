@@ -27,9 +27,9 @@ enum OutboxDelivery: Equatable, Sendable {
 
 /// The courier over a connected session: each item is the engine's own request, sent through the client as any other
 /// (`EngineSession.call`), on whatever channel the session is on. Once the channel has attached, `AppSession` sends the
-/// Outbox through it before anything new: `await outbox.send(through: EngineCourier(engine))`.
+/// Outbox through it before anything new: `await outbox.send(through: EngineOutboxCourier(engine))`.
 @MainActor
-struct EngineCourier<Draft: MessageDraft>: OutboxCourier {
+struct EngineOutboxCourier<Draft: MessageDraft>: OutboxCourier {
     let engine: EngineSession<Draft>
 
     init(_ engine: EngineSession<Draft>) {

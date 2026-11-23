@@ -36,6 +36,19 @@ public enum PairingSecrets {
 		return Data(hasher.finalize())
 	}
 
+	/// The client data hash of the App Attest attestation in the relay's `join`: SHA-256 of the relay's 32-byte challenge
+	/// followed by the device key's public half (SPKI DER, 91 bytes), so that the attested copy of the app vouches for this
+	/// device key on this connection (3.3 step 2). The relay works out the same (`relay/src/join.ts`); one shared value
+	/// holds the two together (`pi2-relay-check`, `relay/test/join-hash.test.ts`).
+	/// Throws for a challenge that is not 32 bytes.
+	public static func joinClientDataHash(challenge: Data, deviceKey: P256.Signing.PublicKey) throws -> Data {
+		guard challenge.count == 32 else { throw RemoteKitError("join client data", "a challenge is not 32 bytes") }
+		var hasher = SHA256()
+		hasher.update(data: challenge)
+		hasher.update(data: deviceKey.derRepresentation)
+		return Data(hasher.finalize())
+	}
+
 	private static func mac(_ secret: Data, label: String, _ bound: Data) -> Data {
 		var message = Data(label.utf8)
 		message.append(0)

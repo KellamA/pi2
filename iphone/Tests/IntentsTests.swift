@@ -86,7 +86,7 @@ struct IntentsTests {
     @Test func askSaysTheRecordingRefusedTheMessage() async throws {
         let session = try await session(try #require(ReplayTransport.recording()), as: .connected(.home))
         let demo = try project(session)
-        let reply = await AskOrchestrator.ask("Who is on call?", of: demo.row, session: session, courier: EngineCourier(session: session))
+        let reply = await AskOrchestrator.ask("Who is on call?", of: demo.row, session: session, courier: IntentEngineCourier(session: session))
         #expect(reply.outcome == .notSent)
         #expect(reply.dialog == "Not sent to Demo project’s orchestrator: The recorded session (PI2_TRANSPORT=replay) does not answer submit.")
         _ = try await AskOrchestratorIntent(message: "Who is on call?", project: demo.entity).perform()
@@ -98,7 +98,7 @@ struct IntentsTests {
         let runs = StopProject.runs(in: demo.row, session: session)
         #expect(runs.map(\.conversationId) == [17, 23, 29])
         #expect(StopProject.question(runs, in: demo.row, session: session).hasPrefix("Stop 3 runs in Demo project?"))
-        let reply = await StopProject.stop(runs, in: demo.row, session: session, courier: EngineCourier(session: session))
+        let reply = await StopProject.stop(runs, in: demo.row, session: session, courier: IntentEngineCourier(session: session))
         #expect(reply.refused == 3 && reply.stopped == 0)
         #expect(reply.dialog == "Couldn’t stop the runs in Demo project: The recorded session (PI2_TRANSPORT=replay) does not answer abort.")
 
@@ -121,7 +121,7 @@ struct IntentsTests {
         let mac = StandInMac(answer: "Dana is on call this week.")
         let session = try await session(mac, as: .connected(.relay))
         let demo = try project(session)
-        let reply = await AskOrchestrator.ask("Who is on call?", of: demo.row, session: session, courier: EngineCourier(session: session))
+        let reply = await AskOrchestrator.ask("Who is on call?", of: demo.row, session: session, courier: IntentEngineCourier(session: session))
         #expect(reply.outcome == .answered)
         #expect(reply.answer == "Dana is on call this week.")
         #expect(reply.dialog == "Dana is on call this week.")
@@ -137,7 +137,7 @@ struct IntentsTests {
         let demo = try project(session)
         AskOrchestrator.answerWait = .milliseconds(300)
         defer { AskOrchestrator.answerWait = .seconds(20) }
-        let reply = await AskOrchestrator.ask("Who is on call?", of: demo.row, session: session, courier: EngineCourier(session: session))
+        let reply = await AskOrchestrator.ask("Who is on call?", of: demo.row, session: session, courier: IntentEngineCourier(session: session))
         #expect(reply.outcome == .stillWorking)
         #expect(reply.dialog == "Sent to Demo project’s orchestrator. It’s still working on the answer, which will be in pi².")
     }
@@ -146,7 +146,7 @@ struct IntentsTests {
         let mac = StandInMac(answer: nil)
         let session = try await session(mac, as: .connected(.home))
         let demo = try project(session)
-        let reply = await StopProject.stop(StopProject.runs(in: demo.row, session: session), in: demo.row, session: session, courier: EngineCourier(session: session))
+        let reply = await StopProject.stop(StopProject.runs(in: demo.row, session: session), in: demo.row, session: session, courier: IntentEngineCourier(session: session))
         #expect(reply.stopped == 3)
         #expect(reply.dialog == "Stopped 3 runs in Demo project. Each conversation stays as it is and can be continued.")
         #expect(mac.sent.filter { $0.method == "abort" }.compactMap { $0.params["id"] as? Int } == [17, 23, 29])
@@ -166,16 +166,18 @@ struct IntentsTests {
         #expect(await IntentSessions.reach(session) == .connected(outOfReach: false))
         let row = try #require(IntentProject.all(in: session).first { $0.conversation != nil })
 
-        let ask = await AskOrchestrator.ask("Who is on call?", of: row, session: session, courier: EngineCourier(session: session))
+        let ask = await AskOrchestrator.ask("Who is on call?", of: row, session: session, courier: IntentEngineCourier(session: session))
         #expect(ask.outcome == .answered)
         #expect(ask.answer?.hasPrefix("You said: \"Who is on call?\". I am the demo model") == true)
 
         let needs = WhatNeedsMe.list(session: session, project: nil, reach: .connected(outOfReach: false))
-        #expect(needs.lines.count == session.engine.needs.count)
+        // The demo has a card of every kind (#684), more than the snippet shows: the rest are counted.
+        #expect(needs.lines.count == min(session.engine.needs.count, WhatNeedsMe.shown))
+        #expect(needs.lines.count + needs.more == session.engine.needs.count)
         #expect(!needs.lines.isEmpty)
 
         let runs = StopProject.runs(in: row, session: session)
-        let stop = await StopProject.stop(runs, in: row, session: session, courier: EngineCourier(session: session))
+        let stop = await StopProject.stop(runs, in: row, session: session, courier: IntentEngineCourier(session: session))
         #expect(stop.refused == 0)
         #expect(stop.stopped == runs.count)
 
@@ -198,7 +200,7 @@ struct IntentsTests {
         let session = AppSession(connection: .outOfReach(lastSeen: nil))
         IntentSessions.register(session)
         #expect(await IntentSessions.reach(session) == .unreachable)
-        let reply = await EngineCourier(session: session).request("abort", ["id": 17])
+        let reply = await IntentEngineCourier(session: session).request("abort", ["id": 17])
         #expect(reply == .unreachable(IntentWords.unreachableNotSent))
         _ = try await AskOrchestratorIntent(message: "Hello", project: IntentProject(id: Self.demo, name: "Demo project")).perform()
     }
@@ -212,11 +214,11 @@ struct IntentsTests {
         let away = IntentWords.away(lastSeen)
         #expect(away.hasPrefix("Your Mac has been asleep or out of reach since "))
 
-        let ask = await AskOrchestrator.ask("Who is on call?", of: demo.row, session: session, courier: EngineCourier(session: session))
+        let ask = await AskOrchestrator.ask("Who is on call?", of: demo.row, session: session, courier: IntentEngineCourier(session: session))
         #expect(ask.outcome == .kept)
         #expect(ask.dialog == "\(away), so your message to Demo project’s orchestrator waits in the mailbox and goes to it when your Mac wakes. The answer will come later, in pi².")
 
-        let stop = await StopProject.stop(StopProject.runs(in: demo.row, session: session), in: demo.row, session: session, courier: EngineCourier(session: session))
+        let stop = await StopProject.stop(StopProject.runs(in: demo.row, session: session), in: demo.row, session: session, courier: IntentEngineCourier(session: session))
         #expect(stop.kept == 3)
         #expect(stop.dialog == "\(away), so the stop for 3 runs waits in the mailbox and reaches it when it wakes.")
         #expect(outbox.kept.map(\.method) == ["submit", "abort", "abort", "abort"])

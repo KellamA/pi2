@@ -48,6 +48,8 @@ TARGETS=(
 	'RemoteKit|regular|[]|[]|[]'
 	'pi2-remote-check|executable|["vectors"]|["RemoteKit"]|[]'
 	'pi2-remote-fuzz|executable|[]|["RemoteKit"]|[]'
+	# The relay client's checks and the protocol test's program (#678).
+	'pi2-relay-check|executable|[]|["RemoteKit"]|[]'
 	"pi2-remote|regular|[]|[\"RemoteKit\"]|$PI2_DEVELOPMENT_IN_DEBUG"
 	'pi2-remote-helper|executable|[]|["pi2-remote"]|[]'
 	'pi2-remote-helper-check|executable|[]|["pi2-remote","RemoteKit"]|[]'
@@ -55,7 +57,7 @@ TARGETS=(
 # The protected targets no product of the package may name: the checks (a library or executable product would hand the
 # test-only entry points, or a stand-in for the checks, to whatever builds on the package) and pi² Remote, which runs
 # only as the engine's own child inside the app's bundle (a product would hand it to the iPhone app's project).
-NO_PRODUCT='["pi2-remote-check","pi2-remote-fuzz","pi2-remote","pi2-remote-helper","pi2-remote-helper-check"]'
+NO_PRODUCT='["pi2-remote-check","pi2-remote-fuzz","pi2-relay-check","pi2-remote","pi2-remote-helper","pi2-remote-helper-check"]'
 # The targets that may depend on each of pi² Remote's three: its code on its program and its check, and nothing on
 # either of those, which carry its code with them.
 REMOTE_USERS='{"pi2-remote":["pi2-remote-helper","pi2-remote-helper-check"],"pi2-remote-helper":[],"pi2-remote-helper-check":[]}'

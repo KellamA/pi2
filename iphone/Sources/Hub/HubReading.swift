@@ -52,8 +52,9 @@ extension EngineSession {
     }
 
     /// The plan's week, as the busiest subscription that reports one says it (the `limits` event); nil when none does.
+    /// The event is read once for both apps, as the shared `PlanLimits` (#861).
     func hubPlanWeek(now: Date = .now) -> HubPlanWeek? {
-        HubPlanWeek.read(extras["limits"], now: now)
+        HubPlanWeek.read(PlanLimits(extras["limits"]), now: now)
     }
 }
 
@@ -106,7 +107,8 @@ struct HubReport: Identifiable, Equatable {
     }
 }
 
-/// The plan's week for the hub's bar: a subscription's weekly window, as the `limits` event reports it.
+/// The plan's week for the hub's bar: a subscription's weekly window, as the `limits` event reports it. The numbers
+/// come from the shared `PlanLimits` (#861); nil when there is no event that reads.
 struct HubPlanWeek: Equatable {
     /// The subscription's name, such as "Anthropic Max".
     let plan: String
@@ -114,15 +116,14 @@ struct HubPlanWeek: Equatable {
     let usedPercent: Double
 
     /// The week window of the subscription that has used most of its week, among those whose window has not reset.
-    static func read(_ limits: JSONValue?, now: Date) -> HubPlanWeek? {
+    static func read(_ limits: PlanLimits?, now: Date) -> HubPlanWeek? {
         var best: HubPlanWeek?
-        for provider in limits?["providers"]?.arrayValue ?? [] {
-            let name = [provider["name"]?.stringValue, provider["plan"]?.stringValue].compactMap { $0 }.joined(separator: " ")
-            for window in provider["windows"]?.arrayValue ?? [] {
-                guard let label = window["label"]?.stringValue, label.lowercased().contains("week"),
-                      case .number(let used)? = window["usedPercent"] else { continue }
-                if case .number(let resets)? = window["resetsAt"], Date(timeIntervalSince1970: resets / 1000) <= now { continue }
-                let week = HubPlanWeek(plan: name, usedPercent: min(max(used, 0), 100))
+        for provider in limits?.providers ?? [] {
+            let name = [provider.name, provider.plan].compactMap { $0 }.joined(separator: " ")
+            for window in provider.windows ?? [] {
+                guard window.label.lowercased().contains("week") else { continue }
+                if let resets = window.resetsAt, LimitsFormat.date(resets) <= now { continue }
+                let week = HubPlanWeek(plan: name, usedPercent: min(max(window.usedPercent, 0), 100))
                 if week.usedPercent > best?.usedPercent ?? -1 { best = week }
             }
         }

@@ -28,6 +28,7 @@ enum Targets {
 			try sealedItem(world),
 			requestItem(world),
 			macItem(world),
+			relayMessages(world),
 		]
 	}
 
@@ -47,6 +48,7 @@ enum Targets {
 		let macRecord: P256.KeyAgreement.PrivateKey
 		let phoneRecord: P256.KeyAgreement.PrivateKey
 		let payload: PairingPayload
+		let homeKey: HomeKey
 
 		init(rng: inout SplitMix64) throws {
 			func bytes(_ count: Int) -> Data { Data(rng.bytes(count)) }
@@ -71,6 +73,8 @@ enum Targets {
 				pairing: pairing, macName: "Alex’s Mac", channelKey: macChannel.publicKey, identityKey: identity.publicKey,
 				recordKey: macRecord.publicKey, secret: secret, relay: "wss://relay.example.dev/v1",
 				addresses: ["192.168.1.2:52000", "[fd7a:115c:a1e0::1]:52000"], expires: 1_800_000_000)
+			// Made last, so that every key before it is what the same seed made before #845.
+			homeKey = HomeKey(rawRepresentation: bytes(32))!
 		}
 
 		var description: DeviceDescription {
@@ -272,7 +276,8 @@ enum Targets {
 		lines.append(.mac(try! MacProof.make(challenge: challenge, pairing: world.pairing, binding: binding, identity: world.identity)))
 		lines.append(.pair(try! PairClaim.make(device: world.description, attestation: Data(repeating: 0xa3, count: 120), keyId: "abc+/=", pairing: world.pairing, binding: binding, deviceKey: world.deviceKey)))
 		lines.append(.pair(try! PairClaim.make(device: world.description, attestation: nil, keyId: nil, pairing: world.pairing, binding: binding, deviceKey: world.deviceKey)))
-		lines.append(.paired(try! Paired(device: world.device, pairing: world.pairing, name: "Mac", addresses: ["10.0.0.1:1"])))
+		lines.append(.paired(try! Paired(device: world.device, pairing: world.pairing, name: "Mac", addresses: ["10.0.0.1:1"], homeKey: world.homeKey)))
+		lines.append(.homeKey(world.homeKey))
 		lines.append(.attach(try! AttachClaim.make(
 			pairing: world.pairing, device: world.device, session: SessionID("s1"), received: 3, binding: binding, challenge: challenge, build: "1.0",
 			deviceKey: world.deviceKey, presenceKey: world.presenceKey)))
@@ -292,7 +297,7 @@ enum Targets {
 			name: "control-lines", seeds: controlLineSeeds(world),
 			dictionary: words([
 				"\\\"", "\\\\", "null", "true", "\"v\\\":2", "\"session\"", "\"received\":", "dev_", ",", "{}", "\\u0000", "\"refused\"", "\"reason\"",
-				"\"update\"", "\\u0061",
+				"\"update\"", "\\u0061", "\"homeKey\"", "\"key\"", "=", "AA",
 			]),
 			maxLength: 8192
 		) { input in
@@ -305,16 +310,76 @@ enum Targets {
 			if case let .refused(refusal) = line!, let reason = refusal.reason, written != ControlLine.refused(Refusal(reason)).line {
 				Fuzz.violation("control-lines", "read a refusal as a reason it does not say", input)
 			}
+			// A home key, in paired or in homeKey, is exactly 32 bytes, and what was written is what it holds.
+			switch line! {
+			case let .homeKey(key):
+				if key.rawRepresentation.count != HomeKey.length || written != ControlLine.homeKey(HomeKey(rawRepresentation: key.rawRepresentation)!).line {
+					Fuzz.violation("control-lines", "read a home key that is not 32 bytes, or not as written", input)
+				}
+			case let .paired(paired):
+				if paired.homeKey.rawRepresentation.count != HomeKey.length { Fuzz.violation("control-lines", "read a paired whose home key is not 32 bytes", input) }
+			default: break
+			}
+			// Each line has one writer: read as from it, it is taken; as from the other end, refused.
+			let other: ControlLine.Side = line!.sender == .mac ? .phone : .mac
+			if (try? ControlLine.parse(Data(input), from: line!.sender)) == nil { Fuzz.violation("control-lines", "refused a line from its own writer", input) }
+			if (try? ControlLine.parse(Data(input), from: other)) != nil { Fuzz.violation("control-lines", "took a line from the end that never sends it", input) }
 			return true
 		}
 	}
 
-	/// The phone's check of the tag in a TXT record (#815): it takes the three days' tags it was made for and nothing else.
+	/// The relay's text messages, as its client reads them (RemoteKit/Relay, #678). The first byte chooses the end that
+	/// reads (a Mac registering, the Mac, a phone, a joining phone); a message taken is read again the same.
+	static func relayMessages(_ world: World) -> Target {
+		let ends: [RelayEnd] = [.registering, .mac, .device, .joining]
+		let sealed = Base64URL.encode(Data([4]) + Data(repeating: 0x5A, count: 100))
+		let device = world.device.text
+		let item = Base64URL.encode(Data(repeating: 1, count: 16))
+		let key = PublicKeys.text(world.deviceKey.publicKey)
+		let keyID = Data(repeating: 2, count: 32).base64EncodedString()
+		let texts: [(UInt8, String)] = [
+			(0, #"{"challenge":"\#(Base64URL.encode(Data(repeating: 3, count: 32)))"}"#),
+			(0, #"{"registered":{"pairing":"\#(world.pairing.text)"}}"#),
+			(1, #"{"ready":{"devices":[{"device":"\#(device)","online":true}],"left":["\#(device)"],"pending":false,"mail":2}}"#),
+			(2, #"{"ready":{"mac":true,"mail":0}}"#),
+			(3, #"{"joined":{"device":"\#(device)"}}"#),
+			(1, #"{"joined":{"device":"\#(device)","deviceKey":"\#(key)","keyId":"\#(keyID)"}}"#),
+			(1, #"{"ok":{"what":"addDevice"}}"#),
+			(2, #"{"refused":{"what":"put","why":"mailbox-full"}}"#),
+			(1, #"{"refused":{"why":"another-mac"}}"#),
+			(2, #"{"busy":{"until":1800000001000}}"#),
+			(1, #"{"item":{"from":"\#(device)","id":"\#(item)","item":"\#(sealed)","presence":true}}"#),
+			(2, #"{"item":{"from":"mac","id":"\#(item)","item":"\#(sealed)","presence":false}}"#),
+			(2, #"{"state":{"id":"\#(item)","item":"\#(sealed)"}}"#),
+			(1, #"{"taken":{"count":2}}"#),
+			(1, #"{"held":{"device":"\#(device)","until":1800000001000}}"#),
+			(3, #"{"mac":{"online":false}}"#),
+			(1, #"{"anotherMac":{}}"#),
+		]
+		return Target(
+			name: "relay-messages", seeds: texts.map { [$0.0] + Array($0.1.utf8) },
+			dictionary: words(["\\\"", "\\u00", "true", "false", "null", "dev_", "\"mac\"", ",", "{}", "[]", "\"why\":", "\"what\":"]), maxLength: 2048
+		) { input in
+			guard let first = input.first else { return false }
+			let end = ends[Int(first) % ends.count]
+			let text = String(decoding: input.dropFirst(), as: UTF8.self)
+			var message: RelayIncoming?
+			guard Fuzz.takes("relay-messages", input, { message = try RelayIncoming.parse(text, for: end) }) else { return false }
+			var again: RelayIncoming?
+			guard Fuzz.takes("relay-messages", input, { again = try RelayIncoming.parse(text, for: end) }), again == message else {
+				Fuzz.violation("relay-messages", "read one text two ways", input)
+			}
+			return true
+		}
+	}
+
+	/// The phone's check of the tag in a TXT record (#815, #845): it takes the three days' tags of its home key and nothing
+	/// else.
 	static func homeTag(_ world: World) -> Target {
 		let now = Date(timeIntervalSince1970: 1_795_000_000)
-		let seeds = [-1.0, 0, 1].map { Array(HomeTag.tag(macChannelKey: world.macChannel.publicKey, pairing: world.pairing, date: now.addingTimeInterval($0 * 86_400)).utf8) }
+		let seeds = [-1.0, 0, 1].map { Array(HomeTag.tag(key: world.homeKey, pairing: world.pairing, date: now.addingTimeInterval($0 * 86_400)).utf8) }
 		return Target(name: "home-tag", seeds: seeds, dictionary: words(["0", "f", "F"]), maxLength: 64) { input in
-			let taken = HomeTag.recognises(text(input), macChannelKey: world.macChannel.publicKey, pairing: world.pairing, now: now)
+			let taken = HomeTag.recognises(text(input), key: world.homeKey, pairing: world.pairing, now: now)
 			if taken, !seeds.contains(input) { Fuzz.violation("home-tag", "took a tag that is not one of the three days'", input) }
 			return taken
 		}
