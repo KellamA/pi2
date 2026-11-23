@@ -149,25 +149,58 @@ struct NeedsTests {
 
     @Test func theMarkDecodesAndItsAbsenceDecodesAsBefore() throws {
         // Without the key, as every recording before the mark: not hidden, whichever of the two objects carried it.
-        #expect(try need(id: "n", kind: "approval", at: 1).partHidden == false)
+        let plainNeed = try need(id: "n", kind: "approval", at: 1)
+        #expect(plainNeed.partHidden == nil && plainNeed.isPartlyHidden == false)
         #expect(try inboxItem("""
         {"id":"7","kind":"approval","conversationId":9,"callId":"c","tool":"bash","arguments":{"command":"ls"},"question":null,
          "title":"T","agentName":"Atlas","rootConversationId":9}
-        """).partHidden == false)
+        """).isPartlyHidden == false)
         // With the mark.
         #expect(try need("""
         {"id":"n","projectId":null,"kind":"approval","conversationId":9,"rootConversationId":9,"title":"T","rootTitle":"T",
          "agentId":null,"agentName":"Atlas","blocking":false,"createdAt":1,"tool":"bash","arguments":{"command":"ls"},"partHidden":true}
-        """).partHidden == true)
+        """).isPartlyHidden == true)
         #expect(try inboxItem("""
         {"id":"7","kind":"approval","conversationId":9,"callId":"c","tool":"bash","arguments":{"command":"ls"},"question":null,
          "title":"T","agentName":"Atlas","rootConversationId":9,"partHidden":true}
-        """).partHidden == true)
-        // A value that is not true: no mark.
+        """).isPartlyHidden == true)
+        // Explicitly unmarked.
         #expect(try inboxItem("""
         {"id":"7","kind":"approval","conversationId":9,"callId":"c","tool":"bash","arguments":{"command":"ls"},"question":null,
          "title":"T","agentName":"Atlas","rootConversationId":9,"partHidden":false}
         """).partHidden == false)
+        #expect(try inboxItem("""
+        {"id":"7","kind":"approval","conversationId":9,"callId":"c","tool":"bash","arguments":{"command":"ls"},"question":null,
+         "title":"T","agentName":"Atlas","rootConversationId":9,"partHidden":false}
+        """).isPartlyHidden == false)
+        // A value of the wrong type fails the item's decoding, as every other field does.
+        #expect(throws: DecodingError.self) {
+            try inboxItem("""
+            {"id":"7","kind":"approval","conversationId":9,"callId":"c","tool":"bash","arguments":{"command":"ls"},"question":null,
+             "title":"T","agentName":"Atlas","rootConversationId":9,"partHidden":"yes"}
+            """)
+        }
+    }
+
+    @Test func eitherObjectsMarkAloneMakesACallPartlyHidden() throws {
+        // `NeedCard.hidden` is private to the view: it combines the two marks as this does, with
+        // `(item?.isPartlyHidden ?? false) || need.isPartlyHidden`, and passes them to `isPartlyHidden`, which this tests.
+        let markedItem = try inboxItem("""
+        {"id":"7","kind":"approval","conversationId":9,"callId":"c","tool":"bash","arguments":{"command":"ls"},"question":null,
+         "title":"T","agentName":"Atlas","rootConversationId":9,"partHidden":true}
+        """)
+        let markedNeed = try need("""
+        {"id":"n","projectId":null,"kind":"approval","conversationId":9,"rootConversationId":9,"title":"T","rootTitle":"T",
+         "agentId":null,"agentName":"Atlas","blocking":false,"createdAt":1,"tool":"bash","arguments":{"command":"ls"},"partHidden":true}
+        """)
+        let plainItem = try inboxItem("""
+        {"id":"7","kind":"approval","conversationId":9,"callId":"c","tool":"bash","arguments":{"command":"ls"},"question":null,
+         "title":"T","agentName":"Atlas","rootConversationId":9}
+        """)
+        let plainNeed = try need(id: "n", kind: "approval", at: 1)
+        #expect(NeedHiddenCall.isPartlyHidden(mark: markedItem.isPartlyHidden || plainNeed.isPartlyHidden, arguments: plainItem.arguments))
+        #expect(NeedHiddenCall.isPartlyHidden(mark: plainItem.isPartlyHidden || markedNeed.isPartlyHidden, arguments: plainItem.arguments))
+        #expect(!NeedHiddenCall.isPartlyHidden(mark: plainItem.isPartlyHidden || plainNeed.isPartlyHidden, arguments: plainItem.arguments))
     }
 
     @Test func aHiddenKeyIsAPieceOfItsOwnNotTheCommandsText() {

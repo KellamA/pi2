@@ -129,46 +129,13 @@ public struct NeedItem: Decodable, Equatable, Identifiable, Sendable {
     public let work: Int?
     /// The engine's mark of an approval whose call it partly kept from a device (#776; iphone.md 5.7): a key masked as
     /// `[key hidden]`, or a value nested too deep to send, which leaves nothing in the call a phone could notice. Such
-    /// an approval can be allowed only on the Mac; a phone reads this and offers Deny only. False, and the key absent,
-    /// when nothing was hidden, so every older recording decodes as before.
-    public let partHidden: Bool
+    /// an approval can be allowed only on the Mac; a phone reads `isPartlyHidden` and offers Deny only. The key is
+    /// absent when nothing was hidden, and a value of the wrong type fails the item's decoding, as every other field
+    /// does.
+    public let partHidden: Bool?
 
-    private enum CodingKeys: String, CodingKey {
-        case id, projectId, kind, conversationId, rootConversationId, title, rootTitle, agentId, agentName, blocking
-        case createdAt, text, binds, why, question, choices, words, tool, arguments, projectSwitch
-        case change, start, limit, work, partHidden
-    }
-
-    public init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        id = try values.decode(String.self, forKey: .id)
-        projectId = try values.decodeIfPresent(String.self, forKey: .projectId)
-        kind = try values.decode(String.self, forKey: .kind)
-        conversationId = try values.decode(Int.self, forKey: .conversationId)
-        rootConversationId = try values.decode(Int.self, forKey: .rootConversationId)
-        title = try values.decode(String.self, forKey: .title)
-        rootTitle = try values.decode(String.self, forKey: .rootTitle)
-        agentId = try values.decodeIfPresent(String.self, forKey: .agentId)
-        agentName = try values.decodeIfPresent(String.self, forKey: .agentName)
-        blocking = try values.decode(Bool.self, forKey: .blocking)
-        createdAt = try values.decode(Double.self, forKey: .createdAt)
-        text = try values.decodeIfPresent(String.self, forKey: .text)
-        binds = try values.decodeIfPresent(ProjectRule.Binds.self, forKey: .binds)
-        why = try values.decodeIfPresent(String.self, forKey: .why)
-        question = try values.decodeIfPresent(String.self, forKey: .question)
-        choices = try values.decodeIfPresent([Choice].self, forKey: .choices)
-        words = try values.decodeIfPresent(Bool.self, forKey: .words)
-        tool = try values.decodeIfPresent(String.self, forKey: .tool)
-        arguments = try values.decodeIfPresent(JSONValue.self, forKey: .arguments)
-        projectSwitch = try values.decodeIfPresent(String.self, forKey: .projectSwitch)
-        change = try values.decodeIfPresent(ReachChange.self, forKey: .change)
-        start = try values.decodeIfPresent(Start.self, forKey: .start)
-        limit = try values.decodeIfPresent(LimitReading.self, forKey: .limit)
-        work = try values.decodeIfPresent(Int.self, forKey: .work)
-        // The engine marks only an approval it hid part of, so the key is missing from every older recording, and a
-        // value that is not `true` counts as no mark.
-        partHidden = (try? values.decodeIfPresent(Bool.self, forKey: .partHidden)) ?? false
-    }
+    /// Whether the engine marked this approval's call as shown in part: the safe side is hidden.
+    public var isPartlyHidden: Bool { partHidden == true }
 
     /// Whether a worker asks, in a sub-chat, rather than an agent in a conversation of its own (#507).
     public var fromSubChat: Bool { conversationId != rootConversationId }
