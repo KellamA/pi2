@@ -95,10 +95,19 @@ struct BoardBranchesPage: View {
                             conversationRow(row)
                         }
                     } header: {
-                        HStack {
-                            Label(group.repo, systemImage: "shippingbox")
-                            Spacer()
-                            if group.worktrees > 0 { Text("\(group.worktrees) worktree\(group.worktrees == 1 ? "" : "s")") }
+                        let count = group.worktrees > 0 ? "\(group.worktrees) worktree\(group.worktrees == 1 ? "" : "s")" : nil
+                        // The count goes under the repository's name when both do not fit on one line, rather than
+                        // breaking the name.
+                        ViewThatFits(in: .horizontal) {
+                            HStack {
+                                Label(group.repo, systemImage: "shippingbox").fixedSize()
+                                Spacer()
+                                if let count { Text(count).fixedSize() }
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(group.repo)
+                                if let count { Text(count) }
+                            }
                         }
                     }
                 }
