@@ -5,41 +5,6 @@ import SwiftUI
 // The rows a hub's Now tab and a Dashboard page both show: who is working, and what finished today, as the Mac's
 // `WorkingRow` and `FinishedRow` show them (app/Sources/pi2/ProjectNowTab.swift), laid out for a phone's list.
 
-/// An agent's mark: its initial on its colour, as the Mac's avatars draw it. Decoration: the row says the name.
-struct HubAgentMark: View {
-    let agent: AgentProfile?
-    @ScaledMetric(relativeTo: .body) private var scaled: CGFloat = 28
-    /// Grows with the text, up to a point: at the largest sizes the words need the row's width more.
-    private var side: CGFloat { min(scaled, 40) }
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: side * 0.28, style: .continuous)
-            .fill(Self.color(agent?.color))
-            .frame(width: side, height: side)
-            .overlay {
-                Text(String(agent?.name.prefix(1) ?? "?").uppercased())
-                    .font(.system(size: side * 0.48, weight: .bold, design: .rounded))
-                    .foregroundStyle(Color(red: 0.08, green: 0.09, blue: 0.11))
-            }
-            .accessibilityHidden(true)
-    }
-
-    /// The Mac's pastels for the agents' colour names (`AgentColor`), the same in both appearances, with dark lettering.
-    static func color(_ name: String?) -> Color {
-        let hex: UInt32 = switch name {
-        case "blue": 0x9FC5FF
-        case "teal": 0x7FD8C4
-        case "green": 0xA8E39A
-        case "yellow": 0xF5D77A
-        case "orange": 0xFFB37A
-        case "pink": 0xFFA8C8
-        case "gray": 0xC3C5D0
-        default: 0xB9A6FF
-        }
-        return Color(red: Double(hex >> 16 & 0xFF) / 255, green: Double(hex >> 8 & 0xFF) / 255, blue: Double(hex & 0xFF) / 255)
-    }
-}
-
 /// One agent working in the project: its mark and name, its model, how long, its last line and the shell command it
 /// waits on. Tapping it opens its conversation; Stop is a swipe and a context menu away, and a VoiceOver action. Whether
 /// it waits for the person or for a provider's limit shows in place of the spinner.
@@ -58,7 +23,7 @@ struct HubWorkingRow: View {
     var body: some View {
         Button(action: open) {
             HStack(alignment: .top, spacing: 12) {
-                HubAgentMark(agent: agent)
+                AgentMark(agent: agent, maximum: 40)
                 VStack(alignment: .leading, spacing: 3) {
                     // Side by side; one under another at the largest sizes, where the line cannot hold them.
                     let line = typeSize.isAccessibilitySize
@@ -168,7 +133,7 @@ struct HubFinishedRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            HubAgentMark(agent: agent)
+            AgentMark(agent: agent, maximum: 40)
             VStack(alignment: .leading, spacing: 3) {
                 Text(report.title.isEmpty ? (agent?.name ?? "An agent") : report.title)
                     .font(.body)

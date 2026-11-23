@@ -216,7 +216,7 @@ private struct ConversationChrome: ViewModifier {
                 .toolbar {
                     ToolbarItem(placement: .principal) { header }
                 }
-                .tint(Color.conversationAccent)
+                .tint(Color.pi2Accent)
         } else {
             content
         }
