@@ -3,8 +3,9 @@ import Foundation
 
 /// What needs the person, answered in the demo (#684), as the engine answers it (`engine/src/needs.ts`, `main.ts`): an
 /// answer of the item's kind takes it off Needs you (and an approval out of the inbox), and the agent that asked carries
-/// on: an approved command runs, and the asking conversation is told. A second answer to the same item is refused with
-/// the engine's words.
+/// on: an approved command runs, an approval a project's switch asked for does what it held (the `work` `file` the
+/// recording holds files the work), a start held back by a limit starts when Start anyway is chosen, and the asking
+/// conversation is told. A second answer to the same item is refused with the engine's words.
 extension DemoScript {
     static let needs: [String: DemoAnswer] = [
         "needs.list": { request, world in
@@ -68,6 +69,9 @@ enum DemoNeeds {
         case "approval":
             let allowed = need["answers"] as? [String] ?? ["once", "always", "rule", "deny"]
             guard let decision = answer["decision"] as? String, allowed.contains(decision) else {
+                if need["projectSwitch"] is String {
+                    throw DemoRefusal("This can only be allowed once, or denied: the project's settings ask each time")
+                }
                 throw DemoRefusal("decision must be one of \(allowed.joined(separator: ", "))")
             }
         case "question":
@@ -104,6 +108,22 @@ enum DemoNeeds {
         }
     }
 
+    /// Takes away what the run of conversation `id` was held on (its approvals and `ask_user` questions), as stopping the
+    /// run withdraws them. A question put with `needs_you` does not hold the run, and stays.
+    static func withdraw(of id: Int, world: DemoWorld) {
+        let held = items(world).filter { ($0["conversationId"] as? NSNumber)?.intValue == id && $0["blocking"] as? Bool == true }
+            .compactMap { $0["id"] as? String }
+        guard !held.isEmpty else { return }
+        world.change("needs") { event in
+            event["items"] = (event["items"] as? [[String: Any]] ?? []).filter { !held.contains($0["id"] as? String ?? "") }
+        }
+        if (world.event("inbox")?["items"] as? [[String: Any]] ?? []).contains(where: { held.contains($0["id"] as? String ?? "") }) {
+            world.change("inbox") { event in
+                event["items"] = (event["items"] as? [[String: Any]] ?? []).filter { !held.contains($0["id"] as? String ?? "") }
+            }
+        }
+    }
+
     /// What follows an answer: the agent that asked is told, and carries on.
     private static func carryOn(_ need: [String: Any], answer: [String: Any], world: DemoWorld) {
         guard let conversation = (need["conversationId"] as? NSNumber)?.intValue else { return }
@@ -111,6 +131,9 @@ enum DemoNeeds {
         case "approval":
             let allowed = answer["decision"] as? String != "deny"
             ranCommand(of: need, in: conversation, allowed: allowed, world: world)
+        case "limit":
+            // The orchestrator hears of either answer in its catch-up, not at once (docs/projects.md, 8.3).
+            if answer["start"] as? Bool == true { DemoStarts.start(need, world: world) }
         case "reach":
             if answer["allow"] as? Bool == true { allowReach(need, world: world) }
             told(conversation, answer["allow"] as? Bool == true ? "The person allowed it." : "The person refused it.", world: world)
@@ -132,13 +155,25 @@ enum DemoNeeds {
         let callID = (world.conversations[id]?.state["tools"] as? [[String: Any]])?.first?["callId"] as? String
         let tool = need["tool"] as? String ?? "bash"
         world.after(0.4) { world in
+            let output: String
+            if need["projectSwitch"] is String {
+                // What the switch held: the engine's words for it done, or for it declined (`requireSwitch`).
+                output = allowed
+                    ? fileWork(need, world: world) ?? "Done."
+                    : "The person declined this action. Do not retry it; ask what they would like instead."
+            } else {
+                output = allowed ? "(no output)" : "The person denied this."
+            }
             let result: [String: Any] = [
                 "id": world.newItemID(), "kind": "tool", "callId": callID ?? NSNull(), "name": tool,
-                "text": allowed ? "(no output)" : "The person denied this.", "isError": !allowed, "images": 0,
+                "text": output, "isError": !allowed, "images": 0,
             ]
-            world.append([result], to: id) { $0["tools"] = [Any]() }
+            world.append([result], to: id) { state in
+                state["tools"] = [Any]()
+                state["messageWaits"] = NSNull()
+            }
             world.after(0.6) { world in
-                let text = allowed ? "Done. The tool returned: (no output)" : "Done. The tool returned: The person denied this."
+                let text = "Done. The tool returned: \(output)"
                 let entry: [String: Any] = [
                     "id": world.newItemID(), "kind": "assistant", "text": text, "thinking": "", "toolCalls": [Any](), "stop": "stop",
                     "error": NSNull(), "model": "demo-1",
@@ -150,6 +185,29 @@ enum DemoNeeds {
                 DemoReplies.working(id, false, world: world)
             }
         }
+    }
+
+    /// A `work` `file` a project's switch held, allowed: the work is filed in the project's list, as the person's
+    /// approval lets the engine file it, and the tool's answer in the engine's words (`work.ts`). Nil for any other call.
+    private static func fileWork(_ need: [String: Any], world: DemoWorld) -> String? {
+        guard need["tool"] as? String == "work", let arguments = need["arguments"] as? [String: Any],
+              arguments["action"] as? String == "file", let title = arguments["title"] as? String,
+              let project = need["projectId"] as? String else { return nil }
+        var number = 0
+        world.change("work") { event in
+            var projects = event["projects"] as? [String: Any] ?? [:]
+            var items = projects[project] as? [[String: Any]] ?? []
+            number = (items.compactMap { ($0["id"] as? NSNumber)?.intValue }.max() ?? 0) + 1
+            items.append([
+                "id": number, "title": title, "text": arguments["text"] as? String ?? "", "state": "open", "class": NSNull(),
+                "takenBy": NSNull(), "notes": [Any](), "result": NSNull(),
+                "filedBy": ["kind": "agent", "agentId": need["agentId"] ?? NSNull(), "conversationId": need["conversationId"] ?? NSNull()],
+                "createdAt": world.now, "updatedAt": world.now, "closedAt": NSNull(),
+            ])
+            projects[project] = items
+            event["projects"] = projects
+        }
+        return "Filed #\(number) “\(title)”, not classified."
     }
 
     /// The asking conversation is told the answer, as a message the demo model answers.
