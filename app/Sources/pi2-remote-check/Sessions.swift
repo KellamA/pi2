@@ -37,18 +37,22 @@ enum Sessions {
 		let phone = Phone()
 		let pairing = PairingID.random()
 		let secret = Bytes.random(32)
+		let homeKey = HomeKey.random()
+		let newHomeKey = HomeKey.random()
 		secrets += [
+			homeKey.rawRepresentation, newHomeKey.rawRepresentation,
 			secret, mac.identity.rawRepresentation, mac.channel.rawRepresentation, mac.record.rawRepresentation, phone.device.rawRepresentation,
 			phone.presence.rawRepresentation, phone.channel.rawRepresentation, phone.record.rawRepresentation,
 		]
 		Check.section("Pairing: a phone and pi² Remote, over the TCP path's framing")
-		guard let paired = pair(mac: mac, phone: phone, pairing: pairing, secret: secret) else { return }
+		guard let paired = pair(mac: mac, phone: phone, pairing: pairing, secret: secret, homeKey: homeKey) else { return }
 		Check.section("A connection: KK, the Mac's proof, attach, lines, acks, padding, bye")
-		guard let session = connect(mac: mac, phone: phone, pairing: pairing, device: paired.device) else { return }
+		guard let session = connect(mac: mac, phone: phone, pairing: pairing, device: paired.device, homeKey: homeKey, newHomeKey: newHomeKey) else { return }
 		Check.section("Resuming through attach, on a new channel")
 		resume(mac: mac, phone: phone, pairing: pairing, device: paired.device, session: session)
 		Check.section("Pairing and connecting refused")
 		refusals(mac: mac, phone: phone, pairing: pairing, secret: secret, device: paired.device)
+		refusedClaim(mac: mac, phone: phone, pairing: pairing, secret: secret)
 		refusedAttach(mac: mac, phone: phone, pairing: pairing, device: paired.device)
 		Check.section("Sealed items, signed by their writer")
 		sealing(mac: mac, phone: phone, pairing: pairing, device: paired.device)
@@ -93,14 +97,19 @@ enum Sessions {
 		let device: DeviceID
 	}
 
-	static func pair(mac: Mac, phone: Phone, pairing: PairingID, secret: Data) -> PairResult? {
+	/// The pairing payload the Mac shows, for this check's pairing.
+	static func payload(mac: Mac, pairing: PairingID, secret: Data) throws -> PairingPayload {
+		try PairingPayload(
+			pairing: pairing, macName: "Alex’s MacBook Pro", channelKey: mac.channel.publicKey, identityKey: mac.identity.publicKey,
+			recordKey: mac.record.publicKey, secret: secret, relay: "wss://relay.example.dev/v1",
+			addresses: ["192.168.1.20:52000", "[fd7a:115c:a1e0::1]:52000"], expires: Int64(Date().timeIntervalSince1970) + 300)
+	}
+
+	static func pair(mac: Mac, phone: Phone, pairing: PairingID, secret: Data, homeKey: HomeKey) -> PairResult? {
 		do {
 			var wire = Wire()
 			// The Mac makes the payload; the phone reads it from the QR code.
-			let payload = try PairingPayload(
-				pairing: pairing, macName: "Alex’s MacBook Pro", channelKey: mac.channel.publicKey, identityKey: mac.identity.publicKey,
-				recordKey: mac.record.publicKey, secret: secret, relay: "wss://relay.example.dev/v1",
-				addresses: ["192.168.1.20:52000", "[fd7a:115c:a1e0::1]:52000"], expires: Int64(Date().timeIntervalSince1970) + 300)
+			let payload = try Self.payload(mac: mac, pairing: pairing, secret: secret)
 			let scanned = try PairingPayload.parse(payload.text)
 			Check.that(scanned == payload, "the payload reads back as written")
 			Check.that(!String(describing: scanned).contains(Base64URL.encode(secret)), "a payload's description leaves out its secret")
@@ -152,12 +161,16 @@ enum Sessions {
 			Check.that(!PairingSecrets.digitsMatch(shown, String(shown.reversed()) == shown ? "000000" : String(shown.reversed())), "other digits do not match")
 
 			let device = DeviceID.random()
-			let answer = try Paired(device: device, pairing: pairing, name: scanned.macName, addresses: scanned.addresses)
+			let answer = try Paired(device: device, pairing: pairing, name: scanned.macName, addresses: scanned.addresses, homeKey: homeKey)
 			guard case let .paired(received) = try send(.paired(answer), from: macChannel, to: phoneChannel, wire: &wire) else {
 				throw RemoteKitError("check", "not paired")
 			}
 			Check.that(received == answer, "the phone reads paired as the Mac wrote it")
-			print("ok   paired: one IKpsk2 handshake, the Mac's proof, pair, the digits, paired")
+			Check.that(received.homeKey == homeKey, "the phone reads the home key in paired, inside the channel")
+			Check.that(!scanned.text.contains(Base64URL.encode(homeKey.rawRepresentation)), "the payload does not hold the home key")
+			let today = HomeTag.tag(key: homeKey, pairing: pairing, date: Date())
+			Check.that(HomeTag.recognises(today, key: received.homeKey, pairing: scanned.pairing), "the phone recognises the Mac's tag with the key paired gave it")
+			print("ok   paired: one IKpsk2 handshake, the Mac's proof, pair, the digits, paired with the home key")
 			return PairResult(device: device)
 		} catch {
 			Check.that(false, "pairing: \(error)")
@@ -181,7 +194,40 @@ enum Sessions {
 		return (phoneChannel, try macHandshake.channel())
 	}
 
-	static func connect(mac: Mac, phone: Phone, pairing: PairingID, device: DeviceID) -> SessionID? {
+	/// A claim the Mac does not take (#845): the claimer completed the handshake with the secret, as someone who read the QR
+	/// code can, and sent its claim, but the claim is refused (a second claim, wrong digits, a refused attestation), so the
+	/// Mac closes with `bye` alone and the claimer reads no `paired`, and so no home key.
+	static func refusedClaim(mac: Mac, phone: Phone, pairing: PairingID, secret: Data) {
+		do {
+			var wire = Wire()
+			let scanned = try PairingPayload.parse(try Self.payload(mac: mac, pairing: pairing, secret: secret).text)
+			let claimer = Phone()
+			let claimerHandshake = try ChannelHandshake.pairingInitiator(payload: scanned, channelKey: claimer.channel)
+			let macHandshake = try ChannelHandshake.pairingResponder(pairing: pairing, secret: secret, channelKey: mac.channel)
+			try macHandshake.readMessage(try wire.carry(try claimerHandshake.writeMessage()))
+			try claimerHandshake.readMessage(try wire.carry(try macHandshake.writeMessage()))
+			let claimerChannel = try claimerHandshake.channel()
+			let macChannel = try macHandshake.channel()
+			claimerChannel.padding = Frame.paddingBlock
+			let proof = try MacProof.make(challenge: Bytes.random(32), pairing: pairing, binding: macChannel.handshakeHash, identity: mac.identity)
+			_ = try send(.mac(proof), from: macChannel, to: claimerChannel, wire: &wire)
+			let claim = try PairClaim.make(
+				device: claimer.description, attestation: nil, keyId: nil, pairing: pairing, binding: claimerChannel.handshakeHash, deviceKey: claimer.device)
+			guard case .pair = try send(.pair(claim), from: claimerChannel, to: macChannel, wire: &wire) else { throw RemoteKitError("check", "not a claim") }
+			// The engine refuses the claim: the Mac's last message is bye.
+			var events: [ChannelEvent?] = []
+			events.append(try claimerChannel.open(try wire.carry(try macChannel.sealBye())))
+			Check.that(events == [.bye], "a refused claim is answered with bye alone: no paired, so no home key")
+			Check.that(claimerChannel.isOver && macChannel.isOver, "and the pairing channel is over")
+			Check.refuses("nothing is sent on it after") { _ = try macChannel.seal(line: ControlLine.homeKey(HomeKey.random()).line) }
+			subjects += [claimerChannel, macChannel]
+			print("ok   a claim refused: bye alone, no home key")
+		} catch {
+			Check.that(false, "refused claim: \(error)")
+		}
+	}
+
+	static func connect(mac: Mac, phone: Phone, pairing: PairingID, device: DeviceID, homeKey: HomeKey, newHomeKey: HomeKey) -> SessionID? {
 		do {
 			var wire = Wire()
 			let (phoneChannel, macChannel) = try kk(mac: mac, phone: phone, pairing: pairing, device: device)
@@ -213,6 +259,20 @@ enum Sessions {
 				throw RemoteKitError("check", "not attached")
 			}
 			Check.that(attached.session == session && !attached.resume, "the phone reads attached")
+
+			// Another device was revoked: pi² Remote made a new home key, advertises its tag at once, and gives it to this
+			// device on its attached channel (#845). The phone reads it only as from the Mac, and keeps it in place of the old.
+			let keyMessages = try macChannel.seal(line: ControlLine.homeKey(newHomeKey).line)
+			var keyEvent: ChannelEvent?
+			for message in keyMessages { keyEvent = try phoneChannel.open(try wire.carry(message)) }
+			guard case let .line(keyLine) = keyEvent else { throw RemoteKitError("check", "no homeKey line") }
+			guard case let .homeKey(received) = try ControlLine.parse(keyLine, from: .mac) else { throw RemoteKitError("check", "not homeKey") }
+			Check.that(received == newHomeKey && received != homeKey, "the phone reads the new home key on its attached channel")
+			let now = Date()
+			let advertised = HomeTag.tag(key: newHomeKey, pairing: pairing, date: now)
+			Check.that(HomeTag.recognises(advertised, key: received, pairing: pairing, now: now), "and recognises the tag the Mac advertises from then on")
+			Check.that(!HomeTag.recognises(advertised, key: homeKey, pairing: pairing, now: now), "which the old key, all a revoked phone holds, does not make")
+			Check.refuses("a homeKey line from the phone, which never sends one") { _ = try ControlLine.parse(keyLine, from: .phone) }
 
 			// Until the device is attached a channel takes lines of 64 KB at most, and refuses a longer one before it holds
 			// more than that; once attached, each end raises its limit.
