@@ -389,6 +389,121 @@ struct SettingsTests {
         #expect(SettingsAwake(session.engine.extras["awake"])?.keep == true)
     }
 
+    // MARK: - In the demo mode, which answers as the engine does
+
+    private func demo() async throws -> (AppSession, DemoTransport) {
+        let transport = try #require(DemoTransport.recorded())
+        transport.world.pace = 0.02
+        let session = AppSession()
+        session.start(transport, as: .demo)
+        let end = Date(timeIntervalSinceNow: 30)
+        while session.engine.projects.isEmpty || session.engine.extras["coauthor"] == nil || session.engine.allAgents.isEmpty {
+            if Date() > end { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        return (session, transport)
+    }
+
+    private func eventually(_ condition: () -> Bool) async throws -> Bool {
+        let end = Date(timeIntervalSinceNow: 30)
+        while !condition() {
+            if Date() > end { return false }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        return true
+    }
+
+    @Test func theDemoChangesAProjectsSettingsAsTheEngineDoes() async throws {
+        let (session, transport) = try await demo()
+        let engine = session.engine
+        let project = try #require(engine.projects.first { $0.name == "Demo project" })
+        #expect(await SettingsRequest.planShare(project: project.id, 75).send(through: engine) == nil)
+        #expect(await SettingsRequest.dailySpend(project: project.id, 2.5).send(through: engine) == nil)
+        #expect(await SettingsRequest.withoutAsking(project: project.id, "merge", on: true).send(through: engine) == nil)
+        #expect(await SettingsRequest.wakeOnReports(project: project.id, on: true).send(through: engine) == nil)
+        #expect(try await eventually { engine.projects.first { $0.id == project.id }?.settings?.limits.dailySpend == 2.5 })
+        let settings = try #require(engine.projects.first { $0.id == project.id }?.settings)
+        #expect(settings.limits.planShare == 75)
+        #expect(settings.withoutAsking?["merge"] == true)
+        #expect(settings.withoutAsking?["startAgents"] == true, "the switches not sent are kept")
+        #expect(settings.wakeOnReports)
+        // The engine's checks, in its words.
+        #expect(await SettingsRequest.planShare(project: project.id, 0).send(through: engine) == "planShare must be a whole number from 1 to 100, or null")
+        #expect(await SettingsRequest.withoutAsking(project: project.id, "everything", on: true).send(through: engine) == "Unknown switch: everything")
+        let other = try #require(engine.projects.first { $0.id != project.id })
+        #expect(await SettingsRequest.rename(project: project.id, to: other.name.uppercased()).send(through: engine)?.hasPrefix("There is already a project called") == true)
+        #expect(await SettingsRequest.rename(project: project.id, to: "Site").send(through: engine) == nil)
+        #expect(try await eventually { engine.projects.contains { $0.name == "Site" } })
+        // The recording has an agent of each project at work: archiving or deleting waits for it, as on a Mac.
+        #expect(await SettingsRequest.archive(project: project.id).send(through: engine) == "Stop the project's agents first.")
+        #expect(await SettingsRequest.delete(project: project.id).send(through: engine) == "Stop the project's agents first.")
+        #expect(engine.projects.first { $0.id == project.id }?.archivedAt == nil)
+        // Restoring one that is not archived changes nothing, and is no error.
+        #expect(await SettingsRequest.restore(project: project.id).send(through: engine) == nil)
+        // No repository to reach in the demo: refused, and nothing attached.
+        #expect(await SettingsRequest.attach(project: project.id, repository: nil).send(through: engine) != nil)
+        #expect(engine.projects.first { $0.id == project.id }?.repository == nil)
+        #expect(transport.world.unanswered.isEmpty)
+    }
+
+    @Test func theDemoChangesTheAppsSettingsAndTheOrchestrator() async throws {
+        let (session, transport) = try await demo()
+        let engine = session.engine
+        #expect(await SettingsRequest.awake(keep: false, battery: false).send(through: engine) == nil)
+        #expect(await SettingsRequest.autoArchive(days: 30).send(through: engine) == nil)
+        #expect(await SettingsRequest.compaction(200_000).send(through: engine) == nil)
+        #expect(await SettingsRequest.coauthor(enabled: true).send(through: engine) == nil)
+        #expect(await SettingsRequest.coauthor(line: "Co-authored-by: Someone <someone@example.invalid>").send(through: engine) == nil)
+        #expect(await SettingsRequest.chatWeb(false).send(through: engine) == nil)
+        #expect(await SettingsRequest.chatInstructions("  Keep it short.  ").send(through: engine) == nil)
+        #expect(try await eventually { SettingsChat(engine.extras["chat"])?.instructions == "Keep it short." })
+        let source = SettingsSource(session)
+        #expect(source.awake == SettingsAwake(keep: false, battery: false))
+        #expect(source.autoArchiveDays == 30)
+        #expect(source.compaction?.tokens == 200_000)
+        #expect(source.coauthor == SettingsCoauthor(enabled: true, line: "Co-authored-by: Someone <someone@example.invalid>", defaultLine: SettingsCoauthor.fallback))
+        #expect(source.chat?.web == false)
+        #expect(await SettingsRequest.coauthor(line: "Someone").send(through: engine)?.hasPrefix("Start the line with") == true)
+        #expect(await SettingsRequest.chatModel(ModelRef(provider: "none", modelId: "x")).send(through: engine) == "Unknown model: none/x")
+
+        let project = try #require(engine.projects.first)
+        let orchestrator = try #require(engine.agent(project.orchestratorId))
+        #expect(await SettingsRequest.agentCompaction(orchestrator, 0).send(through: engine) == nil)
+        #expect(try await eventually { engine.agent(orchestrator.id)?.compactionTokens == 0 })
+        #expect(engine.agent(orchestrator.id)?.instructions == orchestrator.instructions, "what was not sent is kept")
+        #expect(transport.world.unanswered.isEmpty)
+    }
+
+    @Test func theDemoSavesAndDeletesSchedules() async throws {
+        let (session, transport) = try await demo()
+        let engine = session.engine
+        let project = try #require(engine.projects.first)
+        var schedule = Schedule(id: "", title: "Morning brief", agentId: project.orchestratorId, prompt: "Say what needs me.",
+                                repeat: Repeat(kind: "daily", hour: 7, minute: 30), enabled: true)
+        #expect(await SettingsRequest.saveSchedule(schedule, isNew: true).send(through: engine) == nil)
+        #expect(try await eventually { !engine.schedules.isEmpty })
+        let saved = try #require(engine.schedules.first)
+        #expect(saved.title == "Morning brief")
+        let next = try #require(saved.nextRunAt)
+        let at = Calendar.current.dateComponents([.hour, .minute], from: Date(timeIntervalSince1970: next / 1000))
+        #expect(at.hour == 7 && at.minute == 30)
+        #expect(SettingsSource(session).book.schedules(ofProject: project.id).map(\.id) == [saved.id])
+
+        #expect(await SettingsRequest.setSchedule(saved, enabled: false).send(through: engine) == nil)
+        #expect(try await eventually { engine.schedules.first?.enabled == false })
+        #expect(engine.schedules.count == 1)
+
+        schedule.title = " "
+        #expect(await SettingsRequest.saveSchedule(schedule, isNew: true).send(through: engine) == "Give the schedule a name")
+        schedule.title = "Once"
+        schedule.repeat = Repeat(kind: "once", at: 1_000)
+        #expect(await SettingsRequest.saveSchedule(schedule, isNew: true).send(through: engine) == "That time has already passed")
+
+        #expect(await SettingsRequest.deleteSchedule(saved.id).send(through: engine) == nil)
+        #expect(try await eventually { engine.schedules.isEmpty })
+        #expect(transport.world.unanswered.isEmpty)
+    }
+
     @Test func nothingIsOfferedWhileTheMacIsOutOfReach() async throws {
         let session = try await replay()
         #expect(SettingsSource(session).connected)

@@ -29,6 +29,9 @@ enum DemoScreens {
             ("An agent's conversation (#687)", .conversation(agent)),
             ("Needs you, every project (#686)", .needs()),
             ("Needs you, one project (#686)", .needs(project: project.id)),
+            ("The app's settings (#697)", .settings),
+            ("A project's settings and limits (#697)", .projectSettings(project.id)),
+            ("Schedules (#697)", .schedules),
         ]
     }
 }
@@ -218,13 +221,14 @@ struct DemoTests {
         let (session, transport) = try await demo()
         let projects = session.engine.projects
         do {
-            try await session.engine.call("projects.rename", ["id": projects[0].id, "name": "Renamed"])
+            // The Mac's own upkeep, which no screen of the phone sends and the demo never answers.
+            try await session.engine.call("backup.create", ["directory": "/tmp"])
             Issue.record("the demo answered a request its script has no answer for")
         } catch {
-            #expect(error.localizedDescription.contains("The demo does not do projects.rename"))
+            #expect(error.localizedDescription.contains("The demo does not do backup.create"))
         }
         #expect(session.engine.projects == projects)
-        #expect(transport.world.unanswered == ["projects.rename"])
+        #expect(transport.world.unanswered == ["backup.create"])
         #expect(DemoScript.answeredTwice.isEmpty)
     }
 
