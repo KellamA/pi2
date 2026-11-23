@@ -40,6 +40,10 @@ enum DemoScreens {
             ("An orchestrator waiting on a switch's approval (#687)", .conversation(try #require(second.conversation))),
             ("A sub-chat at work (#687)", .conversation(subChat)),
             ("Usage (#697)", .usage),
+            // The demo's projects keep their work in pi², with no repository: the page says it has no pull requests, and
+            // asks the demo nothing.
+            ("A pull request (#695)", .pullRequest(project: project.id, number: 7)),
+            ("A pull request's file (#695)", .pullRequest(project: project.id, number: 7, file: "docs/projects.md")),
         ]
     }
 }
