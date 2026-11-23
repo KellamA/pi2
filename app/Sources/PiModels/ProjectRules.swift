@@ -127,6 +127,15 @@ public struct NeedItem: Decodable, Equatable, Identifiable, Sendable {
     public let limit: LimitReading?
     /// A worker's question or decision: the work item its run was handed, when it was handed one (#507).
     public let work: Int?
+    /// The engine's mark of an approval whose call it partly kept from a device (#776; iphone.md 5.7): a key masked as
+    /// `[key hidden]`, or a value nested too deep to send, which leaves nothing in the call a phone could notice. Such
+    /// an approval can be allowed only on the Mac; a phone reads `isPartlyHidden` and offers Deny only. The key is
+    /// absent when nothing was hidden, and a value of the wrong type fails the item's decoding, as every other field
+    /// does.
+    public let partHidden: Bool?
+
+    /// Whether the engine marked this approval's call as shown in part: the safe side is hidden.
+    public var isPartlyHidden: Bool { partHidden == true }
 
     /// Whether a worker asks, in a sub-chat, rather than an agent in a conversation of its own (#507).
     public var fromSubChat: Bool { conversationId != rootConversationId }

@@ -2,80 +2,25 @@ import EngineKit
 import Foundation
 import PiModels
 
-// What the Work screens read of the engine's state: the `work` event's list kept by pi², or the `github` event's issues
-// and pull requests for a project with a repository attached (docs/projects.md, 3.11 and 4.3). The readings themselves
-// are shared in `PiModels` (Work.swift, GitHubWork.swift, #828): the limit a start past the project's limit carries is
-// read by the shared `WorkLimit` below. `WorkItem`, `WorkPull`, `WorkUnknownWrite` and their container `WorkListing`
-// stay the phone's own, because they read a missing time as the distant past where the shared readings take 0 ms since
-// 1970 — a difference only a malformed event could show, kept as it is until one reading is chosen for both (#828).
+// What the Work screens read of the engine's state is the shared reading in `PiModels` (#828, #868): the `work` event's
+// list kept by pi² as `ProjectWork` holding `WorkPiece`s, the `github` event's issues and pull requests as `GitHubWork`
+// holding `GitHubPull`s and `GitHubUnknownWrite`s. What stays here is only the phone's own: what a piece of work can be
+// given and where a change on its way takes it, on `WorkPiece`; the word on a pull request's row, on `GitHubPull`; the
+// list's shape as the screen shows it (`WorkListing`); and the phone's words for a state, a time and a start the
+// project's limit held.
 
-/// One piece of work, or one issue of an attached repository, as the Mac's `WorkPiece` reads it.
-struct WorkItem: Identifiable, Equatable {
-    struct Note: Equatable {
-        let at: Date
-        /// The agent that wrote it; nil for the person.
-        let agentId: String?
-        let text: String
-    }
-
-    let id: Int
-    let title: String
-    let text: String
-    /// Where it is (the state table's word), and who has it: what a change on its way shows at once (`showing`).
-    private(set) var state: String
-    /// The class of model it needs, "local" or "cloud"; nil when not classified.
-    let modelClass: String?
-    /// The agent working on it, and the sub-chat it works in; nil when nobody has it.
-    private(set) var holderAgentId: String?
-    private(set) var holderConversation: Int?
-    let notes: [Note]
-    /// What finishing it said was done.
-    let result: String?
-    let updatedAt: Date
-    /// An issue's address on GitHub.
-    let url: String?
-    /// An issue of which only what its row shows was read, until it is read whole (`github.show`).
-    let partial: Bool
-
-    init?(_ value: JSONValue?) {
-        guard let value, let id = value["id"]?.intValue, let title = value["title"]?.stringValue else { return nil }
-        let taken = value["takenBy"]
-        self.id = id
-        self.title = title
-        text = value["text"]?.stringValue ?? ""
-        state = value["state"]?.stringValue ?? "open"
-        modelClass = value["class"]?.stringValue
-        holderAgentId = taken?["agentId"]?.stringValue
-        holderConversation = taken?["conversationId"]?.intValue
-        notes = (value["notes"]?.arrayValue ?? []).compactMap { note in
-            guard let text = note["text"]?.stringValue else { return nil }
-            return Note(at: WorkTime.date(note["at"]) ?? .distantPast, agentId: note["by"]?["agentId"]?.stringValue, text: text)
-        }
-        result = value["result"]?.stringValue
-        updatedAt = WorkTime.date(value["updatedAt"]) ?? .distantPast
-        url = value["url"]?.stringValue
-        partial = value["partial"] == .bool(true)
-    }
-
+extension WorkPiece {
     /// Nobody has it, and it is open: what can be given to an agent from its row.
     var givable: Bool { state == "open" && holderAgentId == nil }
     /// An agent holds it, working or not.
     var held: Bool { WorkState.held.contains(state) }
     var closed: Bool { WorkState.closed.contains(state) }
 
-    /// The item as it will be once the change on its way is made, shown at once until the engine says how it went.
-    func showing(_ change: WorkChange?) -> WorkItem {
+    /// The piece as it will be once the change on its way is made, shown at once until the engine says how it went.
+    /// `WorkChange` is this app's own view state, so the reading that takes it stays here with it.
+    func showing(_ change: WorkChange?) -> WorkPiece {
         guard let change, let state = change.state else { return self }
-        var shown = self
-        shown.state = state
-        if change.letsGo {
-            shown.holderAgentId = nil
-            shown.holderConversation = nil
-        } else if let agent = change.holderAgentId {
-            shown.holderAgentId = agent
-            shown.holderConversation = nil
-        }
-        return shown
+        return showing(state: state, holderAgentId: change.holderAgentId, letsGo: change.letsGo)
     }
 }
 
@@ -94,8 +39,8 @@ enum WorkState {
     }
 }
 
-/// A change the person asked for that the engine has not answered yet, as the Mac's `WorkPending`: the words that say so
-/// where the item shows, and the state it takes the item to, shown at once.
+/// A change the person asked for that the engine has not answered yet: the words that say so where the item shows, and
+/// the state it takes the item to, shown at once.
 struct WorkChange: Equatable {
     /// "Closing", "Giving to Forge".
     let word: String
@@ -120,61 +65,9 @@ struct WorkChange: Equatable {
     }
 }
 
-/// A pull request of the attached repository, with what its row in the list shows: the Mac's `GitHubPull`, read only as
-/// far as the list needs. Its own screen (#695) reads it whole.
-struct WorkPull: Identifiable, Equatable {
-    struct Finding: Equatable {
-        let agentName: String
-        /// "approve", "changes" or "comment".
-        let verdict: String
-        let at: Date
-    }
-
-    let number: Int
-    let title: String
-    /// "open", "merged" or "closed".
-    let state: String
-    let draft: Bool
-    /// "passing", "failing", "pending" or "none".
-    let checks: String
-    let failingChecks: Int
-    /// "yes", "no" or "unknown".
-    let mergeable: String
-    /// What a reviewing agent last found.
-    let newestFinding: Finding?
-    /// The work item it fixes, from "Fixes #N" in its text.
-    let work: Int?
-
-    var id: Int { number }
-
-    init?(_ value: JSONValue?) {
-        guard let value, let number = value["number"]?.intValue, let title = value["title"]?.stringValue else { return nil }
-        self.number = number
-        self.title = title
-        state = value["state"]?.stringValue ?? "open"
-        draft = value["draft"] == .bool(true)
-        checks = value["checks"]?.stringValue ?? "none"
-        failingChecks = value["failingChecks"]?.arrayValue?.count ?? 0
-        mergeable = value["mergeable"]?.stringValue ?? "unknown"
-        newestFinding = (value["findings"]?.arrayValue ?? []).compactMap { finding -> Finding? in
-            guard let agentName = finding["agentName"]?.stringValue else { return nil }
-            return Finding(agentName: agentName, verdict: finding["verdict"]?.stringValue ?? "comment",
-                           at: WorkTime.date(finding["at"]) ?? .distantPast)
-        }.max { $0.at < $1.at }
-        work = value["work"]?.intValue
-    }
-
-    /// "Checks passing", "2 checks failing", "Checks running", "No checks": as the Mac's `checksWords`.
-    var checksWords: String {
-        switch checks {
-        case "passing": "Checks passing"
-        case "failing": "\(failingChecks) \(failingChecks == 1 ? "check" : "checks") failing"
-        case "pending": "Checks running"
-        default: "No checks"
-        }
-    }
-
-    /// The word on its row's tag: where it stands, as the design's "PR · ready".
+extension GitHubPull {
+    /// The word on its row's tag: where it stands, as the design's "PR · ready". Its own screen (#695) has its own
+    /// words for the same reading (`PullRequestListing.swift`).
     var standing: String {
         switch state {
         case "merged": "merged"
@@ -188,36 +81,11 @@ struct WorkPull: Identifiable, Equatable {
             else { "ready" }
         }
     }
-
-    /// "approved", "asked for changes" or "left a finding": the Mac's words for a verdict.
-    static func verdictWords(_ verdict: String) -> String {
-        switch verdict {
-        case "approve": "approved"
-        case "changes": "asked for changes"
-        default: "left a finding"
-        }
-    }
-}
-
-/// A write of pi²'s to GitHub whose outcome could not be told (docs/projects.md, 3.11), for the person to settle: the
-/// Mac's `GitHubUnknownWrite`.
-struct WorkUnknownWrite: Identifiable, Equatable {
-    let intent: String
-    let summary: String
-    let at: Date
-
-    var id: String { intent }
-
-    init?(_ value: JSONValue?) {
-        guard let value, let intent = value["intent"]?.stringValue else { return nil }
-        self.intent = intent
-        summary = value["summary"]?.stringValue ?? "a write"
-        at = WorkTime.date(value["at"]) ?? .distantPast
-    }
 }
 
 /// A project's work as the phone shows it: the list pi² keeps, or an attached repository's issues and pull requests,
-/// with how its last read went.
+/// with how its last read went. The reading itself is shared (`ProjectWork`, `GitHubWork`); this is the shape the two
+/// screens draw — which event the list came from, whether it has come, and the segments the list is shown in.
 struct WorkListing: Equatable {
     /// Where the list comes from.
     enum Source: Equatable {
@@ -230,9 +98,9 @@ struct WorkListing: Equatable {
     let source: Source
     /// Whether the event that carries the list has come yet.
     let arrived: Bool
-    let items: [WorkItem]
-    let pulls: [WorkPull]
-    let unknown: [WorkUnknownWrite]
+    let items: [WorkPiece]
+    let pulls: [GitHubPull]
+    let unknown: [GitHubUnknownWrite]
     /// GitHub only: "ok", "loading", "signed_out", "unreachable" or "rate_limited".
     let state: String
     let error: String?
@@ -240,7 +108,7 @@ struct WorkListing: Equatable {
     /// A read under way behind the list.
     let reading: Bool
 
-    init(source: Source, arrived: Bool, items: [WorkItem], pulls: [WorkPull] = [], unknown: [WorkUnknownWrite] = [],
+    init(source: Source, arrived: Bool, items: [WorkPiece], pulls: [GitHubPull] = [], unknown: [GitHubUnknownWrite] = [],
          state: String = "ok", error: String? = nil, readAt: Date? = nil, reading: Bool = false) {
         self.source = source
         self.arrived = arrived
@@ -253,24 +121,24 @@ struct WorkListing: Equatable {
         self.reading = reading
     }
 
-    /// The list pi² keeps, from the `work` event (`nil` until it has come).
+    /// The list pi² keeps, from the `work` event (`nil` until it has come), as the shared `ProjectWork` reads it.
     static func kept(_ event: JSONValue?, project: String) -> WorkListing {
         WorkListing(source: .kept, arrived: event != nil,
-                    items: (event?["projects"]?[project]?.arrayValue ?? []).compactMap(WorkItem.init))
+                    items: ProjectWork(event?["projects"]?[project]).items)
     }
 
-    /// An attached repository's, from the `github` event (`nil` until it has come), as the Mac's `GitHubWork` reads it.
+    /// An attached repository's, from the `github` event (`nil` until it has come), as the shared `GitHubWork` reads it.
     static func github(_ event: JSONValue?, project: String, repository: String) -> WorkListing {
-        let value = event?["projects"]?[project]
+        let work = GitHubWork(event?["projects"]?[project])
         return WorkListing(
             source: .github(repository), arrived: event != nil,
-            items: (value?["issues"]?.arrayValue ?? []).compactMap(WorkItem.init),
-            pulls: (value?["pulls"]?.arrayValue ?? []).compactMap(WorkPull.init),
-            unknown: (value?["unknown"]?.arrayValue ?? []).compactMap(WorkUnknownWrite.init),
-            state: value?["state"]?.stringValue ?? "loading",
-            error: value?["error"]?.stringValue,
-            readAt: WorkTime.date(value?["readAt"]).flatMap { $0.timeIntervalSince1970 > 0 ? $0 : nil },
-            reading: value?["reading"] == .bool(true)
+            items: work.issues,
+            pulls: work.pulls,
+            unknown: work.unknown,
+            state: work.state,
+            error: work.error,
+            readAt: work.readAt,
+            reading: work.reading
         )
     }
 
@@ -303,7 +171,7 @@ struct WorkListing: Equatable {
         }
     }
 
-    func item(_ id: Int) -> WorkItem? { items.first { $0.id == id } }
+    func item(_ id: Int) -> WorkPiece? { items.first { $0.id == id } }
 
     /// The list as one segment of the screen shows it: groups in the state table's order, each newest-changed first,
     /// with the empty ones left out; open pull requests lead the open work, and the merged or closed ones follow the
@@ -368,8 +236,8 @@ struct WorkSection: Identifiable, Equatable {
 
 /// One row of the list: a piece of work (or an issue), or a pull request.
 enum WorkRowEntry: Identifiable, Equatable {
-    case item(WorkItem)
-    case pull(WorkPull)
+    case item(WorkPiece)
+    case pull(GitHubPull)
 
     var id: String {
         switch self {
@@ -379,11 +247,11 @@ enum WorkRowEntry: Identifiable, Equatable {
     }
 }
 
-/// A start the project's limit refused, held until the person confirms that one start or leaves it (8.3). The limit
-/// itself is the shared reading (`WorkLimit` in PiModels, from the refusal's `data.limit`, #828); the words of the
+/// A start the project's limit refused, held until the person confirms that one start or leaves it (8.3). The piece is
+/// the shared reading (`WorkPiece`) and the limit the shared `WorkLimit` (both `PiModels`, #828); the words of the
 /// question are the phone's.
 struct WorkHeldStart: Equatable, Identifiable {
-    let item: WorkItem
+    let item: WorkPiece
     let agent: AgentProfile
     let limit: WorkLimit
 
@@ -396,14 +264,9 @@ struct WorkHeldStart: Equatable, Identifiable {
     }
 }
 
-/// The engine's times, milliseconds since 1970, and how long ago one was.
+/// How long ago a time was, in the Mac's words (`LimitsFormat.ago`).
 enum WorkTime {
-    static func date(_ value: JSONValue?) -> Date? {
-        guard case .number(let milliseconds)? = value else { return nil }
-        return Date(timeIntervalSince1970: milliseconds / 1000)
-    }
-
-    /// "just now", "5 min ago", "3 h ago", "2 d ago": the Mac's words (`LimitsFormat.ago`).
+    /// "just now", "5 min ago", "3 h ago", "2 d ago".
     static func ago(_ date: Date, now: Date = .now) -> String {
         let seconds = now.timeIntervalSince(date)
         if seconds < 60 { return "just now" }
