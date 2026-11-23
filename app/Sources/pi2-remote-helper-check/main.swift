@@ -69,6 +69,7 @@ if ProcessInfo.processInfo.environment[marker] == nil {
 let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment[marker]!, isDirectory: true)
 let home = URL(fileURLWithPath: ProcessInfo.processInfo.environment["PI2_HOME"]!, isDirectory: true)
 defer { try? FileManager.default.removeItem(at: root) }
+Check.cleanup = { try? FileManager.default.removeItem(at: root) }
 
 let built = URL(fileURLWithPath: helperPath ?? AppBundle.ownExecutable()!.deletingLastPathComponent().appendingPathComponent("pi2-remote-helper").path)
 guard FileManager.default.isExecutableFile(atPath: built.path) else {

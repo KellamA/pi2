@@ -21,7 +21,11 @@ enum Check {
 	static func section(_ name: String) { print("-- \(name)") }
 
 	/// Stops the check at once: something it needs to go on did not happen.
+	/// Run before the check stops early: its temporary folder goes.
+	nonisolated(unsafe) static var cleanup: () -> Void = {}
+
 	static func stop(_ why: String) -> Never {
+		cleanup()
 		print("FAIL \(why)")
 		print("\(passed) passed, \(failed.count + 1) failed (stopped)")
 		exit(1)
