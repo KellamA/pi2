@@ -39,6 +39,7 @@ enum DemoScreens {
             ("The Dashboard at the second project (#688)", .dashboard(project: second.id)),
             ("An orchestrator waiting on a switch's approval (#687)", .conversation(try #require(second.conversation))),
             ("A sub-chat at work (#687)", .conversation(subChat)),
+            ("Usage (#697)", .usage),
         ]
     }
 }

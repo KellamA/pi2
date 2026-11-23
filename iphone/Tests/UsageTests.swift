@@ -73,6 +73,35 @@ struct UsageTests {
         #expect(refresh.contains("limits.refresh"))
     }
 
+    @Test func theDemoAnswersAsTheEngineDoes() async throws {
+        let transport = try #require(DemoTransport.recorded())
+        let session = AppSession()
+        session.start(transport, as: .demo)
+        let engine = session.engine
+        #expect(try await eventually { engine.usage != nil && !engine.projects.isEmpty })
+        let spent = try #require(engine.usage?.today.cost)
+
+        // A budget above today's spend, then one below it, then none: the `usage` event follows each.
+        #expect(await UsageRequests.setBudget(engine, daily: spent + 5) == nil)
+        #expect(try await eventually { engine.usage?.budget.daily == spent + 5 })
+        #expect(engine.usage?.overBudget == false)
+        #expect(await UsageRequests.setBudget(engine, daily: spent / 2) == nil)
+        #expect(try await eventually { engine.usage?.overBudget == true })
+        #expect(UsageReading(engine).budget?.over == true)
+        #expect(await UsageRequests.setBudget(engine, daily: 1) == nil)
+        #expect(try await eventually { engine.usage?.budget.daily == 1 })
+        #expect(await UsageRequests.setBudget(engine, daily: nil) == nil)
+        #expect(try await eventually { engine.usage?.budget.daily == nil })
+        #expect(engine.usage?.overBudget == false)
+        // The engine's refusal of an amount that is none.
+        #expect(await UsageRequests.setBudget(engine, daily: 0) == "The budget must be an amount above zero, or off")
+
+        // The demo has no subscription signed in.
+        #expect(UsageReading(engine).providers.isEmpty)
+        #expect(await UsageRequests.refreshLimits(engine, provider: "anthropic") == "That subscription is not signed in.")
+        #expect(transport.world.unanswered.isEmpty)
+    }
+
     @Test func sampleSpendingIsMoneyWithItsWeekAndBudget() throws {
         let reading = UsageSample.reading(over: false, now: now, calendar: utc)
         let amounts = reading.amounts(now: now, calendar: utc)
