@@ -1,24 +1,16 @@
 import Foundation
 
 /// A project's settings and limits, the app's settings a phone may change, and schedules, answered in the demo (#697) as
-/// the engine answers them: `projects.ts` (`projects.unarchive`, `.delete`; `.set`, `.rename` and `.archive` are
-/// `ProjectAnswers.swift`'s), `github.ts` (`github.attach`, `.detach`), `agentrequests.ts` (`agents.save`, as the settings
-/// send it: a name with a model or a summary size), `keepawake.ts` (`settings.setAwake`), `settingsrequests.ts`
-/// (`settings.setAutoArchive`, `settings.setCompaction`, `chat.set`), `coauthor.ts` (`coauthor.set`) and
+/// the engine answers them: `projects.ts` (`projects.delete`; `.set`, `.rename` and `.archive` are `ProjectAnswers.swift`'s,
+/// `.unarchive` with `settings.setAutoArchive` `ConversationsAnswers.swift`'s), `github.ts` (`github.attach`, `.detach`),
+/// `agentrequests.ts` (`agents.save`, as the settings send it: a name with a model or a summary size), `keepawake.ts`
+/// (`settings.setAwake`), `settingsrequests.ts` (`settings.setCompaction`, `chat.set`), `coauthor.ts` (`coauthor.set`) and
 /// `scheduleruns.ts` with `schedules.ts` (`schedules.save`, `.delete`). Each checks what the engine checks, refuses in its
 /// words, changes the event the engine sends again, and answers what it answers. `schedules.runNow`, which starts a
 /// conversation, is left to the demo's second part (#697).
 extension DemoScript {
     static let settings: [String: DemoAnswer] = [
         // MARK: A project
-        "projects.unarchive": { request, world in
-            let id = try DemoSettings.projectID(request)
-            try DemoSettings.lifecycle(id, in: world, checkBusy: false) { project in
-                guard project["archivedAt"] != nil else { return }
-                project.removeValue(forKey: "archivedAt")
-            }
-            return [:]
-        },
         "projects.delete": { request, world in
             let id = try DemoSettings.projectID(request)
             try DemoSettings.lifecycle(id, in: world, checkBusy: true) { project in
@@ -97,19 +89,6 @@ extension DemoScript {
                 answer = ["keep": event["keep"] ?? true, "battery": event["battery"] ?? false]
             }
             return answer
-        },
-        "settings.setAutoArchive": { request, world in
-            let days = request.params["days"]
-            var value: Any = NSNull()
-            if let days, !(days is NSNull) {
-                guard let number = days as? NSNumber, !DemoSettings.isBool(days), number.doubleValue == Double(number.intValue),
-                      (1...3650).contains(number.intValue) else {
-                    throw DemoRefusal("Choose a whole number of days from 1 to 3650, or never")
-                }
-                value = number.intValue
-            }
-            world.change("library") { event in event["autoArchiveDays"] = value }
-            return [:]
         },
         "settings.setCompaction": { request, world in
             let given = request.params["defaultCompactionTokens"]
