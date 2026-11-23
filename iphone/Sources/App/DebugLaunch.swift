@@ -11,7 +11,10 @@ import PiModels
 ///   connection bar says. With the replay it is `home` unless given; without it, `not-paired`.
 /// - `PI2_SHOW=<route>`: the route to open: `home`, `dashboard[:<project>]`, `project:<project>[#chat|now|work|more]`,
 ///   `conversation:<id>`, `needs[:<project>]`, where `<project>` is a project's name or id; it opens once the project is
-///   known. `face-id-check` opens the Face ID check from the first screen (`FirstScreen`).
+///   known. `face-id-check` opens the Face ID check from the first screen (`FirstScreen`). And the next screens':
+///   `work:<project>[#<number>]`, `pull-request:<project>#<number>[:<file>]`, `board:<project>[#agents|rules|notes|branches]`,
+///   `agent:<id>` (a template) or `agent:<project>#<id>`, `templates`, `project-settings:<project>`, `settings`,
+///   `schedules`, `usage`, `conversations[:<project>]`, `archive`, `background-commands[:<id>]`, `new-project`.
 struct DebugLaunch {
     var transport: String?
     var connection: String?
@@ -64,6 +67,11 @@ struct DebugLaunch {
         func project(_ named: String) -> String? {
             projects.first { $0.id == named }?.id ?? projects.first { $0.name == named }?.id
         }
+        /// `<project>[#<rest>]`: the project's id, once it is known, and what follows the `#`.
+        func projectAndRest(_ text: String) -> (String, String?)? {
+            let named = text.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+            return project(named[0]).map { ($0, named.count > 1 ? named[1] : nil) }
+        }
         switch parts.first {
         case "home":
             return .home
@@ -81,6 +89,37 @@ struct DebugLaunch {
             let tab = named.count > 1 ? HubTab(rawValue: named[1]) : .chat
             guard let tab, let id = project(named[0]) else { return nil }
             return .project(id, tab: tab)
+        case "work":
+            guard case let (id, rest)? = argument.flatMap(projectAndRest) else { return nil }
+            guard let rest else { return .work(project: id) }
+            return Int(rest).map { .work(project: id, item: $0) }
+        case "pull-request":
+            guard case let (id, rest)? = argument.flatMap(projectAndRest), let rest else { return nil }
+            let numbered = rest.split(separator: ":", maxSplits: 1).map(String.init)
+            guard let number = Int(numbered[0]) else { return nil }
+            return .pullRequest(project: id, number: number, file: numbered.count > 1 ? numbered[1] : nil)
+        case "board":
+            guard case let (id, rest)? = argument.flatMap(projectAndRest), let page = BoardPage(rawValue: rest ?? "agents") else { return nil }
+            return .board(project: id, page: page)
+        case "agent":
+            guard let argument, !argument.isEmpty else { return nil }
+            guard argument.contains("#") else { return .agent(argument) }
+            guard case let (id, agent)? = projectAndRest(argument), let agent, !agent.isEmpty else { return nil }
+            return .agent(agent, project: id)
+        case "project-settings":
+            return argument.flatMap(project).map { .projectSettings($0) }
+        case "conversations":
+            guard let argument else { return .conversations() }
+            return project(argument).map { .conversations(project: $0) }
+        case "background-commands":
+            guard let argument else { return .backgroundCommands() }
+            return argument.isEmpty ? nil : .backgroundCommands(output: argument)
+        case "templates" where argument == nil: return .templates
+        case "settings" where argument == nil: return .settings
+        case "schedules" where argument == nil: return .schedules
+        case "usage" where argument == nil: return .usage
+        case "archive" where argument == nil: return .archive
+        case "new-project" where argument == nil: return .newProject
         default:
             return nil
         }
