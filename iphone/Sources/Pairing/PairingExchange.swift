@@ -85,7 +85,7 @@ struct PairingExchange: Sendable {
 
     /// Both paths at once (step 1), the first link kept.
     private func reach(device: DeviceStatementSigner) async throws -> Reached {
-        var attempts = HomeReach.attempts(addresses: payload.addresses, macChannelKey: payload.channelKey, pairing: payload.pairing, routes: routes)
+        var attempts = HomeReach.attempts(addresses: payload.addresses, homeKey: nil, pairing: payload.pairing, routes: routes)
         if let relay = URL(string: payload.relay) {
             let payload = payload, attester = attester, routes = routes
             let deviceKey = device.publicKey
@@ -135,7 +135,7 @@ struct PairingExchange: Sendable {
         let binding = channel.channel.handshakeHash
 
         guard let first = try? await channel.nextLine(within: .seconds(20)) else { throw Failure.macDidNotPair }
-        guard case let .mac(proof)? = try? ControlLine.parse(first) else { throw Failure.macNotProved }
+        guard case let .mac(proof)? = try? ControlLine.parse(first, from: .mac) else { throw Failure.macNotProved }
         do {
             try proof.verify(identityKey: payload.identityKey, pairing: payload.pairing, binding: binding)
         } catch {
@@ -172,7 +172,7 @@ struct PairingExchange: Sendable {
         // The person types the digits on the Mac, within the window's five minutes.
         let window = max(Double(payload.expires) - now().timeIntervalSince1970, 0) + 30
         guard let answer = try? await channel.nextLine(within: .seconds(window)) else { throw Failure.macDidNotPair }
-        guard case let .paired(paired)? = try? ControlLine.parse(answer), paired.pairing == payload.pairing else { throw Failure.macDidNotPair }
+        guard case let .paired(paired)? = try? ControlLine.parse(answer, from: .mac), paired.pairing == payload.pairing else { throw Failure.macDidNotPair }
         handedBack = true
         channel.close()
         return PairingRecord(payload: payload, paired: paired, at: now())

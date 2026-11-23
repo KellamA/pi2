@@ -10,7 +10,7 @@ import RemoteKit
 /// tag is not trusting it: the channel's KK handshake, which only the Mac's channel key answers, still decides.
 protocol HomeFinder: Sendable {
     /// The endpoints of services that carry this pairing's tag, as they are found, until the task is cancelled.
-    func find(macChannelKey: Curve25519.KeyAgreement.PublicKey, pairing: PairingID) -> Inbox<NWEndpoint>
+    func find(homeKey: HomeKey, pairing: PairingID) -> Inbox<NWEndpoint>
 }
 
 /// Bonjour, through Network.framework's browser. Browsing asks the phone's owner once for Local Network (5.4), so the
@@ -19,13 +19,13 @@ protocol HomeFinder: Sendable {
 struct BonjourHomeFinder: HomeFinder {
     static let serviceType = "_pi2._tcp"
 
-    func find(macChannelKey: Curve25519.KeyAgreement.PublicKey, pairing: PairingID) -> Inbox<NWEndpoint> {
+    func find(homeKey: HomeKey, pairing: PairingID) -> Inbox<NWEndpoint> {
         let found = Inbox<NWEndpoint>()
         let browser = NWBrowser(for: .bonjourWithTXTRecord(type: Self.serviceType, domain: nil), using: NWParameters())
         browser.browseResultsChangedHandler = { _, changes in
             for change in changes {
                 guard case let .added(result) = change else { continue }
-                if Self.recognises(result.metadata, macChannelKey: macChannelKey, pairing: pairing) { found.push(result.endpoint) }
+                if Self.recognises(result.metadata, homeKey: homeKey, pairing: pairing) { found.push(result.endpoint) }
             }
         }
         browser.stateUpdateHandler = { state in
@@ -44,13 +44,13 @@ struct BonjourHomeFinder: HomeFinder {
     }
 
     /// Whether a service's TXT record names this pairing's Mac today: `v=2` and a tag `HomeTag` takes.
-    static func recognises(_ metadata: NWBrowser.Result.Metadata, macChannelKey: Curve25519.KeyAgreement.PublicKey, pairing: PairingID, now: Date = Date()) -> Bool {
+    static func recognises(_ metadata: NWBrowser.Result.Metadata, homeKey: HomeKey, pairing: PairingID, now: Date = Date()) -> Bool {
         guard case let .bonjour(record) = metadata else { return false }
-        return recognises(version: record["v"], tag: record["t"], macChannelKey: macChannelKey, pairing: pairing, now: now)
+        return recognises(version: record["v"], tag: record["t"], homeKey: homeKey, pairing: pairing, now: now)
     }
 
-    static func recognises(version: String?, tag: String?, macChannelKey: Curve25519.KeyAgreement.PublicKey, pairing: PairingID, now: Date = Date()) -> Bool {
+    static func recognises(version: String?, tag: String?, homeKey: HomeKey, pairing: PairingID, now: Date = Date()) -> Bool {
         guard version == "2", let tag else { return false }
-        return HomeTag.recognises(tag, macChannelKey: macChannelKey, pairing: pairing, now: now)
+        return HomeTag.recognises(tag, key: homeKey, pairing: pairing, now: now)
     }
 }

@@ -30,7 +30,7 @@ final class RemoteConnection {
     /// The Mac revoked this phone: its keys and record are deleted, and the first screen comes back.
     private(set) var unpaired = false
 
-    @ObservationIgnored private let mac: PairedMac
+    @ObservationIgnored private var mac: PairedMac
     @ObservationIgnored private let keys: PairedKeys
     @ObservationIgnored private let keyStore: any PairingKeySource
     @ObservationIgnored private let store: any PairingStore
@@ -209,7 +209,7 @@ final class RemoteConnection {
 
     /// The paths for one attempt: the Mac's last addresses and Bonjour, and the relay unless it stopped.
     private func attempts() -> [@Sendable () async throws -> Reached] {
-        var attempts = HomeReach.attempts(addresses: mac.addresses, macChannelKey: mac.channelKey, pairing: mac.pairing, routes: routes)
+        var attempts = HomeReach.attempts(addresses: mac.addresses, homeKey: mac.homeKey, pairing: mac.pairing, routes: routes)
         if let relay, relay.status.stopped == nil {
             let within = routes.relayWithin
             attempts.append { Reached(link: try await relay.openLink(within: within), path: .relay) }
@@ -252,13 +252,23 @@ final class RemoteConnection {
             lastSeen = now()
             switch event {
             case let .line(line):
-                if line.starts(with: Data(#"{"revoked":"#.utf8)), case let .revoked(revocation)? = try? ControlLine.parse(line) {
+                if line.starts(with: Data(#"{"revoked":"#.utf8)), case let .revoked(revocation)? = try? ControlLine.parse(line, from: .mac) {
                     if (try? Attach.verified(revocation, mac: mac)) == true {
                         await unpair()
                         return
                     }
                     channel.drop()
                     break
+                }
+                if line.starts(with: Data(#"{"homeKey":"#.utf8)) {
+                    // The home tag's key, on every attach and when the Mac makes a new one after a revocation: kept in
+                    // place of the one held, never passed to the engine (remotekit.md, "The home key").
+                    guard case let .homeKey(key)? = try? ControlLine.parse(line, from: .mac) else {
+                        channel.drop()
+                        break
+                    }
+                    keep(key)
+                    continue
                 }
                 transport.deliver(line)
                 bytes += line.count
@@ -277,6 +287,19 @@ final class RemoteConnection {
         if self.channel === channel { self.channel = nil }
         channel.drop()
         if !Task.isCancelled, !unpaired { connection = .connecting }
+    }
+
+    /// Keeps a home key the Mac sent, if it is not the one held: in the record, and for the next Bonjour search.
+    private func keep(_ key: HomeKey) {
+        guard key != mac.homeKey else { return }
+        do {
+            guard var record = try store.load() else { return }
+            record.homeKey = Base64URL.encode(key.rawRepresentation)
+            try store.save(record)
+            mac = try record.mac()
+        } catch {
+            log.notice("the Mac's new home key was not kept")
+        }
     }
 
     private func ack(force: Bool) {

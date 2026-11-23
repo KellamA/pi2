@@ -119,7 +119,7 @@ struct ConnectionTests {
         let paired = try await Self.paired()
         defer { paired.mac.stop() }
         var routes = PairingTests.routes()
-        routes.homeFinder = TagFinder(endpoint: paired.mac.endpoint, advertised: HomeTag.tag(macChannelKey: paired.mac.channelKey.publicKey, pairing: paired.mac.pairing, date: Date()))
+        routes.homeFinder = TagFinder(endpoint: paired.mac.endpoint, advertised: HomeTag.tag(key: paired.mac.homeKey, pairing: paired.mac.pairing, date: Date()))
         // No address kept, so only the finder can reach the Mac.
         var record = paired.record
         record.addresses = []
@@ -129,10 +129,34 @@ struct ConnectionTests {
         #expect(await Wait.until { connection.connection == .connected(.home, relayReachable: false) })
 
         let mac = try record.mac()
-        #expect(BonjourHomeFinder.recognises(version: "2", tag: HomeTag.tag(macChannelKey: mac.channelKey, pairing: mac.pairing, date: Date()), macChannelKey: mac.channelKey, pairing: mac.pairing))
-        #expect(!BonjourHomeFinder.recognises(version: "2", tag: HomeTag.tag(macChannelKey: mac.channelKey, pairing: .random(), date: Date()), macChannelKey: mac.channelKey, pairing: mac.pairing), "another pairing's tag is another Mac")
-        #expect(!BonjourHomeFinder.recognises(version: "1", tag: HomeTag.tag(macChannelKey: mac.channelKey, pairing: mac.pairing, date: Date()), macChannelKey: mac.channelKey, pairing: mac.pairing))
-        #expect(!BonjourHomeFinder.recognises(version: "2", tag: nil, macChannelKey: mac.channelKey, pairing: mac.pairing))
+        #expect(BonjourHomeFinder.recognises(version: "2", tag: HomeTag.tag(key: mac.homeKey, pairing: mac.pairing, date: Date()), homeKey: mac.homeKey, pairing: mac.pairing))
+        #expect(!BonjourHomeFinder.recognises(version: "2", tag: HomeTag.tag(key: mac.homeKey, pairing: .random(), date: Date()), homeKey: mac.homeKey, pairing: mac.pairing), "another pairing's tag is another Mac")
+        #expect(!BonjourHomeFinder.recognises(version: "2", tag: HomeTag.tag(key: .random(), pairing: mac.pairing, date: Date()), homeKey: mac.homeKey, pairing: mac.pairing), "a tag under another home key, as a revoked phone's, is not this Mac's")
+        #expect(!BonjourHomeFinder.recognises(version: "1", tag: HomeTag.tag(key: mac.homeKey, pairing: mac.pairing, date: Date()), homeKey: mac.homeKey, pairing: mac.pairing))
+        #expect(!BonjourHomeFinder.recognises(version: "2", tag: nil, homeKey: mac.homeKey, pairing: mac.pairing))
+    }
+
+    @Test func theMacsNewHomeKeyIsKeptAndNeverReachesTheEngine() async throws {
+        let paired = try await Self.paired()
+        defer { paired.mac.stop() }
+        #expect(paired.record.homeKey == Base64URL.encode(paired.mac.homeKey.rawRepresentation), "the home key from paired is kept")
+        let connection = try Self.connection(paired)
+        let app = AppSession()
+        let transport = connection.transport()
+        app.start(transport, as: .connecting)
+        connection.start()
+        defer { connection.stop() }
+        #expect(await Wait.until { Int(transport.received) == paired.mac.sentInSession && transport.received > 0 })
+        let had = transport.received
+        let key = paired.mac.newHomeKey()
+        #expect(await Wait.until { (try? paired.store.load())?.homeKey == Base64URL.encode(key.rawRepresentation) }, "a new key is kept in place of the old")
+        #expect(transport.received == had, "and is no line of the engine's")
+
+        // The next search on the network goes by the new key's tag.
+        paired.mac.dropChannels()
+        #expect(await Wait.until { paired.mac.state.withLock { $0.attachedCount } == 2 })
+        let mac = try #require(try paired.store.load()).mac()
+        #expect(BonjourHomeFinder.recognises(version: "2", tag: HomeTag.tag(key: key, pairing: mac.pairing, date: Date()), homeKey: mac.homeKey, pairing: mac.pairing))
     }
 
     @Test func aMacWithAnotherIdentityGetsNoAttach() async throws {
@@ -338,9 +362,9 @@ struct TagFinder: HomeFinder {
     let endpoint: NWEndpoint
     let advertised: String
 
-    func find(macChannelKey: Curve25519.KeyAgreement.PublicKey, pairing: PairingID) -> Inbox<NWEndpoint> {
+    func find(homeKey: HomeKey, pairing: PairingID) -> Inbox<NWEndpoint> {
         let found = Inbox<NWEndpoint>()
-        if BonjourHomeFinder.recognises(version: "2", tag: advertised, macChannelKey: macChannelKey, pairing: pairing) { found.push(endpoint) }
+        if BonjourHomeFinder.recognises(version: "2", tag: advertised, homeKey: homeKey, pairing: pairing) { found.push(endpoint) }
         return found
     }
 }

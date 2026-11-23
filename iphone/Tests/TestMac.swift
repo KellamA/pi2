@@ -63,6 +63,8 @@ final class TestMac: @unchecked Sendable {
         var paired: [DeviceID] = []
         var sessionEnds = 0
         var requests: [String] = []
+        /// The home tag's key, sent in `paired` and after every `attached`.
+        var homeKey = HomeKey.random()
     }
 
     let rules: Mutex<Rules>
@@ -176,6 +178,19 @@ final class TestMac: @unchecked Sendable {
         state.withLock { _ = $0.revoked.insert(device) }
     }
 
+    /// A new home key, as after a revocation; sent to the phones attached now, and to the others at their next attach.
+    func newHomeKey() -> HomeKey {
+        let key = HomeKey.random()
+        let channels = state.withLock { state in
+            state.homeKey = key
+            return state.channels
+        }
+        for channel in channels { try? channel.send(.homeKey(key)) }
+        return key
+    }
+
+    var homeKey: HomeKey { state.withLock { $0.homeKey } }
+
     /// Sends one more of the engine's lines in the current session, as an event the engine sent.
     /// How many of the engine's lines the current session has sent.
     var sentInSession: Int {
@@ -242,7 +257,7 @@ final class TestMac: @unchecked Sendable {
             state.devices.append(Device(id: device, channelKey: claim.device.channelKey, deviceKey: claim.device.deviceKey, presenceKey: claim.device.presenceKey))
             state.paired.append(device)
         }
-        try channel.send(.paired(try Paired(device: device, pairing: pairing, name: name, addresses: port > 0 ? ["127.0.0.1:\(port)"] : [])))
+        try channel.send(.paired(try Paired(device: device, pairing: pairing, name: name, addresses: port > 0 ? ["127.0.0.1:\(port)"] : [], homeKey: state.withLock { $0.homeKey })))
         if link is MacRelayLink {
             // Through the relay the pairing channel now goes to the device's id, which the phone's own connection will
             // use next: a late `bye` of this channel would land in the next one and fail it. So no bye: the phone
@@ -314,6 +329,8 @@ final class TestMac: @unchecked Sendable {
             state.current = session
         }
         try channel.send(.attached(Attached(session: session, resume: resumed != nil)))
+        // The home key on every attach (remotekit.md, "The home key").
+        try channel.send(.homeKey(state.withLock { $0.homeKey }))
         channel.channel.maxLineLength = Lines.defaultMaxLength
 
         let end: EngineEnd

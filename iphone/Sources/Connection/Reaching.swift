@@ -30,16 +30,17 @@ struct Reached: Sendable {
 /// The home path (5.4), as one attempt: every address given, dialled at once (`direct`), and the network looked through
 /// for a service with this pairing's tag (`home`); the first to connect is kept, the rest closed.
 enum HomeReach {
-    static func attempts(addresses: [String], macChannelKey: Curve25519.KeyAgreement.PublicKey, pairing: PairingID, routes: Routes) -> [@Sendable () async throws -> Reached] {
+    static func attempts(addresses: [String], homeKey: HomeKey?, pairing: PairingID, routes: Routes) -> [@Sendable () async throws -> Reached] {
         var attempts: [@Sendable () async throws -> Reached] = []
         for endpoint in addresses.compactMap(MacAddress.endpoint) {
             attempts.append {
                 Reached(link: try await routes.dialer.dial(endpoint, within: routes.dialWithin), path: .direct)
             }
         }
-        if let finder = routes.homeFinder {
+        // Bonjour needs the home key, which only `paired` gives: while pairing, the payload's addresses alone.
+        if let finder = routes.homeFinder, let homeKey {
             attempts.append {
-                let found = finder.find(macChannelKey: macChannelKey, pairing: pairing)
+                let found = finder.find(homeKey: homeKey, pairing: pairing)
                 defer { found.finish() }
                 let deadline = ContinuousClock.now + routes.findWithin
                 while true {

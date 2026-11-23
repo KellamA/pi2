@@ -81,7 +81,7 @@ struct KeysAdapterTests {
         let keyring = Self.keyring()
         let store = KeychainPairingStore(keys: keyring.keys)
         let mac = TestMac()
-        let paired = try Paired(device: .random(), pairing: mac.pairing, name: mac.name, addresses: ["127.0.0.1:9"])
+        let paired = try Paired(device: .random(), pairing: mac.pairing, name: mac.name, addresses: ["127.0.0.1:9"], homeKey: .random())
         let record = PairingRecord(payload: try mac.payload(relay: PairingTests.noRelay, addresses: []), paired: paired, at: Date(timeIntervalSince1970: 1_800_000_000))
         try store.save(record)
         #expect(try store.load() == record)
