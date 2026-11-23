@@ -50,11 +50,22 @@ Where each is reached from ([design/iphone.md](design/iphone.md#the-screens)): t
 
 ## Which folder is whose
 
-Each screen issue owns its folder under `iphone/Sources/` and nothing else ([iphone.md 12.2](iphone.md#122-each-issue)): `Home/` #685, `Hub/` and `Dashboard/` #688, `Conversation/` #687, `Needs/` #686, `Demo/` #684, `Work/` #694, `PullRequest/` #695, `Board/` #696, `Settings/` and `Usage/` #697, `Conversations/` #698. `App/` (the session, the routes, the root, the launch, the first screen) and `pi2.xcodeproj` are #680's: a screen's issue does not edit them. If yours needs something there (a route, a field of the session), say so in your report rather than changing it.
+Each screen issue owns its folder under `iphone/Sources/` and nothing else ([iphone.md 12.2](iphone.md#122-each-issue)): `Home/` #685, `Hub/` and `Dashboard/` #688, `Conversation/` #687, `Needs/` #686, `Demo/` #684, `Store/` and `Outbox/` #692, `Work/` #694, `PullRequest/` #695, `Board/` #696, `Settings/` and `Usage/` #697, `Conversations/` #698. `App/` (the session, the routes, the root, the launch, the first screen) and `pi2.xcodeproj` are #680's: a screen's issue does not edit them. If yours needs something there (a route, a field of the session), say so in your report rather than changing it.
 
 **Shared views** are in `App/Shared/`, for what two features or more draw alike: `AgentMark(agent:)` (or `AgentMark(name:color:)`), an agent's or a project's mark in the Mac's pastels (`AgentColor`), and `Color.pi2Accent`, the app's tint, which the root sets. Use them rather than a copy of your own; ask for another in your report. The texts iOS shows when the app asks for a permission (the camera, the microphone, speech recognition, photos, Face ID) are the project's (`INFOPLIST_KEY_…` in `pi2.xcodeproj`); a feature that needs another asks for it the same way.
 
 **The entry file.** Each folder has one file made for it (a folder with several routes, one for each), holding the type and initialiser in the table above and a body that shows `FeaturePlaceholder`, a box saying which screen it is and which issue builds it. Replace that body, keep the type's name and its initialiser as they are (the routes and the tests call them), and put everything else in new files beside it. A file added in a folder is built with no change to the project ([Building the iPhone app](development.md#building-the-iphone-app)). Name your other types after your feature (`HomeConnectionBar`, `NeedCard`), since every folder is one module.
+
+## The phone's store and the Outbox
+
+`Store/` and `Outbox/` (#692) keep what the phone holds between launches (iphone.md 3.6): the last state its Mac sent, and what the person wrote while the Mac was out of reach. Neither is wired into the session yet; this is what `AppSession` is to call, and when.
+
+- **`PhoneStore()`**, one for the app, made at launch: one folder, `Library/Application Support/Store`, protected (`NSFileProtectionComplete`), out of backups. `sweep()` at launch and at every return to the foreground wipes what has gone seven days without the Mac; it needs no key.
+- **`open(key:)`** with the cache key, once Face ID has opened the session (`Keys/` reads it under the session's context); **`close()`** when the session ends, which forgets the key and what was read. The cache and the Outbox are sealed with that key.
+- **Connected**: `session.start(RecordingTransport(channel, store: store), as: .connected(path))`, which keeps every line the Mac sends in the cache as it passes. **Then the Outbox goes first**: `await outbox.send(through: EngineCourier(session.engine))`. Mailbox receipts: `outbox.receipt(for:taken:why:)`. A state from the mailbox: show it only if `store.takeState(number:)` says so.
+- **Out of reach**: `session.start(CachedTransport(store.cache, outbox: outbox), as: .outOfReach(lastSeen: store.lastHeard))`. Every screen draws the last state through the same client; a message, a stop or an answer sent meanwhile goes to the Outbox, and anything else is refused with a line saying it needs the Mac.
+- **Wiping**: `store.wipe(.unpaired)`, `.revoked` (only after RemoteKit's `Revocation.verify` with the Mac's identity key), or `.asked`: one call; it returns the Outbox's items that were not sent, for the screen to show before they are gone.
+- **The Outbox's screen**: `OutboxView()`, for a route `.outbox`, with the `Outbox` in the environment (`.environment(outbox)`); `.inline` draws one line counting what waits. The window is covered in the app switcher by `.coveredInAppSwitcher()` on the root.
 
 ## Launch arguments
 
