@@ -1,0 +1,88 @@
+#!/bin/bash
+# The relay's protocol test (docs/iphone.md 10, #678): RemoteKit's relay client, through the system's WebSocket, against
+# the relay itself, on this computer. It starts the relay under Wrangler's local runtime on 127.0.0.1, on a free port,
+# through relay/scripts/isolated.mjs (a throwaway home folder, Wrangler's usage events off, no Cloudflare credential),
+# with relay/test/protocol/wrangler.jsonc: the relay's own code, with a stand-in for App Attest's verifier that takes
+# only the join's true client data hash. It runs `pi2-relay-check --relay`, then stops the relay and everything it
+# started, by its process group, and removes its folder. Nothing is deployed; no Cloudflare account is used.
+#
+#   (cd relay && npm ci) && (cd app && swift build --product pi2-relay-check) && scripts/relay-protocol-test
+#
+#   scripts/relay-protocol-test [--check PATH]   PATH: the pi2-relay-check to run (app/.build/debug/pi2-relay-check)
+#
+# Exits with the check's status: 0 when it passed, 1 when something failed, 2 when it could not start.
+
+set -uo pipefail
+
+root="$(cd -P -- "$(dirname -- "$0")/.." && pwd -P)"
+check="$root/app/.build/debug/pi2-relay-check"
+while [[ $# -gt 0 ]]; do
+	case $1 in
+		--check) [[ $# -ge 2 ]] || { echo "relay-protocol-test: --check needs a path" >&2; exit 2; }; check=$2; shift 2 ;;
+		*) echo "relay-protocol-test: unknown argument $1" >&2; exit 2 ;;
+	esac
+done
+[[ -x $check ]] || { echo "relay-protocol-test: no $check; build it: cd app && swift build --product pi2-relay-check" >&2; exit 2; }
+[[ -x $root/relay/node_modules/.bin/wrangler ]] || { echo "relay-protocol-test: the relay's packages are not installed: cd relay && npm ci" >&2; exit 2; }
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/pi2-relay-protocol.XXXXXX") || exit 2
+relay_pid=""
+cleanup() {
+	if [[ -n $relay_pid ]]; then
+		# The relay runs in a process group of its own (set -m below): node, Wrangler and workerd all go with it.
+		kill -TERM -- "-$relay_pid" 2>/dev/null
+		for _ in $(seq 1 50); do
+			kill -0 -- "-$relay_pid" 2>/dev/null || break
+			sleep 0.1
+		done
+		kill -KILL -- "-$relay_pid" 2>/dev/null
+		wait "$relay_pid" 2>/dev/null
+	fi
+	rm -rf "$work"
+}
+trap cleanup EXIT
+trap 'exit 1' INT TERM
+
+free_port() {
+	node -e 'const s = require("node:net").createServer(); s.listen(0, "127.0.0.1", () => { console.log(s.address().port); s.close(); });'
+}
+port=$(free_port) && inspector=$(free_port) || { echo "relay-protocol-test: no free port" >&2; exit 2; }
+
+# The settings are a test deployment's, none of them pi²'s: MIN_BUILD_MAC 100 and MIN_BUILD_DEVICE 1 are what
+# pi2-relay-check expects; the stand-in verifier takes no App Attest category, so `none`.
+# TMPDIR is this run's folder, so that isolated.mjs's throwaway home goes in it and is removed with it: its own clean-up
+# does not run when the process group is stopped.
+mkdir -p "$work/tmp"
+set -m
+TMPDIR="$work/tmp" node "$root/relay/scripts/isolated.mjs" wrangler dev \
+	--config test/protocol/wrangler.jsonc --local --ip 127.0.0.1 --port "$port" --inspector-port "$inspector" \
+	--persist-to "$work/state" --show-interactive-dev-session=false --log-level warn \
+	--var APP_ATTEST_TEAM_ID:ABCDE12345 --var APP_ATTEST_BUNDLE_ID:dev.pi2.test \
+	--var APP_ATTEST_ENVIRONMENTS:development --var APP_ATTEST_CATEGORIES:none \
+	--var MIN_BUILD_MAC:100 --var MIN_BUILD_DEVICE:1 \
+	--var ADDRESS_KEY:a-protocol-test-key-for-addresses-not-a-secret \
+	>"$work/relay.log" 2>&1 </dev/null &
+relay_pid=$!
+set +m
+
+# Ready once /v1 answers a request that is not a WebSocket with 426, as the relay does.
+ready=""
+for _ in $(seq 1 600); do
+	if ! kill -0 "$relay_pid" 2>/dev/null; then break; fi
+	status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$port/v1" || true)
+	if [[ $status == 426 ]]; then ready=1; break; fi
+	sleep 0.2
+done
+if [[ -z $ready ]]; then
+	echo "relay-protocol-test: the relay did not start on 127.0.0.1:$port; its output:" >&2
+	cat "$work/relay.log" >&2
+	exit 2
+fi
+
+"$check" --relay "ws://127.0.0.1:$port/v1"
+status=$?
+if [[ $status -ne 0 ]]; then
+	echo "relay-protocol-test: the relay's output:" >&2
+	cat "$work/relay.log" >&2
+fi
+exit "$status"

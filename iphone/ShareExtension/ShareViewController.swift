@@ -1,40 +1,31 @@
 import SwiftUI
 import UIKit
 
-/// pi²'s share extension (docs/iphone.md 12.2, P33), an empty shell for now: pi² in the share sheet shows a page saying
-/// it is not built yet, and Done completes the request having sent nothing. #702 fills it: sending a link, text, a photo
-/// or a file to an orchestrator or an agent. What it shares with the app goes in `Shared/`, which is built into both;
-/// how the extensions are put together is "The extensions" in docs/iphone-app.md.
+/// pi²'s share extension (docs/iphone.md 12.2, P33): a link, text, a photo or a file shared from another app becomes a
+/// message to a project's orchestrator, an agent or a chat on the Mac. It has no connection of its own: Send writes
+/// the message as a draft into the folder it shares with the app (`ShareDrop`), and the app sends it (`SharePickup`).
+/// Everything but this entry is in `Shared/`, built into the app too, where its tests reach it (docs/iphone-app.md,
+/// "The extensions").
 final class ShareViewController: UIViewController {
+    private lazy var model = ShareModel(drop: ShareDrop.inAppGroup())
+
     override func viewDidLoad() {
         super.viewDidLoad()
-        let page = UIHostingController(rootView: SharePlaceholder { [weak self] in
-            self?.extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
+        let page = UIHostingController(rootView: SharePage(model: model) { [weak self] sent in
+            guard let context = self?.extensionContext else { return }
+            if sent {
+                context.completeRequest(returningItems: [], completionHandler: nil)
+            } else {
+                context.cancelRequest(withError: NSError(domain: NSCocoaErrorDomain, code: NSUserCancelledError))
+            }
         })
         addChild(page)
         page.view.frame = view.bounds
         page.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         view.addSubview(page.view)
         page.didMove(toParent: self)
-    }
-}
 
-/// Says sharing to pi² is not built yet. #702 replaces it with its own.
-struct SharePlaceholder: View {
-    let done: () -> Void
-
-    var body: some View {
-        NavigationStack {
-            Text("Sharing to pi² is not built yet (#702). Nothing was sent.")
-                .multilineTextAlignment(.center)
-                .padding()
-                .toolbar {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Done", action: done)
-                    }
-                }
-                .navigationTitle("pi²")
-                .navigationBarTitleDisplayMode(.inline)
-        }
+        let items = extensionContext?.inputItems.compactMap { $0 as? NSExtensionItem } ?? []
+        Task { await model.load(items) }
     }
 }

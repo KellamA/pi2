@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- The share extension's part of its Info.plist (#702); Xcode adds the rest from the build settings. The activation
-     rule offers pi² for a link, text, a photo or a file, one at a time (docs/iphone.md 12.2, P33). -->
+     rule offers pi² for the kinds docs/iphone.md 12.2 (P33) names, and nothing else: a web page's link, text, a photo
+     or a file, one of each at most (a photo from Photos, a page from Safari). Version 2 of the rule counts a photo as
+     a photo rather than also as a file. A video, or several photos at once, does not offer pi². -->
 <plist version="1.0">
 <dict>
 	<key>NSExtension</key>
@@ -10,6 +12,8 @@
 		<dict>
 			<key>NSExtensionActivationRule</key>
 			<dict>
+				<key>NSExtensionActivationDictionaryVersion</key>
+				<integer>2</integer>
 				<key>NSExtensionActivationSupportsWebURLWithMaxCount</key>
 				<integer>1</integer>
 				<key>NSExtensionActivationSupportsText</key>
