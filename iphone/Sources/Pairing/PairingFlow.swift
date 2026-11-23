@@ -19,12 +19,13 @@ final class PairingFlow {
         case failed(PairingFailure)
     }
 
-    /// What pairing needs from outside: the keys and the store (`Keys/`, #692), App Attest, what the phone says of
+    /// What pairing needs from outside: the keyring (`PhoneKeyring` is a `PairingKeySource`) and its App Attest
+    /// (`keyring.attester`), where the Mac's record is kept (`KeychainPairingStore(keys: keyring.keys)`), what the phone says of
     /// itself, and the paths. `unpair` ends the current pairing before a new one: the app's, since it holds the
     /// connection (`RemoteConnection.unpairHere`).
     struct Needs: Sendable {
-        var keyStore: any PhoneKeyStore
-        var attester: any Attester
+        var keyStore: any PairingKeySource
+        var attester: any AppAttesting
         var store: any PairingStore
         var phone: PhoneDescription
         var routes = Routes()
@@ -72,7 +73,7 @@ final class PairingFlow {
         let needs = needs
         task = Task {
             await needs.unpair()
-            try? needs.keyStore.deleteAll()
+            try? await needs.keyStore.wipe()
             try? needs.store.delete()
             self.pair(payload)
         }

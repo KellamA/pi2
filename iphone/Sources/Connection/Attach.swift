@@ -2,7 +2,6 @@
 import CryptoKit
 import Foundation
 import RemoteKit
-import Synchronization
 
 /// The phone's side of every connection after pairing (docs/iphone.md 3.4, 4.3, 5.8; remotekit.md): the KK handshake
 /// with the Mac's channel key kept from pairing, the Mac's proof checked against the identity key kept from pairing,
@@ -45,11 +44,11 @@ enum Attach {
     /// Makes the channel over `link` and attaches. `now` is this phone's clock, which `at` is signed with: the Mac
     /// takes it within two minutes of its own (3.4), and says `clock` otherwise.
     static func run(
-        over link: any MessageLink, path: AppSession.Path, mac: PairedMac, keys: any PhoneKeys, resume: Resume?, build: String,
+        over link: any MessageLink, path: AppSession.Path, mac: PairedMac, keys: PairedKeys, resume: Resume?, build: String,
         now: @Sendable () -> Date = { Date() }
     ) async throws -> Outcome {
         let handshake = try ChannelHandshake.connection(
-            initiator: true, pairing: mac.pairing, device: mac.device, channelKey: try keys.channelKey(), remoteChannelKey: mac.channelKey)
+            initiator: true, pairing: mac.pairing, device: mac.device, channelKey: keys.channel, remoteChannelKey: mac.channelKey)
         let channel = try await OpenChannel.open(handshake, over: link, path: path, within: answerWithin)
         do {
             let outcome = try await attach(on: channel, mac: mac, keys: keys, resume: resume, build: build, now: now)
@@ -62,7 +61,7 @@ enum Attach {
     }
 
     private static func attach(
-        on channel: OpenChannel, mac: PairedMac, keys: any PhoneKeys, resume: Resume?, build: String, now: @Sendable () -> Date
+        on channel: OpenChannel, mac: PairedMac, keys: PairedKeys, resume: Resume?, build: String, now: @Sendable () -> Date
     ) async throws -> Outcome {
         guard let first = try await channel.nextLine(within: answerWithin) else { return .closed }
         guard case let .mac(proof)? = try? ControlLine.parse(first) else { throw Failure.macNotProved }
@@ -72,18 +71,14 @@ enum Attach {
             throw Failure.macNotProved
         }
 
-        let presence = Watched(keys.presence)
-        let device = Watched(keys.device)
         let claim: AttachClaim
         do {
-            claim = try AttachClaim.make(
+            claim = try await PresenceSignatures.attach(
                 pairing: mac.pairing, device: mac.device, session: resume?.session, received: resume?.received,
                 binding: channel.channel.handshakeHash, challenge: proof.challenge, build: build, at: now(),
-                deviceKey: device, presenceKey: presence)
+                deviceKey: keys.device, presence: keys.presence)
         } catch {
-            // RemoteKit says only that a key could not sign; which one, and why, the signers saw.
-            if let failure = presence.failure as? PresenceError { throw Failure.presence(failure) }
-            if presence.failure != nil { throw Failure.presence(.sessionNotOpen) }
+            if let presence = PresenceError(error) { throw Failure.presence(presence) }
             throw Failure.deviceKey
         }
         try channel.send(.attach(claim))
@@ -110,29 +105,6 @@ enum Attach {
             return true
         } catch {
             throw Failure.unreadable
-        }
-    }
-}
-
-/// A signer that keeps the error its key threw, which RemoteKit's claim does not pass on.
-private final class Watched: StatementSigner, @unchecked Sendable {
-    private let key: any StatementSigner
-    private let seen = Mutex<(any Error)?>(nil)
-
-    init(_ key: any StatementSigner) {
-        self.key = key
-    }
-
-    var failure: (any Error)? { seen.withLock { $0 } }
-
-    var publicKey: P256.Signing.PublicKey { key.publicKey }
-
-    func sign(_ data: Data) throws -> Data {
-        do {
-            return try key.sign(data)
-        } catch {
-            seen.withLock { $0 = error }
-            throw error
         }
     }
 }

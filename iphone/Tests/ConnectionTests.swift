@@ -325,7 +325,7 @@ struct ConnectionTests {
     }
 
     @Test func everyProblemHasWordsOfItsOwn() {
-        let problems: [ConnectionProblem] = [.update, .suspended, .presence, .clock, .faceID(.sessionNotOpen), .macNotProved, .relaySaid("left"), .relaySaid("update-required"), .relaySaid("new-word")]
+        let problems: [ConnectionProblem] = [.update, .suspended, .presence, .clock, .faceID(.sessionNotOpen), .faceID(.faceIDNotPassed), .macNotProved, .relaySaid("left"), .relaySaid("update-required"), .relaySaid("new-word")]
         let words = problems.map(\.words)
         #expect(Set(words).count == words.count)
         #expect(words.allSatisfy { $0.hasSuffix(".") })

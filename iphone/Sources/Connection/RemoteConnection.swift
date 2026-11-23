@@ -31,8 +31,8 @@ final class RemoteConnection {
     private(set) var unpaired = false
 
     @ObservationIgnored private let mac: PairedMac
-    @ObservationIgnored private let keys: any PhoneKeys
-    @ObservationIgnored private let keyStore: any PhoneKeyStore
+    @ObservationIgnored private let keys: PairedKeys
+    @ObservationIgnored private let keyStore: any PairingKeySource
     @ObservationIgnored private let store: any PairingStore
     @ObservationIgnored private let routes: Routes
     @ObservationIgnored private let build: String
@@ -51,12 +51,12 @@ final class RemoteConnection {
 
     /// A connection for the pairing kept in `store` with the keys kept in `keyStore`, or nil when none is paired (or
     /// what is kept does not read, which counts as none: nothing half kept is used).
-    static func paired(keyStore: any PhoneKeyStore, store: any PairingStore, routes: Routes = Routes(), build: String = PhoneDescription.bundleBuild, now: @escaping @Sendable () -> Date = { Date() }) -> RemoteConnection? {
-        guard let record = try? store.load(), let keys = try? keyStore.keys() else { return nil }
+    static func paired(keyStore: any PairingKeySource, store: any PairingStore, routes: Routes = Routes(), build: String = PhoneDescription.bundleBuild, now: @escaping @Sendable () -> Date = { Date() }) async -> RemoteConnection? {
+        guard let record = try? store.load(), let keys = try? await keyStore.pairedKeys() else { return nil }
         return try? RemoteConnection(record: record, keys: keys, keyStore: keyStore, store: store, routes: routes, build: build, now: now)
     }
 
-    init(record: PairingRecord, keys: any PhoneKeys, keyStore: any PhoneKeyStore, store: any PairingStore, routes: Routes = Routes(), build: String = PhoneDescription.bundleBuild, now: @escaping @Sendable () -> Date = { Date() }) throws {
+    init(record: PairingRecord, keys: PairedKeys, keyStore: any PairingKeySource, store: any PairingStore, routes: Routes = Routes(), build: String = PhoneDescription.bundleBuild, now: @escaping @Sendable () -> Date = { Date() }) throws {
         mac = try record.mac()
         macName = record.macName
         self.keys = keys
@@ -123,7 +123,7 @@ final class RemoteConnection {
             }
         }
         stop()
-        unpair()
+        await unpair()
     }
 
     /// The person's word after a problem: try again now.
@@ -181,7 +181,7 @@ final class RemoteConnection {
                     stopTrying(ConnectionProblem(reason))
                     return
                 case .revoked:
-                    unpair()
+                    await unpair()
                     return
                 case .refused, .closed:
                     failures += 1
@@ -254,7 +254,7 @@ final class RemoteConnection {
             case let .line(line):
                 if line.starts(with: Data(#"{"revoked":"#.utf8)), case let .revoked(revocation)? = try? ControlLine.parse(line) {
                     if (try? Attach.verified(revocation, mac: mac)) == true {
-                        unpair()
+                        await unpair()
                         return
                     }
                     channel.drop()
@@ -300,7 +300,7 @@ final class RemoteConnection {
 
     /// The Mac's signed revocation (3.6): the keys and the record go, and the first screen comes back. The cache, the
     /// Outbox and the notifications are the store's to clear (#692).
-    private func unpair() {
+    private func unpair() async {
         unpaired = true
         runner = nil
         channel?.drop()
@@ -308,7 +308,7 @@ final class RemoteConnection {
         relay?.stop()
         relay = nil
         forgetSession("This iPhone was revoked on the Mac.")
-        try? keyStore.deleteAll()
+        try? await keyStore.wipe()
         try? store.delete()
         connection = .notPaired
     }
@@ -371,8 +371,10 @@ enum ConnectionProblem: Equatable, Sendable {
             "Your Mac did not take this iPhone's Face ID. Open pi² again to use Face ID. If Face ID was set up again on this iPhone, accept its new key on your Mac in Settings › Devices first."
         case .clock:
             "This iPhone's clock and your Mac's differ by more than two minutes. On both, turn on setting the date and time automatically, then try again."
-        case .faceID:
+        case .faceID(.sessionNotOpen):
             "pi² is locked. Open it with Face ID to reach your Mac."
+        case .faceID(.faceIDNotPassed):
+            "Face ID did not pass, so pi² did not connect to your Mac. Try again."
         case .macNotProved:
             "Something answered as your Mac but could not prove it is. Nothing was sent to it; pi² keeps trying your Mac."
         case let .relaySaid(word):

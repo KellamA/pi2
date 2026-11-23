@@ -27,11 +27,10 @@ final class RelayPath: Sendable {
     private let state = Mutex<(status: Status, link: RelayChannelLink?)>((Status(), nil))
     private let changes: @Sendable (Status) -> Void
 
-    init(mac: PairedMac, keys: any PhoneKeys, build: RelayBuild, connector: any RelayConnector, options: RelayOptions, changed: @escaping @Sendable (Status) -> Void) throws {
-        let device = keys.device
+    init(mac: PairedMac, keys: PairedKeys, build: RelayBuild, connector: any RelayConnector, options: RelayOptions, changed: @escaping @Sendable (Status) -> Void) throws {
         client = try RelayClient(
             relay: mac.relay, role: .device(mac.pairing, mac.device), build: build,
-            signer: RelaySigner(publicKey: device.publicKey, sign: { try device.sign($0) }), connector: connector, options: options)
+            signer: try DeviceStatementSigner(keys.device).relaySigner, connector: connector, options: options)
         changes = changed
     }
 

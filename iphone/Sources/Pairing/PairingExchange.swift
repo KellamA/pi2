@@ -1,6 +1,7 @@
 
 import CryptoKit
 import Foundation
+import os
 import RemoteKit
 
 /// The phone's side of the pairing exchange (docs/iphone.md 3.3), from a payload RemoteKit's reader took to the record
@@ -11,8 +12,8 @@ import RemoteKit
 /// Nothing is kept unless the Mac paired: a failure at any step deletes the keys made for it.
 struct PairingExchange: Sendable {
     let payload: PairingPayload
-    let keyStore: any PhoneKeyStore
-    let attester: any Attester
+    let keyStore: any PairingKeySource
+    let attester: any AppAttesting
     let store: any PairingStore
     let phone: PhoneDescription
     var routes = Routes()
@@ -43,15 +44,19 @@ struct PairingExchange: Sendable {
     /// Runs the exchange. `showDigits` is told the six digits once `pair` is sent, for the person to type on the Mac.
     func run(showDigits: @escaping @Sendable (String) async -> Void, reaching: @escaping @Sendable (AppSession.Path) async -> Void = { _ in }) async throws -> PairingRecord {
         guard payload.isOpen(at: now()) else { throw Failure.expired }
-        let device: any DeviceKeySigner
-        let keys: any PhoneKeys
+        let device: DeviceStatementSigner
+        let keys: PairedKeys
         do {
             // The device key first: the join's attestation binds it (3.3 step 2). The other keys come before the
             // handshake, which needs the channel key: the presence key's making asks no Face ID (3.2).
-            device = try keyStore.makeDeviceKey()
-            keys = try keyStore.makeKeys(device: device)
+            device = try DeviceStatementSigner(try await keyStore.makeDeviceKey())
+            _ = try await keyStore.makePairingKeys()
+            guard let made = try await keyStore.pairedKeys() else { throw Failure.keys }
+            keys = made
         } catch {
-            try? keyStore.deleteAll()
+            // What Keys/ said, in its own words (no key material), for working out why on a phone or a simulator.
+            Logger(subsystem: "dev.pi2.ios", category: "pairing").notice("the keys were not made: \(String(describing: error), privacy: .public)")
+            try? await keyStore.wipe()
             throw Failure.keys
         }
         do {
@@ -65,7 +70,7 @@ struct PairingExchange: Sendable {
             }
             return record
         } catch {
-            try? keyStore.deleteAll()
+            try? await keyStore.wipe()
             throw (error as? Failure) ?? Self.failure(error)
         }
     }
@@ -79,7 +84,7 @@ struct PairingExchange: Sendable {
     }
 
     /// Both paths at once (step 1), the first link kept.
-    private func reach(device: any DeviceKeySigner) async throws -> Reached {
+    private func reach(device: DeviceStatementSigner) async throws -> Reached {
         var attempts = HomeReach.attempts(addresses: payload.addresses, macChannelKey: payload.channelKey, pairing: payload.pairing, routes: routes)
         if let relay = URL(string: payload.relay) {
             let payload = payload, attester = attester, routes = routes
@@ -93,16 +98,14 @@ struct PairingExchange: Sendable {
 
     /// The relay's join (step 2), with an App Attest key made for it alone. The client data hash is RemoteKit's, from
     /// the relay's challenge and this phone's own device key, never from a key or hash given from outside.
-    private static func join(relay: URL, payload: PairingPayload, deviceKey: P256.Signing.PublicKey, attester: any Attester, routes: Routes) async throws -> Reached {
+    private static func join(relay: URL, payload: PairingPayload, deviceKey: P256.Signing.PublicKey, attester: any AppAttesting, routes: Routes) async throws -> Reached {
         let token = PairingSecrets.joinToken(secret: payload.secret, pairing: payload.pairing)
         do {
             let link = try await RelayClient.join(
                 relay: relay, pairing: payload.pairing, build: RelayBuild(PhoneDescription.bundleBuild) ?? RelayBuild("1")!, deviceKey: deviceKey, token: token,
                 attest: { hash in
-                    switch try await attester.attestNewKey(clientDataHash: hash) {
-                    case let .appAttest(object, keyId): return RelayAttestation(attestation: object, keyId: keyId)
-                    case .none: throw LinkError.noAppAttest
-                    }
+                    guard let attestation = try await attester.attestNewKey(clientDataHash: hash).forRelay else { throw LinkError.noAppAttest }
+                    return attestation
                 },
                 connector: routes.relayConnector, options: routes.relayOptions)
             return Reached(link: JoinMessageLink(link), path: .relay)
@@ -118,8 +121,8 @@ struct PairingExchange: Sendable {
     }
 
     /// Steps 3 to 8 over the link.
-    private func exchange(over reached: Reached, keys: any PhoneKeys, showDigits: @escaping @Sendable (String) async -> Void) async throws -> PairingRecord {
-        let handshake = try ChannelHandshake.pairingInitiator(payload: payload, channelKey: try keys.channelKey())
+    private func exchange(over reached: Reached, keys: PairedKeys, showDigits: @escaping @Sendable (String) async -> Void) async throws -> PairingRecord {
+        let handshake = try ChannelHandshake.pairingInitiator(payload: payload, channelKey: keys.channel)
         let channel: OpenChannel
         do {
             channel = try await OpenChannel.open(handshake, over: reached.link, path: reached.path, within: .seconds(20))
@@ -141,23 +144,25 @@ struct PairingExchange: Sendable {
 
         // The Mac's App Attest key: a second new one, never the relay's, over the challenge, this device key and this
         // channel (step 4).
-        let attestation: Attestation
+        let deviceSigner: DeviceStatementSigner
+        let description: DeviceDescription
         do {
-            attestation = try await attester.attestNewKey(
-                clientDataHash: PairingSecrets.attestationClientDataHash(challenge: proof.challenge, deviceKey: keys.device.publicKey, binding: binding))
+            deviceSigner = try DeviceStatementSigner(keys.device)
+            description = try keys.publicKeys.description(of: phone)
+        } catch {
+            throw Failure.keys
+        }
+        let attested: (object: Data?, keyId: String?)
+        do {
+            attested = try await attester.attestNewKey(
+                clientDataHash: PairingSecrets.attestationClientDataHash(challenge: proof.challenge, deviceKey: deviceSigner.publicKey, binding: binding)
+            ).forPair
         } catch {
             throw Failure.attestation
         }
-        let (object, keyId): (Data?, String?) = switch attestation {
-        case let .appAttest(object, keyId): (object, keyId.text)
-        case .none: (nil, nil)
-        }
-        let description = DeviceDescription(
-            name: phone.name, model: phone.model, system: phone.system, build: phone.build, deviceKey: keys.device.publicKey,
-            presenceKey: keys.presence.publicKey, channelKey: try keys.channelKey().publicKey, recordKey: keys.recordKey)
         let claim: PairClaim
         do {
-            claim = try PairClaim.make(device: description, attestation: object, keyId: keyId, pairing: payload.pairing, binding: binding, deviceKey: keys.device)
+            claim = try PairClaim.make(device: description, attestation: attested.object, keyId: attested.keyId, pairing: payload.pairing, binding: binding, deviceKey: deviceSigner)
         } catch {
             throw Failure.keys
         }

@@ -22,12 +22,12 @@ struct PairingTests {
         return routes
     }
 
-    static func exchange(_ mac: TestMac, payload: PairingPayload, keys: MemoryKeyStore, store: MemoryPairingStore, attester: any Attester = NoAttester()) -> PairingExchange {
+    static func exchange(_ mac: TestMac, payload: PairingPayload, keys: MemoryKeyStore, store: MemoryPairingStore, attester: any AppAttesting = NoAttester()) -> PairingExchange {
         PairingExchange(payload: payload, keyStore: keys, attester: attester, store: store, phone: .test, routes: routes())
     }
 
     /// Pairs the phone with `mac` over loopback TCP, the person typing what the phone shows.
-    static func pair(_ mac: TestMac, keys: MemoryKeyStore, store: MemoryPairingStore, attester: any Attester = NoAttester()) async throws -> PairingRecord {
+    static func pair(_ mac: TestMac, keys: MemoryKeyStore, store: MemoryPairingStore, attester: any AppAttesting = NoAttester()) async throws -> PairingRecord {
         let address = try await mac.listen()
         let typed = mac.typed
         return try await exchange(mac, payload: try mac.payload(relay: noRelay, addresses: [address]), keys: keys, store: store, attester: attester)
@@ -53,7 +53,7 @@ struct PairingTests {
         let kept = try #require(keys.software)
         #expect(claim.device.deviceKey.derRepresentation == kept.device.publicKey.derRepresentation, "pair names the device key made on scanning")
         #expect(claim.device.channelKey.rawRepresentation == kept.channel.publicKey.rawRepresentation)
-        #expect(claim.device.presenceKey.derRepresentation == kept.presence.publicKey.derRepresentation)
+        #expect(claim.device.presenceKey.derRepresentation == kept.softwarePresence.publicKey.derRepresentation)
         #expect(claim.attestation == nil && claim.keyId == nil, "a build without App Attest sends none, which only a throwaway copy's engine takes")
         #expect(claim.device.build.allSatisfy { $0.isNumber || $0 == "." }, "the build is digits and dots")
         #expect(claim.device.model.utf8.count <= 64)

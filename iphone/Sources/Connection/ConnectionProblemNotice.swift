@@ -44,7 +44,7 @@ struct ConnectionProblemNotice: View {
     /// Whether trying again is the person's to ask: after the refusals that stop the phone trying by itself.
     private var waitsForThePerson: Bool {
         switch problem {
-        case .clock, .suspended, .presence: true
+        case .clock, .suspended, .presence, .faceID(.faceIDNotPassed): true
         default: false
         }
     }
