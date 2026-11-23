@@ -34,7 +34,7 @@ enum WorkRequests {
         /// The engine took it: the agent has it and starts.
         case given
         /// The project's limit refused the start, with its reading, for the person to confirm that one start (8.3).
-        case held(WorkLimitReading)
+        case held(WorkLimit)
         /// Refused, in the engine's words.
         case refused(String)
     }
@@ -43,14 +43,14 @@ enum WorkRequests {
     /// conversation in one step (`ProjectWorkTab.assign`: `work.act` with `assign`). `confirming` is the person's word to
     /// go past the limit that refused it before.
     static func assign(_ engine: EngineSession<MessageField>, project: String, item: Int, agent: String,
-                       confirming: WorkLimitReading? = nil) async -> Given {
+                       confirming: WorkLimit? = nil) async -> Given {
         var params: [String: Any] = ["projectId": project, "id": item, "action": "assign", "agentId": agent]
         if let confirming { params["confirmLimit"] = confirming.id }
         do {
             _ = try await engine.call("work.act", params)
             return .given
         } catch let error as EngineError {
-            if let limit = WorkLimitReading(error.data?["limit"]) { return .held(limit) }
+            if let limit = WorkLimit(error.data?["limit"]) { return .held(limit) }
             return .refused(error.localizedDescription)
         } catch {
             return .refused(error.localizedDescription)

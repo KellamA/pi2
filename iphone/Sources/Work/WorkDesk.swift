@@ -45,7 +45,7 @@ final class WorkDesk {
     /// Gives a piece to an agent, shown at once as given; past the project's limit the engine holds it, for the person to
     /// confirm that one start (`confirming`) or leave it.
     func assign(_ engine: EngineSession<MessageField>, project: String, item: WorkItem, to agent: AgentProfile,
-                confirming: WorkLimitReading? = nil) async {
+                confirming: WorkLimit? = nil) async {
         guard pending[item.id] == nil else { return }
         pending[item.id] = WorkChange(word: "Giving to \(agent.name)", state: "in_progress", holderAgentId: agent.id)
         defer { pending[item.id] = nil }
