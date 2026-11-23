@@ -7,12 +7,12 @@ import PiModels
 /// A value, so that the page draws the same from the session or, in tests and a debug build's preview, from sample values.
 struct UsageReading {
     var usage: UsageSummary?
-    var providers: [UsageLimits.Provider]
+    var providers: [PlanLimits.Provider]
     var models: [ModelInfo]
     var agents: [AgentProfile]
     var projects: [ProjectRow]
 
-    init(usage: UsageSummary?, providers: [UsageLimits.Provider], models: [ModelInfo], agents: [AgentProfile], projects: [ProjectRow]) {
+    init(usage: UsageSummary?, providers: [PlanLimits.Provider], models: [ModelInfo], agents: [AgentProfile], projects: [ProjectRow]) {
         self.usage = usage
         self.providers = providers
         self.models = models
@@ -23,7 +23,7 @@ struct UsageReading {
     @MainActor
     init(_ engine: EngineSession<MessageField>) {
         self.init(
-            usage: engine.usage, providers: UsageLimits.providers(engine.extras["limits"]),
+            usage: engine.usage, providers: PlanLimits(engine.extras["limits"])?.providers ?? [],
             models: engine.allModels, agents: engine.allAgents, projects: engine.projects
         )
     }
