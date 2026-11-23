@@ -20,6 +20,7 @@ struct RootView: View {
                             RouteView(route)
                         }
                 }
+                .demoBar()
             }
         }
         .tint(.pi2Accent)
