@@ -21,7 +21,7 @@
 //   answer to a claim), `revoke`, and `sessionClosed`. #689 (P20) adds `push` here.
 //
 // pi² Remote's requests: `remote.hello` (the Mac's public keys, the pairing, the Mac's addresses), `remote.state` (the
-// same when they change), `remote.pairClaim` and `remote.pairWrong` (pairing, 3.3), `remote.attachBegin` and
+// same when they change), `remote.pairClaim`, `remote.pairWrong` and `remote.pairRefused` (pairing, 3.3), `remote.attachBegin` and
 // `remote.attach` (3.4: an attach or a resume, signed by the device key and the presence key), and
 // `remote.sessionEnd` (the phone's session ended, 4.5). `remote.mailboxIn` (#678, P10) is added here, and checks each
 // item with `checkRequestItem` in devices.ts.
@@ -56,6 +56,7 @@ import {
 	p256Key,
 	pairClaim,
 	pairedDevice,
+	pairRefusedByHelper,
 	pairWrong,
 	helperGone,
 	activeDevices,
@@ -169,12 +170,14 @@ function helperProgram(): { command: string; args: string[] } | null {
 }
 
 let stopTimer: ReturnType<typeof setTimeout> | undefined;
+/** The longest line pi² Remote takes from a phone (#675): two pictures of 5 MB in base64, with the message's text. */
+export const MAX_PHONE_LINE = 16 * 1024 * 1024;
 /**
- * The longest line taken from pi² Remote, in characters: a device's line wrapped in its session's. RemoteKit takes at
- * most 64 MB in one line from the phone (docs/remotekit.md, framing), a message with its pictures the largest; the rest
- * is room for the wrapping and JSON's escapes.
+ * The longest line taken from pi² Remote, in characters: a phone's line, at most MAX_PHONE_LINE bytes, so as many
+ * characters or fewer, in its session's wrapping (`{"session":…,"message":…}`), with room to spare. pi² Remote's own
+ * requests are far smaller.
  */
-const MAX_HELPER_LINE = 80 * 1024 * 1024;
+export const MAX_HELPER_LINE = MAX_PHONE_LINE + 64 * 1024;
 
 /**
  * Starts or stops pi² Remote as `helperWanted` says. It is stopped a moment after it is no longer wanted, not at once:
@@ -392,6 +395,10 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 	"remote.pairClaim": async (_current, params) => pairClaim(params),
 	"remote.pairWrong": async () => {
 		pairWrong();
+		return {};
+	},
+	"remote.pairRefused": async (_current, params) => {
+		pairRefusedByHelper(params.why);
 		return {};
 	},
 	"remote.attachBegin": async (_current, params) => {

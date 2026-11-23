@@ -951,6 +951,24 @@ export function pairWrong(): void {
 }
 
 /**
+ * Why pi² Remote refused a claimer itself, one that proved the pairing's secret but whose claim never reached the
+ * engine (`remote.pairRefused`): its first line was not `pair`, its claim was not signed for its channel, or it went
+ * quiet. As any refused claim, it closes the window (3.3 step 5). A claim that does not decrypt is a wrong try instead
+ * (`remote.pairWrong`).
+ */
+const HELPER_REFUSALS: Record<string, string> = {
+	"not-pair": "its first line was not a claim to pair",
+	"not-bound": "its claim was not signed for its channel",
+	silent: "it went quiet",
+};
+
+export function pairRefusedByHelper(why: unknown): void {
+	if (typeof why !== "string" || !Object.hasOwn(HELPER_REFUSALS, why)) throw new Error(`why is one of ${Object.keys(HELPER_REFUSALS).join(", ")}`);
+	if (window === null || window.pairing === "") throw new Error(NO_WINDOW);
+	closeWindow(`A phone's claim was refused: ${HELPER_REFUSALS[why]}.`);
+}
+
+/**
  * A phone's claim to pair (`remote.pairClaim`, 3.3 step 5), checked here whatever pi² Remote checked: the window open
  * and with no other claim, the claim's signature by the device key it names over this channel's binding, App Attest's
  * attestation for that very key and channel, and fewer than five devices. One claim per window: a second, on either

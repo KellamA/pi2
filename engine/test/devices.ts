@@ -25,7 +25,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { allowsHiddenApproval, checkDeviceLists, deviceLogged, HIDDEN_FROM_THE_PHONE, deviceMay, devicePlacement, type DeviceSession, ONLY_FROM_THE_HELPER, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID, PERSON_REQUESTS } from "../src/answers.ts";
 import { checkRequestItem, type Device, deviceRequests, DeviceLog, Devices, devicesState, flushDeviceLog, fromBase64url, hidesSomething, logDevice, macNameNow, pairClaim, PART_HIDDEN, remoteHooks, shownName, TOO_DEEP, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
 import type { Client } from "../src/clients.ts";
-import { ANSWER_NOT_SENT, forDevice, SESSION_OVER } from "../src/remote.ts";
+import { ANSWER_NOT_SENT, forDevice, MAX_HELPER_LINE, SESSION_OVER } from "../src/remote.ts";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "100000";
@@ -643,7 +643,7 @@ try {
 	await assert.rejects(app.call("devices.pairStart"), /Turn on Reach from an iPhone first/);
 	await app.call("devices.set", { on: true });
 	await assert.rejects(app.call("devices.pairStart"), /Turn on Reach from an iPhone first/, "remote access on, the preview off");
-	for (const method of ["remote.attach", "remote.attachBegin", "remote.pairClaim", "remote.hello", "remote.sessionEnd"]) {
+	for (const method of ["remote.attach", "remote.attachBegin", "remote.pairClaim", "remote.pairRefused", "remote.hello", "remote.sessionEnd"]) {
 		await assert.rejects(app.call(method, {}), (error: Error) => error.message === ONLY_FROM_THE_HELPER, `${method} on the socket, from a process PeerKit takes for the app`);
 	}
 	assert.ok(!childrenOf(engine.pid!).some((command) => command.includes(standIn)), "no pi² Remote, and no socket pair, was made");
@@ -746,13 +746,21 @@ try {
 		assert.match(reply.error ?? "", expected, what);
 		await app.until(`the window closed after ${what}`, () => app.devicesEvents.at(-1)?.pairingWindow === null && app.devicesEvents.at(-1)?.closed?.why.startsWith("A phone's claim was refused"));
 	}
+	// A claimer pi² Remote refused itself, having proved the secret: the window closes as for any refused claim.
+	const reopened = app.call("devices.pairStart");
+	await remote.event("openJoin", remote.events.length);
+	await reopened;
+	assert.match((await remote.call("remote.pairRefused", { why: "anything" })).error, /why is one of not-pair, not-bound, silent/);
+	assert.deepEqual((await remote.call("remote.pairRefused", { why: "silent" })).result, {});
+	await app.until("the window closed for a claimer pi² Remote refused", () => app.devicesEvents.at(-1)?.pairingWindow === null && app.devicesEvents.at(-1)?.closed?.why === "A phone's claim was refused: it went quiet.");
+	assert.match((await remote.call("remote.pairRefused", { why: "not-pair" })).error, /No pairing is open/);
 	const third = await claimIn(new Phone("Kim's iPhone"));
 	assert.ok(third.reply.result.claim);
 	for (let i = 0; i < 3; i++) await assert.rejects(app.call("devices.pairConfirm", { digits: wrong }));
 	await app.until("the window closed after three wrong entries", () => app.devicesEvents.at(-1)?.closed?.why === "Three wrong entries. Start again.");
 	await assert.rejects(app.call("devices.pairConfirm", { digits: digitsOf(third.channel) }), /No phone is waiting/);
 	assert.deepEqual(app.devicesEvents.at(-1).devices.filter((one: any) => one.revokedAt === null).map((one: any) => one.id), [phone.id], "nothing else was paired");
-	step(`one claim per window: a second closes it and refuses both; so do ${refusals.length} claims that fail a check, and three wrong digits`);
+	step(`one claim per window: a second closes it and refuses both; so do ${refusals.length} claims that fail a check, a claimer pi² Remote refused itself, and three wrong digits`);
 
 	// ---- Attaching, and the device's table in a session (3.4, 4.1)
 	const attach = async (options: { session?: string | null; binding?: Buffer; at?: number; challenge?: string; device?: KeyObject; presence?: KeyObject | null } = {}) => {
@@ -1003,7 +1011,7 @@ try {
 		step("the engine ends a session itself at its bound after the last attach, whatever pi² Remote does");
 		// A line longer than any a phone may send: pi² Remote is stopped, as a crash is, and started again.
 		const beforeLong = macApp.devicesEvents.length;
-		fourth4.socket.write("x".repeat(81 * 1024 * 1024));
+		fourth4.socket.write("x".repeat(MAX_HELPER_LINE + 1));
 		await until("pi² Remote stopped for its line", () => fourth4.closed);
 		assert.equal((await nextRemote(5)).standIn!.ppid, limited.pid, "and started again");
 		await macApp.until("the stop counted as unexpected", () => macApp.devicesEvents.slice(beforeLong).some((event) => event.helper.stoppedInLastHour >= 1));
