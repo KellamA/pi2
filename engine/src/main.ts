@@ -34,7 +34,7 @@ import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { USER_ENTRY_KIND, userContent, userEntryData, validateAttachments } from "./attachments.ts";
 import { backupStatus, createBackup, restoreBackup, tidyBackups } from "./backup.ts";
 import { appBundle, AppCheck, checkDeviceLists, checkRequestClasses, forTheHelper, ONLY_FROM_THE_HELPER, personOnly } from "./answers.ts";
-import { deviceRequests, devicesClientGone, hidesSomething, wireDevices } from "./devices.ts";
+import { deviceRequests, devicesClientGone, flushDeviceLog, hidesSomething, wireDevices } from "./devices.ts";
 import { helperRequests, stopRemote, wireRemote } from "./remote.ts";
 import { backgroundForSubChat, hasRunningCommands } from "./background.ts";
 import { bashForSubChat } from "./commands.ts";
@@ -1760,6 +1760,8 @@ async function stop(): Promise<void> {
 	// What features left running (background commands) goes with the engine.
 	await Promise.all(host.features.map((feature) => feature.stopping?.().catch((error) => log("a feature did not stop cleanly:", error instanceof Error ? error.message : error))));
 	await mcp.stop();
+	// What the devices' log keeps in memory a moment, written before the store closes.
+	await flushDeviceLog().catch((error) => log("devices: the log could not be written at stop:", error instanceof Error ? error.message : error));
 	await harness.close(context);
 	rmSync(socketPath, { force: true });
 	rmSync(runningMarker, { force: true });
