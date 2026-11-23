@@ -113,8 +113,13 @@ enum ShareItemLoader {
         for provider in providers {
             var piece = await load(provider)
             if case .link(let url, nil) = piece, let title { piece = .link(url, title: title) }
-            // Safari can give the page's address twice, as a link and as text.
-            if case .text(let text) = piece, raw.contains(where: { if case .link(let url, _) = $0 { url.absoluteString == text } else { false } }) {
+            // An app can give a page's address twice: as a link, and as text, which reads as a link too.
+            let address: String? = switch piece {
+            case .link(let url, _): url.absoluteString
+            case .text(let text): text.trimmingCharacters(in: .whitespacesAndNewlines)
+            default: nil
+            }
+            if let address, raw.contains(where: { if case .link(let url, _) = $0 { url.absoluteString == address } else { false } }) {
                 continue
             }
             raw.append(piece)

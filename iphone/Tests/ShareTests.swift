@@ -167,8 +167,11 @@ struct ShareTests {
         #expect(drop.all() == [first, second])
 
         let file = drop.folder.appending(path: "Drafts/\(first.id).json")
-        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
-        #expect(attributes[.protectionKey] as? FileProtectionType == .complete)
+        #expect(ShareDrop.options.contains(.completeFileProtection))
+        #if !targetEnvironment(simulator)
+        // The simulator keeps no protection class (as `StoreOutboxTests` found), so only a phone checks it.
+        #expect(try FileManager.default.attributesOfItem(atPath: file.path)[.protectionKey] as? FileProtectionType == .complete)
+        #endif
         #expect(try file.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == true)
 
         // A file that is not a draft's is passed over.
@@ -339,17 +342,40 @@ struct ShareTests {
                 defer { window.isHidden = true }
                 // For the picture only: a moment for the form to lay itself out. Nothing is checked against time.
                 try await Task.sleep(for: .milliseconds(600))
-                let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
-                    _ = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
-                }
-                if let folder, let png = image.pngData() {
-                    try png.write(to: folder.appending(path: "\(sample.rawValue)-\(look).png"))
+                try Self.picture(window, into: folder, as: "\(sample.rawValue)-\(look)")
+                // And its end, when the page is longer than the screen.
+                if let list = Self.scrollView(in: window), list.contentSize.height + list.adjustedContentInset.bottom > list.bounds.height {
+                    // A form lays out its rows as they come on screen, so its height is known only on the way down.
+                    for _ in 0..<6 {
+                        list.layoutIfNeeded()
+                        let end = list.contentSize.height + list.adjustedContentInset.bottom - list.bounds.height
+                        list.setContentOffset(CGPoint(x: 0, y: max(0, end)), animated: false)
+                        try await Task.sleep(for: .milliseconds(150))
+                    }
+                    try Self.picture(window, into: folder, as: "\(sample.rawValue)-\(look)-end")
                 }
             }
         }
     }
 
     // MARK: Helpers
+
+    static func picture(_ window: UIWindow, into folder: URL?, as name: String) throws {
+        let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+            _ = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+        }
+        if let folder, let png = image.pngData() {
+            try png.write(to: folder.appending(path: "\(name).png"))
+        }
+    }
+
+    static func scrollView(in view: UIView) -> UIScrollView? {
+        if let scroll = view as? UIScrollView, scroll.isScrollEnabled, scroll.bounds.height > 200 { return scroll }
+        for subview in view.subviews {
+            if let found = scrollView(in: subview) { return found }
+        }
+        return nil
+    }
 
     static let orchestrator = ShareDestination(conversation: 9, kind: .orchestrator, title: "Atlas", project: "Atlas")
     static let chat = ShareDestination(conversation: 20, kind: .chat, title: "A chat", project: nil)

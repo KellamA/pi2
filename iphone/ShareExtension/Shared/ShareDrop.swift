@@ -32,7 +32,7 @@ struct ShareDrop: Sendable, Equatable {
         }
     }
 
-    private static let options: Data.WritingOptions = [.atomic, .completeFileProtection]
+    static let options: Data.WritingOptions = [.atomic, .completeFileProtection]
     private var drafts: URL { folder.appending(path: "Drafts", directoryHint: .isDirectory) }
     private var destinationsFile: URL { folder.appending(path: "destinations.json", directoryHint: .notDirectory) }
     private var lastFile: URL { folder.appending(path: "last.json", directoryHint: .notDirectory) }
@@ -125,17 +125,9 @@ struct ShareDrop: Sendable, Equatable {
         }
     }
 
-    private static var encoder: JSONEncoder {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .millisecondsSince1970
-        return encoder
-    }
-
-    private static var decoder: JSONDecoder {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .millisecondsSince1970
-        return decoder
-    }
+    // Dates as JSONEncoder writes them by default, which read back exactly.
+    private static var encoder: JSONEncoder { JSONEncoder() }
+    private static var decoder: JSONDecoder { JSONDecoder() }
 }
 
 /// Why something could not be shared, in the person's words.

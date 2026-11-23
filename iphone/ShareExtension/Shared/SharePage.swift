@@ -22,19 +22,15 @@ struct SharePage: View {
                     }
                 }
                 sharing
-                destination
                 if model.destinations?.destinations.isEmpty == false {
-                    Section {
+                    Section("Instructions") {
                         TextField("Add a line of instructions (optional)", text: $model.instructions, axis: .vertical)
                             .lineLimit(1...6)
                             .focused($writing)
                             .accessibilityLabel("Instructions")
-                    } header: {
-                        Text("Instructions")
-                    } footer: {
-                        Text(how)
                     }
                 }
+                destination
                 if let problem = model.sendProblem {
                     Section {
                         Label(problem, systemImage: "exclamationmark.triangle.fill")
@@ -101,6 +97,8 @@ struct SharePage: View {
                 }
             } header: {
                 Text(model.destinations?.macName.map { "To, on \($0)" } ?? "To")
+            } footer: {
+                Text(how)
             }
         } else {
             Section("To") {
@@ -186,12 +184,14 @@ struct SharePieceRow: View {
 struct ShareDestinationRow: View {
     let destination: ShareDestination
     let chosen: Bool
+    /// The symbol's column, growing with the text so that a large symbol does not run into the words.
+    @ScaledMetric(relativeTo: .body) private var symbolWidth: CGFloat = 28
 
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: symbol)
                 .foregroundStyle(Color.shareAccent)
-                .frame(width: 28)
+                .frame(width: symbolWidth)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(destination.label)
