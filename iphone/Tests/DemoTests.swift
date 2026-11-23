@@ -42,6 +42,10 @@ enum DemoScreens {
             ("The app's settings (#697)", .settings),
             ("A project's settings and limits (#697)", .projectSettings(project.id)),
             ("Schedules (#697)", .schedules),
+            // The demo's projects keep their work in pi², with no repository: the page says it has no pull requests, and
+            // asks the demo nothing.
+            ("A pull request (#695)", .pullRequest(project: project.id, number: 7)),
+            ("A pull request's file (#695)", .pullRequest(project: project.id, number: 7, file: "docs/projects.md")),
         ]
     }
 }

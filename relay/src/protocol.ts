@@ -6,6 +6,7 @@
 // Nothing a client sends is ever written back to it or anywhere else: a message that is not one of these is refused
 // with a fixed word (`Why`), never with what was in it.
 
+import { MAX_SEALED, type PushKind, SEALED_SIZES } from "./apns.ts";
 import { fromBase64, fromBase64url } from "./bytes.ts";
 import { publicKeyBytes } from "./crypto.ts";
 
@@ -63,7 +64,11 @@ export type Why =
 	| "left" // the device left
 	| "deleted" // the Mac deleted the pairing
 	| "replaced" // a newer connection of the same end took its place
-	| "window-ended"; // a joined phone's window closed before the Mac added it
+	| "window-ended" // a joined phone's window closed before the Mac added it
+	| "no-token" // a push for a device that has given no push token
+	| "token-dead" // Apple said the device's push token is no longer good: the relay forgot it
+	| "push-limit" // past 6.6's pushes an hour for the device or the pairing, until the hour is over
+	| "push-later"; // Apple asked the relay to slow down, or could not be reached: nothing is sent there for a while
 
 /** A build, as the end's `CFBundleVersion` or the Mac's build number: up to three numbers with dots between. */
 export type Build = number[];
@@ -101,9 +106,11 @@ export type State = { type: "state"; device: string; id: string; item: Uint8Arra
 export type Put = { type: "put"; to: string; id: string; item: Uint8Array<ArrayBuffer>; presence: boolean };
 export type Token = { type: "token"; apns: string; environment: "development" | "production" };
 export type Leave = { type: "leave"; signature: string };
-export type Bare = { type: "closeJoin" | "deletePairing" | "take" };
+/** The Mac's request for a push to one of its devices (apns.ts): `sealed` is the sealed bytes' base64url, as sent. */
+export type Push = { type: "push"; device: string; kind: PushKind; sealed: string; collapse: string | null };
+export type Bare = { type: "closeJoin" | "deletePairing" | "take" | "dropToken" };
 
-export type Message = Hello | Register | Proof | Join | OpenJoin | AddDevice | RemoveDevice | State | Put | Token | Leave | Bare;
+export type Message = Hello | Register | Proof | Join | OpenJoin | AddDevice | RemoveDevice | State | Put | Token | Leave | Push | Bare;
 
 type Body = Record<string, unknown>;
 
@@ -139,7 +146,10 @@ export function readMessage(text: string): Message | null {
 		case "closeJoin":
 		case "deletePairing":
 		case "take":
+		case "dropToken":
 			return exactly(body, []) ? { type: name } : null;
+		case "push":
+			return push(body);
 		case "addDevice":
 			return exactly(body, ["device", "deviceKey", "attestKeyId"]) &&
 				isDeviceId(body.device) &&
@@ -232,6 +242,27 @@ function put(body: Body): Put | null {
 	const item = readItem(body.item);
 	if (item === null) return null;
 	return { type: "put", to: body.to as string, id: body.id, item, presence: body.presence === true };
+}
+
+/**
+ * A push (apns.ts): `sealed` is a sealed item as `put` takes one (HPKE's encapsulated key first), padded to one of
+ * `SEALED_SIZES` (696, 1,464 or 3,000 bytes), so that the payload it goes into fits Apple's 4 KB and its size says no
+ * more than its class; kept as the text it came in, which is the one way of writing those bytes. `collapse`, an alert's only, is 32 bytes (7: an HMAC of the item's id with a key of the
+ * pairing), which the relay passes to Apple as `apns-collapse-id` and cannot read either.
+ */
+function push(body: Body): Push | null {
+	const keys = ["device", "kind", "sealed"];
+	if ("collapse" in body) keys.push("collapse");
+	if (!exactly(body, keys) || !isDeviceId(body.device) || (body.kind !== "alert" && body.kind !== "background")) return null;
+	let collapse: string | null = null;
+	if ("collapse" in body) {
+		if (body.kind !== "alert" || typeof body.collapse !== "string" || fromBase64url(body.collapse, 32) === null) return null;
+		collapse = body.collapse;
+	}
+	if (typeof body.sealed !== "string" || body.sealed.length > Math.ceil((MAX_SEALED * 4) / 3)) return null;
+	const sealed = fromBase64url(body.sealed);
+	if (sealed === null || !SEALED_SIZES.includes(sealed.length) || sealed[0] !== 0x04) return null;
+	return { type: "push", device: body.device, kind: body.kind, sealed: body.sealed, collapse };
 }
 
 function readItem(text: unknown): Uint8Array<ArrayBuffer> | null {
