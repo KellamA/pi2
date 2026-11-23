@@ -35,8 +35,13 @@ export type Answer = { status: number; reason?: string };
 export class ApnsStandIn {
 	/** Every push posted, in order. */
 	readonly pushes: RecordedPush[] = [];
-	/** How the next posts are answered, in order, each an answer or a function that gives one; then 200. */
-	readonly answers: (Answer | ((push: RecordedPush) => Promise<Answer>))[] = [];
+	/**
+	 * How the next posts are answered, in order, each an answer or a function that gives one (and is given the request's
+	 * signal, which aborts it as `fetch` would be); then 200.
+	 */
+	readonly answers: (Answer | ((push: RecordedPush, signal: AbortSignal | null) => Promise<Answer>))[] = [];
+	/** How long the relay's client waits for an answer; set before its first push. */
+	timeout: number | undefined = undefined;
 	/** A post fails as a network would, without an answer, while this is set. */
 	unreachable = false;
 	readonly keyId = "STANDIN123";
@@ -66,12 +71,12 @@ export class ApnsStandIn {
 		this.pushes.push(push);
 		if (!push.providerToken.verified) return answer({ status: 403, reason: "InvalidProviderToken" });
 		const next = this.answers.shift();
-		return answer(next === undefined ? { status: 200 } : typeof next === "function" ? await next(push) : next);
+		return answer(next === undefined ? { status: 200 } : typeof next === "function" ? await next(push, init.signal ?? null) : next);
 	};
 
 	/** The relay's client, signing with the stand-in's key and posting to it: what a pairing's `apns` gives. */
 	readonly client = (topic: string): Apns => {
-		this.made ??= new Apns({ keyId: this.keyId, teamId: this.teamId, signingKey: async () => (await this.keys()).privateKey }, topic, this.post);
+		this.made ??= new Apns({ keyId: this.keyId, teamId: this.teamId, signingKey: async () => (await this.keys()).privateKey }, topic, this.post, this.timeout);
 		return this.made;
 	};
 

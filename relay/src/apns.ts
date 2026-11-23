@@ -30,9 +30,10 @@
 // for Workers that post to APNs with plain `fetch` exist and are used; the one push this code has not yet made, to the
 // owner's phone from the development relay (#689's last check), is what shows it for this relay.
 //
-// The relay retries nothing. A push Apple refuses for a while (429, 5XX, the network) is answered `push-later`, and
-// nothing more goes to that token or that environment until the back-off below has passed; whether to ask again is the
-// Mac's to decide, which knows whether the need still waits (6.5: "only for what still waits"). The push key is read
+// The relay retries nothing, and waits at most POST_TIMEOUT for an answer. A push Apple refuses for a while (429, 5XX,
+// the network, no answer in time) is answered `push-later`, and nothing more goes to that token or that environment
+// until the back-off below has passed; whether to ask again is the Mac's to decide, which knows whether the need still
+// waits (6.5: "only for what still waits"). The push key is read
 // from the deployment's secrets, imported as a key Web Crypto will not export, and the token made with it is kept in
 // this isolate's memory for its allowed life: neither is ever logged, stored, sent anywhere but in Apple's
 // `authorization` header, or put in an error.
@@ -82,13 +83,32 @@ export function payload(kind: PushKind, sealed: string): string {
 
 /**
  * The most sealed bytes a push takes: what fits Apple's 4,096 bytes beside the alert's payload, the larger of the two,
- * once written as base64url. It is 3,000 bytes (4,000 characters, a payload of 4,095 bytes). `push` is read against it
- * (protocol.ts), and `send` checks the payload again before posting.
+ * once written as base64url. It is 3,000 bytes (4,000 characters, a payload of 4,095 bytes).
  */
 export const MAX_SEALED = Math.floor(((MAX_PAYLOAD - utf8(payload("alert", "")).length) * 3) / 4);
 
+/**
+ * The only sizes a push's sealed bytes may have (7): the most that make an alert's payload at most 1, 2 or 4 KB (1,023,
+ * 2,047 and 4,095 bytes; a background push's are 971, 1,995 and 4,043), the same for both kinds. pi² Remote pads every
+ * sealed push to one of them, and `push` is refused with any other (protocol.ts), so that a push's size tells no more
+ * than its class even if the sealer slips, and cannot carry a signal of its own. `send` checks the payload again.
+ */
+export const SEALED_SIZES: readonly number[] = [1024, 2048, MAX_PAYLOAD].map((size) =>
+	Math.floor(((size - utf8(payload("alert", "")).length) * 3) / 4),
+);
+
 /** How long Apple keeps a push for a phone that is offline: an hour, then it is dropped (the mailbox keeps the need). */
 const EXPIRES_AFTER = 60 * 60;
+/**
+ * How long the relay waits for Apple's answer before it gives up on the push, as on a failed connection (`push-later`,
+ * and the environment's back-off): a stalled answer must not hold the pairing's pushes behind it without end.
+ */
+export const POST_TIMEOUT = 10 * 1000;
+/**
+ * The pushes of one pairing that may wait their turn, the one in hand among them. One more is answered `push-later` in
+ * its turn, and nothing of it is kept meanwhile.
+ */
+export const MAX_WAITING_PUSHES = 16;
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
@@ -207,6 +227,8 @@ export class Apns {
 		/** The phone app's bundle id, which is the topic of its alerts and background pushes. */
 		readonly topic: string,
 		private readonly post: Post,
+		/** How long to wait for Apple's answer; tests make it shorter. */
+		private readonly timeout = POST_TIMEOUT,
 	) {
 		this.token = new ProviderToken(credentials);
 	}
@@ -235,7 +257,13 @@ export class Apns {
 		if (sending.collapse !== null) headers["apns-collapse-id"] = sending.collapse;
 		let response: Response;
 		try {
-			response = await this.post(`${HOSTS[token.environment]}/3/device/${token.apns}`, { method: "POST", headers, body, redirect: "manual" });
+			response = await this.post(`${HOSTS[token.environment]}/3/device/${token.apns}`, {
+				method: "POST",
+				headers,
+				body,
+				redirect: "manual",
+				signal: AbortSignal.timeout(this.timeout),
+			});
 		} catch {
 			this.backOff(token.environment, now);
 			return "push-later";
@@ -293,12 +321,25 @@ export class Apns {
 	}
 }
 
-/** The `reason` of Apple's answer, read from at most a kilobyte of it, or null. */
+/** The `reason` of Apple's answer, read from at most a kilobyte of it (the rest is not read), or null. */
 async function readReason(response: Response): Promise<string | null> {
 	try {
-		const text = await response.text();
-		if (text.length > 1024) return null;
-		const reason = (JSON.parse(text) as { reason?: unknown }).reason;
+		const reader = response.body?.getReader();
+		if (reader === undefined) return null;
+		const decoder = new TextDecoder();
+		let text = "";
+		let size = 0;
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			size += value.length;
+			if (size > 1024) {
+				await reader.cancel();
+				return null;
+			}
+			text += decoder.decode(value, { stream: true });
+		}
+		const reason = (JSON.parse(text + decoder.decode()) as { reason?: unknown }).reason;
 		return typeof reason === "string" && /^[A-Za-z]{1,64}$/.test(reason) ? reason : null;
 	} catch {
 		return null;
@@ -335,8 +376,15 @@ const PAIRING = "pairing";
 /** The pushes counted this hour, by device and for the pairing; what the pairing's object stores as `pushes`. */
 export type PushHour = { hour: number; counts: Record<string, Record<PushKind, number>> };
 
+/**
+ * The pushes counted this hour, by device and for the pairing, kept in the pairing's storage as `pushes` until the hour
+ * is over: a device's entry goes in the same write that removes the device (`forget`, then the pairing's save), and the
+ * whole hour's go at the pairing's alarm once the hour has passed (`roll`), or with any write after it.
+ */
 export class PushCounts {
 	private state: PushHour;
+	/** Whether `state` has changes not yet stored. */
+	dirty = false;
 
 	constructor(saved: PushHour | undefined) {
 		this.state = saved ?? { hour: 0, counts: {} };
@@ -349,23 +397,44 @@ export class PushCounts {
 		return (counts[device]?.[kind] ?? 0) < limits[kind] && (counts[PAIRING]?.[kind] ?? 0) < limits[kind] * PAIRING_TIMES;
 	}
 
-	/**
-	 * Counts one push sent; gives what to store. Devices no longer listed are dropped from it as it goes, so a removed
-	 * device's id stays no longer than the hour, and only the pairing's count remembers it.
-	 */
-	add(device: string, kind: PushKind, now: number, listed: (device: string) => boolean): PushHour {
+	/** Counts one push sent; says whether it is the hour's first, for which the alarm is set at the hour's end. */
+	add(device: string, kind: PushKind, now: number): boolean {
 		this.roll(now);
 		const counts = this.state.counts;
-		for (const id of Object.keys(counts)) if (id !== PAIRING && !listed(id)) delete counts[id];
+		const first = Object.keys(counts).length === 0;
 		for (const id of [device, PAIRING]) {
 			counts[id] ??= { alert: 0, background: 0 };
 			counts[id][kind] += 1;
 		}
-		return this.state;
+		this.dirty = true;
+		return first;
 	}
 
-	private roll(now: number): void {
+	/** Drops a device that is removed or left: only the pairing's count remembers its pushes. */
+	forget(device: string): void {
+		if (this.state.counts[device] === undefined) return;
+		delete this.state.counts[device];
+		this.dirty = true;
+	}
+
+	/** Forgets the counts of an hour that is over; says whether there were any. */
+	roll(now: number): boolean {
 		const hour = Math.floor(now / HOUR);
-		if (this.state.hour !== hour) this.state = { hour, counts: {} };
+		if (this.state.hour === hour) return false;
+		const had = Object.keys(this.state.counts).length > 0;
+		this.state = { hour, counts: {} };
+		if (had) this.dirty = true;
+		return had;
+	}
+
+	/** When the counts kept are over, or null if none are. */
+	get ends(): number | null {
+		return Object.keys(this.state.counts).length === 0 ? null : (this.state.hour + 1) * HOUR;
+	}
+
+	/** What to store; the counts are then taken as stored. */
+	stored(): PushHour {
+		this.dirty = false;
+		return this.state;
 	}
 }

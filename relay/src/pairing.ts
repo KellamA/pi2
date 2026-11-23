@@ -9,7 +9,7 @@
 // within ten seconds is closed.
 
 import { DurableObject } from "cloudflare:workers";
-import { type Apns, apnsFor, PUSH_LIMITS, PushCounts, type PushHour, type PushLimits } from "./apns.ts";
+import { type Apns, apnsFor, MAX_WAITING_PUSHES, PUSH_LIMITS, PushCounts, type PushHour, type PushLimits } from "./apns.ts";
 import { verifyAttestation } from "./attest.ts";
 import { base64url, concat, fromBase64url, random, same } from "./bytes.ts";
 import { publicKeyBytes, sha256, verifySignature } from "./crypto.ts";
@@ -160,9 +160,10 @@ export class Pairing extends DurableObject<Env> {
 	apns: (topic: string) => Apns | null = (topic) => apnsFor(this.env, topic);
 	/** 6.6's push limits; tests make them smaller. */
 	pushLimits: PushLimits = PUSH_LIMITS;
-	private pushCounts: PushCounts | null = null;
-	/** The pushes in hand, one at a time, so that the Mac's answers come in the order it asked. */
+	private pushCounts = new PushCounts(undefined);
+	/** The pushes in hand, one at a time, so that the Mac's answers come in the order it asked; and how many wait. */
 	private pushing: Promise<void> = Promise.resolve();
+	private pushesWaiting = 0;
 
 	private meta: Meta | null = null;
 	private devices: Record<string, Device> = {};
@@ -179,6 +180,7 @@ export class Pairing extends DurableObject<Env> {
 			this.devices = (await ctx.storage.get<Record<string, Device>>("devices")) ?? {};
 			const days = await ctx.storage.get<Record<string, Day>>("days");
 			if (days !== undefined) this.counters = new Counters(days);
+			this.pushCounts = new PushCounts(await ctx.storage.get<PushHour>("pushes"));
 		});
 	}
 
@@ -290,6 +292,8 @@ export class Pairing extends DurableObject<Env> {
 			delete meta.blocked[sender];
 			changed = true;
 		}
+		// The push counts of an hour that is over are not kept past it.
+		if (this.pushCounts.roll(now)) changed = true;
 		if (changed) await this.save();
 		this.mailbox.expire(now);
 		if (this.counters.forgetBefore(now) || this.counters.dirty) await this.saveDays();
@@ -529,11 +533,10 @@ export class Pairing extends DurableObject<Env> {
 				return this.put(ws, message, "mac", now);
 			case "take":
 				return this.take(ws, "mac", now);
-			case "push": {
-				const turn = this.pushing.then(() => this.push(ws, message));
-				this.pushing = turn.catch(() => undefined);
-				return turn;
-			}
+			case "push":
+				// At most MAX_WAITING_PUSHES wait their turn; one past that is answered push-later in its turn, kept meanwhile
+				// as no more than its socket.
+				return this.inTurn(this.pushesWaiting < MAX_WAITING_PUSHES ? this.pushStep(ws, message) : laterStep(ws));
 			default:
 				return this.refuse(ws, "malformed");
 		}
@@ -698,6 +701,8 @@ export class Pairing extends DurableObject<Env> {
 		delete this.devices[id];
 		this.mailbox.forget(id);
 		this.counters.forget(id);
+		// Its push counts go in the same write as its record; only the pairing's count remembers its pushes.
+		this.pushCounts.forget(id);
 		if (this.meta !== null) delete this.meta.blocked[id];
 		for (const [ws, attachment] of this.sockets()) {
 			if (attachment.kind !== "mac" && attachment.device === id) this.refuse(ws, why);
@@ -737,6 +742,7 @@ export class Pairing extends DurableObject<Env> {
 		this.meta = null;
 		this.devices = {};
 		this.counters = new Counters({});
+		this.pushCounts = new PushCounts(undefined);
 		for (const [ws] of this.sockets()) this.refuse(ws, "deleted");
 		await this.ctx.storage.deleteAlarm();
 		await this.ctx.storage.deleteAll();
@@ -782,9 +788,11 @@ export class Pairing extends DurableObject<Env> {
 		if (apns === null) return refused(ws, "push", "unavailable");
 		const held = apns.held(token, now);
 		if (held !== null) return refused(ws, "push", held);
-		this.pushCounts ??= new PushCounts(await this.ctx.storage.get<PushHour>("pushes"));
 		if (!this.pushCounts.allows(message.device, message.kind, now, this.pushLimits)) return refused(ws, "push", "push-limit");
-		await this.ctx.storage.put("pushes", this.pushCounts.add(message.device, message.kind, now, (id) => this.devices[id]?.listed === true));
+		const first = this.pushCounts.add(message.device, message.kind, now);
+		await this.ctx.storage.put("pushes", this.pushCounts.stored());
+		// The hour's first push sets the alarm for the hour's end, which clears the counts.
+		if (first) await this.schedule();
 		const outcome = await apns.send(token, message, now);
 		if (outcome === "sent") return ok(ws, "push");
 		// Forgotten only if it is still the token Apple refused: the phone may have given another meanwhile.
@@ -794,6 +802,17 @@ export class Pairing extends DurableObject<Env> {
 			await this.save();
 		}
 		return refused(ws, "push", outcome);
+	}
+
+	private inTurn(step: () => Promise<void> | void): Promise<void> {
+		const turn = this.pushing.then(step);
+		this.pushing = turn.catch(() => undefined);
+		return turn;
+	}
+
+	private pushStep(ws: WebSocket, message: Push): () => Promise<void> {
+		this.pushesWaiting += 1;
+		return () => this.push(ws, message).finally(() => (this.pushesWaiting -= 1));
 	}
 
 	// The sockets.
@@ -881,7 +900,11 @@ export class Pairing extends DurableObject<Env> {
 
 	private async save(): Promise<void> {
 		if (this.meta === null) return;
-		await this.ctx.storage.put({ meta: this.meta, devices: this.devices });
+		// The push counts ride along when they changed (a device dropped, an hour over), in the same write.
+		this.pushCounts.roll(Date.now());
+		const record: Record<string, unknown> = { meta: this.meta, devices: this.devices };
+		if (this.pushCounts.dirty) record.pushes = this.pushCounts.stored();
+		await this.ctx.storage.put(record);
 	}
 
 	private async saveDays(): Promise<void> {
@@ -905,6 +928,8 @@ export class Pairing extends DurableObject<Env> {
 			times.push(meta.lastSeen + IDLE_FOR);
 			const expiry = this.mailbox.nextExpiry();
 			if (expiry !== null) times.push(expiry);
+			const pushesEnd = this.pushCounts.ends;
+			if (pushesEnd !== null) times.push(pushesEnd);
 			// The day's counts are kept for the day.
 			if (Object.keys(this.counters.days).length > 0) times.push(Date.parse(`${new Date().toISOString().slice(0, 10)}T00:00:00Z`) + DAY);
 		}
@@ -925,6 +950,11 @@ function send(ws: WebSocket, message: object): void {
 	} catch {
 		// Closed while this was being sent: nothing to tell it.
 	}
+}
+
+/** A push past MAX_WAITING_PUSHES: answered in its turn, holding nothing of it but its socket. */
+function laterStep(ws: WebSocket): () => void {
+	return () => refused(ws, "push", "push-later");
 }
 
 function sendBytes(ws: WebSocket, bytes: Uint8Array): void {

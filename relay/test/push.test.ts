@@ -3,9 +3,9 @@
 // posted to a stand-in for Apple's service exactly as Apple takes it, with the payload's words fixed and the Mac's bytes
 // only in `sealed`; the provider token's life; each of Apple's answers; the push limits; and the writes all of it makes.
 
-import { env, runInDurableObject } from "cloudflare:test";
+import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ALERT, Apns, apnsFor, MAX_PAYLOAD, MAX_SEALED, payload, PUSH_LIMITS, type PushLimits, readCredentials } from "../src/apns.ts";
+import { ALERT, Apns, apnsFor, MAX_PAYLOAD, MAX_SEALED, MAX_WAITING_PUSHES, payload, PUSH_LIMITS, type PushLimits, readCredentials, SEALED_SIZES } from "../src/apns.ts";
 import { base64url, fromBase64url, hex, random, utf8 } from "../src/bytes.ts";
 import type { Pairing } from "../src/pairing.ts";
 import { proofText } from "../src/protocol.ts";
@@ -58,7 +58,7 @@ async function paired(environment: "development" | "production" = "development",
 /** Each pairing's one stand-in, shared by the phones paired with it. */
 const standIns = new Map<string, ApnsStandIn>();
 
-function sealed(size = 1000): string {
+function sealed(size = 696): string {
 	return base64url(sealedItem(size, 9));
 }
 
@@ -82,7 +82,7 @@ describe("pushes", () => {
 	it("posts an alert to Apple's sandbox exactly as the contract has it: fixed words, the Mac's bytes only in sealed", async () => {
 		const { mac, phone, token, standIn } = await paired();
 		const collapse = base64url(random(32));
-		const bytes = sealed(1500);
+		const bytes = sealed(1464);
 		mac.client.send({ push: { device: phone.device, kind: "alert", sealed: bytes, collapse } });
 		expect(await mac.client.json()).toEqual(OK);
 
@@ -105,7 +105,7 @@ describe("pushes", () => {
 
 	it("posts a background push with priority 5 and content-available alone, and a production token to production", async () => {
 		const { mac, phone, standIn } = await paired("production");
-		const bytes = sealed(200);
+		const bytes = sealed(696);
 		mac.client.send({ push: { device: phone.device, kind: "background", sealed: bytes } });
 		expect(await mac.client.json()).toEqual(OK);
 		const [sent] = standIn.pushes;
@@ -114,17 +114,25 @@ describe("pushes", () => {
 		expect(sent.payload).toBe(`{"aps":{"content-available":1},"sealed":"${bytes}"}`);
 	});
 
-	it("fits the largest sealed item in Apple's 4 KB, and refuses a larger one, one that is not a sealed item, and a background collapse id", () => {
+	it("pads sealed items to three sizes that make payloads of at most 1, 2 and 4 KB for both kinds", () => {
 		expect(MAX_SEALED).toBe(3000);
+		expect(SEALED_SIZES).toEqual([696, 1464, 3000]);
+		const sizes = (kind: "alert" | "background") => SEALED_SIZES.map((size) => utf8(payload(kind, base64url(sealedItem(size)))).length);
+		expect(sizes("alert")).toEqual([1023, 2047, 4095]);
+		expect(sizes("background")).toEqual([971, 1995, 4043]);
+		// One byte more would not fit an alert's class.
+		expect(SEALED_SIZES.map((size, index) => utf8(payload("alert", base64url(sealedItem(size + 1)))).length > [1024, 2048, 4096][index])).toEqual([true, true, true]);
 		expect(utf8(payload("alert", base64url(sealedItem(MAX_SEALED)))).length).toBeLessThanOrEqual(MAX_PAYLOAD);
 		expect(utf8(payload("background", base64url(sealedItem(MAX_SEALED)))).length).toBeLessThanOrEqual(MAX_PAYLOAD);
 		expect(JSON.parse(payload("alert", "x")).aps.alert).toEqual(ALERT);
 	});
 
-	it("closes the Mac's socket for a push that is not one: too large, not sealed, a collapse id on a background push", async () => {
+	it("closes the Mac's socket for a push that is not one: too large, not a padded size, not sealed, a collapse id on a background push", async () => {
 		for (const body of [
 			{ kind: "alert", sealed: base64url(sealedItem(MAX_SEALED + 1)) },
-			{ kind: "alert", sealed: base64url(new Uint8Array(500).fill(1)) },
+			{ kind: "alert", sealed: base64url(sealedItem(1000)) },
+			{ kind: "background", sealed: base64url(sealedItem(697)) },
+			{ kind: "alert", sealed: base64url(new Uint8Array(696).fill(1)) },
 			{ kind: "background", sealed: sealed(), collapse: base64url(random(32)) },
 			{ kind: "alert", sealed: sealed(), collapse: base64url(random(16)) },
 			{ kind: "activity", sealed: sealed() },
@@ -337,6 +345,40 @@ describe("Apple's answers", () => {
 		expect(await push(mac, phone.device)).toEqual(OK);
 	});
 
+	it("gives up on an answer that does not come, as on a failed connection, and the pushes behind it go on", async () => {
+		const { mac, phone, standIn } = await paired();
+		const other = await paired("production", mac);
+		standIn.timeout = 50;
+		// An answer that never comes: the request is ended only by its signal, as `fetch`'s would be.
+		standIn.answers.push((_, signal) => new Promise((_resolve, reject) => signal!.addEventListener("abort", () => reject(signal!.reason))));
+		mac.client.send({ push: { device: phone.device, kind: "alert", sealed: sealed() } });
+		mac.client.send({ push: { device: other.phone.device, kind: "alert", sealed: sealed() } });
+		expect(await mac.client.json()).toEqual(refusal("push-later"));
+		expect(await mac.client.json()).toEqual(OK);
+		// The environment rests, as after a 5XX.
+		expect(await push(mac, phone.device)).toEqual(refusal("push-later"));
+		expect(standIn.pushes).toHaveLength(2);
+	});
+
+	it(`keeps at most ${MAX_WAITING_PUSHES} pushes waiting, answering one more push-later in its turn without sending it`, async () => {
+		const { mac, phone, standIn } = await paired();
+		let release!: () => void;
+		const later = new Promise<void>((resolve) => (release = resolve));
+		standIn.answers.push(async () => {
+			await later;
+			return { status: 200 };
+		});
+		for (let index = 0; index < MAX_WAITING_PUSHES + 3; index++) mac.client.send({ push: { device: phone.device, kind: "alert", sealed: sealed() } });
+		// Every push has been taken in, and none answered.
+		expect(await mac.client.settle()).toEqual([]);
+		release();
+		for (let index = 0; index < MAX_WAITING_PUSHES; index++) expect(await mac.client.json()).toEqual(OK);
+		for (let index = 0; index < 3; index++) expect(await mac.client.json()).toEqual(refusal("push-later"));
+		expect(standIn.pushes).toHaveLength(MAX_WAITING_PUSHES);
+		// Once they are done, pushes wait again.
+		expect(await push(mac, phone.device)).toEqual(OK);
+	});
+
 	it("answers the Mac's pushes in the order it asked, one at a time", async () => {
 		const { mac, phone, token, standIn } = await paired();
 		const other = await paired("development", mac);
@@ -430,11 +472,36 @@ describe("push limits", () => {
 		expect(await mac.client.json()).toEqual({ ok: { what: "removeDevice" } });
 		const sixth = await paired("development", mac);
 		expect(await push(mac, sixth.phone.device)).toEqual(refusal("push-limit"));
-		// The removed device's id is not kept in the counts past the next push sent.
 		await setPushLimits(mac.pairing, { alert: 2 });
 		expect(await push(mac, sixth.phone.device)).toEqual(OK);
-		const counts = await runInDurableObject(pairingObject(mac.pairing), (_: Pairing, state) => state.storage.get<{ counts: object }>("pushes"));
-		expect(Object.keys(counts!.counts)).not.toContain(phones[0].phone.device);
+	});
+
+	it("drops a removed device's counts in the same write that removes it, keeping the pairing's", async () => {
+		const { mac, phone, client } = await paired();
+		expect(await push(mac, phone.device)).toEqual(OK);
+		const writes = await countStorageWrites(mac.pairing);
+		mac.client.send({ removeDevice: { device: phone.device } });
+		await client.refused("removed");
+		expect(await mac.client.json()).toEqual({ ok: { what: "removeDevice" } });
+		expect(writes.what.filter((what) => what === "put")).toHaveLength(1);
+		expect((await storedCounts(mac.pairing))!.counts).toEqual({ pairing: { alert: 1, background: 0 } });
+	});
+
+	it("clears the counts at the pairing's alarm once their hour is over", async () => {
+		const { mac, phone } = await paired();
+		expect(await push(mac, phone.device)).toEqual(OK);
+		const end = Math.ceil(NOON / HOUR + 0.5) * HOUR;
+		// Before the hour is over, the alarm keeps them.
+		vi.setSystemTime(end - 1);
+		await runDurableObjectAlarm(pairingObject(mac.pairing));
+		expect((await storedCounts(mac.pairing))!.counts[phone.device]).toEqual({ alert: 1, background: 0 });
+		vi.setSystemTime(end);
+		await runDurableObjectAlarm(pairingObject(mac.pairing));
+		expect((await storedCounts(mac.pairing))!.counts).toEqual({});
+		// And the alarm after it is not set for the counts.
+		vi.setSystemTime(end + 1000);
+		expect(await push(mac, phone.device)).toEqual(OK);
+		expect((await storedCounts(mac.pairing))!.counts[phone.device]).toEqual({ alert: 1, background: 0 });
 	});
 
 	it("survives the object being evicted: the counts are stored", async () => {
@@ -464,30 +531,34 @@ describe("writes", () => {
 		expect(await client.json()).toEqual({ ok: { what: "token" } });
 		expect(writes.count).toBe(1);
 
-		// Two pushes sent, one write each; refused ones, none.
+		// Two pushes sent, one write each, and the alarm set for the end of the hour at its first; refused ones, none.
 		expect(await push(mac, phone.device)).toEqual(OK);
 		expect(await push(mac, phone.device)).toEqual(OK);
-		expect(writes.what).toEqual(["put", "put", "put"]);
+		expect(writes.what).toEqual(["put", "put", "setAlarm", "put"]);
 		for (let index = 0; index < 10; index++) expect(await push(mac, phone.device)).toEqual(refusal("push-limit"));
-		expect(writes.count).toBe(3);
+		expect(writes.count).toBe(4);
 
 		for (let index = 0; index < 3; index++) {
 			client.send({ dropToken: {} });
 			expect(await client.json()).toEqual({ ok: { what: "dropToken" } });
 		}
-		expect(writes.count).toBe(4);
+		expect(writes.count).toBe(5);
 		for (let index = 0; index < 10; index++) expect(await push(mac, phone.device)).toEqual(refusal("no-token"));
-		expect(writes.count).toBe(4);
+		expect(writes.count).toBe(5);
 	});
 
-	it("makes two writes for a push whose token Apple calls dead: the count, then the token forgotten", async () => {
+	it("makes two writes for a push whose token Apple calls dead, the count and the token forgotten, and sets the hour's alarm", async () => {
 		const { mac, phone, standIn } = await paired();
 		standIn.answers.push({ status: 410, reason: "Unregistered" } satisfies Answer);
 		const writes = await countStorageWrites(mac.pairing);
 		expect(await push(mac, phone.device)).toEqual(refusal("token-dead"));
-		expect(writes.count).toBe(2);
+		expect(writes.what).toEqual(["put", "setAlarm", "put"]);
 	});
 });
+
+async function storedCounts(pairing: string): Promise<{ hour: number; counts: Record<string, unknown> } | undefined> {
+	return runInDurableObject(pairingObject(pairing), (_: Pairing, state) => state.storage.get("pushes"));
+}
 
 /** The challenge a listed phone's ready socket was given, which its `leave` signs. */
 async function challengeOf(pairing: string, device: string): Promise<string> {

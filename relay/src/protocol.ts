@@ -6,7 +6,7 @@
 // Nothing a client sends is ever written back to it or anywhere else: a message that is not one of these is refused
 // with a fixed word (`Why`), never with what was in it.
 
-import { MAX_SEALED, type PushKind } from "./apns.ts";
+import { MAX_SEALED, type PushKind, SEALED_SIZES } from "./apns.ts";
 import { fromBase64, fromBase64url } from "./bytes.ts";
 import { publicKeyBytes } from "./crypto.ts";
 
@@ -245,9 +245,9 @@ function put(body: Body): Put | null {
 }
 
 /**
- * A push (apns.ts): `sealed` is a sealed item as `put` takes one (HPKE's encapsulated key first), at most `MAX_SEALED`
- * bytes, so that the payload it goes into fits Apple's 4 KB; kept as the text it came in, which is the one way of
- * writing those bytes. `collapse`, an alert's only, is 32 bytes (7: an HMAC of the item's id with a key of the
+ * A push (apns.ts): `sealed` is a sealed item as `put` takes one (HPKE's encapsulated key first), padded to one of
+ * `SEALED_SIZES` (696, 1,464 or 3,000 bytes), so that the payload it goes into fits Apple's 4 KB and its size says no
+ * more than its class; kept as the text it came in, which is the one way of writing those bytes. `collapse`, an alert's only, is 32 bytes (7: an HMAC of the item's id with a key of the
  * pairing), which the relay passes to Apple as `apns-collapse-id` and cannot read either.
  */
 function push(body: Body): Push | null {
@@ -261,7 +261,7 @@ function push(body: Body): Push | null {
 	}
 	if (typeof body.sealed !== "string" || body.sealed.length > Math.ceil((MAX_SEALED * 4) / 3)) return null;
 	const sealed = fromBase64url(body.sealed);
-	if (sealed === null || sealed.length < MIN_ITEM || sealed.length > MAX_SEALED || sealed[0] !== 0x04) return null;
+	if (sealed === null || !SEALED_SIZES.includes(sealed.length) || sealed[0] !== 0x04) return null;
 	return { type: "push", device: body.device, kind: body.kind, sealed: body.sealed, collapse };
 }
 
