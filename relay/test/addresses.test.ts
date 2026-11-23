@@ -18,6 +18,7 @@ import {
 	BLOCK_REGISTRATIONS_AN_HOUR,
 	CONNECTIONS_A_MINUTE,
 	CONNECTIONS_AN_HOUR,
+	REGISTRATIONS_A_DAY,
 	REGISTRATIONS_AN_HOUR,
 } from "../src/addresses.ts";
 import type { Pairing } from "../src/pairing.ts";
@@ -57,6 +58,23 @@ let quads = 0;
 function newQuad(): string {
 	quads += 1;
 	return `203.0.${(quads >> 8) & 255}.${quads & 255}`;
+}
+
+/** The two 16-bit groups of an IPv4 address, in hex, inverted for Teredo. */
+function groupsOf(quad: string, inverted = false): string {
+	const [a, b, c, d] = quad.split(".").map(Number);
+	const flip = (group: number) => (inverted ? ~group & 0xffff : group).toString(16);
+	return `${flip((a << 8) | b)}:${flip((c << 8) | d)}`;
+}
+
+/** The 6to4 address of an IPv4 address (RFC 3056), in a /64 of its /48. */
+function sixToFourOf(quad: string, subnet = 1): string {
+	return `2002:${groupsOf(quad)}:${subnet.toString(16)}::1`;
+}
+
+/** A Teredo address of an IPv4 address (RFC 4380), through RFC 4380's example server, with a port. */
+function teredoOf(quad: string, port = 0x63bf): string {
+	return `2001:0:4136:e378:8000:${port.toString(16)}:${groupsOf(quad, true)}`;
 }
 
 /** The Address object an address is counted in, today. */
@@ -100,6 +118,7 @@ async function watch(object: DurableObjectStub<Address>): Promise<Watched> {
 			const real = storage[name].bind(storage);
 			storage[name] = (...args: unknown[]) => {
 				watched.writes += 1;
+				if (watched.failWrites === true) return Promise.reject(new Error("storage"));
 				return real(...args);
 			};
 		}
@@ -108,10 +127,11 @@ async function watch(object: DurableObjectStub<Address>): Promise<Watched> {
 		if (prototype[WATCHED] !== true) {
 			for (const method of ["admit", "admitBlock"] as const) {
 				const real = prototype[method];
-				prototype[method] = function (this: object, ...args: unknown[]) {
+				prototype[method] = async function (this: object, ...args: unknown[]) {
 					const counts = askedOf.get(this);
 					if (counts !== undefined) counts.asked += 1;
-					if (counts?.fail === true) return Promise.reject(new Error("overloaded"));
+					if (counts?.fail === true) throw new Error("overloaded");
+					if (counts?.gate !== undefined) await counts.gate;
 					return real.apply(this, args);
 				};
 			}
@@ -129,7 +149,15 @@ type Watchable = {
 	[WATCHED]?: true;
 };
 /** What `watchAddress` counts; `fail` makes the object's every answer an error, as an overloaded object's. */
-type Watched = { writes: number; asked: number; fail: boolean };
+type Watched = {
+	writes: number;
+	asked: number;
+	fail: boolean;
+	/** Every write to the object's storage refused, as a write the platform could not make. */
+	failWrites?: boolean;
+	/** While set, each call waits for it before the object answers. */
+	gate?: Promise<void>;
+};
 const askedOf = new WeakMap<object, Watched>();
 
 /**
@@ -151,7 +179,7 @@ async function afresh(address: string, count: number): Promise<Admission[]> {
  */
 async function evict(object: DurableObjectStub<Address>): Promise<void> {
 	await runInDurableObject(object, (instance: Address) => {
-		Object.assign(instance, { minutes: new Map(), marks: new Map(), bases: new Map(), times: [], loading: null });
+		Object.assign(instance, { minutes: new Map(), marks: new Map(), bases: new Map(), times: [], waiting: [], loading: null });
 	});
 }
 
@@ -224,19 +252,20 @@ describe("the group an address is counted in", () => {
 		expect(addressGroup("64:ff9b::192.0.2.1")).toBe("64:ff9b:0:0::/64");
 	});
 
-	it("takes a 6to4 or Teredo address as the IPv4 address it carries, with no block", () => {
-		for (const text of ["2002:c000:201::1", "2002:C000:0201:0:0:0:0:1", "2002:c000:201:ffff:1:2:3:4", "2002:c000:201:5::", "2002:c000:201::192.0.2.9"]) {
-			expect(addressCounted(text), text).toEqual({ group: "192.0.2.1", block: null });
+	it("takes every 6to4 address as one group, and every Teredo address as another, with no block, never as the IPv4 address it carries", () => {
+		// 6to4 (2002::/16), whichever IPv4 address its next 32 bits carry, and whichever /64 of that address's /48.
+		for (const text of ["2002:c000:201::1", "2002:C000:0201:0:0:0:0:1", "2002:c000:201:ffff:1:2:3:4", "2002:c000:201:5::", "2002:c000:201::192.0.2.9", "2002:cb00:7101::1", "2002::", "2002::1", "2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff", "2002:c000:201::1%en0"]) {
+			expect(addressCounted(text), text).toEqual({ group: "2002::/16", block: null });
 		}
-		expect(addressCounted("2002:cb00:7101::1")).toEqual({ group: "203.0.113.1", block: null });
-		// Teredo (2001::/32): its client's IPv4 address, the last 32 bits inverted (RFC 4380's example: 192.0.2.45),
-		// whichever server, flags and port it names, which the client chooses.
-		for (const text of ["2001:0:4136:e378:8000:63bf:3fff:fdd2", "2001:0000:0a0b:0c0d:0:0:3fff:FDD2", "2001::ffff:1:3fff:fdd2", "2001:0:4136:e378:8000:63bf:63.255.253.210"]) {
-			expect(addressCounted(text), text).toEqual({ group: "192.0.2.45", block: null });
+		// Teredo (2001::/32), whichever server, flags, port and client address it names (RFC 4380's example carries
+		// 192.0.2.45, its last 32 bits inverted).
+		for (const text of ["2001:0:4136:e378:8000:63bf:3fff:fdd2", "2001:0000:0a0b:0c0d:0:0:3fff:FDD2", "2001::ffff:1:3fff:fdd2", "2001:0:4136:e378:8000:63bf:63.255.253.210", "2001:0:1:2::", "2001::", "2001:0:ffff:ffff:ffff:ffff:ffff:ffff"]) {
+			expect(addressCounted(text), text).toEqual({ group: "2001::/32", block: null });
 		}
-		expect(addressCounted("2001:0:1:2::")).toEqual({ group: "255.255.255.255", block: null });
-		// 2001:1::/32 and the rest of 2001::/16 are ordinary IPv6.
+		// 2001:1::/32 and the rest of 2001::/16, and 2003::/16, are ordinary IPv6.
 		expect(addressCounted("2001:1:4136:e378::3fff:fdd2")).toEqual({ group: "2001:1:4136:e378::/64", block: "2001:1:4136::/48" });
+		expect(addressCounted("2001:db8:1:2::1")).toEqual({ group: "2001:db8:1:2::/64", block: "2001:db8:1::/48" });
+		expect(addressCounted("2003:c000:201::1")).toEqual({ group: "2003:c000:201:0::/64", block: "2003:c000:201::/48" });
 	});
 
 	it("counts an IPv6 address in its /48 too, in every spelling; an IPv4 or mapped address in no block", () => {
@@ -676,5 +705,117 @@ describe("an IPv6 address's block", () => {
 		for (let index = 0; index < REGISTRATIONS_AN_HOUR; index++) await register(block(0));
 		for (let index = REGISTRATIONS_AN_HOUR; index < CONNECTIONS_A_MINUTE; index++) expect(await admitFrom(block(0))).toEqual({ pass: true });
 		expect(await admitFrom(block(0))).toEqual({ pass: false, until: NOON + MINUTE, limit: "connections", by: "group" });
+	});
+
+	it("stores no registration of a /64 still waiting on its block: one the block then refuses is never stored", async () => {
+		const block = newBlock();
+		await fillBlockRegistrations(block, BLOCK_REGISTRATIONS_AN_HOUR - 1);
+		const address = block(0);
+		const blockWatched = await watchBlock(address);
+		let open!: () => void;
+		blockWatched.gate = new Promise((resolve) => {
+			open = resolve;
+		});
+		// A first registration from the /64 waits at the block...
+		const first = admitFrom(address, true);
+		await vi.waitFor(() => expect(blockWatched.asked).toBe(1));
+		blockWatched.gate = undefined;
+		// ...while a second, a second later, takes the block's last room this hour, and is stored: alone.
+		vi.setSystemTime(NOON + 1000);
+		expect(await admitFrom(address, true)).toEqual({ pass: true });
+		const object = await addressObject(address);
+		expect((await storedIn(object)).times).toEqual([NOON + 1000]);
+		open();
+		expect(await first).toEqual({ pass: false, until: NOON + HOUR, limit: "registrations", by: "block" });
+		expect((await storedIn(object)).times).toEqual([NOON + 1000]);
+	});
+
+	it("takes back what the block took when its /64's own write fails, so that the block counts only what passed", async () => {
+		const block = newBlock();
+		await fillBlockRegistrations(block, BLOCK_REGISTRATIONS_AN_HOUR - 1);
+		const failing = block(0);
+		const watched = await watchAddress(failing);
+		watched.failWrites = true;
+		await expect(admitFrom(failing, true)).rejects.toThrow();
+		await expect(admitFrom(failing)).rejects.toThrow();
+		// Through the Worker, 503, as for an object that does not answer.
+		const response = await knock(null, failing);
+		expect(response.status).toBe(503);
+		expect(response.headers.get("Retry-After")).toBe("60");
+		// The block took each and was told to give it back: it stores the nineteen registrations that passed, and counts
+		// nineteen connections this minute; the /64 counts none.
+		const blockStub = await blockObject(failing);
+		expect(((await storedIn(blockStub)).times as number[]).length).toBe(BLOCK_REGISTRATIONS_AN_HOUR - 1);
+		const minute = Math.floor(NOON / MINUTE);
+		const counted = async (object: DurableObjectStub<Address>) =>
+			runInDurableObject(object, (instance: Address) => (instance as unknown as { minutes: Map<number, number> }).minutes.get(minute) ?? 0);
+		expect(await counted(blockStub)).toBe(BLOCK_REGISTRATIONS_AN_HOUR - 1);
+		expect(await counted(await addressObject(failing))).toBe(0);
+		// So the block's twentieth is still there to take, and only it.
+		watched.failWrites = false;
+		expect(await admitFrom(block(5), true)).toEqual({ pass: true });
+		expect(await admitFrom(failing, true)).toEqual({ pass: false, until: NOON + HOUR, limit: "registrations", by: "block" });
+		expect(await counted(blockStub)).toBe(BLOCK_REGISTRATIONS_AN_HOUR);
+	});
+});
+
+/** Registrations from a block's /64s 1, 2, 3 and 4, five from each, `count` in all, at the present time. */
+async function fillBlockRegistrations(block: (subnet: number, host?: number) => string, count: number): Promise<void> {
+	for (let index = 0; index < count; index++) {
+		const subnet = 1 + Math.floor(index / REGISTRATIONS_AN_HOUR);
+		expect(await admitFrom(block(subnet, 1 + (index % REGISTRATIONS_AN_HOUR)), true)).toEqual({ pass: true });
+	}
+}
+
+describe("the tunnelling ranges, 6to4 and Teredo", () => {
+	it("counts registrations from every 6to4 address together, every Teredo address together, and neither against the IPv4 address it carries", async () => {
+		// A day of its own, since each range is one object for everyone, named by the day.
+		const day = NOON + 10 * DAY;
+		vi.setSystemTime(day);
+		const carried = Array.from({ length: REGISTRATIONS_AN_HOUR + 1 }, () => newQuad());
+		// Five, each carrying another IPv4 address, from another /64 of its /48: the range's five this hour.
+		for (let index = 0; index < REGISTRATIONS_AN_HOUR; index++) await register(sixToFourOf(carried[index], index));
+		const refused = await knock(null, sixToFourOf(carried[REGISTRATIONS_AN_HOUR]));
+		expect(refused.status).toBe(429);
+		expect(refused.headers.get("Retry-After")).toBe(String(HOUR / 1000));
+		// Teredo is one count of its own, whichever client address and port each names.
+		for (let index = 0; index < REGISTRATIONS_AN_HOUR; index++) await register(teredoOf(carried[index], 0x1000 + index));
+		expect((await knock(null, teredoOf(carried[REGISTRATIONS_AN_HOUR]))).status).toBe(429);
+		// The IPv4 addresses they carry were counted for none of it: each still has its own five.
+		for (let index = 0; index < REGISTRATIONS_AN_HOUR; index++) await register(carried[0]);
+		expect((await knock(null, carried[0])).status).toBe(429);
+		await register(carried[REGISTRATIONS_AN_HOUR]);
+		// The day's limit is the range's too, all its addresses together.
+		for (let hour = 1; hour < REGISTRATIONS_A_DAY / REGISTRATIONS_AN_HOUR; hour++) {
+			vi.setSystemTime(day + hour * HOUR);
+			for (let index = 0; index < REGISTRATIONS_AN_HOUR; index++) await register(sixToFourOf(newQuad()));
+		}
+		vi.setSystemTime(day + 4 * HOUR);
+		const held = await knock(null, sixToFourOf(newQuad()));
+		expect(held.status).toBe(429);
+		expect(held.headers.get("Retry-After")).toBe(String((20 * HOUR) / 1000));
+	});
+
+	it(`takes one address's ${CONNECTIONS_A_MINUTE} connections a minute from a whole range, then holds it in the Worker; connections as a chosen IPv4 address's 6to4 or Teredo address take nothing of its own`, async () => {
+		const day = NOON + 11 * DAY;
+		vi.setSystemTime(day);
+		const mac = await register();
+		const target = newQuad();
+		for (let index = 0; index < CONNECTIONS_A_MINUTE; index++) expect((await knock(mac.pairing, sixToFourOf(target, index))).status).toBe(101);
+		const range = await watchAddress(sixToFourOf(newQuad()));
+		for (const address of [sixToFourOf(target), sixToFourOf(newQuad()), "2002::1"]) {
+			const refused = await knock(mac.pairing, address);
+			expect(refused.status, address).toBe(429);
+			expect(refused.headers.get("Retry-After")).toBe("60");
+		}
+		expect(range.asked).toBe(1);
+		// The IPv4 address they carried has its whole minute, and Teredo is another count.
+		for (let index = 0; index < CONNECTIONS_A_MINUTE; index++) expect((await knock(mac.pairing, target)).status).toBe(101);
+		expect((await knock(mac.pairing, target)).status).toBe(429);
+		for (let index = 0; index < CONNECTIONS_A_MINUTE; index++) expect((await knock(mac.pairing, teredoOf(target, index))).status).toBe(101);
+		expect((await knock(mac.pairing, teredoOf(newQuad()))).status).toBe(429);
+		// The next minute, the range is taken again.
+		vi.setSystemTime(day + MINUTE);
+		expect((await knock(mac.pairing, sixToFourOf(newQuad()))).status).toBe(101);
 	});
 });
