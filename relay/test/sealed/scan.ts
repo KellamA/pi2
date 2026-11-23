@@ -417,32 +417,51 @@ export function messageFault(text: string, from: "end" | "relay"): string | null
 }
 
 /**
- * The headers a connection may carry to the relay, by name: the WebSocket's own, the pairing's, what the system's
- * WebSocket (URLSession) adds by itself, and the address the local runtime puts on a request before the Worker sees it.
- * Anything else is a header someone added, and fails until it is named here. Each value is searched for markers too.
+ * The `User-Agent` RemoteKit's relay client sends on every connection: a fixed text that says nothing of the person,
+ * the device or its system (#678's security read, S2, which folded in #819). Pinned here to the client's own value, so
+ * that the check fails if the system's (the program's name, CFNetwork's and Darwin's versions) comes back. Null until
+ * the client that sends it is merged into this branch; until then every connection fails the check.
  */
-export const HEADERS = [
+export const USER_AGENT: string | null = null;
+
+/**
+ * The headers a connection may carry to the relay, each with what it may hold: the WebSocket's own, the pairing's,
+ * the two URLSession adds whatever the client asks (the same for everyone), the client's fixed `User-Agent`, and the
+ * address the local runtime puts on a request before the Worker sees it. Anything else fails until it is named here:
+ * `Accept-Language` among them, which would tell the relay the person's languages. Each value is searched for markers
+ * too.
+ */
+export const HEADERS: Record<string, Kind> = {
 	// The WebSocket's handshake (RFC 6455) and HTTP's own.
-	"host", "upgrade", "connection", "sec-websocket-key", "sec-websocket-version", "sec-websocket-extensions",
-	// The pairing, which takes the connection to its object (5.3); the relay checks it is a pairing's id.
-	"pi2-pairing",
-	// URLSession's own, sent whatever the client asks: the same for everyone.
-	"accept", "accept-encoding",
-	// URLSession's own too, but these say something of the person and the device: their languages, and the program's
-	// name and the system's versions. 5.3 does not list them, and RemoteKit says it sends no header but the pairing's.
-	// #819 is to stop them; then they come off this list, so that the check fails if they come back.
-	"accept-language", "user-agent",
+	host: (value) => typeof value === "string" && /^(?:127\.0\.0\.1|localhost|\[::1\])(?::\d{1,5})?$/.test(value),
+	upgrade: (value) => value === "websocket",
+	connection: (value) => value === "Upgrade",
+	"sec-websocket-key": (value) => typeof value === "string" && /^[A-Za-z0-9+/]{22}==$/.test(value),
+	"sec-websocket-version": (value) => value === "13",
+	"sec-websocket-extensions": (value) => typeof value === "string" && /^permessage-deflate(?:; ?[a-z_]+(?:=\d+)?)*$/.test(value),
+	// The pairing, which takes the connection to its object (5.3).
+	"pi2-pairing": pairing,
+	// URLSession's own, the same for everyone.
+	accept: (value) => value === "*/*",
+	"accept-encoding": (value) => typeof value === "string" && /^[a-z]+(?:, [a-z]+)*$/.test(value),
+	// The relay client's own, fixed (USER_AGENT above).
+	"user-agent": (value) => USER_AGENT !== null && value === USER_AGENT,
 	// The connecting address, which the local runtime sets as Cloudflare does (5.3: the relay knows it, and keeps none).
-	"cf-connecting-ip",
-];
+	"cf-connecting-ip": (value) => typeof value === "string" && /^[0-9a-f.:]+$/.test(value),
+};
 
 /** Why a connection's request is not one the allow-list takes; null if it is. */
 export function requestFault(event: Extract<Event, { kind: "open" }>): string | null {
 	const url = new URL(event.url);
 	if (url.pathname !== "/v1" || url.search !== "") return "an address that carries more than /v1";
 	for (const [name, value] of event.headers) {
-		if (!HEADERS.includes(name.toLowerCase())) return `a header the allow-list does not have: ${name}`;
-		if (name.toLowerCase() === "pi2-pairing" && !pairing(value)) return "a Pi2-Pairing header that is not a pairing's id";
+		const kind = HEADERS[name.toLowerCase()];
+		if (kind === undefined) return `a header the allow-list does not have: ${name}`;
+		if (!kind(value)) {
+			return name.toLowerCase() === "user-agent"
+				? "a User-Agent that is not the relay client's fixed one (USER_AGENT in scan.ts)"
+				: `a ${name} header that is not what the allow-list takes`;
+		}
 	}
 	return null;
 }

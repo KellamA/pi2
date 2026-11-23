@@ -418,6 +418,9 @@ describe("the allow-list of what the relay may see", () => {
 		expect(requestFault(open("https://relay.test/v1", [["x-device-name", "Marker phone"]]))).not.toBeNull();
 		expect(requestFault(open("https://relay.test/v1", [["pi2-pairing", "Marker phone"]]))).not.toBeNull();
 		expect(requestFault(open("https://relay.test/v1?device=Marker", []))).not.toBeNull();
+		// What the system's WebSocket sends of its own accord, which says something of the person and the device (#678's S2).
+		expect(requestFault(open("https://relay.test/v1", [["accept-language", "en-US,en;q=0.9"]]))).not.toBeNull();
+		expect(requestFault(open("https://relay.test/v1", [["user-agent", "pi2 (unknown version) CFNetwork/3896.200.61 Darwin/27.2.0"]]))).toMatch(/User-Agent/);
 	});
 
 	it("refuses a key, a field or a table the relay's objects do not keep today", () => {
