@@ -20,7 +20,7 @@ package final class EngineLink: @unchecked Sendable {
 	private let io: SocketIO
 	private var partial = Data()
 	private var nextID: Int64 = 1
-	private var waiting: [Int64: (Result<JSONValue, Refusal>) -> Void] = [:]
+	private var waiting: [Int64: (Result<JSONValue, Refused>) -> Void] = [:]
 
 	/// A `remote` event: its fields, `kind` among them.
 	package var onEvent: (JSONValue) -> Void = { _ in }
@@ -79,7 +79,7 @@ package final class EngineLink: @unchecked Sendable {
 	private func failWaiting() {
 		let answers = waiting
 		waiting = [:]
-		for answer in answers.values { answer(.failure(Refusal("the engine's connection closed"))) }
+		for answer in answers.values { answer(.failure(Refused("the engine's connection closed"))) }
 	}
 
 	private func heard(_ line: Data) {
@@ -95,7 +95,7 @@ package final class EngineLink: @unchecked Sendable {
 			onEvent(value)
 		} else if let id = value["id"]?.integerValue, let answer = waiting.removeValue(forKey: id) {
 			if let error = value["error"] {
-				answer(.failure(Refusal(error.stringValue ?? "the engine refused")))
+				answer(.failure(Refused(error.stringValue ?? "the engine refused")))
 			} else {
 				answer(.success(value["result"] ?? .null))
 			}
@@ -119,8 +119,8 @@ package final class EngineLink: @unchecked Sendable {
 	}
 
 	/// One of pi² Remote's own requests; `answer` is called on the queue with the result or the engine's refusal.
-	package func request(_ method: String, _ params: JSONValue = .object([]), answer: @escaping (Result<JSONValue, Refusal>) -> Void = { _ in }) {
-		guard !io.isClosed else { return answer(.failure(Refusal("the engine's connection closed"))) }
+	package func request(_ method: String, _ params: JSONValue = .object([]), answer: @escaping (Result<JSONValue, Refused>) -> Void = { _ in }) {
+		guard !io.isClosed else { return answer(.failure(Refused("the engine's connection closed"))) }
 		let id = nextID
 		nextID += 1
 		waiting[id] = answer

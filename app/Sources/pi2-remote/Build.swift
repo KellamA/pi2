@@ -27,11 +27,11 @@ package enum BuildKind: Sendable, Equatable, CustomStringConvertible {
 	}()
 
 	/// This process's kind, or why it is neither.
-	package static func current() -> Result<BuildKind, Refusal> {
+	package static func current() -> Result<BuildKind, Refused> {
 		guard compiledForDevelopment else { return .success(.release) }
 		// Anything that cannot be told is taken as signed: a development build that cannot read its own signature stops.
 		if signedWithDeveloperID() != false {
-			return .failure(Refusal("this development build is signed with a Developer ID, or its signature could not be read; a development build of pi² Remote runs only signed ad hoc"))
+			return .failure(Refused("this development build is signed with a Developer ID, or its signature could not be read; a development build of pi² Remote runs only signed ad hoc"))
 		}
 		return .success(.development)
 	}
@@ -54,7 +54,7 @@ package enum BuildKind: Sendable, Equatable, CustomStringConvertible {
 }
 
 /// Why pi² Remote will not run, in words for its log and its standard error. Never holds a key or a secret.
-package struct Refusal: Error, CustomStringConvertible, Equatable {
+package struct Refused: Error, CustomStringConvertible, Equatable {
 	package let description: String
 	package init(_ description: String) { self.description = description }
 }

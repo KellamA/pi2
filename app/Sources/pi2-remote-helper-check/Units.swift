@@ -124,19 +124,14 @@ enum Units {
 	}
 
 	static func homeTag() {
-		Check.section("the Bonjour tag (5.4)")
+		Check.section("the Bonjour tag (5.4): RemoteKit's, as pi² Remote advertises it")
 		let key = try! Curve25519.KeyAgreement.PublicKey(rawRepresentation: Data(repeating: 7, count: 32))
 		let pairing = PairingID(Base64URL.encode(Data(repeating: 1, count: 16)))!
 		let day = Date(timeIntervalSince1970: 1_795_000_000)
-		let tag = HomeTag.tag(channelKey: key, pairing: pairing, date: day)
-		Check.expect(HomeTag.day(day) == "2026-11-18", "the tag's date is the UTC day", HomeTag.day(day))
-		var material = Data("pi2-tag".utf8) + Data([0]) + Data(repeating: 7, count: 32) + Data([0]) + Data(pairing.text.utf8)
-		let expected = HMAC<SHA256>.authenticationCode(for: Data("2026-11-18".utf8), using: SymmetricKey(data: SHA256.hash(data: material)))
-		material = Data()
-		Check.expect(tag == Data(expected).prefix(8).map { String(format: "%02x", $0) }.joined() && tag.count == 16, "the tag is 8 bytes of HMAC-SHA256 of the day, keyed from the channel key and the pairing", tag)
-		Check.expect(tag != HomeTag.tag(channelKey: key, pairing: pairing, date: day.addingTimeInterval(86_400)), "and changes each day")
-		Check.expect(!tag.contains(pairing.text) && !tag.contains(Base64URL.encode(key.rawRepresentation)), "and says neither the pairing nor the key")
-		Check.expect(HomeTag.txtRecord(tag: tag) == Data([3]) + Data("v=2".utf8) + Data([18]) + Data("t=\(tag)".utf8), "the TXT record is v=2 and t=<tag>")
+		let tag = HomeTag.tag(macChannelKey: key, pairing: pairing, date: day)
+		Check.expect(tag == "c6b71440d4d049db", "the tag of 2026-11-18 is remotekit.md's test value", tag)
+		Check.expect(HomeTag.recognises(tag, macChannelKey: key, pairing: pairing, now: day), "and a phone recognises it")
+		Check.expect(HomeTXT.record(tag: tag) == Data([3]) + Data("v=2".utf8) + Data([18]) + Data("t=\(tag)".utf8), "the TXT record is v=2 and t=<tag>")
 	}
 
 	static func dataFolder() {
@@ -185,7 +180,7 @@ enum Units {
 		}
 
 		func signingKey(blob: Data) throws -> SigningKey {
-			guard usable, blob.starts(with: Data("sealed-by-enclave".utf8)) else { throw Refusal("stand-in: not usable") }
+			guard usable, blob.starts(with: Data("sealed-by-enclave".utf8)) else { throw Refused("stand-in: not usable") }
 			return .software(try P256.Signing.PrivateKey(rawRepresentation: blob.dropFirst(17)))
 		}
 
@@ -196,7 +191,7 @@ enum Units {
 		}
 
 		func agreementKey(blob: Data) throws -> RecordKey {
-			guard usable, blob.starts(with: Data("sealed-by-enclave".utf8)) else { throw Refusal("stand-in: not usable") }
+			guard usable, blob.starts(with: Data("sealed-by-enclave".utf8)) else { throw Refused("stand-in: not usable") }
 			return .software(try P256.KeyAgreement.PrivateKey(rawRepresentation: blob.dropFirst(17)))
 		}
 	}

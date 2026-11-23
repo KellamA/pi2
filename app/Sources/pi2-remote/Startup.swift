@@ -30,21 +30,21 @@ package enum Startup {
 	}
 
 	/// Every check, in order; nothing here reads a key.
-	package static func verify(kind: BuildKind, descriptor: Int32 = controlDescriptor) -> Result<Verified, Refusal> {
+	package static func verify(kind: BuildKind, descriptor: Int32 = controlDescriptor) -> Result<Verified, Refused> {
 		do {
 			let parent = try checkControlSocket(descriptor)
 			let bundle = AppBundle.containing(executable: AppBundle.ownExecutable())
 			let folder = try DataFolder.resolve(kind: kind, parent: parent, bundle: bundle)
 			try checkEnginePID(folder: folder.url, parent: parent)
 			if kind == .release {
-				guard let bundle else { throw Refusal("pi² Remote is not inside an app's bundle (Contents/Helpers/pi² Remote.app)") }
+				guard let bundle else { throw Refused("pi² Remote is not inside an app's bundle (Contents/Helpers/pi² Remote.app)") }
 				try checkParentCode(descriptor: descriptor, parent: parent, node: bundle.node)
 			}
 			return .success(Verified(engine: parent, folder: folder))
-		} catch let refusal as Refusal {
+		} catch let refusal as Refused {
 			return .failure(refusal)
 		} catch {
-			return .failure(Refusal("the start-up checks failed: \(error)"))
+			return .failure(Refused("the start-up checks failed: \(error)"))
 		}
 	}
 
@@ -57,12 +57,12 @@ package enum Startup {
 	/// relay, switches, a pairing (or null), a list of devices and a minimum build. Read a byte at a time, so that nothing
 	/// after it is taken from the control connection. Anything else, nothing within `seconds`, or the connection
 	/// closing, is a refusal.
-	package static func firstLine(_ descriptor: Int32 = controlDescriptor, within seconds: TimeInterval = startWithin) -> Result<JSONValue, Refusal> {
+	package static func firstLine(_ descriptor: Int32 = controlDescriptor, within seconds: TimeInterval = startWithin) -> Result<JSONValue, Refused> {
 		let deadline = Date().addingTimeInterval(seconds)
 		var line = [UInt8]()
 		while true {
 			let left = deadline.timeIntervalSinceNow
-			guard left > 0 else { return .failure(Refusal("the engine's start did not come within \(Int(seconds)) seconds: pi² Remote was not started by pi²'s engine")) }
+			guard left > 0 else { return .failure(Refused("the engine's start did not come within \(Int(seconds)) seconds: pi² Remote was not started by pi²'s engine")) }
 			var poller = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
 			let ready = poll(&poller, 1, Int32(max(1, left * 1000)))
 			if ready < 0, errno == EINTR { continue }
@@ -70,15 +70,15 @@ package enum Startup {
 			var byte: UInt8 = 0
 			let count = read(descriptor, &byte, 1)
 			if count < 0, errno == EINTR || errno == EAGAIN { continue }
-			guard count == 1 else { return .failure(Refusal("the control connection closed before the engine's start")) }
+			guard count == 1 else { return .failure(Refused("the control connection closed before the engine's start")) }
 			if byte == 0x0A { break }
 			line.append(byte)
-			guard line.count <= startMaxLength else { return .failure(Refusal("the first line on descriptor \(descriptor) is too long to be the engine's start")) }
+			guard line.count <= startMaxLength else { return .failure(Refused("the first line on descriptor \(descriptor) is too long to be the engine's start")) }
 		}
 		guard let value = try? JSON.parse(line), value["event"]?.stringValue == "remote", value["kind"]?.stringValue == "start",
 		      value["relay"]?.stringValue != nil, case .object? = value["switches"], let pairing = value["pairing"], pairing.isNull || pairing.stringValue != nil,
 		      case .array? = value["devices"], value["minimumBuild"]?.stringValue != nil
-		else { return .failure(Refusal("the first line on descriptor \(descriptor) is not the engine's start: pi² Remote was not started by pi²'s engine")) }
+		else { return .failure(Refused("the first line on descriptor \(descriptor) is not the engine's start: pi² Remote was not started by pi²'s engine")) }
 		return .success(value)
 	}
 
@@ -86,25 +86,25 @@ package enum Startup {
 	/// Returns the parent's process id.
 	package static func checkControlSocket(_ descriptor: Int32) throws -> pid_t {
 		var info = stat()
-		guard fstat(descriptor, &info) == 0 else { throw Refusal("descriptor \(descriptor) is not open: pi² Remote was not started by pi²'s engine") }
-		guard (info.st_mode & S_IFMT) == S_IFSOCK else { throw Refusal("descriptor \(descriptor) is not a socket: pi² Remote was not started by pi²'s engine") }
+		guard fstat(descriptor, &info) == 0 else { throw Refused("descriptor \(descriptor) is not open: pi² Remote was not started by pi²'s engine") }
+		guard (info.st_mode & S_IFMT) == S_IFSOCK else { throw Refused("descriptor \(descriptor) is not a socket: pi² Remote was not started by pi²'s engine") }
 		var address = sockaddr_storage()
 		var length = socklen_t(MemoryLayout<sockaddr_storage>.size)
 		let named = withUnsafeMutablePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(descriptor, $0, &length) } }
-		guard named == 0, Int32(address.ss_family) == AF_UNIX else { throw Refusal("descriptor \(descriptor) is not a Unix socket") }
+		guard named == 0, Int32(address.ss_family) == AF_UNIX else { throw Refused("descriptor \(descriptor) is not a Unix socket") }
 		var type: Int32 = 0
 		var size = socklen_t(MemoryLayout<Int32>.size)
-		guard getsockopt(descriptor, SOL_SOCKET, SO_TYPE, &type, &size) == 0, type == SOCK_STREAM else { throw Refusal("descriptor \(descriptor) is not a stream socket") }
+		guard getsockopt(descriptor, SOL_SOCKET, SO_TYPE, &type, &size) == 0, type == SOCK_STREAM else { throw Refused("descriptor \(descriptor) is not a stream socket") }
 		var peer: pid_t = 0
 		size = socklen_t(MemoryLayout<pid_t>.size)
-		guard getsockopt(descriptor, SOL_LOCAL, LOCAL_PEERPID, &peer, &size) == 0 else { throw Refusal("descriptor \(descriptor) cannot say which process is at its other end") }
+		guard getsockopt(descriptor, SOL_LOCAL, LOCAL_PEERPID, &peer, &size) == 0 else { throw Refused("descriptor \(descriptor) cannot say which process is at its other end") }
 		let parent = getppid()
-		guard parent > 1 else { throw Refusal("pi² Remote has no parent: the engine that started it is gone") }
-		guard peer == parent else { throw Refusal("the other end of descriptor \(descriptor) is process \(peer), not the process that started pi² Remote (\(parent))") }
+		guard parent > 1 else { throw Refused("pi² Remote has no parent: the engine that started it is gone") }
+		guard peer == parent else { throw Refused("the other end of descriptor \(descriptor) is process \(peer), not the process that started pi² Remote (\(parent))") }
 		var credentials = xucred()
 		size = socklen_t(MemoryLayout<xucred>.size)
 		guard getsockopt(descriptor, SOL_LOCAL, LOCAL_PEERCRED, &credentials, &size) == 0, credentials.cr_uid == getuid() else {
-			throw Refusal("the other end of descriptor \(descriptor) is not run by this user")
+			throw Refused("the other end of descriptor \(descriptor) is not run by this user")
 		}
 		return parent
 	}
@@ -113,14 +113,14 @@ package enum Startup {
 	package static func checkEnginePID(folder: URL, parent: pid_t) throws {
 		let path = folder.appendingPathComponent("engine.pid").path
 		let file = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-		guard file >= 0 else { throw Refusal("the data folder has no engine.pid to check the engine against") }
+		guard file >= 0 else { throw Refused("the data folder has no engine.pid to check the engine against") }
 		defer { close(file) }
 		var bytes = [UInt8](repeating: 0, count: 32)
 		let count = read(file, &bytes, bytes.count)
-		guard count > 0 else { throw Refusal("engine.pid could not be read") }
+		guard count > 0 else { throw Refused("engine.pid could not be read") }
 		let text = String(decoding: bytes[0 ..< count], as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
 		guard let named = pid_t(text), named == parent else {
-			throw Refusal("the process that started pi² Remote (\(parent)) is not the engine engine.pid names")
+			throw Refused("the process that started pi² Remote (\(parent)) is not the engine engine.pid names")
 		}
 	}
 
@@ -129,15 +129,15 @@ package enum Startup {
 	/// another process after the engine ended is not taken for it).
 	package static func checkParentCode(descriptor: Int32, parent: pid_t, node: URL) throws {
 		var path = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
-		guard proc_pidpath(parent, &path, UInt32(path.count)) > 0 else { throw Refusal("the engine's executable could not be named") }
+		guard proc_pidpath(parent, &path, UInt32(path.count)) > 0 else { throw Refused("the engine's executable could not be named") }
 		let running = URL(fileURLWithPath: text(path)).resolvingSymlinksInPath().standardizedFileURL.path
 		guard running == node.resolvingSymlinksInPath().standardizedFileURL.path else {
-			throw Refusal("the process that started pi² Remote is not the Node in this app's bundle")
+			throw Refused("the process that started pi² Remote is not the Node in this app's bundle")
 		}
 		var token = audit_token_t()
 		var size = socklen_t(MemoryLayout<audit_token_t>.size)
-		guard getsockopt(descriptor, SOL_LOCAL, LOCAL_PEERTOKEN, &token, &size) == 0 else { throw Refusal("the engine's connection has no audit token") }
-		guard Int32(bitPattern: token.val.5) == parent else { throw Refusal("the engine's connection names another process") }
+		guard getsockopt(descriptor, SOL_LOCAL, LOCAL_PEERTOKEN, &token, &size) == 0 else { throw Refused("the engine's connection has no audit token") }
+		guard Int32(bitPattern: token.val.5) == parent else { throw Refused("the engine's connection names another process") }
 		switch codeMatches(token: token, executable: node) {
 		case .success: return
 		case let .failure(refusal): throw refusal
@@ -145,23 +145,23 @@ package enum Startup {
 	}
 
 	/// Whether the process with `token` satisfies the designated requirement of the code at `executable`.
-	package static func codeMatches(token: audit_token_t, executable: URL) -> Result<Void, Refusal> {
+	package static func codeMatches(token: audit_token_t, executable: URL) -> Result<Void, Refused> {
 		var token = token
 		var staticCode: SecStaticCode?
 		guard SecStaticCodeCreateWithPath(executable as CFURL, [], &staticCode) == errSecSuccess, let staticCode else {
-			return .failure(Refusal("the bundle's Node could not be read"))
+			return .failure(Refused("the bundle's Node could not be read"))
 		}
 		var requirement: SecRequirement?
 		guard SecCodeCopyDesignatedRequirement(staticCode, [], &requirement) == errSecSuccess, let requirement else {
-			return .failure(Refusal("the bundle's Node has no requirement to check against"))
+			return .failure(Refused("the bundle's Node has no requirement to check against"))
 		}
 		let attributes = [kSecGuestAttributeAudit: withUnsafeBytes(of: &token) { Data($0) }] as CFDictionary
 		var guest: SecCode?
 		guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &guest) == errSecSuccess, let guest else {
-			return .failure(Refusal("the engine's process could not be found"))
+			return .failure(Refused("the engine's process could not be found"))
 		}
 		guard SecCodeCheckValidity(guest, [], requirement) == errSecSuccess else {
-			return .failure(Refusal("the engine's process is not the Node in this app's bundle"))
+			return .failure(Refused("the engine's process is not the Node in this app's bundle"))
 		}
 		return .success(())
 	}

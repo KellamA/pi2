@@ -32,7 +32,7 @@ struct KeychainItems: SecretItems {
 		var result: CFTypeRef?
 		let status = SecItemCopyMatching(query as CFDictionary, &result)
 		if status == errSecItemNotFound { return nil }
-		guard status == errSecSuccess, let data = result as? Data else { throw Refusal("the Keychain's \(account) item could not be read (status \(status))") }
+		guard status == errSecSuccess, let data = result as? Data else { throw Refused("the Keychain's \(account) item could not be read (status \(status))") }
 		return data
 	}
 
@@ -42,19 +42,19 @@ struct KeychainItems: SecretItems {
 		item[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
 		let added = SecItemAdd(item as CFDictionary, nil)
 		if added == errSecDuplicateItem { return false }
-		guard added == errSecSuccess else { throw Refusal("the Keychain's \(account) item could not be added (status \(added))") }
+		guard added == errSecSuccess else { throw Refused("the Keychain's \(account) item could not be added (status \(added))") }
 		return true
 	}
 
 	func write(_ account: String, _ data: Data) throws {
 		let update = SecItemUpdate(base(account) as CFDictionary, [kSecValueData: data] as CFDictionary)
 		if update == errSecSuccess { return }
-		guard update == errSecItemNotFound else { throw Refusal("the Keychain's \(account) item could not be written (status \(update))") }
+		guard update == errSecItemNotFound else { throw Refused("the Keychain's \(account) item could not be written (status \(update))") }
 		var item = base(account)
 		item[kSecValueData] = data
 		item[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
 		let added = SecItemAdd(item as CFDictionary, nil)
-		guard added == errSecSuccess else { throw Refusal("the Keychain's \(account) item could not be added (status \(added))") }
+		guard added == errSecSuccess else { throw Refused("the Keychain's \(account) item could not be added (status \(added))") }
 	}
 }
 
@@ -67,7 +67,7 @@ struct SecureEnclaveKeys: Enclave {
 	private func access() throws -> SecAccessControl {
 		var error: Unmanaged<CFError>?
 		guard let control = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly, .privateKeyUsage, &error) else {
-			throw Refusal("the Secure Enclave's access could not be set")
+			throw Refused("the Secure Enclave's access could not be set")
 		}
 		return control
 	}
@@ -81,7 +81,7 @@ struct SecureEnclaveKeys: Enclave {
 		do {
 			return .enclave(try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: blob))
 		} catch {
-			throw Refusal("a key in the Secure Enclave cannot be used on this Mac")
+			throw Refused("a key in the Secure Enclave cannot be used on this Mac")
 		}
 	}
 
@@ -94,7 +94,7 @@ struct SecureEnclaveKeys: Enclave {
 		do {
 			return .enclave(try SecureEnclave.P256.KeyAgreement.PrivateKey(dataRepresentation: blob))
 		} catch {
-			throw Refusal("a key in the Secure Enclave cannot be used on this Mac")
+			throw Refused("a key in the Secure Enclave cannot be used on this Mac")
 		}
 	}
 }

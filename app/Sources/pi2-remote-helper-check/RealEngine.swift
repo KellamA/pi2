@@ -33,17 +33,17 @@ enum RealEngine {
 		}
 
 		/// A request and its answer: the result, or the engine's error as a failure.
-		func call(_ method: String, _ params: JSONValue = .object([]), within seconds: Double = 120) -> Result<JSONValue, Refusal> {
+		func call(_ method: String, _ params: JSONValue = .object([]), within seconds: Double = 120) -> Result<JSONValue, Refused> {
 			let id = next
 			next += 1
 			lines.write(JSON.write(.object([("id", .integer(Int64(id))), ("method", .string(method)), ("params", params)])))
 			let deadline = Date().addingTimeInterval(seconds)
 			while let line = lines.next(within: max(0, deadline.timeIntervalSinceNow)) {
 				guard let value = try? JSON.parse(line), value["id"]?.integerValue == Int64(id) else { continue }
-				if let error = value["error"] { return .failure(Refusal(error.stringValue ?? JSON.text(error))) }
+				if let error = value["error"] { return .failure(Refused(error.stringValue ?? JSON.text(error))) }
 				return .success(value["result"] ?? .null)
 			}
-			return .failure(Refusal("no answer to \(method)"))
+			return .failure(Refused("no answer to \(method)"))
 		}
 	}
 
@@ -150,7 +150,7 @@ enum RealEngine {
 			return Check.expect(false, "the phone's pairing handshake on the home path")
 		}
 		let digits = PairingSecrets.digits(secret: payload.secret, binding: paired.binding)
-		var confirmed: Result<JSONValue, Refusal> = .failure(Refusal("not tried"))
+		var confirmed: Result<JSONValue, Refused> = .failure(Refused("not tried"))
 		let confirmStart = Date()
 		repeat {
 			confirmed = app.call("devices.pairConfirm", .object([("digits", .string(digits))]))

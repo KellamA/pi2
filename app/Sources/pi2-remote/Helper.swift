@@ -65,7 +65,7 @@ public enum RemoteHelper {
 		withExtendedLifetime(remote) { dispatchMain() }
 	}
 
-	private static func refuse(_ refusal: Refusal) -> Never {
+	private static func refuse(_ refusal: Refused) -> Never {
 		log("not started: \(refusal)")
 		exit(refusedAtStart)
 	}

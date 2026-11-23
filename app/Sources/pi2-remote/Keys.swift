@@ -130,9 +130,9 @@ package struct ListedDevice: Sendable {
 
 	package static func read(list data: Data) throws -> [ListedDevice] {
 		let value = try JSON.parse(data)
-		guard value["v"]?.integerValue == 1, case let .array(items)? = value["devices"] else { throw Refusal("the list of devices is not one pi² Remote wrote") }
+		guard value["v"]?.integerValue == 1, case let .array(items)? = value["devices"] else { throw Refused("the list of devices is not one pi² Remote wrote") }
 		return try items.map { item in
-			guard let device = ListedDevice(json: item) else { throw Refusal("a device in the list is not one pi² Remote wrote") }
+			guard let device = ListedDevice(json: item) else { throw Refused("a device in the list is not one pi² Remote wrote") }
 			return device
 		}
 	}
@@ -158,11 +158,11 @@ package enum KeyVaults {
 			#if PI2_DEVELOPMENT
 			return KeyFiles(folder: folder)
 			#else
-			throw Refusal("a release build keeps no keys in files")
+			throw Refused("a release build keeps no keys in files")
 			#endif
 		case .release:
 			#if PI2_DEVELOPMENT
-			throw Refusal("a development build never uses the Keychain or the Secure Enclave")
+			throw Refused("a development build never uses the Keychain or the Secure Enclave")
 			#else
 			return KeychainVault(items: KeychainItems(), enclave: SecureEnclaveKeys())
 			#endif
@@ -217,7 +217,7 @@ package struct KeychainVault: KeyVault {
 		guard let data = try items.read(account) else { return nil }
 		guard let value = try? JSON.parse(data), let place = value["in"]?.stringValue, let text = value["key"]?.stringValue,
 		      let key = Base64URL.decode(text), place == "enclave" || place == "software"
-		else { throw Refusal("the Keychain's \(account) key is not one pi² Remote wrote") }
+		else { throw Refused("the Keychain's \(account) key is not one pi² Remote wrote") }
 		return (place == "enclave", key)
 	}
 
@@ -232,7 +232,7 @@ package struct KeychainVault: KeyVault {
 		if let (inEnclave, data) = try stored(account) { return try load(inEnclave, data) }
 		let made = try make()
 		if try items.add(account, encoded(made.inEnclave, made.data)) { return made.key }
-		guard let (inEnclave, data) = try stored(account) else { throw Refusal("the Keychain's \(account) key was added by another pi² Remote, and cannot be read") }
+		guard let (inEnclave, data) = try stored(account) else { throw Refused("the Keychain's \(account) key was added by another pi² Remote, and cannot be read") }
 		return try load(inEnclave, data)
 	}
 
@@ -264,7 +264,7 @@ package struct KeychainVault: KeyVault {
 
 	private func channel() throws -> Curve25519.KeyAgreement.PrivateKey {
 		try key("channel", load: { inEnclave, data in
-			guard !inEnclave else { throw Refusal("the Keychain's channel key is not one pi² Remote wrote") }
+			guard !inEnclave else { throw Refused("the Keychain's channel key is not one pi² Remote wrote") }
 			return try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: data)
 		}, make: {
 			let key = Curve25519.KeyAgreement.PrivateKey()
@@ -299,13 +299,13 @@ package struct KeyFiles: KeyVault {
 	private func stored() throws -> [(String, JSONValue)]? {
 		guard let data = try PrivateFile.read(keysFile) else { return nil }
 		guard let value = try? JSON.parse(data), value["v"]?.integerValue == 1, case let .object(members) = value else {
-			throw Refusal("remote-keys.json is not one pi² Remote wrote")
+			throw Refused("remote-keys.json is not one pi² Remote wrote")
 		}
 		return members
 	}
 
 	private static func raw(_ members: [(String, JSONValue)], _ name: String) throws -> Data {
-		guard let text = JSONValue.object(members)[name]?.stringValue, let bytes = Base64URL.decode(text) else { throw Refusal("remote-keys.json has no \(name) key") }
+		guard let text = JSONValue.object(members)[name]?.stringValue, let bytes = Base64URL.decode(text) else { throw Refused("remote-keys.json has no \(name) key") }
 		return bytes
 	}
 
@@ -328,7 +328,7 @@ package struct KeyFiles: KeyVault {
 	}
 
 	package func relayKey(for address: String) throws -> SigningKey {
-		guard var members = try stored() else { throw Refusal("remote-keys.json does not exist yet") }
+		guard var members = try stored() else { throw Refused("remote-keys.json does not exist yet") }
 		var relays: [(String, JSONValue)] = []
 		if case let .object(given)? = JSONValue.object(members)["relays"] { relays = given }
 		if let text = relays.first(where: { $0.0.utf8.elementsEqual(address.utf8) })?.1.stringValue, let bytes = Base64URL.decode(text) {
@@ -360,16 +360,16 @@ package enum PrivateFile {
 		let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
 		if descriptor < 0 {
 			if errno == ENOENT { return nil }
-			throw Refusal("\(url.lastPathComponent) could not be opened (\(String(cString: strerror(errno))))")
+			throw Refused("\(url.lastPathComponent) could not be opened (\(String(cString: strerror(errno))))")
 		}
 		defer { close(descriptor) }
 		var info = stat()
-		guard fstat(descriptor, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { throw Refusal("\(url.lastPathComponent) is not a file") }
-		guard info.st_uid == getuid(), info.st_mode & 0o077 == 0 else { throw Refusal("\(url.lastPathComponent) can be read by others, or is not this user's") }
-		guard info.st_size <= 1_000_000 else { throw Refusal("\(url.lastPathComponent) is too long") }
+		guard fstat(descriptor, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { throw Refused("\(url.lastPathComponent) is not a file") }
+		guard info.st_uid == getuid(), info.st_mode & 0o077 == 0 else { throw Refused("\(url.lastPathComponent) can be read by others, or is not this user's") }
+		guard info.st_size <= 1_000_000 else { throw Refused("\(url.lastPathComponent) is too long") }
 		var data = Data(count: Int(info.st_size))
 		let count = data.withUnsafeMutableBytes { Darwin.read(descriptor, $0.baseAddress, $0.count) }
-		guard count == Int(info.st_size) else { throw Refusal("\(url.lastPathComponent) could not be read") }
+		guard count == Int(info.st_size) else { throw Refused("\(url.lastPathComponent) could not be read") }
 		return data
 	}
 
@@ -379,20 +379,20 @@ package enum PrivateFile {
 		defer { unlink(temporary.path) }
 		if link(temporary.path, url.path) == 0 { return true }
 		if errno == EEXIST { return false }
-		throw Refusal("\(url.lastPathComponent) could not be written (\(String(cString: strerror(errno))))")
+		throw Refused("\(url.lastPathComponent) could not be written (\(String(cString: strerror(errno))))")
 	}
 
 	/// `data` in a new file beside `url`, 0600, synced.
 	private static func written(beside url: URL, _ data: Data) throws -> URL {
 		let temporary = url.deletingLastPathComponent().appendingPathComponent(".\(url.lastPathComponent).\(getpid()).\(UInt32.random(in: 0 ... .max))")
 		let descriptor = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
-		guard descriptor >= 0 else { throw Refusal("\(url.lastPathComponent) could not be written (\(String(cString: strerror(errno))))") }
+		guard descriptor >= 0 else { throw Refused("\(url.lastPathComponent) could not be written (\(String(cString: strerror(errno))))") }
 		let count = data.withUnsafeBytes { Darwin.write(descriptor, $0.baseAddress, $0.count) }
 		let synced = fsync(descriptor) == 0
 		close(descriptor)
 		guard count == data.count, synced else {
 			unlink(temporary.path)
-			throw Refusal("\(url.lastPathComponent) could not be written")
+			throw Refused("\(url.lastPathComponent) could not be written")
 		}
 		return temporary
 	}
@@ -400,13 +400,13 @@ package enum PrivateFile {
 	package static func write(_ url: URL, _ data: Data) throws {
 		let temporary = url.deletingLastPathComponent().appendingPathComponent(".\(url.lastPathComponent).\(getpid()).\(UInt32.random(in: 0 ... .max))")
 		let descriptor = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
-		guard descriptor >= 0 else { throw Refusal("\(url.lastPathComponent) could not be written (\(String(cString: strerror(errno))))") }
+		guard descriptor >= 0 else { throw Refused("\(url.lastPathComponent) could not be written (\(String(cString: strerror(errno))))") }
 		let written = data.withUnsafeBytes { Darwin.write(descriptor, $0.baseAddress, $0.count) }
 		let synced = fsync(descriptor) == 0
 		close(descriptor)
 		guard written == data.count, synced, rename(temporary.path, url.path) == 0 else {
 			unlink(temporary.path)
-			throw Refusal("\(url.lastPathComponent) could not be written")
+			throw Refused("\(url.lastPathComponent) could not be written")
 		}
 	}
 }

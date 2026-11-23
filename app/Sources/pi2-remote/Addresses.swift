@@ -374,7 +374,7 @@ package final class Listener: @unchecked Sendable {
 		self.queue = queue
 		let family = loopbackOnly ? AF_INET : AF_INET6
 		descriptor = socket(family, SOCK_STREAM, 0)
-		guard descriptor >= 0 else { throw Refusal("the home listener could not be made") }
+		guard descriptor >= 0 else { throw Refused("the home listener could not be made") }
 		_ = fcntl(descriptor, F_SETFD, FD_CLOEXEC)
 		var bound: Int32
 		if loopbackOnly {
@@ -396,7 +396,7 @@ package final class Listener: @unchecked Sendable {
 		}
 		guard bound == 0, listen(descriptor, 16) == 0 else {
 			close(descriptor)
-			throw Refusal("the home listener could not listen (\(String(cString: strerror(errno))))")
+			throw Refused("the home listener could not listen (\(String(cString: strerror(errno))))")
 		}
 		var address = sockaddr_storage()
 		var length = socklen_t(MemoryLayout<sockaddr_storage>.size)

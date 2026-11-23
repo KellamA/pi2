@@ -263,11 +263,11 @@ package final class Remote: @unchecked Sendable {
 			advertised = nil
 			return
 		}
-		let tag = HomeTag.tag(channelKey: keys.channel.publicKey, pairing: pairing, date: Date())
+		let tag = HomeTag.tag(macChannelKey: keys.channel.publicKey, pairing: pairing, date: Date())
 		let key = "\(listener.port) \(tag)"
 		guard key != advertised else { return }
 		advertised = key
-		advertiser.advertise(port: listener.port, txt: HomeTag.txtRecord(tag: tag))
+		advertiser.advertise(port: listener.port, txt: HomeTXT.record(tag: tag))
 	}
 
 	private func accepted(_ descriptor: Int32, from peer: IPAddress) {

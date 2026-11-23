@@ -2,41 +2,10 @@ import CryptoKit
 import Foundation
 import RemoteKit
 
-/// The tag in the home path's Bonjour TXT record (docs/iphone.md 5.4): HMAC-SHA256, keyed with a key of the pairing, of
-/// the day's date, cut to 8 bytes, so that a paired phone recognises its Mac and nobody else learns the pairing's id,
-/// which would follow the Mac from network to network and name it at the relay.
-///
-/// The key is SHA-256 of `pi2-tag`, a zero byte, the Mac's channel key's 32 raw public bytes, a zero byte and the
-/// pairing's id as text: the phone has both from pairing, and the relay, which knows the pairing's id, never sees the
-/// channel key. The date is the UTC day, `YYYY-MM-DD`; the tag is written as 16 lower-case hexadecimal digits. A phone
-/// takes the tags of the day before, the day and the day after, so that clocks a little apart still meet.
-///
-/// RemoteKit does not hold this yet: it is written here first, and belongs in RemoteKit beside the join token, where the
-/// phone (P12) can share it (#675's report).
-package enum HomeTag {
-	package static func key(channelKey: Curve25519.KeyAgreement.PublicKey, pairing: PairingID) -> SymmetricKey {
-		var material = Data("pi2-tag".utf8)
-		material.append(0)
-		material.append(channelKey.rawRepresentation)
-		material.append(0)
-		material.append(contentsOf: pairing.text.utf8)
-		return SymmetricKey(data: SHA256.hash(data: material))
-	}
-
-	package static func day(_ date: Date) -> String {
-		var calendar = Calendar(identifier: .gregorian)
-		calendar.timeZone = .gmt
-		let parts = calendar.dateComponents([.year, .month, .day], from: date)
-		return String(format: "%04d-%02d-%02d", parts.year!, parts.month!, parts.day!)
-	}
-
-	package static func tag(channelKey: Curve25519.KeyAgreement.PublicKey, pairing: PairingID, date: Date) -> String {
-		let mac = HMAC<SHA256>.authenticationCode(for: Data(day(date).utf8), using: key(channelKey: channelKey, pairing: pairing))
-		return Data(mac).prefix(8).map { String(format: "%02x", $0) }.joined()
-	}
-
-	/// The TXT record's bytes: `v=2` and `t=<tag>`, each a length byte and its text.
-	package static func txtRecord(tag: String) -> Data {
+/// The home path's Bonjour TXT record: `v=2` and `t=<tag>`, the tag RemoteKit's (`HomeTag`, remotekit.md "The home
+/// tag"), each a length byte and its text.
+package enum HomeTXT {
+	package static func record(tag: String) -> Data {
 		var record = Data()
 		for entry in ["v=2", "t=\(tag)"] {
 			record.append(UInt8(entry.utf8.count))

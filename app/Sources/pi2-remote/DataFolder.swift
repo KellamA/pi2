@@ -16,7 +16,7 @@ package struct DataFolder: Sendable, Equatable {
 	package let url: URL
 
 	package static func usual() throws -> URL {
-		guard let entry = getpwuid(getuid()), let home = entry.pointee.pw_dir else { throw Refusal("this user has no home folder") }
+		guard let entry = getpwuid(getuid()), let home = entry.pointee.pw_dir else { throw Refused("this user has no home folder") }
 		return URL(fileURLWithPath: String(cString: home), isDirectory: true).appendingPathComponent("Library/Application Support/pi2", isDirectory: true)
 	}
 
@@ -40,9 +40,9 @@ package struct DataFolder: Sendable, Equatable {
 			} else if let suffix = bundle.map({ developmentSuffix(bundleID: $0.bundleID) }) {
 				folder = usual.deletingLastPathComponent().appendingPathComponent("pi2-\(suffix)", isDirectory: true)
 			} else {
-				throw Refusal("the engine names no data folder (PI2_HOME), and pi² Remote is in no app's bundle to name one")
+				throw Refused("the engine names no data folder (PI2_HOME), and pi² Remote is in no app's bundle to name one")
 			}
-			if sameFolder(folder, usual) { throw Refusal("a development build of pi² Remote never uses the usual data folder, which is the installed pi²'s") }
+			if sameFolder(folder, usual) { throw Refused("a development build of pi² Remote never uses the usual data folder, which is the installed pi²'s") }
 		}
 		return folder
 	}
@@ -66,10 +66,10 @@ package struct DataFolder: Sendable, Equatable {
 	/// The folder is a real folder (not a link), this user's, and writable by nobody else.
 	package static func checkOwned(_ folder: URL) throws {
 		var info = stat()
-		guard lstat(folder.path, &info) == 0 else { throw Refusal("the data folder does not exist") }
-		guard (info.st_mode & S_IFMT) == S_IFDIR else { throw Refusal("the data folder is not a folder (a link is not taken)") }
-		guard info.st_uid == getuid() else { throw Refusal("the data folder is not this user's") }
-		guard info.st_mode & (S_IWGRP | S_IWOTH) == 0 else { throw Refusal("the data folder can be written by other users") }
+		guard lstat(folder.path, &info) == 0 else { throw Refused("the data folder does not exist") }
+		guard (info.st_mode & S_IFMT) == S_IFDIR else { throw Refused("the data folder is not a folder (a link is not taken)") }
+		guard info.st_uid == getuid() else { throw Refused("the data folder is not this user's") }
+		guard info.st_mode & (S_IWGRP | S_IWOTH) == 0 else { throw Refused("the data folder can be written by other users") }
 	}
 }
 
