@@ -97,7 +97,7 @@ enum UsageSample {
         }
         return UsageReading(
             usage: decode(UsageSummary.self, usage),
-            providers: UsageLimits.providers(decode(JSONValue.self, limits)),
+            providers: PlanLimits(decode(JSONValue.self, limits))?.providers ?? [],
             models: decode([ModelInfo].self, models) ?? [],
             agents: decode([AgentProfile].self, agents) ?? [],
             projects: decode([ProjectRow].self, projects) ?? []

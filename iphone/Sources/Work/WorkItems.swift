@@ -3,9 +3,11 @@ import Foundation
 import PiModels
 
 // What the Work screens read of the engine's state: the `work` event's list kept by pi², or the `github` event's issues
-// and pull requests for a project with a repository attached (docs/projects.md, 3.11 and 4.3). The Mac reads the same
-// events into `WorkPiece`, `GitHubPull` and `GitHubWork` (app/Sources/pi2/ProjectWorkTab.swift, ProjectWorkGitHub.swift),
-// which live in the Mac app's target; these read the same fields the same way, from the same `JSONValue`.
+// and pull requests for a project with a repository attached (docs/projects.md, 3.11 and 4.3). The readings themselves
+// are shared in `PiModels` (Work.swift, GitHubWork.swift, #828): the limit a start past the project's limit carries is
+// read by the shared `WorkLimit` below. `WorkItem`, `WorkPull`, `WorkUnknownWrite` and their container `WorkListing`
+// stay the phone's own, because they read a missing time as the distant past where the shared readings take 0 ms since
+// 1970 — a difference only a malformed event could show, kept as it is until one reading is chosen for both (#828).
 
 /// One piece of work, or one issue of an attached repository, as the Mac's `WorkPiece` reads it.
 struct WorkItem: Identifiable, Equatable {
@@ -377,38 +379,13 @@ enum WorkRowEntry: Identifiable, Equatable {
     }
 }
 
-/// What the project's limit was when the engine refused to start an agent (docs/projects.md, 8.3), with the id of that
-/// reading for confirming the one start it refused: the Mac's `WorkLimit`, from the refusal's `data.limit`.
-struct WorkLimitReading: Equatable {
-    let id: String
-    /// "planShare" or "dailySpend".
-    let kind: String
-    /// What was over, as the engine read it.
-    let reason: String
-
-    init?(_ value: JSONValue?) {
-        guard let id = value?["id"]?.stringValue, let kind = value?["limit"]?.stringValue,
-              let reason = value?["reason"]?.stringValue else { return nil }
-        self.id = id
-        self.kind = kind
-        self.reason = reason
-    }
-
-    /// The limit as the person reads its name.
-    var name: String {
-        switch kind {
-        case "dailySpend": "daily spending limit"
-        case "planShare": "plan share limit"
-        default: "limit"
-        }
-    }
-}
-
-/// A start the project's limit refused, held until the person confirms that one start or leaves it (8.3).
+/// A start the project's limit refused, held until the person confirms that one start or leaves it (8.3). The limit
+/// itself is the shared reading (`WorkLimit` in PiModels, from the refusal's `data.limit`, #828); the words of the
+/// question are the phone's.
 struct WorkHeldStart: Equatable, Identifiable {
     let item: WorkItem
     let agent: AgentProfile
-    let limit: WorkLimitReading
+    let limit: WorkLimit
 
     var id: String { "\(item.id)|\(agent.id)|\(limit.id)" }
 

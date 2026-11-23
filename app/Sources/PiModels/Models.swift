@@ -1163,6 +1163,9 @@ public struct UsageSummary: Codable, Equatable, Sendable {
     }
     public let models: [ModelRow]
     public let agents: [AgentRow]
+    /// The spend of chats, the built-in assistant's, which is no agent's: counted on their own. Nil from an older
+    /// recording that does not have it.
+    public var chats: Spend? = nil
     public var projects: [ProjectSpend]? = nil
     public let conversations: [ConversationRow]
     public let total: Spend

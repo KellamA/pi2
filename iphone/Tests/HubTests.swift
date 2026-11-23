@@ -81,7 +81,8 @@ struct HubTests {
              "notices": []}
             """
         let value = try JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))
-        #expect(HubPlanWeek.read(value, now: now) == HubPlanWeek(plan: "Anthropic Max", usedPercent: 41))
+        let limits = try #require(PlanLimits(value))
+        #expect(HubPlanWeek.read(limits, now: now) == HubPlanWeek(plan: "Anthropic Max", usedPercent: 41))
         #expect(HubPlanWeek.read(nil, now: now) == nil)
     }
 

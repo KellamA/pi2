@@ -68,10 +68,13 @@ struct PullRequestView: View {
 }
 
 /// What the screen shows of one pull request, worked out from the session: whether the Mac has answered yet, whether
-/// the project has a repository, and the pull request as the last read of it lists it, with its diff as read.
+/// the project has a repository, and the pull request as the last read of it lists it (`GitHubPull` in `GitHubWork`),
+/// with its diff as read.
 @MainActor
 struct PullRequestSource {
-    enum State: Equatable {
+    /// Not `Equatable`: `GitHubWork` cannot be (its `grouped` tuples), and nothing compares a state; the screens
+    /// switch over it.
+    enum State {
         /// The engine's lists have not come yet.
         case waiting
         case noProject
@@ -81,7 +84,7 @@ struct PullRequestSource {
         case firstRead(String)
         /// The last read does not list it: "owner/name", and what went wrong with the read, if anything.
         case notListed(String, trouble: String?)
-        case listed(PullRequestInfo, PullRequestListing)
+        case listed(GitHubPull, GitHubWork)
     }
 
     let key: PullRequestStore.Key
@@ -111,10 +114,10 @@ struct PullRequestSource {
             return
         }
         let name = "\(repository.owner)/\(repository.name)"
-        let listing = PullRequestListing.of(engine.extras["github"], project: id)
+        let listing = GitHubWork.of(engine.extras["github"], project: id)
         if let listing, let pull = listing.pull(number) {
             state = .listed(pull, listing)
-        } else if listing == nil || listing?.firstRead == true {
+        } else if listing?.firstRead != false {
             state = .firstRead(name)
         } else {
             state = .notListed(name, trouble: listing?.troubleWords())
