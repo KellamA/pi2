@@ -1,0 +1,23 @@
+// The relay as the protocol test runs it (worker.ts beside this file, #678): the relay's own configuration, with this
+// folder's Worker, whose only difference is App Attest's stand-in. For local runs through scripts/isolated.mjs only;
+// nothing deploys it. Every setting is given on the command line by scripts/relay-protocol-test.
+{
+	"$schema": "../../node_modules/wrangler/config-schema.json",
+	"name": "pi2-relay-protocol-test",
+	"main": "worker.ts",
+	"compatibility_date": "2026-11-01",
+	"compatibility_flags": ["no_nodejs_compat", "no_nodejs_compat_v2"],
+	"send_metrics": false,
+	"observability": {
+		"enabled": false,
+		"logs": { "enabled": false, "invocation_logs": false }
+	},
+	"durable_objects": {
+		"bindings": [
+			{ "name": "PAIRINGS", "class_name": "Pairing" },
+			{ "name": "ATTEST_KEYS", "class_name": "AttestKey" },
+			{ "name": "ADDRESSES", "class_name": "Address" }
+		]
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["Pairing", "AttestKey", "Address"] }]
+}

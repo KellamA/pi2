@@ -102,5 +102,8 @@ let package = Package(
         // Runs every parser in RemoteKit that reads bytes from the network against mutated and random input, from a fixed
         // seed for a bounded time (#674).
         .executableTarget(name: "pi2-remote-fuzz", dependencies: ["RemoteKit"], path: "Sources/pi2-remote-fuzz"),
+        // Checks RemoteKit's relay client (#678): its messages, and the client against a relay of its own in memory; with
+        // --relay, the protocol test against the relay itself on this computer (scripts/relay-protocol-test).
+        .executableTarget(name: "pi2-relay-check", dependencies: ["RemoteKit"], path: "Sources/pi2-relay-check"),
     ]
 )

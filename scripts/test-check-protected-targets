@@ -14,7 +14,7 @@ command -v jq >/dev/null || { echo "test-check-protected-targets: needs jq" >&2;
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 
-# A package description as `swift package dump-package` writes app/Package.swift's: the three protected targets as they
+# A package description as `swift package dump-package` writes app/Package.swift's: the four protected targets as they
 # are, and two others with what only other targets may have (a setting, unsafe flags, a product).
 jq -n '{
 	name: "pi2",
@@ -29,6 +29,8 @@ jq -n '{
 		{name: "pi2-remote-check", path: "Sources/pi2-remote-check", type: "executable", dependencies: [{byName: ["RemoteKit", null]}],
 			exclude: ["vectors"], resources: [], settings: [], packageAccess: true},
 		{name: "pi2-remote-fuzz", path: "Sources/pi2-remote-fuzz", type: "executable", dependencies: [{byName: ["RemoteKit", null]}],
+			exclude: [], resources: [], settings: [], packageAccess: true},
+		{name: "pi2-relay-check", path: "Sources/pi2-relay-check", type: "executable", dependencies: [{byName: ["RemoteKit", null]}],
 			exclude: [], resources: [], settings: [], packageAccess: true}
 	],
 	products: [
@@ -100,6 +102,10 @@ expect_refused "another target named for a protected folder, with no path" "whic
 expect_refused "a library product for the check" "the product Vectors names one of RemoteKit's checks" ".products += [{name: \"Vectors\", settings: [], targets: [\"pi2-remote-check\"], type: {library: [\"automatic\"]}}]"
 expect_refused "a library product with RemoteKit and the fuzzer" "the product RemoteKitAndMore names one of RemoteKit's checks" ".products += [{name: \"RemoteKitAndMore\", settings: [], targets: [\"RemoteKit\", \"pi2-remote-fuzz\"], type: {library: [\"dynamic\"]}}]"
 expect_refused "an executable product for the fuzzer" "the product fuzz names one of RemoteKit's checks" ".products += [{name: \"fuzz\", settings: [], targets: [\"pi2-remote-fuzz\"], type: {executable: null}}]"
+expect_refused "the relay client's check gone" "pi2-relay-check: there are 0 targets of that name" "del(.targets[] | select(.name == \"pi2-relay-check\"))"
+expect_refused "the relay client's check depending on more" "it depends on other than [\"RemoteKit\"]" "$(target pi2-relay-check).dependencies += [{byName: [\"EngineKit\", null]}]"
+expect_refused "the relay client's check excluding its protocol test" "it excludes other files than []" "$(target pi2-relay-check).exclude = [\"Protocol.swift\"]"
+expect_refused "an executable product for the relay client's check" "the product relay-check names one of RemoteKit's checks" ".products += [{name: \"relay-check\", settings: [], targets: [\"pi2-relay-check\"], type: {executable: null}}]"
 expect_refused "a package that is not allowed" "a package dependency that is not allowed: https://example.com/evil" ".dependencies += [{sourceControl: [{identity: \"evil\", location: {remote: [{urlString: \"https://example.com/evil\"}]}, requirement: {exact: [\"1.0.0\"]}}]}]"
 expect_refused "Sparkle from another address" "not allowed: https://github.com/someone/Sparkle" ".dependencies[0].sourceControl[0].location.remote[0].urlString = \"https://github.com/someone/Sparkle\""
 expect_refused "a package from a folder on disk" "a package dependency that is not allowed: fileSystem" ".dependencies += [{fileSystem: [{identity: \"local\", path: \"/tmp/local\"}]}]"
