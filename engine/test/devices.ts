@@ -250,8 +250,11 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	assert.equal(JSON.parse(sentLong).text, `x ${KEY_HIDDEN} y`, "8 MB after sk-, hidden whole");
 	assert.equal(JSON.parse(sentLong).other, KEY_HIDDEN);
 	const prefixes = ["gsk_", "xai-", "whsec_", "sk_test_", "rk_test_", "sk_live_", "rk_live_", "ya29.", "AKIA", "ASIA", "https://hooks.slack.com/services/"];
-	const sentMore = JSON.parse(sentOf({ event: "conversation", texts: prefixes.map((prefix) => `x ${prefix}${"A".repeat(8 * 1024 * 1024)} y`) }));
-	prefixes.forEach((prefix, i) => assert.equal(sentMore.texts[i], prefix.startsWith("https") ? `x ${prefix}${KEY_HIDDEN} y` : `x ${KEY_HIDDEN} y`, `8 MB after ${prefix}`));
+	// One at a time, as strings: one line of them all would hold some 100 MB, and slow every test run beside this one.
+	for (const prefix of prefixes) {
+		const masked = maskKeys(`x ${prefix}${"A".repeat(8 * 1024 * 1024)} y`);
+		assert.equal(masked, prefix.startsWith("https") ? `x ${prefix}${KEY_HIDDEN} y` : `x ${KEY_HIDDEN} y`, `8 MB after ${prefix}`);
+	}
 	console.log(`    8 MB after each of ${prefixes.length + 2} prefixes masked in ${Math.round(performance.now() - began)} ms`);
 	// Too deep to walk: only that value is replaced, and an approval holding it is marked; an approval holding a key too.
 	const deep = `{"event":"conversation","x":${"[".repeat(200_000)}${"]".repeat(200_000)},"y":"kept"}`;
