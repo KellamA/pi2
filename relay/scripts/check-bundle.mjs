@@ -20,7 +20,8 @@ try {
 	execFileSync(
 		join(relay, "node_modules/.bin/wrangler"),
 		// `--config` names the project, which also keeps Wrangler from looking for one to set up (and sending events of it).
-		["deploy", "--dry-run", "--config", "wrangler.jsonc", "--outdir", join(temporary, "out"), "--metafile", join(temporary, "meta.json")],
+		// `--env production`: the bundle the production relay's deploy makes; every environment bundles the same code.
+		["deploy", "--dry-run", "--config", "wrangler.jsonc", "--env", "production", "--outdir", join(temporary, "out"), "--metafile", join(temporary, "meta.json")],
 		{
 			cwd: relay,
 			stdio: ["ignore", "ignore", "inherit"],
