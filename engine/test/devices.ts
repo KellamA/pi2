@@ -648,6 +648,14 @@ try {
 	}
 	assert.ok(!childrenOf(engine.pid!).some((command) => command.includes(standIn)), "no pi² Remote, and no socket pair, was made");
 	assert.equal(remotes.length, 0);
+	// The relay's address in its one written form: pi² Remote keeps a relay key for each exact address.
+	for (const spelling of ["wss://RELAY.example/v1", "wss://relay.example:443/v1", " wss://relay.example/v1", "wss://relay.example/./v1", "WSS://relay.example/v1", "wss://relay.example/v1\t"]) {
+		assert.equal((await app.call("devices.set", { relayAddress: spelling })).relay, "wss://relay.example/v1", JSON.stringify(spelling));
+	}
+	for (const refused of ["wss://user:secret@relay.example/v1", "wss://user@relay.example/v1", "wss://relay.example./v1", "https://relay.example/v1", "ws://relay.example/v1", "wss://relay.example/v1?k=1", "not an address"]) {
+		await assert.rejects(app.call("devices.set", { relayAddress: refused }), /The relay's address is wss:\/\/host\/path/, refused);
+	}
+	assert.equal(app.devicesEvents.at(-1).relay, "wss://relay.example/v1", "nothing refused was stored");
 	await app.call("devices.set", { preview: true, relayAddress: "ws://127.0.0.1:9/v1" });
 	assert.ok(!childrenOf(engine.pid!).some((command) => command.includes(standIn)), "nor with nothing paired and no pairing open");
 	step("with the preview off no device can pair and no socket pair is made; remote.* is refused on the engine's socket");

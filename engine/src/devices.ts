@@ -1361,10 +1361,11 @@ export const deviceRequests: Record<string, (params: Params, client: Client) => 
 			if (!(switches as readonly string[]).includes(key) || typeof value !== "boolean") throw new Error(`Unknown setting: ${key}`);
 		}
 		const address = params.relayAddress;
-		if (address !== undefined && (typeof address !== "string" || !relayAddress(address))) throw new Error("The relay's address is wss://host/path.");
+		const relay = typeof address === "string" ? relayAddress(address) : null;
+		if (address !== undefined && relay === null) throw new Error("The relay's address is wss://host/path, with no user name or password.");
 		await change((doc) => {
 			for (const key of switches) if (typeof params[key] === "boolean") doc.remote[key] = params[key] as boolean;
-			if (typeof address === "string") doc.relay = address;
+			if (relay !== null) doc.relay = relay;
 		});
 		if (!remoteOn()) {
 			closeWindow(null);
@@ -1433,14 +1434,19 @@ for (const [name, handler] of Object.entries(deviceRequests)) {
 	};
 }
 
-/** A relay's address: wss:// anywhere; ws:// only to this Mac, and only in a development engine (iphone.md 10). */
-function relayAddress(text: string): boolean {
+/**
+ * A relay's address in its one written form (the URL parser's), or null: wss:// anywhere; ws:// only to this Mac, and
+ * only in a development engine (iphone.md 10); no user name or password, no query or fragment, no host ending in a
+ * dot. pi² Remote keeps a relay key for each exact address, so two spellings of one relay must be one address.
+ */
+function relayAddress(text: string): string | null {
 	let url: URL;
 	try {
 		url = new URL(text);
 	} catch {
-		return false;
+		return null;
 	}
-	if (url.protocol === "wss:") return url.hostname !== "" && url.search === "" && url.hash === "";
-	return !release && url.protocol === "ws:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+	if (url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "" || url.hostname === "" || url.hostname.endsWith(".")) return null;
+	if (url.protocol === "wss:" || (!release && url.protocol === "ws:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) return url.href;
+	return null;
 }
