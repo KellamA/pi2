@@ -18,6 +18,7 @@ enum Targets {
 			tcpFraming(),
 			payload(world),
 			controlLines(world),
+			homeTag(world),
 			try kkResponder(world),
 			try kkInitiator(world),
 			try kkRespondByTrial(world),
@@ -282,13 +283,18 @@ enum Targets {
 		lines.append(.attached(Attached(session: SessionID("s1")!, resume: true)))
 		lines.append(.revoked(try! Revocation.make(pairing: world.pairing, device: world.device, identity: world.identity)))
 		lines.append(.sessionEnd)
-		return lines.map { Array($0.line) }
+		lines += Refusal.Reason.allCases.map { .refused(Refusal($0)) }
+		// A reason from a newer Mac, which this build reads as a plain refusal.
+		return lines.map { Array($0.line) } + [Array(#"{"refused":{"reason":"later"}}"#.utf8)]
 	}
 
 	static func controlLines(_ world: World) -> Target {
 		Target(
 			name: "control-lines", seeds: controlLineSeeds(world),
-			dictionary: words(["\\\"", "\\\\", "null", "true", "\"v\\\":2", "\"session\"", "\"received\":", "dev_", ",", "{}", "\\u0000"]),
+			dictionary: words([
+				"\\\"", "\\\\", "null", "true", "\"v\\\":2", "\"session\"", "\"received\":", "dev_", ",", "{}", "\\u0000", "\"refused\"", "\"reason\"",
+				"\"update\"", "\\u0061",
+			]),
 			maxLength: 8192
 		) { input in
 			var line: ControlLine?
@@ -297,6 +303,9 @@ enum Targets {
 			var again: ControlLine?
 			guard Fuzz.takes("control-lines", input, { again = try ControlLine.parse(written) }) else { Fuzz.violation("control-lines", "could not read what it wrote", input) }
 			if again!.line != written { Fuzz.violation("control-lines", "wrote one line two ways", input) }
+			if case let .refused(refusal) = line!, let reason = refusal.reason, written != ControlLine.refused(Refusal(reason)).line {
+				Fuzz.violation("control-lines", "read a refusal as a reason it does not say", input)
+			}
 			return true
 		}
 	}
@@ -343,6 +352,17 @@ enum Targets {
 				Fuzz.violation("relay-messages", "read one text two ways", input)
 			}
 			return true
+		}
+	}
+
+	/// The phone's check of the tag in a TXT record (#815): it takes the three days' tags it was made for and nothing else.
+	static func homeTag(_ world: World) -> Target {
+		let now = Date(timeIntervalSince1970: 1_795_000_000)
+		let seeds = [-1.0, 0, 1].map { Array(HomeTag.tag(macChannelKey: world.macChannel.publicKey, pairing: world.pairing, date: now.addingTimeInterval($0 * 86_400)).utf8) }
+		return Target(name: "home-tag", seeds: seeds, dictionary: words(["0", "f", "F"]), maxLength: 64) { input in
+			let taken = HomeTag.recognises(text(input), macChannelKey: world.macChannel.publicKey, pairing: world.pairing, now: now)
+			if taken, !seeds.contains(input) { Fuzz.violation("home-tag", "took a tag that is not one of the three days'", input) }
+			return taken
 		}
 	}
 

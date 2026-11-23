@@ -1,6 +1,6 @@
 import CryptoKit
 import Foundation
-import RemoteKit
+@_spi(Vectors) import RemoteKit
 
 /// What each reader takes and refuses, case by case. The fuzzer tries the rest.
 enum Formats {
@@ -10,6 +10,8 @@ enum Formats {
 		frames()
 		payload()
 		lines()
+		refusedLine()
+		homeTag()
 	}
 
 	static func bytes() {
@@ -217,5 +219,112 @@ enum Formats {
 			Check.refuses("a line with \(why)") { _ = try ControlLine.parse(Data(text.utf8)) }
 		}
 		Check.that((try? ControlLine.parse(Data(#"{"attached":{"session":"s1","resume":true}}"#.utf8))) != nil, "attached reads")
+	}
+
+	/// The refused line (#816): a reason from a fixed list, a reason of the same form this build does not know read as a
+	/// plain refusal, and nothing else.
+	static func refusedLine() {
+		Check.section("The refused line")
+		Check.that(Refusal.Reason.allCases.map(\.rawValue) == ["update", "suspended", "presence", "clock", "resume"], "the reasons are exactly the five listed")
+		for reason in Refusal.Reason.allCases {
+			let written = ControlLine.refused(Refusal(reason)).line
+			Check.that(written == Data(#"{"refused":{"reason":"\#(reason.rawValue)"}}"#.utf8), "refused \(reason.rawValue) is written as remotekit.md says")
+			guard case let .refused(read)? = try? ControlLine.parse(written) else {
+				Check.that(false, "refused \(reason.rawValue) reads")
+				continue
+			}
+			Check.that(read.reason == reason && read == Refusal(reason), "refused \(reason.rawValue) reads back as itself")
+		}
+		let unknown = Data(#"{"refused":{"reason":"moonphase"}}"#.utf8)
+		if case let .refused(read)? = try? ControlLine.parse(unknown) {
+			Check.that(read.reason == nil, "a reason this build does not know is a plain refusal")
+			Check.that(ControlLine.refused(read).line == unknown, "and is written back as it came")
+		} else {
+			Check.that(false, "a reason this build does not know is read, not refused")
+		}
+		for (text, why) in [
+			(#"{"refused":{}}"#, "no reason"),
+			(#"{"refused":{"reason":"update","text":"Update pi²"}}"#, "a field beside the reason"),
+			(#"{"refused":{"reason":"update","reason":"clock"}}"#, "the reason twice"),
+			(#"{"refused":{"reason":""}}"#, "an empty reason"),
+			(#"{"refused":{"reason":"Update"}}"#, "a reason with a capital"),
+			(#"{"refused":{"reason":"update the app"}}"#, "a reason in words"),
+			(#"{"refused":{"reason":"abcdefghijklmnopqrstuvwxyzabcdefg"}}"#, "a reason of 33 letters"),
+			(#"{"refused":{"reason":1}}"#, "a reason that is a number"),
+			(#"{"refused":{"reason":null}}"#, "a reason that is null"),
+			(#"{"refused":"update"}"#, "a reason that is not in an object"),
+			(#"{"refused":{"reason":"update"},"x":1}"#, "a second member"),
+			(#"{"refused":{"reason":"уpdate"}}"#, "a reason with a Cyrillic letter"),
+		] {
+			Check.refuses("a refused line with \(why)") { _ = try ControlLine.parse(Data(text.utf8)) }
+		}
+		// An escape that reads as a letter is that letter once read: it is taken, and written back without the escape.
+		if case let .refused(read)? = try? ControlLine.parse(Data(#"{"refused":{"reason":"upd\u0061te"}}"#.utf8)) {
+			Check.that(read.reason == .update, "an escaped letter in a reason is the letter")
+		} else {
+			Check.that(false, "an escaped letter in a reason is read")
+		}
+		let longest = String(repeating: "z", count: 32)
+		Check.that((try? ControlLine.parse(Data(#"{"refused":{"reason":"\#(longest)"}}"#.utf8))) != nil, "a reason of 32 letters is read")
+	}
+
+	/// The home path's Bonjour tag (#815): the test value of remotekit.md, the UTC day, the three days the phone takes,
+	/// and another pairing's or key's tag.
+	static func homeTag() {
+		Check.section("The home tag")
+		guard let key = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: Data(repeating: 7, count: 32)),
+			let pairing = PairingID("AQEBAQEBAQEBAQEBAQEBAQ"), let other = PairingID(Base64URL.encode(Data(repeating: 2, count: 16)))
+		else { return Check.that(false, "the home tag's test keys") }
+		// 2026-11-18T11:06:40Z.
+		let date = Date(timeIntervalSince1970: 1_795_000_000)
+		let tag = HomeTag.tag(macChannelKey: key, pairing: pairing, date: date)
+		Check.that(tag == "c6b71440d4d049db", "the tag is remotekit.md's test value, worked out apart in Node")
+		Check.that(tag.utf8.count == HomeTag.length && tag.utf8.allSatisfy { (0x30...0x39).contains($0) || (0x61...0x66).contains($0) },
+			"a tag is 16 lower-case hexadecimal digits")
+		let startOfDay = Date(timeIntervalSince1970: 1_794_960_000)
+		let endOfDay = Date(timeIntervalSince1970: 1_795_046_399)
+		Check.that(HomeTag.tag(macChannelKey: key, pairing: pairing, date: startOfDay) == tag && HomeTag.tag(macChannelKey: key, pairing: pairing, date: endOfDay) == tag,
+			"one tag from 00:00:00 to 23:59:59 UTC")
+		let before = HomeTag.tag(macChannelKey: key, pairing: pairing, date: startOfDay.addingTimeInterval(-1))
+		let after = HomeTag.tag(macChannelKey: key, pairing: pairing, date: endOfDay.addingTimeInterval(1))
+		Check.that(before == "56b9f25c56ee5161", "the day before's tag is remotekit.md's")
+		Check.that(after == "174c8f2e0a1b3cb3", "the day after's tag is remotekit.md's")
+		Check.that(HomeTag.tag(macChannelKey: key, pairing: other, date: date) == "3b505b5d165f5394", "another pairing's tag is remotekit.md's")
+		Check.that(HomeTag.tag(macChannelKey: key, pairing: other, date: date) != tag, "another pairing gives another tag")
+		let otherKey = Curve25519.KeyAgreement.PrivateKey().publicKey
+		Check.that(HomeTag.tag(macChannelKey: otherKey, pairing: pairing, date: date) != tag, "another Mac's channel key gives another tag")
+		Check.that(!tag.contains(pairing.text) && !tag.contains(Base64URL.encode(key.rawRepresentation)), "a tag holds neither the pairing's id nor the key")
+
+		// The phone takes the day before, the day and the day after, by its own clock, and nothing further.
+		Check.that(HomeTag.recognises(tag, macChannelKey: key, pairing: pairing, now: date), "the phone recognises the day's tag")
+		Check.that(HomeTag.recognises(before, macChannelKey: key, pairing: pairing, now: date), "and the day before's, from a Mac whose clock is behind")
+		Check.that(HomeTag.recognises(after, macChannelKey: key, pairing: pairing, now: date), "and the day after's, from a Mac whose clock is ahead")
+		let twoBefore = HomeTag.tag(macChannelKey: key, pairing: pairing, date: date.addingTimeInterval(-2 * 86_400))
+		let twoAfter = HomeTag.tag(macChannelKey: key, pairing: pairing, date: date.addingTimeInterval(2 * 86_400))
+		Check.that(!HomeTag.recognises(twoBefore, macChannelKey: key, pairing: pairing, now: date) && !HomeTag.recognises(twoAfter, macChannelKey: key, pairing: pairing, now: date),
+			"but not two days before or after")
+		Check.that(!HomeTag.recognises(tag, macChannelKey: key, pairing: other, now: date), "nor another pairing's tag")
+		Check.that(!HomeTag.recognises(tag.uppercased(), macChannelKey: key, pairing: pairing, now: date), "nor the tag in capitals")
+		Check.that(!HomeTag.recognises(String(tag.dropLast()), macChannelKey: key, pairing: pairing, now: date) && !HomeTag.recognises(tag + "0", macChannelKey: key, pairing: pairing, now: date)
+			&& !HomeTag.recognises("", macChannelKey: key, pairing: pairing, now: date), "nor one a digit short or long, nor nothing")
+		// Compared in constant time: a tag that differs in its first digit and one that differs in its last are refused
+		// alike; the comparison is Bytes.constantTimeEqual, which `bytes()` checks.
+		var first = Array(tag.utf8)
+		first[0] = first[0] == 0x30 ? 0x31 : 0x30
+		var last = Array(tag.utf8)
+		last[15] = last[15] == 0x30 ? 0x31 : 0x30
+		Check.that(!HomeTag.recognises(String(decoding: first, as: UTF8.self), macChannelKey: key, pairing: pairing, now: date)
+			&& !HomeTag.recognises(String(decoding: last, as: UTF8.self), macChannelKey: key, pairing: pairing, now: date), "nor one a digit off, first or last")
+
+		// The day is the UTC day, written as remotekit.md says, at the edges of days, months, leap years and the range.
+		for (seconds, day) in [
+			(0.0, "1970-01-01"), (-1, "1969-12-31"), (951_782_400, "2000-02-29"), (951_868_799, "2000-02-29"), (4_107_542_400, "2100-03-01"),
+			(1_795_046_399, "2026-11-18"), (1_795_046_400, "2026-11-19"), (253_402_300_799, "9999-12-31"), (-62_167_219_200, "0000-01-01"),
+			(1e15, "9999-12-31"), (-1e15, "0000-01-01"), (.infinity, "9999-12-31"), (-.infinity, "0000-01-01"),
+		] {
+			let written = HomeTag.day(Date(timeIntervalSince1970: seconds))
+			Check.that(written == day, "\(seconds) seconds is the UTC day \(day)")
+		}
+		Check.that(HomeTag.day(Date(timeIntervalSince1970: .nan)) == "1970-01-01", "a date that is no number is taken as 1970-01-01")
 	}
 }

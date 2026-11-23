@@ -264,9 +264,28 @@ public final class Channel: Sendable, CustomStringConvertible, CustomDebugString
 		}
 	}
 
-	private static func seal(_ frame: Frame, _ state: inout State) throws -> Data {
+	/// pi² Remote's last messages to a phone it did not attach: the `refused` line, then `bye`, so the line always comes
+	/// before the channel closes. The line is padded to 256 bytes whatever this end's padding, so that its length tells
+	/// the relay or the network nothing of the reason; that a refusal came still shows.
+	///
+	/// The caller's duties (remotekit.md, "The refused line"): call it only once the attach's device-key signature has
+	/// checked out against pi² Remote's own list (`AttachClaim.verifyDevice`), and close anything that fails sooner with
+	/// `bye` alone; refuse a `refused` line that arrives from a phone, which never sends one; and never turn the engine's
+	/// "revoked" into another reason: a revoked device is sent `bye` alone, or the signed `revoked` line.
+	public func sealRefusal(_ refusal: Refusal, at instant: ContinuousClock.Instant = .now) throws -> [Data] {
+		let frames = try Lines.frames(for: ControlLine.refused(refusal).line)
+		return try state.withLock { state in
+			try usable(state, at: instant)
+			var messages = try frames.map { try Self.seal($0, &state, padTo: max(state.padding ?? 0, Frame.paddingBlock)) }
+			messages.append(try Self.seal(Frame(.bye), &state))
+			state.phase = .ended
+			return messages
+		}
+	}
+
+	private static func seal(_ frame: Frame, _ state: inout State, padTo block: Int? = nil) throws -> Data {
 		do {
-			return try state.transport.encrypt(frame.encoded(padTo: state.padding))
+			return try state.transport.encrypt(frame.encoded(padTo: block ?? state.padding))
 		} catch {
 			state.phase = .failed
 			throw error

@@ -48,6 +48,13 @@ const WINDOW_FOR = 5 * 60 * 1000;
 const WINDOW_TRIES = 3;
 /** Phones that may join one window: the engine needs to see a second claim to close it (3.3 step 6). */
 const WINDOW_JOINS = 3;
+/**
+ * Join windows the Mac may open in any minute (6.6). Opening one is a write or two, and closing it another, so the Mac's
+ * whole allowance of messages spent on them would be hundreds of writes a second; a person pairing a phone, and trying
+ * again a few times, opens a handful in some minutes.
+ */
+const WINDOWS_A_MINUTE = 10;
+const MINUTE = 60 * 1000;
 /** Devices listed at most (3.5). */
 const MAX_DEVICES = 5;
 /** A Mac socket that has sent nothing, not even a ping, for this long is taken for gone (it pings every 30 seconds). */
@@ -69,6 +76,8 @@ type Meta = {
 	window: Window | null;
 	/** Devices that left while the Mac was away, which it is told when it next connects (3.6). */
 	left: string[];
+	/** When the join windows of the last minute were opened, for their limit (`WINDOWS_A_MINUTE`). */
+	opened?: number[];
 };
 
 type Window = { id: string; tokenHash: string; expires: number; tries: number; joins: number };
@@ -144,6 +153,8 @@ export class Pairing extends DurableObject<Env> {
 	limits: Limits = LIMITS;
 	joinedLimits: Limits = JOINED_LIMITS;
 	pendingLimits: Limits = PENDING_LIMITS;
+	/** The join windows the Mac may open in any minute; tests change it. */
+	windowsAMinute = WINDOWS_A_MINUTE;
 
 	/** The object of an App Attest key's tie (claims.ts). Tests stand it in, to make its calls fail; nothing else does. */
 	keyObject(keyId: string): Pick<DurableObjectStub<import("./claims.ts").AttestKey>, "tie" | "retie" | "untie"> {
@@ -478,6 +489,12 @@ export class Pairing extends DurableObject<Env> {
 		switch (message.type) {
 			case "openJoin": {
 				if (message.expires <= now) return refused(ws, "openJoin", "malformed");
+				// Past the minute's windows, the Mac is held off as past any other limit, until the oldest is a minute old.
+				// The times are kept in the record that opening a window writes anyway, so they cost no write of their own and
+				// last when the object leaves memory; one refused writes nothing.
+				const opened = (meta.opened ?? []).filter((time) => now - time < MINUTE);
+				if (opened.length >= this.windowsAMinute) return this.holdOff(ws, opened[0] + MINUTE);
+				meta.opened = [...opened, now];
 				if (meta.window !== null) await this.closeWindow();
 				meta.window = {
 					id: base64url(random(16)),
