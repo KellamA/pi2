@@ -30,6 +30,13 @@ export default {
 		// A redirect to the relay itself, which the client must not follow (#678's security read): followed, the
 		// connection would succeed; refused, it ends with the 302.
 		if (new URL(request.url).pathname === "/redirect") return new Response(null, { status: 302, headers: { Location: "/v1" } });
+		// The client's fixed headers in place of URLSession's own, which would name the system and its locale (#678): a
+		// connection without them is answered 400, so every check that connects shows them. A connection with an Origin
+		// (a web page's, which the protocol test makes on purpose) goes on to the relay's own 403.
+		const upgrade = request.headers.get("Upgrade")?.toLowerCase() === "websocket";
+		if (upgrade && !request.headers.has("Origin") && (request.headers.get("User-Agent") !== "pi2-relay-client" || request.headers.get("Accept-Language") !== "*")) {
+			return new Response(null, { status: 400 });
+		}
 		// Cloudflare sets the connecting address, which registrations are counted by; the local runtime may not.
 		if (request.headers.has("CF-Connecting-IP")) return worker.fetch(request, env);
 		const headers = new Headers(request.headers);

@@ -58,7 +58,7 @@ enum Sessions {
 
 	/// Plays the relay through a Mac's handshake: checks its hello and its proof, and answers `ready`.
 	@discardableResult
-	static func macReady(_ rig: Rig, ready: String = #"{"ready":{"devices":[],"left":[],"pending":true,"mail":0}}"#) async throws -> MemorySocket {
+	static func macReady(_ rig: Rig, ready: String = #"{"ready":{"devices":[{"device":"dev_EBESExQVFhcYGRobHB0eHw","online":false}],"left":[],"pending":false,"mail":0}}"#) async throws -> MemorySocket {
 		let socket = try await rig.connector.next("the Mac's socket")
 		Check.equal(socket.pairing, Formats.pairing, "the socket names its pairing, for the Pi2-Pairing header")
 		Check.equal(try await socket.nextText("hello"), RelayOutgoing.hello(pairing: Formats.pairing, device: nil, role: .mac, build: RelayBuild("200")!).text, "the Mac's hello")
