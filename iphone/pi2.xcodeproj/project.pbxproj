@@ -7,6 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		680E00000000000000000301 /* NotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 680E00000000000000000101 /* NotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		680E00000000000000000302 /* Widgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 680E00000000000000000102 /* Widgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		680E00000000000000000303 /* ShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 680E00000000000000000103 /* ShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		680E00000000000000000311 /* PiModels in Frameworks */ = {isa = PBXBuildFile; productRef = 680E00000000000000000401 /* PiModels */; };
+		680E00000000000000000312 /* PiModels in Frameworks */ = {isa = PBXBuildFile; productRef = 680E00000000000000000402 /* PiModels */; };
+		680E00000000000000000313 /* PiModels in Frameworks */ = {isa = PBXBuildFile; productRef = 680E00000000000000000403 /* PiModels */; };
 		680000000000000000000301 /* PiModels in Frameworks */ = {isa = PBXBuildFile; productRef = 680000000000000000000401 /* PiModels */; };
 		680000000000000000000302 /* EngineKit in Frameworks */ = {isa = PBXBuildFile; productRef = 680000000000000000000402 /* EngineKit */; };
 		680000000000000000000303 /* TranscriptKit in Frameworks */ = {isa = PBXBuildFile; productRef = 680000000000000000000403 /* TranscriptKit */; };
@@ -21,17 +27,87 @@
 			remoteGlobalIDString = 680000000000000000000601;
 			remoteInfo = pi2;
 		};
+		680E00000000000000000A01 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 680000000000000000000000 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 680E00000000000000000601;
+			remoteInfo = NotificationService;
+		};
+		680E00000000000000000A02 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 680000000000000000000000 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 680E00000000000000000602;
+			remoteInfo = Widgets;
+		};
+		680E00000000000000000A03 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 680000000000000000000000 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 680E00000000000000000603;
+			remoteInfo = ShareExtension;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		680E00000000000000000501 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				680E00000000000000000301 /* NotificationService.appex in Embed Foundation Extensions */,
+				680E00000000000000000302 /* Widgets.appex in Embed Foundation Extensions */,
+				680E00000000000000000303 /* ShareExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		680000000000000000000101 /* pi2.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = pi2.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		680000000000000000000102 /* pi2Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = pi2Tests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		680000000000000000000103 /* session.jsonl */ = {isa = PBXFileReference; lastKnownFileType = text; name = session.jsonl; path = "../app/Sources/pi2-client-check/Fixture/session.jsonl"; sourceTree = SOURCE_ROOT; };
+		680E00000000000000000101 /* NotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		680E00000000000000000102 /* Widgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = Widgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		680E00000000000000000103 /* ShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		680E00000000000000000B02 /* Exceptions for "NotificationService" folder in "NotificationService" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 680E00000000000000000601 /* NotificationService */;
+		};
+		680E00000000000000000B03 /* Exceptions for "Widgets" folder in "Widgets" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 680E00000000000000000602 /* Widgets */;
+		};
+		680E00000000000000000B05 /* Exceptions for "ShareExtension" folder in "ShareExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 680E00000000000000000603 /* ShareExtension */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		680000000000000000000201 /* Sources */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Sources; sourceTree = "<group>"; };
 		680000000000000000000202 /* Tests */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Tests; sourceTree = "<group>"; };
+		680E00000000000000000201 /* NotificationService */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (680E00000000000000000B02 /* Exceptions for "NotificationService" folder in "NotificationService" target */, ); path = NotificationService; sourceTree = "<group>"; };
+		680E00000000000000000202 /* Widgets */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (680E00000000000000000B03 /* Exceptions for "Widgets" folder in "Widgets" target */, ); path = Widgets; sourceTree = "<group>"; };
+		680E00000000000000000203 /* ShareExtension */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (680E00000000000000000B05 /* Exceptions for "ShareExtension" folder in "ShareExtension" target */, ); path = ShareExtension; sourceTree = "<group>"; };
+		680E00000000000000000204 /* Sources/Push */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Sources/Push; sourceTree = "<group>"; };
+		680E00000000000000000205 /* Widgets/Shared */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Widgets/Shared; sourceTree = "<group>"; };
+		680E00000000000000000206 /* ShareExtension/Shared */ = {isa = PBXFileSystemSynchronizedRootGroup; path = ShareExtension/Shared; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -52,6 +128,30 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		680E00000000000000000512 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				680E00000000000000000311 /* PiModels in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		680E00000000000000000522 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				680E00000000000000000312 /* PiModels in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		680E00000000000000000532 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				680E00000000000000000313 /* PiModels in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -60,6 +160,12 @@
 			children = (
 				680000000000000000000201 /* Sources */,
 				680000000000000000000202 /* Tests */,
+				680E00000000000000000201 /* NotificationService */,
+				680E00000000000000000202 /* Widgets */,
+				680E00000000000000000203 /* ShareExtension */,
+				680E00000000000000000204 /* Sources/Push */,
+				680E00000000000000000205 /* Widgets/Shared */,
+				680E00000000000000000206 /* ShareExtension/Shared */,
 				680000000000000000000103 /* session.jsonl */,
 				680000000000000000000002 /* Products */,
 			);
@@ -70,6 +176,9 @@
 			children = (
 				680000000000000000000101 /* pi2.app */,
 				680000000000000000000102 /* pi2Tests.xctest */,
+				680E00000000000000000101 /* NotificationService.appex */,
+				680E00000000000000000102 /* Widgets.appex */,
+				680E00000000000000000103 /* ShareExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -84,13 +193,19 @@
 				680000000000000000000501 /* Sources */,
 				680000000000000000000502 /* Frameworks */,
 				680000000000000000000503 /* Resources */,
+				680E00000000000000000501 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				680E00000000000000000A11 /* PBXTargetDependency */,
+				680E00000000000000000A12 /* PBXTargetDependency */,
+				680E00000000000000000A13 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				680000000000000000000201 /* Sources */,
+				680E00000000000000000205 /* Widgets/Shared */,
+				680E00000000000000000206 /* ShareExtension/Shared */,
 			);
 			name = pi2;
 			packageProductDependencies = (
@@ -125,6 +240,76 @@
 			productReference = 680000000000000000000102 /* pi2Tests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		680E00000000000000000601 /* NotificationService */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 680E00000000000000000801 /* Build configuration list for PBXNativeTarget "NotificationService" */;
+			buildPhases = (
+				680E00000000000000000511 /* Sources */,
+				680E00000000000000000512 /* Frameworks */,
+				680E00000000000000000513 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				680E00000000000000000201 /* NotificationService */,
+				680E00000000000000000204 /* Sources/Push */,
+			);
+			name = NotificationService;
+			packageProductDependencies = (
+				680E00000000000000000401 /* PiModels */,
+			);
+			productName = NotificationService;
+			productReference = 680E00000000000000000101 /* NotificationService.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		680E00000000000000000602 /* Widgets */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 680E00000000000000000802 /* Build configuration list for PBXNativeTarget "Widgets" */;
+			buildPhases = (
+				680E00000000000000000521 /* Sources */,
+				680E00000000000000000522 /* Frameworks */,
+				680E00000000000000000523 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				680E00000000000000000202 /* Widgets */,
+			);
+			name = Widgets;
+			packageProductDependencies = (
+				680E00000000000000000402 /* PiModels */,
+			);
+			productName = Widgets;
+			productReference = 680E00000000000000000102 /* Widgets.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		680E00000000000000000603 /* ShareExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 680E00000000000000000803 /* Build configuration list for PBXNativeTarget "ShareExtension" */;
+			buildPhases = (
+				680E00000000000000000531 /* Sources */,
+				680E00000000000000000532 /* Frameworks */,
+				680E00000000000000000533 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				680E00000000000000000203 /* ShareExtension */,
+			);
+			name = ShareExtension;
+			packageProductDependencies = (
+				680E00000000000000000403 /* PiModels */,
+			);
+			productName = ShareExtension;
+			productReference = 680E00000000000000000103 /* ShareExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -154,6 +339,9 @@
 			targets = (
 				680000000000000000000601 /* pi2 */,
 				680000000000000000000602 /* pi2Tests */,
+				680E00000000000000000601 /* NotificationService */,
+				680E00000000000000000602 /* Widgets */,
+				680E00000000000000000603 /* ShareExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -168,6 +356,27 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		680000000000000000000513 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		680E00000000000000000513 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		680E00000000000000000523 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		680E00000000000000000533 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -191,6 +400,27 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		680E00000000000000000511 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		680E00000000000000000521 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		680E00000000000000000531 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -198,6 +428,21 @@
 			isa = PBXTargetDependency;
 			target = 680000000000000000000601 /* pi2 */;
 			targetProxy = 680000000000000000000A01 /* PBXContainerItemProxy */;
+		};
+		680E00000000000000000A11 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 680E00000000000000000601 /* NotificationService */;
+			targetProxy = 680E00000000000000000A01 /* PBXContainerItemProxy */;
+		};
+		680E00000000000000000A12 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 680E00000000000000000602 /* Widgets */;
+			targetProxy = 680E00000000000000000A02 /* PBXContainerItemProxy */;
+		};
+		680E00000000000000000A13 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 680E00000000000000000603 /* ShareExtension */;
+			targetProxy = 680E00000000000000000A03 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -350,6 +595,138 @@
 			};
 			name = Release;
 		};
+		680E00000000000000000711 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NotificationService/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "pi²";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.pi2.ios.notifications;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		680E00000000000000000712 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NotificationService/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "pi²";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.pi2.ios.notifications;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		680E00000000000000000721 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Widgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "pi²";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.pi2.ios.widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		680E00000000000000000722 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Widgets/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "pi²";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.pi2.ios.widgets;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		680E00000000000000000731 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = ShareExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "pi²";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.pi2.ios.share;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		680E00000000000000000732 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = ShareExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "pi²";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.pi2.ios.share;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -380,6 +757,33 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		680E00000000000000000801 /* Build configuration list for PBXNativeTarget "NotificationService" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				680E00000000000000000711 /* Debug */,
+				680E00000000000000000712 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		680E00000000000000000802 /* Build configuration list for PBXNativeTarget "Widgets" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				680E00000000000000000721 /* Debug */,
+				680E00000000000000000722 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		680E00000000000000000803 /* Build configuration list for PBXNativeTarget "ShareExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				680E00000000000000000731 /* Debug */,
+				680E00000000000000000732 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -390,6 +794,21 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		680E00000000000000000401 /* PiModels */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 680000000000000000000901 /* XCLocalSwiftPackageReference "../app" */;
+			productName = PiModels;
+		};
+		680E00000000000000000402 /* PiModels */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 680000000000000000000901 /* XCLocalSwiftPackageReference "../app" */;
+			productName = PiModels;
+		};
+		680E00000000000000000403 /* PiModels */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 680000000000000000000901 /* XCLocalSwiftPackageReference "../app" */;
+			productName = PiModels;
+		};
 		680000000000000000000401 /* PiModels */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 680000000000000000000901 /* XCLocalSwiftPackageReference "../app" */;

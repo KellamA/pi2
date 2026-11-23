@@ -4,8 +4,10 @@
 // and the times of the day's registrations, each removed once it has aged out.
 //
 // An address is counted by the group it belongs to: an IPv4 address whole, an IPv6 address by its /64, since a home or
-// a phone network is given a whole /64 and can use any address in it, and an IPv4-mapped IPv6 address as the IPv4
-// address it is.
+// a phone network is given a whole /64 and can use any address in it, and an IPv4-mapped, 6to4 or Teredo IPv6 address
+// as the IPv4 address it carries. An IPv6 address is counted again, more loosely, by its block, the /48 it is in: a home or a
+// site given a /56 or a /48 has 256 or 65,536 /64s, each with a count of its own, and the block's count keeps that
+// from multiplying its limits by as much (README.md, "What it decides").
 
 import { DurableObject } from "cloudflare:workers";
 import { hex, utf8 } from "./bytes.ts";
@@ -21,43 +23,100 @@ export const REGISTRATIONS_A_DAY = 20;
  */
 export const CONNECTIONS_A_MINUTE = 120;
 export const CONNECTIONS_AN_HOUR = 1_200;
+/**
+ * The same for an IPv6 address's block, its /48, all its /64s together: four times a /64's registrations and ten times
+ * its connections. A /64 alone can never reach them, so a household meets its own /64's limits first, and no one
+ * customer of a network that hands out /64s from a shared /48 (a phone network, an ISP giving each home a /60) can use
+ * them up for the rest. Registrations come from Macs, not phones, and cost a pending pairing's storage, so their factor
+ * is the smaller; connections cost little, and many phones of a carrier may share a /48, so theirs is loose.
+ */
+export const BLOCK_REGISTRATIONS_AN_HOUR = 4 * REGISTRATIONS_AN_HOUR;
+export const BLOCK_REGISTRATIONS_A_DAY = 4 * REGISTRATIONS_A_DAY;
+export const BLOCK_CONNECTIONS_A_MINUTE = 10 * CONNECTIONS_A_MINUTE;
+export const BLOCK_CONNECTIONS_AN_HOUR = 10 * CONNECTIONS_AN_HOUR;
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
-/** Whether a connection is taken; if not, until when its address is refused, and for which limit. */
-export type Admission = { pass: true } | { pass: false; until: number; limit: "connections" | "registrations" };
+type Limits = { registrationsAnHour: number; registrationsADay: number; connectionsAMinute: number; connectionsAnHour: number };
+const GROUP: Limits = {
+	registrationsAnHour: REGISTRATIONS_AN_HOUR,
+	registrationsADay: REGISTRATIONS_A_DAY,
+	connectionsAMinute: CONNECTIONS_A_MINUTE,
+	connectionsAnHour: CONNECTIONS_AN_HOUR,
+};
+const BLOCK: Limits = {
+	registrationsAnHour: BLOCK_REGISTRATIONS_AN_HOUR,
+	registrationsADay: BLOCK_REGISTRATIONS_A_DAY,
+	connectionsAMinute: BLOCK_CONNECTIONS_A_MINUTE,
+	connectionsAnHour: BLOCK_CONNECTIONS_AN_HOUR,
+};
 
 /**
- * The name of an address's object today: HMAC-SHA256 of the address's group (`addressGroup`), keyed with a key made from
- * the deployment's `ADDRESS_KEY` and the date, so the name changes every day and cannot be worked back to an address
- * without that key.
+ * Whether a connection is taken; if not, until when it is refused, for which limit, and by which count: the address's
+ * own group's, or its block's.
  */
-export async function addressName(addressKey: string, group: string, now: number): Promise<string> {
+export type Admission = { pass: true } | { pass: false; until: number; limit: "connections" | "registrations"; by: "group" | "block" };
+
+/** What an address is counted by: its group (`addressGroup`), and for an IPv6 address its block, else null. */
+export type Counted = { group: string; block: string | null };
+
+/**
+ * The names of the objects of an address's group and block today: HMAC-SHA256 of each (`addressCounted`), keyed with a
+ * key made from the deployment's `ADDRESS_KEY` and the date, so the names change every day and cannot be worked back to
+ * an address without that key. A group and a block never hash the same text: a block is written with `::/48`, a /64
+ * with `::/64`, an IPv4 address with neither.
+ */
+export async function addressNames(addressKey: string, counted: Counted, now: number): Promise<{ group: string; block: string | null }> {
 	const day = new Date(now).toISOString().slice(0, 10);
 	const dayKey = await hmac(utf8(addressKey), utf8(`pi2-address\0${day}`));
-	return hex(await hmac(dayKey, utf8(group)));
+	const name = async (text: string) => hex(await hmac(dayKey, utf8(text)));
+	return { group: await name(counted.group), block: counted.block === null ? null : await name(counted.block) };
+}
+
+/** The name of the object of one group or block today, as `addressNames` makes it. */
+export async function addressName(addressKey: string, group: string, now: number): Promise<string> {
+	return (await addressNames(addressKey, { group, block: null }, now)).group;
+}
+
+/** The group an address is counted in (`addressCounted`), or null. */
+export function addressGroup(text: string | null): string | null {
+	return addressCounted(text)?.group ?? null;
 }
 
 /**
- * The group an address is counted in, from `CF-Connecting-IP` as Cloudflare gives it: an IPv4 address as itself
- * (`192.0.2.1`), an IPv6 address as its /64 (`2001:db8:1:2::/64`), an IPv4-mapped IPv6 address as its IPv4 address. Read
- * strictly, by hand: anything else, a missing header among it, is null, and the relay takes nothing from it.
+ * What an address is counted by, from `CF-Connecting-IP` as Cloudflare gives it. Its group: an IPv4 address as itself
+ * (`192.0.2.1`), an IPv6 address as its /64 (`2001:db8:1:2::/64`), an IPv4-mapped IPv6 address (`::ffff:192.0.2.1`) and a
+ * 6to4 one (`2002:c000:201::/48`, a whole /48 for one IPv4 address) and a Teredo one (`2001:0:…`, whose client's IPv4
+ * address is its last 32 bits inverted) as the IPv4 address they carry. Its block: for an
+ * IPv6 address counted as IPv6, its /48 (`2001:db8:1::/48`); else none, since an IPv4 address is one place already.
+ * Read strictly, by hand: anything else, a missing header among it, is null, and the relay takes nothing from it.
  */
-export function addressGroup(text: string | null): string | null {
+export function addressCounted(text: string | null): Counted | null {
 	if (text === null || text.length > 100) return null;
 	const v4 = readIPv4(text);
-	if (v4 !== null) return v4.join(".");
+	if (v4 !== null) return { group: v4.join("."), block: null };
 	const v6 = readIPv6(text);
 	if (v6 === null) return null;
 	// ::ffff:0:0/96, an IPv4 address written as IPv6.
-	if (v6.slice(0, 5).every((group) => group === 0) && v6[5] === 0xffff) {
-		return [v6[6] >> 8, v6[6] & 0xff, v6[7] >> 8, v6[7] & 0xff].join(".");
-	}
-	return `${v6
-		.slice(0, 4)
-		.map((group) => group.toString(16))
-		.join(":")}::/64`;
+	if (v6.slice(0, 5).every((group) => group === 0) && v6[5] === 0xffff) return { group: quad(v6[6], v6[7]), block: null };
+	// 2002::/16, 6to4 (RFC 3056): the /48 after it is the one IPv4 address's, which the next 32 bits give.
+	if (v6[0] === 0x2002) return { group: quad(v6[1], v6[2]), block: null };
+	// 2001::/32, Teredo (RFC 4380): `2001:0:server:server:flags:port:client:client`, the client's IPv4 address inverted.
+	// Its /64 and /48 are its server's, which the client chooses, so they would count nothing; its client's address is
+	// where the connection comes from.
+	if (v6[0] === 0x2001 && v6[1] === 0) return { group: quad(~v6[6] & 0xffff, ~v6[7] & 0xffff), block: null };
+	const prefix = (length: number) =>
+		v6
+			.slice(0, length)
+			.map((group) => group.toString(16))
+			.join(":");
+	return { group: `${prefix(4)}::/64`, block: `${prefix(3)}::/48` };
+}
+
+/** An IPv4 address from two 16-bit groups. */
+function quad(high: number, low: number): string {
+	return [high >> 8, high & 0xff, low >> 8, low & 0xff].join(".");
 }
 
 /** A dotted quad of four decimal numbers up to 255, with no leading zero (which some readers take for octal). */
@@ -112,66 +171,116 @@ function readGroups(text: string, last: boolean): number[] | null {
 	return out;
 }
 
-/** The stored mark of a minute's connections: the count itself while small, then the next power of two, at most the limit. */
-function markFor(count: number): number {
-	return Math.min(CONNECTIONS_A_MINUTE, count <= 2 ? count : 2 ** Math.ceil(Math.log2(count)));
+/**
+ * The stored mark of a minute's connections: what the object found stored when it last loaded (`base`), and on top of it
+ * the connections since, as themselves while one or two, then the next power of two; at most the minute's limit. Built
+ * on the passes since the last load, never on a mark, so a mark stays at most twice what passed however often the
+ * object leaves memory: by induction, base ≤ 2 × what passed before it, and the ladder ≤ 2 × what passed since.
+ */
+function markFor(count: number, base: number, limit: number): number {
+	const since = count - base;
+	return Math.min(limit, base + (since <= 2 ? since : 2 ** Math.ceil(Math.log2(since))));
 }
 
+/**
+ * One object for each group (an IPv4 address, an IPv6 /64) and each block (an IPv6 /48) that connects today, named by
+ * `addressNames`. A group's object counts against `GROUP`'s limits and, for an IPv6 address, asks its block's object,
+ * which counts against `BLOCK`'s; a block's object asks no other.
+ */
 export class Address extends DurableObject<Env> {
 	/**
 	 * Connections counted in each clock minute of the last hour, by the minute's number. They are kept in storage too,
 	 * since an object with nothing to do leaves memory after some seconds, which an address could otherwise bring about
-	 * to start afresh. What is stored is a mark at or above the count, written before a connection passes it: the count
-	 * itself for a minute's first two, then 4, 8, 16, 32, 64 and the limit. So a minute's connections cost at most eight
-	 * writes however many they are, an object that left memory comes back counting at most twice what was made, and
-	 * nothing is ever counted below what passed.
+	 * to start afresh. What is stored is a mark at or above the count, written before a connection passes it: what was
+	 * stored when the object loaded, and on top of it the count since, itself for the first two, then 4, 8, 16 and each
+	 * power of two up to the limit (`markFor`). So the minute's connections since a load cost at most eight writes however
+	 * many they are (twelve for a block's); an object leaves memory only after some seconds with nothing to do, so a
+	 * minute has a handful of loads at most. An object that left memory comes back counting at most twice what was made,
+	 * however often it left, and nothing is ever counted below what passed.
 	 */
 	private minutes = new Map<number, number>();
 	private marks = new Map<number, number>();
+	/** Each minute's mark as it was stored when the object loaded: what `markFor` builds on. */
+	private bases = new Map<number, number>();
+	/** The times of the day's registrations, oldest first, as stored. */
+	private times: number[] = [];
 	private loading: Promise<void> | null = null;
 
 	private load(): Promise<void> {
 		this.loading ??= (async () => {
-			const stored = (await this.ctx.storage.get<Record<string, number>>("minutes")) ?? {};
-			for (const [minute, mark] of Object.entries(stored)) {
+			const stored = await this.ctx.storage.get<unknown>(["minutes", "times"]);
+			for (const [minute, mark] of Object.entries((stored.get("minutes") as Record<string, number> | undefined) ?? {})) {
 				this.minutes.set(Number(minute), mark);
 				this.marks.set(Number(minute), mark);
+				this.bases.set(Number(minute), mark);
 			}
+			this.times = (stored.get("times") as number[] | undefined) ?? [];
 		})();
 		return this.loading;
 	}
 
 	/**
-	 * Counts a connection to /v1 from this address, and a registration if it is one, if they are within the limits. A
-	 * connection refused is not counted and writes nothing, so that people who share an address get in as soon as there
-	 * is room.
+	 * Counts a connection to /v1 from this group, and a registration if it is one, if they are within the limits; and
+	 * then, for an IPv6 address, in its block's object, named `block`, which must take it too. A connection refused by
+	 * either is counted by neither and writes nothing, so that people who share an address or a block get in as soon as
+	 * there is room, and the block counts only what its /64s let through.
 	 */
-	async admit(registering: boolean): Promise<Admission> {
+	async admit(registering: boolean, block: string | null = null): Promise<Admission> {
+		const ask = block === null ? undefined : () => this.env.ADDRESSES.get(this.env.ADDRESSES.idFromName(block)).admitBlock(registering);
+		return this.count(registering, GROUP, "group", ask);
+	}
+
+	/** Counts a connection, and a registration if it is one, against a block's limits: asked by its /64s' objects only. */
+	async admitBlock(registering: boolean): Promise<Admission> {
+		return this.count(registering, BLOCK, "block");
+	}
+
+	private async count(registering: boolean, limits: Limits, by: "group" | "block", ask?: () => Promise<Admission>): Promise<Admission> {
 		await this.load();
 		const now = Date.now();
-		const refused = this.connectionsRefused(now);
-		if (refused !== null) return { pass: false, until: refused, limit: "connections" };
-		const writes: Record<string, unknown> = {};
+		const refused = this.connectionsRefused(now, limits);
+		if (refused !== null) return { pass: false, until: refused, limit: "connections", by };
+		this.times = this.times.filter((time) => now - time < DAY);
 		if (registering) {
-			const times = ((await this.ctx.storage.get<number[]>("times")) ?? []).filter((time) => now - time < DAY);
-			const hour = times.filter((time) => now - time < HOUR);
-			if (times.length >= REGISTRATIONS_A_DAY) return { pass: false, until: times[0] + DAY, limit: "registrations" };
-			if (hour.length >= REGISTRATIONS_AN_HOUR) return { pass: false, until: hour[0] + HOUR, limit: "registrations" };
-			times.push(now);
-			writes.times = times;
+			const hour = this.times.filter((time) => now - time < HOUR);
+			if (this.times.length >= limits.registrationsADay) return { pass: false, until: this.times[0] + DAY, limit: "registrations", by };
+			if (hour.length >= limits.registrationsAnHour) return { pass: false, until: hour[0] + HOUR, limit: "registrations", by };
 		}
 		const minute = Math.floor(now / MINUTE);
-		const count = (this.minutes.get(minute) ?? 0) + 1;
-		this.minutes.set(minute, count);
+		// Counted at once, so that the connections that come while the block is asked see this one; given back if the
+		// block refuses it, or does not answer.
+		this.minutes.set(minute, (this.minutes.get(minute) ?? 0) + 1);
+		if (registering) this.times.push(now);
+		if (ask !== undefined) {
+			let answer: Admission;
+			try {
+				const result = await ask();
+				answer = result.pass ? { pass: true } : { pass: false, until: result.until, limit: result.limit, by: result.by };
+				// What the runtime keeps for an answer over RPC is let go when it is disposed, rather than left to the garbage
+				// collector (which the runtime warns of).
+				(result as Partial<Disposable>)[Symbol.dispose]?.();
+			} catch (error) {
+				this.giveBack(minute, registering, now);
+				throw error;
+			}
+			if (!answer.pass) {
+				this.giveBack(minute, registering, now);
+				return answer;
+			}
+		}
+		const writes: Record<string, unknown> = {};
+		if (registering) writes.times = [...this.times];
+		// The minute's count with any still waiting on the block: a mark at or above what passed.
+		const count = this.minutes.get(minute) ?? 0;
 		if (count > (this.marks.get(minute) ?? 0)) {
-			this.marks.set(minute, markFor(count));
-			for (const marked of this.marks.keys()) if (!this.minutes.has(marked)) this.marks.delete(marked);
+			this.marks.set(minute, markFor(count, this.bases.get(minute) ?? 0, limits.connectionsAMinute));
+			this.forgetMarks();
 			writes.minutes = Object.fromEntries(this.marks);
 		}
 		if (Object.keys(writes).length === 0) return { pass: true };
 		// Written before the connection is let through, and the alarm that removes it all once it has aged out set with it
 		// (moved only earlier, so a busy address does not set it again each time).
-		const due = this.agedOut(now, writes.times as number[] | undefined);
+		const due = this.agedOut(now);
 		const alarm = await this.ctx.storage.getAlarm();
 		const moved = alarm === null || alarm > due;
 		if (moved) writes.cleanupAt = due;
@@ -181,26 +290,49 @@ export class Address extends DurableObject<Env> {
 		return { pass: true };
 	}
 
+	/** Takes back a connection counted while its block was asked, which the block refused. */
+	private giveBack(minute: number, registering: boolean, now: number): void {
+		const count = (this.minutes.get(minute) ?? 1) - 1;
+		if (count > 0) this.minutes.set(minute, count);
+		else this.minutes.delete(minute);
+		if (registering) {
+			const index = this.times.lastIndexOf(now);
+			if (index !== -1) this.times.splice(index, 1);
+		}
+	}
+
 	/** When the oldest of what is kept has aged out: the newest minute an hour on, or the first registration a day on. */
-	private agedOut(now: number, times?: number[]): number {
+	private agedOut(now: number): number {
 		const due: number[] = [];
 		if (this.minutes.size > 0) due.push((Math.max(...this.minutes.keys()) + 61) * MINUTE);
-		if (times !== undefined && times.length > 0) due.push(times[0] + DAY);
+		if (this.times.length > 0) due.push(this.times[0] + DAY);
 		return due.length > 0 ? Math.min(...due) : now + HOUR;
 	}
 
-	/** Null if a connection may be taken now; else when the next may be. */
-	private connectionsRefused(now: number): number | null {
+	/** Forgets the marks, and what they were loaded as, of the minutes no longer counted. */
+	private forgetMarks(): void {
+		for (const marked of this.marks.keys()) if (!this.minutes.has(marked)) this.marks.delete(marked);
+		for (const based of this.bases.keys()) if (!this.minutes.has(based)) this.bases.delete(based);
+	}
+
+	/** Forgets the minutes older than the hour. */
+	private prune(now: number): void {
 		const minute = Math.floor(now / MINUTE);
 		for (const counted of this.minutes.keys()) if (counted <= minute - 60) this.minutes.delete(counted);
-		if ((this.minutes.get(minute) ?? 0) >= CONNECTIONS_A_MINUTE) return (minute + 1) * MINUTE;
+	}
+
+	/** Null if a connection may be taken now; else when the next may be. */
+	private connectionsRefused(now: number, limits: Limits): number | null {
+		this.prune(now);
+		const minute = Math.floor(now / MINUTE);
+		if ((this.minutes.get(minute) ?? 0) >= limits.connectionsAMinute) return (minute + 1) * MINUTE;
 		let hour = 0;
 		for (const count of this.minutes.values()) hour += count;
-		if (hour < CONNECTIONS_AN_HOUR) return null;
+		if (hour < limits.connectionsAnHour) return null;
 		// Room comes back as the oldest minutes leave the hour.
 		for (const [counted, count] of [...this.minutes].sort(([a], [b]) => a - b)) {
 			hour -= count;
-			if (hour < CONNECTIONS_AN_HOUR) return (counted + 60) * MINUTE;
+			if (hour < limits.connectionsAnHour) return (counted + 60) * MINUTE;
 		}
 		return (minute + 1) * MINUTE;
 	}
@@ -217,16 +349,16 @@ export class Address extends DurableObject<Env> {
 		// the runtime's) sets itself again for that time, so that what is stored always has an alarm to remove it.
 		const cleanupAt = await this.ctx.storage.get<number>("cleanupAt");
 		if (cleanupAt !== undefined && now < cleanupAt) return this.ctx.storage.setAlarm(cleanupAt);
-		this.connectionsRefused(now);
-		for (const marked of this.marks.keys()) if (!this.minutes.has(marked)) this.marks.delete(marked);
-		const times = ((await this.ctx.storage.get<number[]>("times")) ?? []).filter((time) => now - time < DAY);
-		if (this.marks.size === 0 && times.length === 0) {
+		this.prune(now);
+		this.forgetMarks();
+		this.times = this.times.filter((time) => now - time < DAY);
+		if (this.marks.size === 0 && this.times.length === 0) {
 			await this.ctx.storage.deleteAll();
 			return;
 		}
-		const due = this.agedOut(now, times);
+		const due = this.agedOut(now);
 		// The alarm first, as above.
 		await this.ctx.storage.setAlarm(due);
-		await this.ctx.storage.put({ minutes: Object.fromEntries(this.marks), times, cleanupAt: due });
+		await this.ctx.storage.put({ minutes: Object.fromEntries(this.marks), times: this.times, cleanupAt: due });
 	}
 }
