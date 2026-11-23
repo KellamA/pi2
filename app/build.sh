@@ -121,28 +121,10 @@ rm -rf "${REPLACED[@]}"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp "$BIN/pi2" "$APP/Contents/MacOS/pi2"
 cp "$BIN/pi2-peer" "$APP/Contents/MacOS/pi2-peer"
-# pi² Remote, an app bundle of its own with no Dock icon, where the engine starts it from (engine/src/remote.ts). Its
-# bundle id is the app's and `.remote`: dev.pi2.app.remote in a release, its own in a development build. Its usage
-# description is what macOS shows the person when a release build first advertises on Bonjour (docs/iphone.md 5.5).
-REMOTE="$APP/Contents/Helpers/pi² Remote.app"
-mkdir -p "$REMOTE/Contents/MacOS"
-cp "$BIN/pi2-remote-helper" "$REMOTE/Contents/MacOS/pi² Remote"
-cat > "$REMOTE/Contents/Info.plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>CFBundleExecutable</key><string>pi² Remote</string>
-  <key>CFBundleIdentifier</key><string>$BUNDLE_ID.remote</string>
-  <key>CFBundleName</key><string>pi² Remote</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>$VERSION</string>
-  <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
-  <key>LSMinimumSystemVersion</key><string>15.0</string>
-  <key>LSUIElement</key><true/>
-  <key>NSLocalNetworkUsageDescription</key><string>pi² lets your paired iPhone reach this Mac directly when both are on the same network.</string>
-  <key>NSBonjourServices</key><array><string>_pi2._tcp</string></array>
-</dict></plist>
-PLIST
+# pi² Remote, an app bundle of its own in Contents/Helpers, where the engine starts it from. Its packaging and signing
+# are remote-helper.sh's, an owner's path (.github/CODEOWNERS): how the helper that holds the Mac's keys is signed
+# decides what may run inside it.
+./remote-helper.sh place "$APP" "$BIN/pi2-remote-helper" "$BUNDLE_ID.remote" "$VERSION" "$BUILD_NUMBER"
 # Sparkle, for updates. ditto keeps the framework's symbolic links.
 ditto "$BIN/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 
@@ -235,8 +217,7 @@ ENT
   sign() { codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$@"; }
   [[ -f "$APP/Contents/Resources/node" ]] && sign --entitlements build/node.entitlements "$APP/Contents/Resources/node"
   sign "$APP/Contents/MacOS/pi2-peer"
-  # Its Keychain access group (keychain-access-groups) comes with its provisioning profile (P14, #686).
-  sign "$REMOTE"
+  ./remote-helper.sh sign "$APP" "$SIGN_IDENTITY"
   # Sparkle from the inside out, as its documentation sets out, so all of it carries the same team as the app.
   sign "$SPARKLE/XPCServices/Installer.xpc"
   sign --preserve-metadata=entitlements "$SPARKLE/XPCServices/Downloader.xpc"
@@ -256,7 +237,7 @@ else
   # signature it came with.
   [[ -f "$APP/Contents/Resources/node" ]] && codesign --force --sign - "$APP/Contents/Resources/node" 2>/dev/null
   codesign --force --sign - "$APP/Contents/MacOS/pi2-peer"
-  codesign --force --sign - "$REMOTE"
+  ./remote-helper.sh sign "$APP"
   codesign --force --sign - "$APP" 2>/dev/null || true
 fi
 echo "Built $PWD/$APP ($MODE, $VERSION build $BUILD_NUMBER)"

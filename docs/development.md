@@ -298,7 +298,7 @@ cd app && swift build --product pi2-remote-helper && swift build --product pi2-r
 cd app && .build/debug/pi2-remote-helper-check --engine ../engine/src/main.ts
 ```
 
-`app/build.sh` puts the helper in the app as `Contents/Helpers/pi² Remote.app`, where the engine starts it from. A throwaway copy's helper runs in loopback mode: to see it, turn remote access on through the copy's engine and open a pairing, then read `remote.log` in the copy's data folder:
+`app/build.sh` puts the helper in the app as `Contents/Helpers/pi² Remote.app`, where the engine starts it from, through `app/remote-helper.sh`, which packages and signs it (an owner's path); `app/check-release-build.mts` checks a release build's helper ([pi2-remote.md](pi2-remote.md#packaging-and-signing)). A throwaway copy's helper runs in loopback mode: to see it, turn remote access on through the copy's engine and open a pairing, then read `remote.log` in the copy's data folder:
 
 ```bash
 scripts/test-copy call test-7 devices.set '{"on":true,"preview":true,"relayAddress":"ws://127.0.0.1:9/v1"}'

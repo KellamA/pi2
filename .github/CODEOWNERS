@@ -41,6 +41,9 @@
 # its start-up checks and its loopback mode (a weakened check would let a weakened helper through).
 /app/Sources/pi2-remote-helper/ @KellamA
 /app/Sources/pi2-remote-helper-check/ @KellamA
+# How pi² Remote is packaged and signed (#675): an entitlement given it there would let any program load a library into
+# the process that holds the Mac's keys.
+/app/remote-helper.sh @KellamA
 /engine/src/devices.ts @KellamA
 /engine/src/remote.ts @KellamA
 /engine/test/devices.ts @KellamA
