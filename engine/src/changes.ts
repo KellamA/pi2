@@ -54,7 +54,7 @@ export type Op =
 	| { kind: "note.remove"; note: ProjectNote }
 	// before or after empty ({}): the item was not there (filed, or the Undo of filing).
 	| { kind: "work.local"; id: number; action: WorkAction; before: Partial<WorkItem>; after: Partial<WorkItem> }
-	| { kind: "work.github"; intent: string; action: WorkAction | "pull_request" | "review" | "merge" | "send_back"; summary: string }
+	| { kind: "work.github"; intent: string; action: WorkAction | "pull_request" | "update_pull_request" | "review" | "merge" | "send_back"; summary: string }
 	// after: one choice for every run, or one each (an Undo's); batches: the batch each run was in, and is put in.
 	| { kind: "wake.choice"; submissions: number[]; before: (string | null)[]; after: string | (string | null)[]; batches?: { before: (string | null)[]; after: (string | null)[] } }
 	| { kind: "orchestrator.set"; from: string; to: string };

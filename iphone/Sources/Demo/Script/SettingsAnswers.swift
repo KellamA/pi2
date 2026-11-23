@@ -1,8 +1,8 @@
 import Foundation
 
 /// A project's settings and limits, the app's settings a phone may change, and schedules, answered in the demo (#697) as
-/// the engine answers them: `projects.ts` (`projects.rename`, `.set`, `.archive`, `.unarchive`, `.delete`, with
-/// `changeProjectSettings`), `github.ts` (`github.attach`, `.detach`), `agentrequests.ts` (`agents.save`, as the settings
+/// the engine answers them: `projects.ts` (`projects.unarchive`, `.delete`; `.set`, `.rename` and `.archive` are
+/// `ProjectAnswers.swift`'s), `github.ts` (`github.attach`, `.detach`), `agentrequests.ts` (`agents.save`, as the settings
 /// send it: a name with a model or a summary size), `keepawake.ts` (`settings.setAwake`), `settingsrequests.ts`
 /// (`settings.setAutoArchive`, `settings.setCompaction`, `chat.set`), `coauthor.ts` (`coauthor.set`) and
 /// `scheduleruns.ts` with `schedules.ts` (`schedules.save`, `.delete`). Each checks what the engine checks, refuses in its
@@ -11,39 +11,6 @@ import Foundation
 extension DemoScript {
     static let settings: [String: DemoAnswer] = [
         // MARK: A project
-        "projects.rename": { request, world in
-            let id = try DemoSettings.projectID(request)
-            let name = try DemoSettings.checkName(request.params["name"])
-            try DemoSettings.changeProject(id, in: world) { project, projects in
-                let taken = projects.contains { other in
-                    other["id"] as? String != id && other["deletedAt"] == nil && (other["name"] as? String)?.lowercased() == name.lowercased()
-                }
-                if taken { throw DemoRefusal("There is already a project called \(name)") }
-                project["name"] = name
-            }
-            return [:]
-        },
-        "projects.set": { request, world in
-            let id = try DemoSettings.projectID(request)
-            // The demo's projects keep the folders they were recorded with: the phone chooses no folder here.
-            if request.params["folder"] != nil { throw DemoRefusal("The demo has no other folders to offer: nothing was changed.") }
-            var answer: [String: Any] = [:]
-            try DemoSettings.changeProject(id, in: world) { project, _ in
-                if let given = request.params["settings"] {
-                    project["settings"] = try DemoSettings.changeSettings(project["settings"] as? [String: Any] ?? [:], given)
-                }
-                answer = ["settings": project["settings"] ?? [:]]
-            }
-            return answer
-        },
-        "projects.archive": { request, world in
-            let id = try DemoSettings.projectID(request)
-            try DemoSettings.lifecycle(id, in: world, checkBusy: true) { project in
-                guard project["archivedAt"] == nil else { return }
-                project["archivedAt"] = world.now
-            }
-            return [:]
-        },
         "projects.unarchive": { request, world in
             let id = try DemoSettings.projectID(request)
             try DemoSettings.lifecycle(id, in: world, checkBusy: false) { project in
@@ -253,7 +220,6 @@ enum DemoSettings {
     static let archived = "This project is archived. Restore it first."
     static let projectDeleted = "This agent’s project was deleted. Choose another agent."
     static let stopFirst = "Stop the project's agents first."
-    static let switches = ["startAgents", "fileWork", "closeWork", "makeAgents", "addRules", "merge", "release", "passLimits"]
 
     static func projects(_ world: DemoWorld) -> [[String: Any]] { world.event("projects")?["projects"] as? [[String: Any]] ?? [] }
     static func agents(_ world: DemoWorld) -> [[String: Any]] { world.event("agents")?["agents"] as? [[String: Any]] ?? [] }
@@ -302,67 +268,10 @@ enum DemoSettings {
     }
 
     /// Whether something of the project works now: a conversation of it busy, as the library says.
+    /// As `projects.archive` in `ProjectAnswers.swift` reads it: a run of it going, or something of it waiting for the person.
     private static func busy(_ id: String, in world: DemoWorld) -> Bool {
-        (world.event("library")?["conversations"] as? [[String: Any]] ?? []).contains { $0["projectId"] as? String == id && $0["busy"] as? Bool == true }
-    }
-
-    /// `checkName`.
-    static func checkName(_ value: Any?) throws -> String {
-        guard let text = value as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw DemoRefusal("Give the project a name") }
-        let name = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if name.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F || $0.value == 0x2028 || $0.value == 0x2029 }) {
-            throw DemoRefusal("A project's name must be a single line")
-        }
-        if name.count > 80 { throw DemoRefusal("A project's name can be 80 characters at most; this one is \(name.count)") }
-        return name
-    }
-
-    /// `changeProjectSettings`: each part checked, the parts not given kept.
-    static func changeSettings(_ settings: [String: Any], _ given: Any) throws -> [String: Any] {
-        guard let given = given as? [String: Any] else { throw DemoRefusal("settings must be an object") }
-        var next = settings
-        for (key, value) in given {
-            switch key {
-            case "wakeOnReports":
-                guard isBool(value) else { throw DemoRefusal("wakeOnReports must be true or false") }
-                next["wakeOnReports"] = value
-            case "withoutAsking":
-                guard let value = value as? [String: Any] else { throw DemoRefusal("withoutAsking must be an object of switches") }
-                var switches = next["withoutAsking"] as? [String: Any] ?? [:]
-                for (name, on) in value {
-                    guard Self.switches.contains(name) else { throw DemoRefusal("Unknown switch: \(name)") }
-                    guard isBool(on) else { throw DemoRefusal("\(name) must be true or false") }
-                    switches[name] = on
-                }
-                next["withoutAsking"] = switches
-            case "limits":
-                guard let value = value as? [String: Any] else { throw DemoRefusal("limits must be an object") }
-                var limits = next["limits"] as? [String: Any] ?? [:]
-                for (name, limit) in value {
-                    switch name {
-                    case "planShare":
-                        if !(limit is NSNull) {
-                            guard let number = limit as? NSNumber, !isBool(limit), number.doubleValue == Double(number.intValue), (1...100).contains(number.intValue) else {
-                                throw DemoRefusal("planShare must be a whole number from 1 to 100, or null")
-                            }
-                        }
-                    case "dailySpend":
-                        if !(limit is NSNull) {
-                            guard let number = limit as? NSNumber, !isBool(limit), number.doubleValue.isFinite, number.doubleValue > 0 else {
-                                throw DemoRefusal("dailySpend must be an amount above zero, or null")
-                            }
-                        }
-                    default:
-                        throw DemoRefusal("Unknown limit: \(name)")
-                    }
-                    limits[name] = limit
-                }
-                next["limits"] = limits
-            default:
-                throw DemoRefusal("Unknown setting: \(key)")
-            }
-        }
-        return next
+        (world.event("activity")?["runs"] as? [[String: Any]] ?? []).contains { $0["projectId"] as? String == id }
+            || DemoNeeds.items(world).contains { $0["projectId"] as? String == id }
     }
 
     /// Whether the `providers` event lists the model `{ provider, modelId }`.
