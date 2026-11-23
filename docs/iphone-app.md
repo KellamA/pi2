@@ -136,18 +136,18 @@ Run them all with `xcodebuild test` and the same arguments as `build` above, or 
 `Intents/` (#701) holds the App Intents: **Ask an Orchestrator**, **What Needs Me** and **Stop a Project**, each with `authenticationPolicy = .requiresAuthentication` ([iphone.md 4.5](iphone.md#45-a-stolen-or-unlocked-phone-the-owners-choice)), a project as an `AppEntity` (`IntentProject`) read from `session.engine.projects`, and `PiShortcuts`, the phrases. They send what the Mac's screens send, through the same client: `submit` as the Dashboard's strip does, `abort` for each of the project's agent runs as Stop All does, and they read what needs the person from the client's `needs`.
 
 - **The session.** App Intents run in the app's process, which iOS starts in the background for one, running `Pi2App.init` but drawing no scene. `App/` is to register its session there, once: `IntentSessions.register(session, isOpen: { … })`, where `isOpen` says whether a session Face ID opened is open, once `AppSession` keeps one. While it is closed, an intent opens pi² in the foreground for Face ID before it sends or reads anything (iOS 26 and later; before, it asks the person to open pi²). Until `App/` registers one, an intent makes a session as `Pi2App.init` does.
-- **The Mac out of reach.** An intent sends through `IntentCourier`; its one courier, `EngineCourier`, sends on `session.engine` and reads the Outbox's answer `{ "outbox": <id> }` (#692's `CachedTransport`, run by the session while `.outOfReach`) as kept for later, which the intent says: the message waits in the mailbox and the answer comes later. Without it, the intent says nothing was sent.
+- **The Mac out of reach.** An intent sends through `IntentCourier`; its one courier, `IntentEngineCourier`, sends on `session.engine` and reads the Outbox's answer `{ "outbox": <id> }` (#692's `CachedTransport`, run by the session while `.outOfReach`) as kept for later, which the intent says: the message waits in the mailbox and the answer comes later. Without it, the intent says nothing was sent.
 - **Tests.** `IntentsTests.swift` calls each intent's `perform()` and what it says in each state, on the recording, in the demo mode, and on stand-ins for a Mac that answers and for the Outbox. `IntentSessions.prompts` stands in for the system's confirmation and its opening of the app, which a test cannot answer.
 
 ## The extensions
 
-The app carries three app extensions, each a target of `pi2.xcodeproj` embedded in the app, with its bundle id under the app's ([iphone.md 9.1](iphone.md#91-given-out-testflights-internal-testing)) and the app's deployment target, Swift settings and version. Each is an empty shell for now, whose entry file names the issue that fills it:
+The app carries three app extensions, each a target of `pi2.xcodeproj` embedded in the app, with its bundle id under the app's ([iphone.md 9.1](iphone.md#91-given-out-testflights-internal-testing)) and the app's deployment target, Swift settings and version. Each began as an empty shell, whose entry file names the issue that fills it:
 
 | Target | Folder | Bundle id | Extension point | Entry | Owner | Shared with the app in |
 |---|---|---|---|---|---|---|
 | `NotificationService` | `iphone/NotificationService/` | `dev.pi2.ios.notifications` | `com.apple.usernotifications.service` | `NotificationService`, a `UNNotificationServiceExtension`: hands each notification on unchanged | #690 | `iphone/Sources/Push/` |
 | `Widgets` | `iphone/Widgets/`, and `LiveActivity/` in it | `dev.pi2.ios.widgets` | `com.apple.widgetkit-extension` | `PiWidgets`, the `@main` widget bundle: one placeholder widget | #699; #700 for `LiveActivity/` | `iphone/Widgets/Shared/` |
-| `ShareExtension` | `iphone/ShareExtension/` | `dev.pi2.ios.share` | `com.apple.share-services` (a link, text, a photo or a file) | `ShareViewController`: a page saying it is not built, whose Done completes the request | #702 | `iphone/ShareExtension/Shared/` |
+| `ShareExtension` | `iphone/ShareExtension/` | `dev.pi2.ios.share` | `com.apple.share-services` (a link, text, a photo or a file) | `ShareViewController`: hosts `SharePage` (`Shared/`), whose Send writes the message as a draft into the app group's `Share/` folder (`ShareDrop`) for the app to send (`SharePickup`) | #702 | `iphone/ShareExtension/Shared/` |
 
 **Rules for the issues that fill them.**
 

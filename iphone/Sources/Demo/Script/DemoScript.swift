@@ -20,6 +20,8 @@ enum DemoScript {
                         // search
         projects,       // Script/ProjectAnswers.swift (#685, #688): projects.set, .rename, .archive, .startFresh, .watch
         usage,          // Script/UsageAnswers.swift (#697): usage.setBudget, limits.refresh
+        settings,       // Script/SettingsAnswers.swift (#697): a project's repository, projects.delete; agents.save; the app's
+                        // settings; schedules
         board,          // Script/BoardAnswers.swift (#696): projects.rules.*, memory.add/.edit/.delete/.setEnabled,
                         // agents.allowEverything (off), branches.refresh
         work,           // Script/WorkAnswers.swift (#694): work.list, work.create, work.act

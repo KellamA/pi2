@@ -28,6 +28,7 @@ enum Targets {
 			try sealedItem(world),
 			requestItem(world),
 			macItem(world),
+			relayMessages(world),
 		]
 	}
 
@@ -323,6 +324,51 @@ enum Targets {
 			let other: ControlLine.Side = line!.sender == .mac ? .phone : .mac
 			if (try? ControlLine.parse(Data(input), from: line!.sender)) == nil { Fuzz.violation("control-lines", "refused a line from its own writer", input) }
 			if (try? ControlLine.parse(Data(input), from: other)) != nil { Fuzz.violation("control-lines", "took a line from the end that never sends it", input) }
+			return true
+		}
+	}
+
+	/// The relay's text messages, as its client reads them (RemoteKit/Relay, #678). The first byte chooses the end that
+	/// reads (a Mac registering, the Mac, a phone, a joining phone); a message taken is read again the same.
+	static func relayMessages(_ world: World) -> Target {
+		let ends: [RelayEnd] = [.registering, .mac, .device, .joining]
+		let sealed = Base64URL.encode(Data([4]) + Data(repeating: 0x5A, count: 100))
+		let device = world.device.text
+		let item = Base64URL.encode(Data(repeating: 1, count: 16))
+		let key = PublicKeys.text(world.deviceKey.publicKey)
+		let keyID = Data(repeating: 2, count: 32).base64EncodedString()
+		let texts: [(UInt8, String)] = [
+			(0, #"{"challenge":"\#(Base64URL.encode(Data(repeating: 3, count: 32)))"}"#),
+			(0, #"{"registered":{"pairing":"\#(world.pairing.text)"}}"#),
+			(1, #"{"ready":{"devices":[{"device":"\#(device)","online":true}],"left":["\#(device)"],"pending":false,"mail":2}}"#),
+			(2, #"{"ready":{"mac":true,"mail":0}}"#),
+			(3, #"{"joined":{"device":"\#(device)"}}"#),
+			(1, #"{"joined":{"device":"\#(device)","deviceKey":"\#(key)","keyId":"\#(keyID)"}}"#),
+			(1, #"{"ok":{"what":"addDevice"}}"#),
+			(2, #"{"refused":{"what":"put","why":"mailbox-full"}}"#),
+			(1, #"{"refused":{"why":"another-mac"}}"#),
+			(2, #"{"busy":{"until":1800000001000}}"#),
+			(1, #"{"item":{"from":"\#(device)","id":"\#(item)","item":"\#(sealed)","presence":true}}"#),
+			(2, #"{"item":{"from":"mac","id":"\#(item)","item":"\#(sealed)","presence":false}}"#),
+			(2, #"{"state":{"id":"\#(item)","item":"\#(sealed)"}}"#),
+			(1, #"{"taken":{"count":2}}"#),
+			(1, #"{"held":{"device":"\#(device)","until":1800000001000}}"#),
+			(3, #"{"mac":{"online":false}}"#),
+			(1, #"{"anotherMac":{}}"#),
+		]
+		return Target(
+			name: "relay-messages", seeds: texts.map { [$0.0] + Array($0.1.utf8) },
+			dictionary: words(["\\\"", "\\u00", "true", "false", "null", "dev_", "\"mac\"", ",", "{}", "[]", "\"why\":", "\"what\":"]), maxLength: 2048
+		) { input in
+			guard let first = input.first else { return false }
+			let end = ends[Int(first) % ends.count]
+			let text = String(decoding: input.dropFirst(), as: UTF8.self)
+			var message: RelayIncoming?
+			guard Fuzz.takes("relay-messages", input, { message = try RelayIncoming.parse(text, for: end) }) else { return false }
+			var again: RelayIncoming?
+			guard Fuzz.takes("relay-messages", input, { again = try RelayIncoming.parse(text, for: end) }), again == message else {
+				Fuzz.violation("relay-messages", "read one text two ways", input)
+			}
 			return true
 		}
 	}
