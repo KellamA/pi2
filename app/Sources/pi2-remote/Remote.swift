@@ -272,7 +272,7 @@ package final class Remote: @unchecked Sendable {
 
 	private func accepted(_ descriptor: Int32, from peer: IPAddress) {
 		// Which interface it came by matters only for the shared address space (D2), so it is looked up for that alone.
-		let arrivedOn = peer.isSharedAddressSpace ? IPAddress.local(of: descriptor).flatMap(MacAddresses.interface(of:)) : nil
+		let arrivedOn = peer.isSharedAddressSpace ? MacAddresses.routeInterface(to: peer) : nil
 		guard admits(peer: peer, arrivedOn: arrivedOn, kind: kind, direct: switches.direct) else {
 			Seldom.shared.say("public", "a connection from an address outside the local and private ranges refused (Direct from any address is off)")
 			close(descriptor)
@@ -283,7 +283,7 @@ package final class Remote: @unchecked Sendable {
 		while true {
 			let admitted = admission.admit(peer)
 			if admitted == .taken { break }
-			let idle = connections.values.filter { $0.waitingForFirstMessage && (admitted == .allFull || $0.peer.limitKey == peer.limitKey) }
+			let idle = connections.values.filter { $0.waitingForFirstMessage && (admitted == .allFull || admission.sourceKey($0.peer) == admission.sourceKey(peer)) }
 			guard let oldest = idle.min(by: { $0.acceptedAt < $1.acceptedAt }) else {
 				Seldom.shared.say("pending", "a connection from \(peer) refused: \(admission.pendingCount) wait to authenticate already")
 				close(descriptor)
@@ -309,7 +309,40 @@ package final class Remote: @unchecked Sendable {
 		guard !phonesPaused, engine.pending > Self.engineBacklog else { return }
 		phonesPaused = true
 		Seldom.shared.say("backlog", "more than \(Self.engineBacklog / 1024 / 1024) MB wait for the engine: phones are not read until it drains")
-		for connection in connections.values { connection.pauseReading() }
+		for connection in connections.values where connection.isAttached { connection.pauseReading() }
+	}
+
+	// ---- What phones may make pi² Remote hold (#675's security read B, M1b)
+
+	/// The most attached connections one device keeps: a phone moving between paths has two for a moment; a third ends
+	/// the oldest, whose session keeps its resume window.
+	package static let attachedPerDevice = 2
+	/// What all phones' outgoing queues may hold together. One connection may hold up to 128 MB waiting and one line of
+	/// the engine's longest (64 MB) on top; this lets one such phone, and every other phone's ordinary traffic, through,
+	/// and bounds what slow readers can make the Mac hold, together, at a quarter of a gigabyte. Over it, the connection
+	/// with the most waiting is ended (its session keeps what a resume needs).
+	package static let queueBudget = 256 * 1024 * 1024
+
+	/// Of `items` and what each holds, the one to let go when together they hold more than `budget`: the largest.
+	package static func overBudget<T>(_ items: [(T, Int)], budget: Int) -> T? {
+		guard items.reduce(0, { $0 + $1.1 }) > budget else { return nil }
+		return items.max(by: { $0.1 < $1.1 })?.0
+	}
+
+	func keepWithinBudget() {
+		let held = connections.values.map { ($0, $0.queued) }
+		guard let largest = Self.overBudget(held, budget: Self.queueBudget) else { return }
+		log("phones leave more than \(Self.queueBudget / 1024 / 1024) MB unread in all; the one leaving the most is closed")
+		largest.end()
+	}
+
+	/// A device's newest connections are kept; older ones past `attachedPerDevice` end.
+	private func keepNewest(of device: DeviceID) {
+		let attached = connections.values.filter { $0.isAttached && $0.device == device }.sorted { $0.attachedAt > $1.attachedAt }
+		for old in attached.dropFirst(Self.attachedPerDevice) {
+			log("device \(device) has more than \(Self.attachedPerDevice) connections attached; the oldest is closed")
+			old.end()
+		}
 	}
 
 	private func engineDrained() {
@@ -396,12 +429,15 @@ package final class Remote: @unchecked Sendable {
 				engine.request("remote.sessionEnd", .object([("session", .string(id.text))]))
 				return false
 			}
-			return session.resume(on: connection, received: received ?? 0)
+			let resumed = session.resume(on: connection, received: received ?? 0)
+			keepNewest(of: device)
+			return resumed
 		}
 		// A fresh session; a session the phone asked to resume and the engine did not is gone.
 		let session = Session(remote: self, id: id, device: device)
 		sessions[id.text] = session
 		session.attach(connection)
+		keepNewest(of: device)
 		return true
 	}
 

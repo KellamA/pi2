@@ -316,6 +316,12 @@ enum Flows {
 		guard let (closing, _) = attach(engine, mac: mac, device: other, keys: second2, session: "s_two") else { Check.stop("attached again") }
 		// Back-pressure: the engine (this check) reads nothing while the phone sends; pi² Remote stops reading from the
 		// phone once 8 MB wait for the engine, so the phone is held back and pi² Remote's memory is not (M2).
+		let secret3 = Bytes.random(32)
+		let expires3 = Int64(Date().timeIntervalSince1970) + 300
+		engine.event("openJoin", [("secret", .string(Base64URL.encode(secret3))), ("tokenHash", .string("x")), ("expires", .integer(expires3 * 1000))])
+		let payload3 = try! PairingPayload(
+			pairing: mac.pairing, macName: "Check Mac", channelKey: mac.channel, identityKey: mac.identity, recordKey: mac.record, secret: secret3,
+			relay: "ws://127.0.0.1:9/v1", addresses: [], expires: expires3)
 		let rssBefore = rss(child.pid)
 		closing.sendTimeout(3)
 		let pad = String(repeating: "b", count: 1024 * 1024)
@@ -327,28 +333,53 @@ enum Flows {
 		let rssHeld = rss(child.pid) - rssBefore
 		Check.expect(sent < 100, "a phone sending 160 MB at an engine that reads nothing is held back", "\(sent) MB taken")
 		Check.expect(rssHeld < 64 * 1024, "and pi² Remote holds no more than the bound for the engine: it grew by \(rssHeld / 1024) MB")
+		// Meanwhile a second phone connects and a claimer pairs: neither is attached, so neither is paused (M2c). Both
+		// wait past the three seconds a first message has before the engine is read at all.
+		let joining = Phone(port: mac.port)!
+		let joiningHandshake = try! ChannelHandshake.connection(initiator: true, pairing: mac.pairing, device: other, channelKey: second2.channel, remoteChannelKey: mac.channel)
+		joining.send(try! joiningHandshake.writeMessage())
+		let unanswered = Phone(port: mac.port)!
+		let claimSent = unanswered.pair(payload: payload3, keys: PhoneKeys(), team: team) != nil
+		Check.expect(claimSent, "a claimer completes its handshake and sends its claim while another phone is held back")
+		sleep(4)
+		var claimRequest: (id: JSONValue, params: JSONValue)?
+		if let begin = engine.request("remote.attachBegin", within: 60) {
+			let challenge = Bytes.random(32)
+			engine.answer(begin.id, .object([("challenge", .string(Base64URL.encode(challenge)))]))
+			if let answer = joining.message(), (try? joiningHandshake.readMessage(answer)) != nil, let channel = try? joiningHandshake.channel(maxLineLength: Lines.defaultMaxLength) {
+				joining.channel = channel
+				_ = joining.line()
+				let claim = try! AttachClaim.make(pairing: mac.pairing, device: other, session: nil, received: nil, binding: channel.handshakeHash, challenge: challenge, build: second2.build, deviceKey: second2.device, presenceKey: second2.presence)
+				joining.sendLine(ControlLine.attach(claim).line)
+				// The claim was sent before this attach, so the engine hears it first.
+				claimRequest = engine.request("remote.pairClaim")
+				if let attachRequest = engine.request("remote.attach") { engine.answer(attachRequest.id, .object([("session", .string("s_six")), ("resume", .bool(false))])) }
+			}
+			let attachedLine = joining.line().flatMap { try? ControlLine.parse($0) }
+			if case .attached? = attachedLine {
+				Check.expect(true, "a second phone attaches while the first is held back")
+			} else {
+				Check.expect(false, "a second phone attaches while the first is held back")
+			}
+		} else {
+			Check.expect(false, "a second phone's first message is read while the first phone is held back")
+		}
+		var unansweredAt: Date?
+		if let claimed = claimRequest {
+			Check.expect(true, "and the claimer's claim reaches the engine, uncut")
+			engine.answer(claimed.id, .object([("claim", .string("claim_3"))]))
+			usleep(300_000)
+			// As before `paired`, and then no answer ever: its channel ends 30 s later.
+			engine.event("closeJoin")
+			unansweredAt = Date()
+		} else {
+			Check.expect(false, "and the claimer's claim reaches the engine, uncut")
+		}
 		var drained = 0
 		while engine.sessionLine(within: 3) != nil { drained += 1 }
 		Check.expect(drained > 0 && drained <= sent, "once the engine reads, what the phone sent reaches it", "\(drained) of \(sent)")
 		engine.event("sessionClosed", [("session", .string("s_two")), ("why", .string("check"))])
 		Check.expect(closing.event(within: 30) == .bye, "a session the engine closes ends its channel")
-		// A claim the engine took, then `closeJoin` as before `paired`, and no answer ever: its channel ends 30 s later.
-		let secret3 = Bytes.random(32)
-		let expires3 = Int64(Date().timeIntervalSince1970) + 300
-		engine.event("openJoin", [("secret", .string(Base64URL.encode(secret3))), ("tokenHash", .string("x")), ("expires", .integer(expires3 * 1000))])
-		let payload3 = try! PairingPayload(
-			pairing: mac.pairing, macName: "Check Mac", channelKey: mac.channel, identityKey: mac.identity, recordKey: mac.record, secret: secret3,
-			relay: "ws://127.0.0.1:9/v1", addresses: [], expires: expires3)
-		let unanswered = Phone(port: mac.port)!
-		var unansweredAt: Date?
-		if unanswered.pair(payload: payload3, keys: PhoneKeys(), team: team) != nil, let claimed = engine.request("remote.pairClaim") {
-			engine.answer(claimed.id, .object([("claim", .string("claim_3"))]))
-			usleep(300_000)
-			engine.event("closeJoin")
-			unansweredAt = Date()
-		} else {
-			Check.expect(false, "a third claim reached the engine")
-		}
 		guard let (lapsing, _) = attach(engine, mac: mac, device: other, keys: second2, session: "s_three") else { Check.stop("the second phone attached") }
 		// A `refused` line is the Mac's alone (#820): from a phone it closes the channel, and the session waits for a resume.
 		lapsing.sendLine(Data(#"{"refused":{"reason":"update"}}"#.utf8))
@@ -386,6 +417,21 @@ enum Flows {
 			phone.sendLine(ControlLine.attach(claim).line)
 			Check.expect(phone.closesWithin(10), "an attach whose build is not numbers and dots is closed by pi² Remote itself")
 			Check.expect(engine.quiet(for: 1), "and never reaches the engine")
+		}
+
+		Check.section("a device's attached connections, and the Mac's proof from a phone (#675's security read B, M1b)")
+		if let (seventh, _) = attach(engine, mac: mac, device: other, keys: second2, session: "s_seven"),
+		   let (eighth, _) = attach(engine, mac: mac, device: other, keys: second2, session: "s_eight") {
+			Check.expect(joining.event(within: 10) == .bye && joining.closesWithin(5), "a device's third attached connection ends its oldest")
+			Check.expect(seventh.message(within: 0.5) == nil && !seventh.closed && !eighth.closed, "and keeps its newest two")
+			engine.event("sessionClosed", [("session", .string("s_six")), ("why", .string("check"))])
+			seventh.sendLine(Data(#"{"challenge":"x","mac":{"signed":"y","signature":"z"}}"#.utf8))
+			Check.expect(seventh.closesWithin(10), "the Mac's proof sent by a phone in a session closes its channel")
+			Check.expect(engine.sessionLine(within: 1) == nil, "and never reaches the engine")
+			engine.event("sessionClosed", [("session", .string("s_seven")), ("why", .string("check"))])
+			engine.event("sessionClosed", [("session", .string("s_eight")), ("why", .string("check"))])
+		} else {
+			Check.expect(false, "a device attaches two connections more")
 		}
 
 		guard let (revoked, _) = attach(engine, mac: mac, device: device, keys: keys, session: "s_four") else { Check.stop("attached once more") }

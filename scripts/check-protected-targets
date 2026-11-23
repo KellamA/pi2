@@ -166,8 +166,14 @@ done < <(grep -rlE --include='*.swift' --exclude-dir=.build --exclude-dir=.git '
 # Read with line comments taken out, lines joined and block comments taken out, so that an attribute on a line of its
 # own or a comment between the words counts; an import of one declaration (`import struct pi2_remote.Startup`) too.
 while IFS= read -r file; do
-	# Block comments nest in Swift, so the innermost goes first, again and again.
-	if perl -0777 -pe 's#//[^\n]*##g; 1 while s#/\*(?:(?!/\*|\*/).)*\*/# #gs; s/\n/ /g' "$file" |
+	# Comments read as Swift reads them, from the start: a line comment to its line's end, a block comment to its own
+	# end, block comments nested, and neither opening inside the other.
+	if perl -0777 -ne 'my $o = ""; my $d = 0; pos($_) = 0;
+		while (pos($_) < length) {
+			if ($d) { m{\G(/\*|\*/|.)}gcs; $d++ if $1 eq "/*"; $d-- if $1 eq "*/" }
+			else { m{\G(//[^\n]*|/\*|.)}gcs; if ($1 eq "/*") { $d = 1; $o .= " " } elsif (substr($1, 0, 2) eq "//") { $o .= " " } else { $o .= $1 } }
+		}
+		$o =~ s/\n/ /g; print $o' "$file" |
 		grep -qE '@testable([[:space:]]+@[A-Za-z_]+(\([^)]*\))?)*[[:space:]]+import[[:space:]]+((typealias|struct|class|enum|protocol|let|var|func|actor|macro)[[:space:]]+)?(RemoteKit|pi2_remote)([^A-Za-z0-9_]|$)'; then
 		fail "${file#"$root"/} names @testable import of RemoteKit or pi² Remote, which nothing may"
 	fi

@@ -74,12 +74,13 @@ final class PhoneConnection: @unchecked Sendable {
 	/// and once the window has closed (`closeJoin`, which the engine sends just before `paired`), 30 seconds.
 	static let claimWithin: TimeInterval = 6 * 60
 	static let answerAfterCloseJoin: TimeInterval = 30
+	/// How long an attach may wait for the engine's answer.
+	static let attachWithin: TimeInterval = 60
 
 	func start() {
 		io.onBytes = { [unowned self] in self.take($0) }
 		io.onClose = { [unowned self] in self.closed() }
 		io.start()
-		if remote.phonesPaused { io.pauseReading() }
 		let deadline = DispatchWorkItem { [weak self] in self?.tooSlow() }
 		self.deadline = deadline
 		remote.queue.asyncAfter(deadline: .now() + remote.attachWithin, execute: deadline)
@@ -115,6 +116,20 @@ final class PhoneConnection: @unchecked Sendable {
 
 	func pauseReading() { io.pauseReading() }
 	func resumeReading() { io.resumeReading() }
+
+	/// Attached, so its lines feed the engine: the only kind back-pressure pauses (#675's security read B, M2c). One
+	/// not yet attached (a handshake, a claim, an attach) is always read, so that a phone held back by another's large
+	/// message, or a claimer mid-pairing, is never cut by its own deadline.
+	var isAttached: Bool {
+		if case .attached = phase { return true }
+		return false
+	}
+
+	/// When it attached, for keeping a device's newest two (M1b).
+	private(set) var attachedAt = ContinuousClock.now
+
+	/// What waits to be written to the phone.
+	var queued: Int { io.pending }
 
 	/// A pairing channel whose claimer has sent no claim yet: the one kind `closeJoin` ends. A claim passed to the engine
 	/// is the engine's to answer (`paired` or `pairRefused`, or its refusal of `remote.pairClaim`); the engine closes the
@@ -335,6 +350,12 @@ final class PhoneConnection: @unchecked Sendable {
 		phase = .attaching(channel)
 		deadline?.cancel()
 		deadline = nil
+		// With the engine now, which answers at once; a minute at most, so that its waiting slot is not held for good.
+		remote.queue.asyncAfter(deadline: .now() + Self.attachWithin) { [weak self] in
+			guard let self, case .attaching = self.phase else { return }
+			log("an attach had no answer from the engine within \(Int(Self.attachWithin)) seconds; its channel is closed")
+			self.end()
+		}
 		// `received` is pi² Remote's alone, for its buffer: the engine takes exactly these three fields (devices.ts).
 		let attach = JSONValue.object([
 			("signed", .string(claim.statement.text)), ("signature", .string(claim.statement.signatureText)), ("presence", .string(Base64URL.encode(claim.presence))),
@@ -356,6 +377,8 @@ final class PhoneConnection: @unchecked Sendable {
 	func attachedTo(_ session: Session, resumed: Bool) {
 		guard case let .attaching(channel) = phase else { return }
 		phase = .attached(channel, session)
+		attachedAt = .now
+		if remote.phonesPaused { io.pauseReading() }
 		sendLine(ControlLine.attached(Attached(session: session.id, resume: resumed)).line)
 	}
 
@@ -396,7 +419,7 @@ final class PhoneConnection: @unchecked Sendable {
 		// The channel's own lines are the Mac's to send, or a phone's first lines (5.6): none is taken from a phone in a
 		// session, nor passed to the engine as a request. A `refused` line, the Mac's word that it did not attach the phone
 		// (#820), is refused from a phone above all.
-		if names.count == 1, Self.macLines.contains(where: { names[0].utf8.elementsEqual($0.utf8) }) || names.contains(where: { $0.utf8.elementsEqual("challenge".utf8) }) {
+		if (names.count == 1 && Self.macLines.contains(where: { names[0].utf8.elementsEqual($0.utf8) })) || names.contains(where: { $0.utf8.elementsEqual("challenge".utf8) }) {
 			log("device \(session.device) sent one of the channel's own lines in its session; closed")
 			return end()
 		}
@@ -460,6 +483,7 @@ final class PhoneConnection: @unchecked Sendable {
 		} catch {
 			return end()
 		}
+		remote.keepWithinBudget()
 	}
 
 	/// The Mac ended the channel (it closed the pairing window, stopped listening, or narrowed who may connect): that is

@@ -45,10 +45,20 @@ enum Units {
 		Check.expect(gate.pendingCount == Admission.maxPending && gate.admit(IPAddress("192.168.1.9")!) == .allFull, "at most \(Admission.maxPending) wait in all", "\(gate.pendingCount)")
 		gate.release(a)
 		Check.expect(gate.admit(a) == .taken, "a connection that authenticated or closed makes room")
-		let six = Admission()
+		// The Mac's own prefixes, given: a global /64 of its LAN.
+		let six = Admission(localPrefixes: [(IPAddress("2001:db8:aa:1::5")!, 64)])
 		let v6 = (1 ... 6).map { IPAddress("2001:db8:1:2::\($0)")! }
-		Check.expect(v6.map { six.admit($0) } == [.taken, .taken, .taken, .taken, .sourceFull, .sourceFull], "IPv6 addresses in one /64 are one source")
+		Check.expect(v6.map { six.admit($0) } == [.taken, .taken, .taken, .taken, .sourceFull, .sourceFull], "IPv6 addresses in one /64 away from the Mac's link are one source")
 		Check.expect(six.admit(IPAddress("2001:db8:1:3::1")!) == .taken, "and another /64 is another")
+		let lan = Admission(localPrefixes: [(IPAddress("2001:db8:aa:1::5")!, 64)])
+		for (what, prefix) in [("the Mac's own on-link prefix", "2001:db8:aa:1::"), ("link-local", "fe80::"), ("unique-local", "fd12:3456:789a:1::")] {
+			let hosts = (1 ... 6).map { IPAddress("\(prefix)\($0)")! }
+			Check.expect(hosts.map { lan.admit($0) }.allSatisfy { $0 == .taken || $0 == .allFull }, "IPv6 hosts on the Mac's own link (\(what)) are each a source of their own (#675's security read B, D1-a)")
+			for host in hosts { lan.release(host) }
+		}
+		Check.expect(IPAddress("fe80::1")!.limitKey(localPrefixes: []) == IPAddress("fe80::1") && IPAddress("fd00::7")!.limitKey(localPrefixes: []) == IPAddress("fd00::7"), "link-local and unique-local are counted by address")
+		Check.expect(IPAddress("2001:db8:aa:1::9")!.limitKey(localPrefixes: [(IPAddress("2001:db8:aa:1::5")!, 64)]) == IPAddress("2001:db8:aa:1::9"), "an address in a prefix the Mac has is counted by itself")
+		Check.expect(contains(IPAddress("10.1.2.3")!, in: IPAddress("10.1.0.0")!, length: 16) && !contains(IPAddress("10.2.2.3")!, in: IPAddress("10.1.0.0")!, length: 16) && contains(IPAddress("2001:db8::1")!, in: IPAddress("2001:db8::")!, length: 33), "prefixes are matched bit by bit")
 		let now = 1_000.0
 		let firsts = (0 ..< 30).filter { _ in gate.firstMessage(from: a, now: now) }.count
 		Check.expect(firsts == Admission.firstMessagesPerSourcePerMinute, "at most \(Admission.firstMessagesPerSourcePerMinute) first messages a minute from one address", "\(firsts)")
@@ -72,7 +82,13 @@ enum Units {
 		Check.expect(admits(peer: public4, arrivedOn: nil, kind: .release, direct: true) && admits(peer: public6, arrivedOn: nil, kind: .release, direct: true), "with it on, a public address is taken")
 		Check.expect(admits(peer: shared, arrivedOn: "utun4", kind: .release, direct: false), "100.64.0.0/10 by a tunnel interface (Tailscale) is taken with the switch off")
 		Check.expect(!admits(peer: shared, arrivedOn: "en0", kind: .release, direct: false) && !admits(peer: shared, arrivedOn: nil, kind: .release, direct: false), "100.64.0.0/10 by any other interface (carrier-grade NAT) is not")
-		Check.expect(IPAddress("2001:db8::1:2:3:4")?.limitKey == IPAddress("2001:db8::") && IPAddress("10.1.2.3")?.limitKey == IPAddress("10.1.2.3"), "an IPv6 source is counted by its /64, an IPv4 one by its address")
+		Check.expect(IPAddress("2001:db8::1:2:3:4")?.limitKey(localPrefixes: []) == IPAddress("2001:db8::") && IPAddress("10.1.2.3")?.limitKey(localPrefixes: []) == IPAddress("10.1.2.3"), "an IPv6 source away from the Mac's link is counted by its /64, an IPv4 one by its address")
+		Check.expect(MacAddresses.routeInterface(to: IPAddress("127.0.0.1")!)?.hasPrefix("lo") == true, "the interface of the route back to a peer is read without sending anything (D2)", MacAddresses.routeInterface(to: IPAddress("127.0.0.1")!) ?? "none")
+
+		Check.section("what phones may make pi² Remote hold together (#675's security read B, M1b)")
+		Check.expect(Remote.overBudget([("a", 100), ("b", 50)], budget: 200) == nil, "within the budget, nothing is let go")
+		Check.expect(Remote.overBudget([("a", 100), ("b", 150), ("c", 10)], budget: 200) == "b", "over it, the connection leaving the most unread is")
+		Check.expect(Remote.queueBudget == 256 * 1024 * 1024 && Remote.attachedPerDevice == 2, "the budget is 256 MB in all, and a device keeps two attached connections")
 	}
 
 	static func scan() {

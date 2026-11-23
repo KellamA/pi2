@@ -156,7 +156,8 @@ for case in "pi2/Remote.swift|@testable import RemoteKit" "pi2-remote-helper-che
 	"pi2/Fourth.swift|@testable\nimport RemoteKit" "pi2/Fifth.swift|@testable import struct pi2_remote.Startup" \
 	"pi2/Sixth.swift|@testable import enum pi2_remote.BuildKind" "pi2/Seventh.swift|@testable import class RemoteKit.Channel" \
 	"pi2/Eighth.swift|@testable import func pi2_remote.log" "pi2/Ninth.swift|@testable /* x */ import RemoteKit" \
-	"pi2/Tenth.swift|@testable /* a\n * b */\nimport pi2_remote" "pi2/Eleventh.swift|@testable /* a /* b */ c */ import RemoteKit"; do
+	"pi2/Tenth.swift|@testable /* a\n * b */\nimport pi2_remote" "pi2/Eleventh.swift|@testable /* a /* b */ c */ import RemoteKit" \
+	"pi2/Twelfth.swift|@testable /* // */ import RemoteKit"; do
 	IFS='|' read -r file line <<<"$case"
 	rm -rf "$T/testable"; cp -R "$T/tree" "$T/testable"
 	printf "$line\n" >"$T/testable/app/Sources/$file"
@@ -168,6 +169,14 @@ done
 rm -rf "$T/testable"; cp -R "$T/tree" "$T/testable"
 printf '@testable import RemoteKitten\nimport RemoteKit\n' >"$T/testable/app/Sources/pi2/Remote.swift"
 if run "$T/good.json" "$T/testable"; then passed=$((passed + 1)); else failed=$((failed + 1)); echo "FAIL @testable import of another module was refused"; cat "$T/out"; fi
+# A line comment that names a block comment's opening does not start one: what follows it on the next line is code.
+rm -rf "$T/testable"; cp -R "$T/tree" "$T/testable"
+printf '// a /* here\n@testable import RemoteKit\n' >"$T/testable/app/Sources/pi2/Remote.swift"
+if run "$T/good.json" "$T/testable"; then failed=$((failed + 1)); echo "FAIL @testable import after a line comment naming /*: was taken"; else passed=$((passed + 1)); fi
+# And a line comment's marker inside a block comment comments nothing out.
+rm -rf "$T/testable"; cp -R "$T/tree" "$T/testable"
+printf '/* a\n @testable import RemoteKit\n*/\nimport RemoteKit\n' >"$T/testable/app/Sources/pi2/Remote.swift"
+if run "$T/good.json" "$T/testable"; then passed=$((passed + 1)); else failed=$((failed + 1)); echo "FAIL a @testable import inside a block comment was refused"; cat "$T/out"; fi
 
 # Arguments.
 "$check" --nonsense >/dev/null 2>&1
