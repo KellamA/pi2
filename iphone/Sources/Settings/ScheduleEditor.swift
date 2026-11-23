@@ -81,6 +81,7 @@ struct ScheduleEditor: View {
 
     @Environment(AppSession.self) private var session
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var draft: ScheduleDraft
     @State private var problem: String?
     @State private var saving = false
@@ -109,6 +110,7 @@ struct ScheduleEditor: View {
                             Text(agentLabel(agent)).tag(agent.id)
                         }
                     }
+                    .settingsPickerStyle(dynamicTypeSize)
                 }
                 Section {
                     TextField("What should it do?", text: $draft.prompt, prompt: Text("Read what finished overnight and say what needs me first."), axis: .vertical)
@@ -124,6 +126,7 @@ struct ScheduleEditor: View {
                         Text("Every few minutes").tag("interval")
                         Text("Once").tag("once")
                     }
+                    .settingsPickerStyle(dynamicTypeSize)
                     switch draft.kind {
                     case "once":
                         DatePicker("At", selection: $draft.date, in: Date.now...)
@@ -141,6 +144,7 @@ struct ScheduleEditor: View {
                         Picker("Day", selection: $draft.weekday) {
                             ForEach(0..<7, id: \.self) { Text(Calendar.current.weekdaySymbols[$0]).tag($0) }
                         }
+                        .settingsPickerStyle(dynamicTypeSize)
                         DatePicker("At", selection: $draft.time, displayedComponents: .hourAndMinute)
                     default:
                         DatePicker("At", selection: $draft.time, displayedComponents: .hourAndMinute)
@@ -149,7 +153,7 @@ struct ScheduleEditor: View {
                 } header: {
                     Text("When")
                 } footer: {
-                    Text("Each run starts a new conversation with the agent, which works with no one watching. Runs missed while the Mac's engine was off happen once when it starts. Your Mac tells you of a schedule saved from here.")
+                    Text("Each run starts a new conversation with the agent, which works with no one watching. Runs missed while the Mac’s engine was off happen once when it starts. Your Mac tells you of a schedule saved from here.")
                 }
                 if let problem {
                     Section { SettingsProblem(text: problem) }

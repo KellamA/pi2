@@ -25,7 +25,7 @@ struct ScheduleRow: View {
                         .foregroundStyle(.primary)
                     Text(book.detail(schedule))
                         .font(.subheadline)
-                        .foregroundStyle(schedule.holdReason != nil ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                        .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 if !book.isActive(schedule) {

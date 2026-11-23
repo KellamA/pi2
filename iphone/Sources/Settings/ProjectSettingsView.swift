@@ -20,7 +20,7 @@ struct ProjectSettingsView: View {
     @Environment(AppSession.self) private var session
 
     var body: some View {
-        let source = SettingsSource(session.engine)
+        let source = SettingsSource(session)
         Group {
             if let project = source.project(projectID) {
                 ProjectSettingsForm(project: project, source: source)
@@ -46,6 +46,7 @@ struct ProjectSettingsForm: View {
 
     @Environment(AppSession.self) private var session
     @Environment(\.openRoute) private var openRoute
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var problems = SettingsProblems()
     @State private var name: String
     @State private var planShare: String
@@ -78,7 +79,7 @@ struct ProjectSettingsForm: View {
     var body: some View {
         ScrollViewReader { proxy in
             Form {
-                if !connected || !source.samples.isEmpty {
+                if SettingsConnectionLine(connected: connected, connection: session.connection).shows || !source.samples.isEmpty {
                     Section {
                         SettingsConnectionLine(connected: connected, connection: session.connection)
                         #if DEBUG
@@ -175,7 +176,7 @@ struct ProjectSettingsForm: View {
                 if let folder = project.folder {
                     Text(folder)
                         .font(.footnote.monospaced())
-                        .lineLimit(3)
+                        .lineLimit(8)
                         .truncationMode(.middle)
                         .textSelection(.enabled)
                 } else {
@@ -256,7 +257,7 @@ struct ProjectSettingsForm: View {
                         Text(SettingsCompaction.label(tokens)).tag(Int?.some(tokens))
                     }
                 }
-                .pickerStyle(.menu)
+                .settingsPickerStyle(dynamicTypeSize)
                 .disabled(!connected)
             } else {
                 Text("The Mac has not sent the orchestrator’s agent.").foregroundStyle(.secondary)
@@ -322,11 +323,7 @@ struct ProjectSettingsForm: View {
                 accessibility: "Spent today limit, in dollars", isSet: project.settings?.limits.dailySpend != nil,
                 line: dailySpendLine, row: "dailySpend", save: saveDailySpend
             )
-            Button {
-                openRoute(.usage)
-            } label: {
-                Label("Usage and limits", systemImage: "chart.bar")
-            }
+            SettingsRouteRow(title: "Usage and limits", symbol: "chart.bar") { openRoute(.usage) }
         } header: {
             Text("Limits")
         } footer: {
@@ -415,7 +412,8 @@ struct ProjectSettingsForm: View {
                     send(request, row: "schedules")
                 }
             }
-            Button("New Schedule…", systemImage: "plus") { editing = .new }
+            // Text alone: a disabled button's symbol keeps the tint in a form, and would look as if it could be pressed.
+            Button("New Schedule…") { editing = .new }
                 .disabled(book.agents(ofProject: project.id).isEmpty || !connected || project.archivedAt != nil)
             SettingsProblem(text: problems["schedules"])
         } header: {

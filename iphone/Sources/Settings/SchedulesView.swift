@@ -15,11 +15,11 @@ struct SchedulesView: View {
     @State private var problems = SettingsProblems()
 
     var body: some View {
-        let source = SettingsSource(session.engine)
+        let source = SettingsSource(session)
         let book = source.book
         let groups = book.groups
         List {
-            if !source.connected || !source.samples.isEmpty || problems["list"] != nil {
+            if SettingsConnectionLine(connected: source.connected, connection: session.connection).shows || !source.samples.isEmpty || problems["list"] != nil {
                 Section {
                     SettingsConnectionLine(connected: source.connected, connection: session.connection)
                     #if DEBUG
@@ -52,6 +52,11 @@ struct SchedulesView: View {
             if let first, source.connected, SettingsSamples.shouldPress("run") {
                 SettingsRequest.runSchedule(first).send(through: session.engine, row: "list", into: $problems)
             }
+        }
+        .onChange(of: book.everyAgent.isEmpty, initial: true) { _, empty in
+            guard !empty, let open = SettingsSamples.open, !SettingsSamples.opened else { return }
+            SettingsSamples.opened = true
+            editing = open == "new" ? .new : .schedule(open)
         }
         #endif
         .overlay {

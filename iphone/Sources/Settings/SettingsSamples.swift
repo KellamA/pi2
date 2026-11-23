@@ -35,8 +35,11 @@ struct SettingsSamples {
 
     static let scroll: String? = ProcessInfo.processInfo.environment["PI2_SETTINGS_SCROLL"]
     static let press: String? = ProcessInfo.processInfo.environment["PI2_SETTINGS_PRESS"]
-    /// Whether `press` was done: once a launch.
+    /// `PI2_SETTINGS_OPEN=new` or a schedule's id: the schedule sheet, opened on Schedules once it has drawn.
+    static let open: String? = ProcessInfo.processInfo.environment["PI2_SETTINGS_OPEN"]
+    /// Whether `press` was done, and `open`: each once a launch.
     @MainActor static var pressed = false
+    @MainActor static var opened = false
 
     /// Whether to make the change named `row` now: once a launch, once its screen has what it changes.
     @MainActor
@@ -94,6 +97,11 @@ struct SettingsSamples {
 
     static func schedules(agents: [AgentProfile], projects: [ProjectRow], now: Date) -> [Schedule] {
         let ms = now.timeIntervalSince1970 * 1000
+        let calendar = Calendar.current
+        /// The next moment on the clock that matches, in milliseconds, as the engine works out `nextRunAt`.
+        func next(_ components: DateComponents) -> Double? {
+            calendar.nextDate(after: now, matching: components, matchingPolicy: .nextTime).map { $0.timeIntervalSince1970 * 1000 }
+        }
         let first = projects.first
         let orchestrator = first?.orchestratorId
         let scout = agents.first { $0.projectId == first?.id && $0.name == "Scout" }?.id
@@ -104,12 +112,12 @@ struct SettingsSamples {
         if let orchestrator {
             schedules.append(Schedule(id: "sample-morning", title: "Morning brief", agentId: orchestrator,
                                       prompt: "Read what finished overnight and say what needs me first.",
-                                      repeat: Repeat(kind: "daily", hour: 7, minute: 30), enabled: true, nextRunAt: ms + 9 * 3_600_000, lastConversationId: 9))
+                                      repeat: Repeat(kind: "daily", hour: 7, minute: 30), enabled: true, nextRunAt: next(DateComponents(hour: 7, minute: 30)), lastConversationId: 9))
         }
         if let scout {
             schedules.append(Schedule(id: "sample-links", title: "Check the site's links", agentId: scout,
                                       prompt: "Run the link checker over the built site and file work for each broken link.",
-                                      repeat: Repeat(kind: "weekly", hour: 9, minute: 0, weekday: 1), enabled: true, nextRunAt: ms + 3 * 86_400_000,
+                                      repeat: Repeat(kind: "weekly", hour: 9, minute: 0, weekday: 1), enabled: true, nextRunAt: next(DateComponents(hour: 9, minute: 0, weekday: 2)),
                                       createdBy: orchestrator.flatMap { Self.creator(agentID: $0, conversation: 9) }))
         }
         if let forge {

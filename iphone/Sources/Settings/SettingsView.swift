@@ -17,10 +17,10 @@ struct SettingsView: View {
     @FocusState private var editingLine: Bool
 
     var body: some View {
-        let source = SettingsSource(session.engine)
+        let source = SettingsSource(session)
         ScrollViewReader { proxy in
             Form {
-                if !source.connected || !source.samples.isEmpty {
+                if SettingsConnectionLine(connected: source.connected, connection: session.connection).shows || !source.samples.isEmpty {
                     Section {
                         SettingsConnectionLine(connected: source.connected, connection: session.connection)
                         #if DEBUG
@@ -161,7 +161,7 @@ struct SettingsView: View {
                 .disabled(!source.connected)
                 Toggle("Start new chats with the web on", isOn: Binding(get: { chat.web }, set: { send(.chatWeb($0), row: "chat") }))
                     .disabled(!source.connected)
-                Toggle("Memory", isOn: Binding(get: { chat.memory }, set: { send(.chatMemory($0), row: "chat") }))
+                Toggle("Chat memory", isOn: Binding(get: { chat.memory }, set: { send(.chatMemory($0), row: "chat") }))
                     .disabled(!source.connected)
             } else {
                 SettingsNotKnown(title: "Chat settings")
@@ -313,8 +313,12 @@ struct SettingsRouteRow: View {
     var body: some View {
         Button(action: action) {
             HStack {
-                Label(title, systemImage: symbol)
-                    .foregroundStyle(.primary)
+                Label {
+                    // `Color.primary`, not `.primary`, which a button resolves to its tint.
+                    Text(title).foregroundStyle(Color.primary)
+                } icon: {
+                    Image(systemName: symbol).foregroundStyle(Color.pi2Accent)
+                }
                 Spacer()
                 Image(systemName: "chevron.forward")
                     .font(.footnote.weight(.semibold))

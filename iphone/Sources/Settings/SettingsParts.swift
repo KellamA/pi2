@@ -22,6 +22,9 @@ struct SettingsConnectionLine: View {
     let connected: Bool
     let connection: AppSession.Connection
 
+    /// Whether it has anything to say.
+    var shows: Bool { words != nil }
+
     var body: some View {
         if let words {
             Label(words, systemImage: "wifi.exclamationmark")
@@ -83,6 +86,19 @@ struct SettingsProblems {
     subscript(row: String) -> String? {
         get { byRow[row] }
         set { byRow[row] = newValue }
+    }
+}
+
+extension View {
+    /// A picker that opens as a menu, or at the accessibility text sizes as a list of its own, where a menu's closed label
+    /// would be cut to a few letters.
+    @ViewBuilder
+    func settingsPickerStyle(_ size: DynamicTypeSize) -> some View {
+        if size.isAccessibilitySize {
+            pickerStyle(.navigationLink)
+        } else {
+            pickerStyle(.menu)
+        }
     }
 }
 

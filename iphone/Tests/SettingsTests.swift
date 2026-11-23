@@ -389,6 +389,17 @@ struct SettingsTests {
         #expect(SettingsAwake(session.engine.extras["awake"])?.keep == true)
     }
 
+    @Test func nothingIsOfferedWhileTheMacIsOutOfReach() async throws {
+        let session = try await replay()
+        #expect(SettingsSource(session).connected)
+        session.connection = .outOfReach(lastSeen: nil)
+        #expect(!SettingsSource(session).connected)
+        session.connection = .connecting
+        #expect(!SettingsSource(session).connected)
+        // What was last seen is still drawn.
+        #expect(!SettingsSource(session).projects.isEmpty)
+    }
+
     @Test func withNoEngineAChangeIsRefusedNotLost() async {
         let session = AppSession()
         let refused = await SettingsRequest.runSchedule("s").send(through: session.engine)

@@ -43,12 +43,12 @@ enum SettingsReach: Equatable {
     static let onTheMac: [(title: String, why: String, symbol: String)] = [
         ("Providers, keys and sign-ins", "Secrets never leave the Mac.", "key"),
         ("Default model for new agents", "Set on the Mac until the engine lets a phone choose it.", "cpu"),
-        ("Models for pictures", "They spend on the Mac's keys.", "photo"),
-        ("Agents' variables", "Their values are secrets; agents' pages show the names.", "lock"),
-        ("MCP servers, computer use and pi²'s browser", "Programs and permissions of the Mac.", "desktopcomputer"),
+        ("Models for pictures", "They spend on the Mac’s keys.", "photo"),
+        ("Agents’ variables", "Their values are secrets; agents’ pages show the names.", "lock"),
+        ("MCP servers, computer use and pi²’s browser", "Programs and permissions of the Mac.", "desktopcomputer"),
         ("Local models", "Installed and run on the Mac.", "internaldrive"),
-        ("Command priority", "The Mac's own upkeep.", "speedometer"),
-        ("Storage, backups and updates", "The Mac's own upkeep.", "externaldrive"),
+        ("Command priority", "The Mac’s own upkeep.", "speedometer"),
+        ("Storage, backups and updates", "The Mac’s own upkeep.", "externaldrive"),
         ("Devices and pairing", "Only at the Mac, so a lost phone cannot add one.", "iphone"),
         ("Allow everything, turned on", "Ends all asking for an agent; turning it off works here.", "checkmark.shield"),
     ]

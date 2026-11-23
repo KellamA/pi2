@@ -79,6 +79,15 @@ struct SettingsSource {
         #endif
     }
 
+    /// The session's client, with nothing sent while the connection bar says the Mac is out of reach or being reached.
+    init(_ session: AppSession) {
+        self.init(session.engine)
+        switch session.connection {
+        case .outOfReach, .connecting, .notPaired: connected = false
+        case .demo, .connected: break
+        }
+    }
+
     /// Whether the engine's lists may still be coming: a project not among them may yet arrive.
     var waiting: Bool { !connected || (projects.isEmpty && !libraryLoaded) }
 
