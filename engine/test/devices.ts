@@ -733,7 +733,11 @@ try {
 	await app.until("the session shown on the Mac", () => app.devicesEvents.at(-1)?.sessions.some((one: any) => one.session === session && one.device === phone.id));
 
 	const ask = (method: string, params: Record<string, unknown> = {}) => remote.inSession(session, method, params);
-	assert.deepEqual((await ask("engine.info")).result, { build: null, pid: engine.pid }, "no path of the Mac's");
+	const info = (await ask("engine.info")).result;
+	assert.deepEqual(info, { build: null, pid: engine.pid }, "no path of the Mac's");
+	assert.ok(!("main" in info) && !("backup" in info), "neither the engine's file nor the last unfinished backup's folder");
+	const appInfo = await app.call("engine.info");
+	assert.ok("main" in appInfo && "backup" in appInfo, "the app is told both");
 	assert.deepEqual((await ask("connection.mayAnswer")).result, { mayAnswer: false, why: "this is a paired device's session, which is never the app" });
 	for (const [method, params] of [
 		["agents.allowEverything", { id: "forge", on: true }],
