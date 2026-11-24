@@ -141,7 +141,7 @@ enum Hostile {
 				socket.hangUp(code: 4008, reason: "left")
 			}
 		}
-		let left = Task { try await rig.client.leave() }
+		let left = Task { try await rig.client.leave(mac: Formats.key.publicKey) }
 		let finished = Task {
 			try await Task.sleep(for: .seconds(10))
 			left.cancel()
@@ -264,7 +264,7 @@ enum Hostile {
 		await rig.client.start()
 		let start = rig.clock.now()
 		let (socket, _) = try await Sessions.phoneReady(rig)
-		let left = Task { try await rig.client.leave() }
+		let left = Task { try await rig.client.leave(mac: Formats.key.publicKey) }
 		_ = try await socket.nextText("leave")
 		// The relay never answers the leave: at 30 seconds both the watchdog and the leave's deadline look.
 		try await rig.clock.waitForSleeper(until: start + 30_000, count: 2)

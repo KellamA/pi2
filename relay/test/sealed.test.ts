@@ -509,6 +509,7 @@ describe("the allow-list of what the relay may see", () => {
 			{ ping: {} },
 			{ took: { ids: [base64url(random(16))] } },
 			{ took: { ids: Array.from({ length: 200 }, () => base64url(random(16))) } },
+			{ leave: { signature: base64url(random(64)), at: Date.now(), notice: base64url(random(64)) } },
 		];
 		for (const message of fromEnd) expect(messageFault(JSON.stringify(message), "end"), JSON.stringify(message)).toBeNull();
 		const fromRelay = [
@@ -519,6 +520,8 @@ describe("the allow-list of what the relay may see", () => {
 			{ ok: { what: "took" } },
 			{ item: { from: device, id: base64url(random(16)), item, presence: false } },
 			{ held: { device, until: Date.now() } },
+			{ left: { device, at: Date.now(), notice: base64url(random(64)) } },
+			{ ready: { devices: [], left: [{ device, at: Date.now(), notice: base64url(random(64)) }], pending: false, mail: 0 } },
 		];
 		for (const message of fromRelay) expect(messageFault(JSON.stringify(message), "relay"), JSON.stringify(message)).toBeNull();
 	});
@@ -545,6 +548,16 @@ describe("the allow-list of what the relay may see", () => {
 			[{ took: { ids: [pairing] } }, "relay"],
 			[{ refused: { what: "took", why: "malformed" } }, "relay"],
 			[{ ok: { what: "Marker phone" } }, "relay"],
+			// A leave's time and notice (#813): a time and 64 bytes, nothing else, and the notice passed on as it came.
+			[{ leave: { signature: base64url(random(64)) } }, "end"],
+			[{ leave: { signature: base64url(random(64)), at: Date.now(), notice: base64url(utf8("Marker phone left, as it says in clear")) } }, "end"],
+			[{ leave: { signature: base64url(random(64)), at: "Marker phone", notice: base64url(random(64)) } }, "end"],
+			[{ leave: { signature: base64url(random(64)), at: 10_000_000_000_000, notice: base64url(random(64)) } }, "end"],
+			[{ leave: { signature: base64url(random(64)), at: Date.now(), notice: base64url(random(64)), reason: "Marker phone" } }, "end"],
+			[{ left: { device } }, "relay"],
+			[{ left: { device, at: Date.now(), notice: base64url(random(64)), name: "Marker phone" } }, "relay"],
+			[{ left: { device, at: Date.now(), notice: "Marker phone" } }, "relay"],
+			[{ ready: { devices: [], left: [device], pending: false, mail: 0 } }, "relay"],
 		];
 		for (const [message, from] of refused) expect(messageFault(JSON.stringify(message), from), JSON.stringify(message)).not.toBeNull();
 	});
@@ -582,6 +595,11 @@ describe("the allow-list of what the relay may see", () => {
 		const stored = (kv: Record<string, unknown>, tables: Stored["tables"] = {}): Stored => ({ object: "pairing", name: pairing, id: "00".repeat(32), kv, tables, sockets: [] });
 		expect(storedFaults([stored({ meta })])).toEqual([]);
 		expect(storedFaults([stored({ meta: { ...meta, macName: "Marker Mac" } })])).not.toEqual([]);
+		// A device that left while the Mac was away, kept with its time and notice (#813), and nothing more.
+		const left = { device, at: Date.now(), notice: base64url(random(64)) };
+		expect(storedFaults([stored({ meta: { ...meta, left: [left] } })])).toEqual([]);
+		expect(storedFaults([stored({ meta: { ...meta, left: [device] } })])).not.toEqual([]);
+		expect(storedFaults([stored({ meta: { ...meta, left: [{ ...left, name: "Marker phone" }] } })])).not.toEqual([]);
 		expect(storedFaults([stored({ meta, log: ["a message"] })])).not.toEqual([]);
 		expect(storedFaults([stored({ meta }, { log: [{ text: "a message" }] })])).not.toEqual([]);
 		expect(storedFaults([stored({ meta }, { items: [{ reader: "mac", writer: device, id: base64url(random(16)), item: utf8("in clear".repeat(20)), presence: 0, expires: Date.now() }] })])).not.toEqual([]);

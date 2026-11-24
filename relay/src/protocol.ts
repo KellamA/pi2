@@ -113,7 +113,14 @@ export type Put = { type: "put"; to: string; id: string; item: Uint8Array<ArrayB
 /** What a reader has kept of what its takes handed over: the ids of its items, and of its state for a phone. */
 export type Took = { type: "took"; ids: string[] };
 export type Token = { type: "token"; apns: string; environment: "development" | "production" };
-export type Leave = { type: "leave"; signature: string };
+/**
+ * A phone leaving (3.6): `signature` over `proofText("leave", …)` with this connection's challenge, which the relay
+ * checks; `at` and `notice`, the device key's signature over the leave text for the Mac (docs/remotekit.md, "The leave
+ * notice"), which names the Mac's identity key, so the relay cannot check it and passes it on in `left` as it came.
+ */
+export type Leave = { type: "leave"; signature: string; at: number; notice: string };
+/** A device that left, as the Mac is told it, now or at its next `ready`: what the phone gave for the Mac to check. */
+export type Left = { device: string; at: number; notice: string };
 /** The Mac's request for a push to one of its devices (apns.ts): `sealed` is the sealed bytes' base64url, as sent. */
 export type Push = { type: "push"; device: string; kind: PushKind; sealed: string; collapse: string | null };
 export type Bare = { type: "closeJoin" | "deletePairing" | "take" | "dropToken" };
@@ -184,7 +191,9 @@ export function readMessage(text: string): Message | null {
 				? { type: "token", apns: body.apns, environment: body.environment }
 				: null;
 		case "leave":
-			return exactly(body, ["signature"]) && isSignature(body.signature) ? { type: "leave", signature: body.signature } : null;
+			return exactly(body, ["signature", "at", "notice"]) && isSignature(body.signature) && isTime(body.at) && isSignature(body.notice)
+				? { type: "leave", signature: body.signature, at: body.at, notice: body.notice }
+				: null;
 		default:
 			return null;
 	}
@@ -331,6 +340,15 @@ function isKeyText(value: unknown): value is string {
 /** An App Attest key's id as `DCAppAttestService` gives it: 32 bytes in standard base64. */
 function isKeyId(value: unknown): value is string {
 	return typeof value === "string" && fromBase64(value, 32) !== null;
+}
+
+/**
+ * A time in milliseconds since 1970, as RemoteKit's client reads one: above zero and at most 9,999,999,999,999 (the year
+ * 2286), so that what the relay passes on in `left` is never one the Mac's reader refuses.
+ */
+const MAX_TIME = 9_999_999_999_999;
+function isTime(value: unknown): value is number {
+	return Number.isSafeInteger(value) && (value as number) > 0 && (value as number) <= MAX_TIME;
 }
 
 function isSignature(value: unknown): value is string {
