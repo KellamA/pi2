@@ -83,6 +83,7 @@ try! FileManager.default.copyItem(at: built, to: bundled)
 
 let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("pi2-remote")
 Units.run(sources: sources, helper: built)
+Pushes.run(home: root)
 Starts.refusals(helper: bundled, home: home)
 Flows.run(helper: bundled, home: home)
 if let engineMain { RealEngine.run(engineMain: engineMain, helper: built, root: root) }

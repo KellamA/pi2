@@ -20,7 +20,8 @@ final class NotificationService: UNNotificationServiceExtension {
     ) {
         handler = contentHandler
         PushCategories.register()
-        let (content, outcome) = PushDelivery.deliver(request.content.userInfo, opener: PushOpeners.standard, keys: { try PushKeychain().keys() })
+        let (content, outcome) = PushDelivery.deliver(
+            request.content.userInfo, opener: PushOpeners.standard, keys: { try PushKeychain().keys() }, seen: PushSeen.shared)
         if case let .shown(notice) = outcome {
             do {
                 try PushInbox.shared?.keep(notice)

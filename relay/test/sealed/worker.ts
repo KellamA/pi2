@@ -3,6 +3,10 @@
 // and its objects able to read back what they keep. `GET /recording` gives everything the recorder kept and every
 // object the recording names, read back, as JSON (scan.ts's `encode`).
 //
+// Its pairings push through the stand-in for Apple's service (../apns.ts) in place of Apple's (#689): nothing is sent
+// anywhere, and every request the relay makes of Apple is given with the recording, as `pushes`, its address, headers
+// (`authorization` among them) and body exactly as posted, for scan.ts to check.
+//
 // It also shows that what the relay would write to the console reaches the output the check reads: each `/recording`
 // writes two canaries made afresh, one with `console.log` and one with `console.debug`, and gives them with the
 // recording, so that check.mjs fails if either is missing from the local runtime's output. `?log=<text>` writes that
@@ -13,15 +17,31 @@
 // beside this file. Nothing deploys it: the relay's own wrangler.jsonc names src/index.ts, and check-bundle reads that.
 
 import { addressGroup, addressName, Address as RelayAddress } from "../../src/addresses.ts";
+import { HOSTS } from "../../src/apns.ts";
+import { utf8 } from "../../src/bytes.ts";
 import { AttestKey as RelayAttestKey } from "../../src/claims.ts";
 import { type Env, readSettings } from "../../src/settings.ts";
+import { ApnsStandIn } from "../apns.ts";
 import protocolTest, { Pairing as ProtocolPairing } from "../protocol/worker.ts";
 import { dump, Recorder } from "./recorder.ts";
-import { encode, type Stored } from "./scan.ts";
+import { encode, type Push, type Stored } from "./scan.ts";
 
 const recorder = new Recorder();
+/** Apple's service, stood in: one for every pairing of the run, whose `pushes` go with the recording. */
+const apple = new ApnsStandIn();
+
+/** A push as the stand-in took it, as the recording gives it: the address, every header, the body. */
+function recorded(push: ApnsStandIn["pushes"][number]): Push {
+	return {
+		url: `${HOSTS[push.environment]}/3/device/${push.token}`,
+		headers: [["authorization", `bearer ${push.providerToken.text}`], ...Object.entries(push.headers)],
+		body: utf8(push.payload),
+	};
+}
 
 export class Pairing extends ProtocolPairing {
+	override apns = apple.client;
+
 	async dump(name: string): Promise<Stored> {
 		return dump("pairing", name, this.ctx);
 	}
@@ -61,7 +81,7 @@ export default {
 			console.debug(canaries.debug);
 			const planted = url.searchParams.get("log");
 			if (planted !== null) console.log(planted);
-			return Response.json(encode({ events: recorder.events, stored, pushes: recorder.pushes, canaries }));
+			return Response.json(encode({ events: recorder.events, stored, pushes: [...recorder.pushes, ...apple.pushes.map(recorded)], canaries }));
 		}
 		return recorder.fetch(request, (forwarded) => protocolTest.fetch(forwarded, env));
 	},

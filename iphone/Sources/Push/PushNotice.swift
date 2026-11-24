@@ -5,6 +5,12 @@ enum PushKind: String, CaseIterable, Sendable {
     case approval, question, decision, reach, rule, limit, notice
 
     var category: String { "pi2.\(rawValue)" }
+
+    /// The kind of an alert's `category`, as the engine names it (`pi2.approval`); nil for one this build does not know.
+    init?(category: String) {
+        guard let kind = Self.allCases.first(where: { $0.category == category }) else { return nil }
+        self = kind
+    }
     /// The category of a notification whose body does not show the whole call, question or rule: without the button
     /// that would act on what was cut (section 7).
     var cutCategory: String { "pi2.\(rawValue).cut" }
@@ -12,44 +18,62 @@ enum PushKind: String, CaseIterable, Sendable {
     var hasCutCategory: Bool { [.approval, .question, .rule].contains(self) }
 }
 
-/// What a push holds once opened and verified (section 7): the Mac item `push`, whose body is
-/// `{"kind":…,"title":…,"body":…,"whole":…,"need":…,"projectId":…,"conversationId":…,"pad":…}`, or `pushGone`, whose
-/// body is `{"need":…,"pad":…}`, a notification to take away. Only `title` and `body` are required of a `push`; `pad`
-/// is the sealer's padding and is not read. This form is #690's assumption of what the engine and pi² Remote send
-/// (#689's later parts, not built): the `remote` event's `push { device, kind, title, body, need?, projectId? }`, with
-/// `whole` and `conversationId` added.
+/// What a push holds once opened and verified (section 7): the engine's own body, as pi² Remote sealed it inside the Mac
+/// item (`PushSealing`, docs/iphone.md 7.1). The Mac item `push` holds an alert's, `{"v":1,"type":"need"|"limit"|
+/// "answer","category":"pi2.approval"…,"title","subtitle"?,"body","projectId"?,"need"?,"conversationId"?,"whole",
+/// "partHidden"?,"until"?,"at"}`; `pushGone` a background push's, `{"v":1,"type":"gone","needs":[…],"at"}`, the
+/// notifications to take away. This is the engine's shape (#689), which replaced #690's assumption (`kind`, a body with
+/// the project in front, one `need` gone): the phone's side changed to read it.
 enum PushItem: Equatable, Sendable {
     case notice(PushNotice)
-    case gone(need: String)
+    case gone(needs: [String])
 
-    /// The longest title and body shown, in characters; section 7 holds the body to 180.
-    static let titleLimit = 120
+    /// The longest title, subtitle and body shown, in characters, as the engine cuts them (7.1: 80, 64, 180).
+    static let titleLimit = 80
+    static let subtitleLimit = 64
     static let bodyLimit = 180
+    /// The most items one background push names (the engine's 50).
+    static let goneLimit = 50
     /// How old a push may be when it is opened: the relay keeps an alert an hour (`apns-expiration`) and the mailbox a
     /// day, so an older one can only be one handed back.
     static let oldest: TimeInterval = 24 * 60 * 60
+    /// How far ahead of the phone's clock a push may be dated: a Mac whose clock runs fast would otherwise date a push
+    /// that stays under `oldest` after `PushSeen` has let its id go, and a relay could hand it back then.
+    static let newest: TimeInterval = 60 * 60
 
     static func read(_ opened: OpenedPush, now: Date) throws -> PushItem {
         let at = Date(timeIntervalSince1970: TimeInterval(opened.at) / 1000)
         guard now.timeIntervalSince(at) <= oldest else { throw PushRefusal.tooOld }
-        guard let body = try? JSONSerialization.jsonObject(with: opened.body) as? [String: Any] else { throw PushRefusal.notANotice }
-        switch opened.kind {
-        case "push":
-            guard let title = Self.shown(body["title"], limit: titleLimit).text, !title.isEmpty,
-                  case let (text?, whole) = Self.shown(body["body"], limit: bodyLimit)
-            else { throw PushRefusal.notANotice }
+        guard at.timeIntervalSince(now) <= newest else { throw PushRefusal.tooNew }
+        guard let body = try? JSONSerialization.jsonObject(with: opened.body) as? [String: Any], (body["v"] as? NSNumber)?.intValue == 1,
+              let type = body["type"] as? String
+        else { throw PushRefusal.notANotice }
+        switch (opened.kind, type) {
+        case ("push", "need"), ("push", "limit"), ("push", "answer"):
+            let (title, titleWhole) = Self.shown(body["title"], limit: titleLimit)
+            let (text, textWhole) = Self.shown(body["body"], limit: bodyLimit)
+            guard let title, !title.isEmpty, let text else { throw PushRefusal.notANotice }
+            var subtitle: String?
+            var subtitleWhole = true
+            if body["subtitle"] != nil {
+                let shown = Self.shown(body["subtitle"], limit: subtitleLimit)
+                guard let given = shown.text else { throw PushRefusal.notANotice }
+                (subtitle, subtitleWhole) = (given.isEmpty ? nil : given, shown.whole)
+            }
             return .notice(PushNotice(
                 id: opened.id, at: opened.at,
-                kind: PushKind(rawValue: body["kind"] as? String ?? ""),
-                title: title, body: text,
-                // A button that acts on what is shown is offered only when the Mac says it is shown whole, and nothing
-                // was cut here (section 7). Missing means cut.
-                whole: whole && Self.isTrue(body["whole"]),
+                kind: (body["category"] as? String).flatMap(PushKind.init(category:)),
+                title: title, subtitle: subtitle, body: text,
+                // A button that acts on what is shown is offered only when the Mac says it is shown whole, nothing of it
+                // was hidden, and nothing was cut or changed here (section 7, 7.1). Missing means not whole.
+                whole: titleWhole && subtitleWhole && textWhole && Self.isTrue(body["whole"]) && body["partHidden"] == nil,
                 need: Self.id(body["need"]), projectId: Self.id(body["projectId"]),
                 conversationId: (body["conversationId"] as? NSNumber).flatMap { Int(exactly: $0.doubleValue) }))
-        case "pushGone":
-            guard let need = Self.id(body["need"]) else { throw PushRefusal.notANotice }
-            return .gone(need: need)
+        case ("pushGone", "gone"):
+            guard let list = body["needs"] as? [Any], (1...goneLimit).contains(list.count) else { throw PushRefusal.notANotice }
+            let needs = list.compactMap { Self.id($0) }
+            guard needs.count == list.count else { throw PushRefusal.notANotice }
+            return .gone(needs: needs)
         default:
             throw PushRefusal.notANotice
         }
@@ -88,7 +112,9 @@ struct PushNotice: Equatable, Sendable {
     let kind: PushKind?
     /// "Forge needs approval": the agent's name and the kind, as the Mac's `Notifier.needsYou` says it.
     let title: String
-    /// "Demo project · bash: npm test": the project's name and the card's short line.
+    /// "Demo project": the project's name, when it is in one.
+    let subtitle: String?
+    /// "bash: npm test": the card's short line.
     let body: String
     /// Whether the body shows the whole call, question or rule.
     let whole: Bool
