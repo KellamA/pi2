@@ -218,7 +218,8 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' }}
     runs-on: macos-26
-    timeout-minutes: 20
+    # Five more than before pi² Remote's check (#675), which runs an engine and waits out a session's resume window.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
       # What scripts/test-copy refuses, in a stand-in checkout: it launches nothing. Here and not on Linux because both
@@ -289,6 +290,15 @@ jobs:
       - name: Fuzz RemoteKit's parsers
         working-directory: app
         run: .build/debug/pi2-remote-fuzz --seed 674 --seconds 60
+      # pi² Remote (#675): its exits when the engine did not start it, a release build's Keychain and Secure Enclave logic
+      # with stand-ins, the listener's ranges and limits, that a development build names no Keychain, Secure Enclave or
+      # Bonjour call, then pairing and attaching over loopback with the check as its engine, and through a real engine on
+      # a temporary data folder. No Keychain, no Bonjour, 127.0.0.1 alone; about two minutes, one the resume window.
+      - name: Check pi² Remote
+        working-directory: app
+        run: |
+          npm --prefix ../engine ci --no-audit --no-fund
+          .build/debug/pi2-remote-helper-check --engine ../engine/src/main.ts
       # RemoteKit's relay client (#678): its messages, written and read, and the client against a relay the check plays
       # itself in memory, on a clock it moves. No network. The protocol test against the relay is its own job.
       - name: Check RemoteKit's relay client
