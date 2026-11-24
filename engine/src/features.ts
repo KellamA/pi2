@@ -21,6 +21,7 @@ import { coauthor } from "./coauthor.ts";
 import { commands } from "./commands.ts";
 import { compaction } from "./compaction.ts";
 import { documents } from "./documents.ts";
+import { folders } from "./folders.ts";
 import { heed } from "./heed.ts";
 import { knowledge } from "./knowledge.ts";
 import { keepAwake } from "./keepawake.ts";
@@ -286,6 +287,8 @@ export const FEATURES: Feature[] = [
 	carryOver,
 	// The projects epic (docs/projects.md). Their greetings go to an app in this order (4.4).
 	projects,
+	// What a paired phone may see of the Mac's folders and files (#698): requests only, with no greeting of its own.
+	folders,
 	projectRules,
 	needs,
 	reports,

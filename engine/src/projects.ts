@@ -15,6 +15,9 @@
 // - `lastWords(projectId)`: the orchestrator's last words, for the Dashboard, from orchestrator.ts through
 //   `wireLastWords`, which also marks a new project's conversation for its state block through `wireFresh`.
 //
+// And `offeredFolder(folder)`, the one check of a folder a paired phone gives `projects.create`, from folders.ts through
+// `wireOfferedFolder`: without it, a phone's project has no folder.
+//
 // Without them (a stand-in engine in a test), `carryOver` is null, `ruleTokens` zeros and `lastWords` null. `news` is
 // stored by `addNews`, from the commits of the features that tell of something, and delivered by orchestrator.ts.
 // `requireSwitch` asks the person when a switch that is off governs a tool, whatever the agent's access.
@@ -24,6 +27,7 @@ import { existsSync, realpathSync, statSync } from "node:fs";
 import { basename } from "node:path";
 import type { Context } from "@earendil-works/chord/context";
 import { type CommitChange, defineDoc, type HookApi, type Tx } from "@earendil-works/pi-durable";
+import type { Client } from "./clients.ts";
 import type { Host } from "./extensions.ts";
 import type { Feature } from "./features.ts";
 import { Schedules } from "./schedules.ts";
@@ -443,6 +447,20 @@ export function wireFresh(mark: typeof markFresh): void {
 	markFresh = mark;
 }
 
+/**
+ * The folder a paired phone may make a project from (docs/iphone.md 4.2, #698): one `projects.folders` offers at that
+ * moment, compared after links are followed (folders.ts). Until folders.ts wires it, none: a phone cannot browse the
+ * Mac's disk, so a folder it names is refused.
+ */
+let offeredFolder = async (value: unknown): Promise<string | null> => {
+	if (value === null) return null;
+	throw new Error("A new project's folder is chosen on the Mac.");
+};
+
+export function wireOfferedFolder(check: typeof offeredFolder): void {
+	offeredFolder = check;
+}
+
 let reloadNow = async (): Promise<void> => {};
 
 /** Read the document again now, after a commit made elsewhere (Start fresh, orchestrator.ts), and tell the apps. */
@@ -660,9 +678,10 @@ export const projects: Feature = (host, engine) => {
 			 * `{ folder, name?, template? }`: a project from a folder (or null) in one step, with its orchestrator and an empty
 			 * conversation with it, in one commit. The orchestrator is a copy of `template`, else of the default orchestrator.
 			 */
-			"projects.create": async (params) => {
+			"projects.create": async (params, connection) => {
 				if (!("folder" in params)) throw new Error("folder must be a folder's path, or null");
-				const folder = checkFolder(params.folder);
+				// From a paired phone, only a folder the Mac offers it (folders.ts); the app chooses any in its own panel.
+				const folder = (connection as Client | undefined)?.device !== undefined ? await offeredFolder(params.folder) : checkFolder(params.folder);
 				const given = params.name === undefined || params.name === null ? undefined : checkName(params.name);
 				const template = params.template === undefined || params.template === null ? undefined : templateOf(params.template);
 				const now = Date.now();

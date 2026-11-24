@@ -617,6 +617,10 @@ export function summarize(given: string, params: Params): string {
 		"github.settle": () => `Marked a write ${params.happened === true ? "done" : "not done"}${inProject}`,
 		"work.act": () => `${clip(String(params.action ?? "Acted on"), 24)} work #${clip(String(params.id), 12)}${inProject}`,
 		"devices.forgetSelf": () => "Unpaired itself",
+		// #698: the folders offered for a new project, a project made from one, and a file shown on the phone, by its name.
+		"projects.folders": () => "Asked for the folders offered for a new project",
+		"projects.create": () => `Made a project ${typeof params.folder === "string" ? `from the folder “${clip(params.folder.split("/").filter(Boolean).at(-1) ?? params.folder, 60)}”` : "with no folder"}${params.template != null ? " and a copy of a template" : ""}`,
+		"files.preview": () => `Showed the file “${clip(typeof params.path === "string" ? (params.path.split("/").filter(Boolean).at(-1) ?? params.path) : "?", 60)}”${inConversation}`,
 		pair: () => "Paired",
 		attach: () => "Attached",
 		resume: () => "Resumed",

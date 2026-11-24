@@ -218,6 +218,8 @@ const OPEN_TO_ANY = new Set([
 	"memory.delete", // notes never widen (projects.md 7.1)
 	"needs.list",
 	"projects.list",
+	"projects.folders", // the folders offered for a new project: those already used with pi², never a listing (folders.ts)
+	"files.preview", // reads one text file a conversation links to, under its folder; agents read files themselves
 	"projects.carryOver", // a dry run alone since carrying over runs by itself at the update (#715): it changes nothing
 	"reports.wake", // waking never widens; the limits bound it
 	"wakes.cancel",
@@ -352,6 +354,8 @@ const FROM_A_DEVICE: Record<string, DeviceRow> = {
 	"limits.refresh": { why: "reading", reading: true },
 	"settings.getCompaction": { why: "reading", reading: true },
 	"local.status": { why: "reading", reading: true },
+	"projects.folders": { why: "reading: the folders the Mac offers for a new project, those already used with pi², never a listing of the disk (folders.ts)", reading: true },
+	"files.preview": { why: "reading a text file the conversation links to, under its folder, not ignored by git, at most 256 KB; logged, since it copies a file out (4.4, 5.7)" },
 	// Messages, starts and stops.
 	submit: {
 		why: "a message, as the person sends one at the Mac",
@@ -434,11 +438,12 @@ const FROM_A_DEVICE: Record<string, DeviceRow> = {
 	"rules.remove": { why: "removing an allowed command narrows" },
 	"schedules.delete": { why: "deleting a schedule narrows" },
 	"coauthor.set": { why: "the person's ordinary act" },
-	// With a folder only once the Mac offers it (projects.folders, #696, P29), which no request does yet.
-	// With a template it copies an agent with its reach, as agents.duplicate does, so it widens (decision 27).
+	// With a folder only one projects.folders offers at that moment, which its handler checks after following links
+	// (folders.ts, `offeredFolder`). With a template it copies an agent with its reach, as agents.duplicate does, so it
+	// widens (decision 27).
 	"projects.create": {
-		why: "a new project; with a folder only one the Mac offers (P29), until then none; with a template it copies an agent, which widens",
-		may: (params) => (params.folder != null ? "no" : params.template != null ? "face" : "yes"),
+		why: "a new project; with a folder only one the Mac offers (projects.folders), checked by its handler; with a template it copies an agent, which widens",
+		may: (params) => (params.template != null ? "face" : "yes"),
 	},
 	"projects.archive": { why: "putting away narrows" },
 	"projects.startFresh": { why: "the person's ordinary act" },
@@ -455,8 +460,7 @@ const FROM_A_DEVICE: Record<string, DeviceRow> = {
 	// A device's own (4.2's last paragraph).
 	"devices.self": { why: "its own record and log" },
 	"devices.forgetSelf": { why: "it unpairs itself (3.6)" },
-	// remote.mailboxIn (#678, P10) is pi² Remote's and goes in FOR_THE_HELPER. projects.folders and files.preview (P29)
-	// go here, with their reasons, when they are made.
+	// remote.mailboxIn (#678, P10) is pi² Remote's and goes in FOR_THE_HELPER.
 };
 
 /** What a phone may send that always widens reach: the Mac notifies the person of each (4.4). */

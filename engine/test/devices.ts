@@ -26,6 +26,8 @@ import { allowsHiddenApproval, checkDeviceLists, deviceLogged, HIDDEN_FROM_THE_P
 import { APPROVAL_DEPTH, checkRequestItem, type Device, deviceRequests, DeviceLog, Devices, devicesState, flushDeviceLog, fromBase64url, hidesSomething, logDevice, macNameNow, pairClaim, PART_HIDDEN, remoteHooks, shownName, TOO_DEEP, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
 import type { Client } from "../src/clients.ts";
 import { ANSWER_NOT_SENT, forDevice, MAX_HELPER_LINE, SESSION_OVER } from "../src/remote.ts";
+import { NOT_LINKED, NOT_OFFERED } from "../src/folders.ts";
+import { symlinkSync } from "node:fs";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "100000";
@@ -84,7 +86,7 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	"schedules.save": ["schedules start work with nobody there", "always"],
 	"schedules.delete": ["deleting a schedule narrows", "never"],
 	"coauthor.set": ["the person's ordinary act", "never"],
-	"projects.create": ["a new project; with a folder only one the Mac offers (P29), until then none; with a template it copies an agent, which widens", "by its parameters"],
+	"projects.create": ["a new project; with a folder only one the Mac offers (projects.folders), checked by its handler; with a template it copies an agent, which widens", "by its parameters"],
 	"projects.set": ["the switches of 8.1 and the limits", "always"],
 	"projects.archive": ["putting away narrows", "never"],
 	"projects.unarchive": ["puts back what was put away, with its reach", "always"],
@@ -161,7 +163,7 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	assert.equal(deviceMay("github.settle", { happened: false }, relay), "face");
 	assert.equal(deviceMay("chat.set", { memory: false }, relay), "yes");
 	assert.equal(deviceMay("chat.set", { instructions: "x" }, relay), "face");
-	assert.equal(deviceMay("projects.create", { folder: "/Users" }, relay), "no", "a folder the Mac does not offer");
+	assert.equal(deviceMay("projects.create", { folder: "/Users" }, relay), "yes", "a folder, which its handler takes only if the Mac offers it (#698)");
 	assert.equal(deviceMay("projects.create", { folder: null }, relay), "yes");
 	assert.equal(deviceMay("projects.create", { folder: null, template: "forge" }, relay), "face", "a template copies an agent with its reach, as agents.duplicate does");
 	for (const method of ["providers.setKey", "variables.set", "mcp.save", "devices.pairStart", "devices.pairConfirm", "devices.set", "remote.attach", "test-copy.answerer", "settings.setAgentDefault", "no.such"]) {
@@ -180,6 +182,8 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	assert.equal(deviceLogged("conversation.export", {}), true, "an export is");
 	assert.equal(deviceLogged("projects.restoreConversation", { dryRun: true }), false);
 	assert.equal(deviceLogged("projects.restoreConversation", {}), true);
+	assert.equal(deviceLogged("projects.folders", {}), false, "the folders offered are reading");
+	assert.equal(deviceLogged("files.preview", {}), true, "a file shown is logged, since it copies a file out");
 	step("the table: Allow everything on, secrets, programs, pairing and remote.* stay the Mac's; answers widen by what they allow; the mailbox takes its rows alone");
 
 	assert.throws(() => checkDeviceLists(["engine.info", "made.up"], []), /made\.up belongs to 0 device lists/);
@@ -905,6 +909,35 @@ try {
 	for (const line of remote.sessionLines.get(session)!) assert.ok(!["mcp", "devices", "computer", "browser", "auth", "local", "local.progress", "remote"].includes(line.event), line.event);
 	assert.ok(app.events.providers.providers.some((one: any) => one.endpoint?.baseUrl?.includes(secrets.endpoint)), "the app is sent the endpoint whole");
 	step("with a provider's key, an agent's variable and an endpoint's token set, none reaches a device; a key-shaped string typed is masked");
+
+	// ---- A new project's folder, and a file shown, from the phone (#698; engine/test/folders.ts has every refusal)
+	{
+		const used = realpathSync(mkdtempSync(join(work, "used-")));
+		const neverUsed = realpathSync(mkdtempSync(join(work, "never-used-")));
+		const inFile = "sk-ant-api03-aKeyShapedStringInAFileShown0123456789";
+		writeFileSync(join(used, "notes.md"), `notes, and ${inFile}\n`);
+		const { id: linking } = await app.call("conversation.create", { model: { provider: "demo", modelId: "demo-1" } });
+		await app.call("conversation.configure", { id: linking, cwd: used });
+		await app.call("conversation.open", { id: linking });
+		await app.call("submit", { id: linking, text: "[the notes](notes.md)" });
+		await app.until("the answer linking the notes", () => app.conversations.get(linking)?.items.some((item: any) => item.kind === "assistant" && item.text.includes("(notes.md)")));
+		const offered = (await ask("projects.folders")).result.folders.map((folder: any) => folder.path);
+		assert.ok(offered.includes(used) && !offered.includes(neverUsed) && !offered.includes(join(work, "..")), "a folder used with pi², never one unused nor a parent");
+		assert.equal((await ask("projects.create", { folder: neverUsed })).error, NOT_OFFERED, "a folder the Mac does not offer");
+		assert.equal((await ask("projects.create", { folder: join(used, "..", "..") })).error, NOT_OFFERED, "nor a parent of one");
+		symlinkSync(used, join(work, "link-to-used"));
+		const fromPhone = (await ask("projects.create", { folder: join(work, "link-to-used") })).result;
+		const listed = await app.until("the phone's project", () => app.events.projects?.projects?.find((project: any) => project.id === fromPhone.id));
+		assert.equal(listed.folder, used, "a link to a folder offered is taken as the folder it leads to");
+		const shown = (await ask("files.preview", { id: linking, path: "notes.md" })).result;
+		assert.equal(shown.text, `notes, and ${KEY_HIDDEN}\n`, "masked, as everything sent to a phone is");
+		assert.equal((await ask("files.preview", { id: linking, path: "other.md" })).error, NOT_LINKED);
+		const logged = (await app.call("devices.log", { device: phone.id })).entries;
+		assert.ok(logged.some((entry: any) => entry.method === "files.preview" && entry.outcome === "done" && entry.summary.startsWith("Showed the file “notes.md”")), "a file shown is logged");
+		assert.ok(logged.some((entry: any) => entry.method === "projects.create" && entry.outcome === "failed" && entry.why === NOT_OFFERED), "and a folder refused");
+		assert.ok(!logged.some((entry: any) => entry.method === "projects.folders"), "asking for the folders is reading");
+		step("from the phone: the folders offered, a project made from one through a link and refused from any other, a linked file shown masked, and logged");
+	}
 
 	// ---- Resume, refusals, suspension (3.4, 3.6, 5.8)
 	const resumed = await attach({ session });
