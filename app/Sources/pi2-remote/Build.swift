@@ -56,5 +56,11 @@ package enum BuildKind: Sendable, Equatable, CustomStringConvertible {
 /// Why pi² Remote will not run, in words for its log and its standard error. Never holds a key or a secret.
 package struct Refused: Error, CustomStringConvertible, Equatable {
 	package let description: String
-	package init(_ description: String) { self.description = description }
+	/// The fixed word the engine gives beside its words (`data.reason` on `remote.attach`'s refusal, #818), as written;
+	/// nil when it gives none. pi² Remote reads this, never `description`, for what it tells a phone.
+	package let reason: String?
+	package init(_ description: String, reason: String? = nil) {
+		self.description = description
+		self.reason = reason
+	}
 }

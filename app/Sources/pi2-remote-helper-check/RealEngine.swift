@@ -255,6 +255,25 @@ enum RealEngine {
 			Check.expect(false, "a second pairing window opened")
 		}
 
+		// A claim waiting while the person cancels the pairing on the Mac: the engine's word for it reaches the phone (#881).
+		if case let .success(again) = app.call("devices.pairStart", within: 180), let text = again["payload"]?.stringValue, let third = try? PairingPayload.parse(text),
+		   let claimer = Phone(port: port), claimer.pair(payload: third, keys: PhoneKeys(), team: team) != nil {
+			var waiting = false
+			for _ in 0 ..< 100 where !waiting {
+				if case let .success(state) = app.call("devices.watch"), state["pairingWindow"]?["claim"]?.isNull == false { waiting = true }
+				if !waiting { usleep(100_000) }
+			}
+			Check.expect(waiting, "the third claim waits for the digits on the Mac")
+			_ = app.call("devices.pairCancel")
+			if let line = claimer.line(within: 30), case let .pairRefused(refusal)? = try? ControlLine.parse(line, from: .mac) {
+				Check.expect(refusal.why == .cancelled && claimer.event() == .bye && claimer.homeKey == nil, "a claim the person cancels on the Mac is told pairRefused cancelled by pi² Remote, from the engine's word, then bye")
+			} else {
+				Check.expect(false, "a claim the person cancels on the Mac is told so")
+			}
+		} else {
+			Check.expect(false, "a third pairing window opened and its claim was sent")
+		}
+
 		let log = (try? String(contentsOf: home.appendingPathComponent("remote.log"), encoding: .utf8)) ?? ""
 		Check.expect(log.contains("a development build") && !log.contains(Base64URL.encode(payload.secret)) && !log.contains(digits), "pi² Remote's log holds neither the pairing's secret nor the digits", log)
 

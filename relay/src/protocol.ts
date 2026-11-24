@@ -114,7 +114,14 @@ export type Put = { type: "put"; to: string; id: string; item: Uint8Array<ArrayB
 /** What a reader has kept of what its takes handed over: the ids of its items, and of its state for a phone. */
 export type Took = { type: "took"; ids: string[] };
 export type Token = { type: "token"; apns: string; environment: "development" | "production" };
-export type Leave = { type: "leave"; signature: string };
+/**
+ * A phone leaving (3.6): `signature` over `proofText("leave", …)` with this connection's challenge, which the relay
+ * checks; `at` and `notice`, the device key's signature over the leave text for the Mac (docs/remotekit.md, "The leave
+ * notice"), which names the Mac's identity key, so the relay cannot check it and passes it on in `left` as it came.
+ */
+export type Leave = { type: "leave"; signature: string; at: number; notice: string };
+/** A device that left, as the Mac is told it, now or at its next `ready`: what the phone gave for the Mac to check. */
+export type Left = { device: string; at: number; notice: string };
 /** The Mac's request for a push to one of its devices (apns.ts): `sealed` is the sealed bytes' base64url, as sent. */
 export type Push = { type: "push"; device: string; kind: PushKind; sealed: string; collapse: string | null };
 /**
@@ -219,7 +226,11 @@ export function readMessage(text: string): Message | null {
 				? { type: "token", apns: body.apns, environment: body.environment }
 				: null;
 		case "leave":
-			return exactly(body, ["signature"]) && isSignature(body.signature) ? { type: "leave", signature: body.signature } : null;
+			// `at` up to the year 2286 (apns.ts's `isTime`), the most RemoteKit's client reads as a time, so that what the relay
+			// passes on in `left` is never one the Mac's reader refuses.
+			return exactly(body, ["signature", "at", "notice"]) && isSignature(body.signature) && isTime(body.at) && isSignature(body.notice)
+				? { type: "leave", signature: body.signature, at: body.at, notice: body.notice }
+				: null;
 		default:
 			return null;
 	}

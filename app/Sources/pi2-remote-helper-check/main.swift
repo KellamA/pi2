@@ -107,6 +107,7 @@ if let relayURL {
 	if let engineMain { RealEngine.run(engineMain: engineMain, helper: built, root: root, relay: relayURL) }
 } else {
 	Units.run(sources: sources, helper: built)
+	Pushes.run(home: root)
 	Starts.refusals(helper: bundled, home: home)
 	Flows.run(helper: bundled, home: home)
 	if let engineMain { RealEngine.run(engineMain: engineMain, helper: built, root: root) }

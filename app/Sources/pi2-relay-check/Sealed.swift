@@ -14,21 +14,25 @@ import RemoteKit
 /// `sessionEnd` and `bye`; request items for the Mac (one marked `presence`) and Mac items for the phone, both through
 /// the mailbox; and the Mac's state for the phone. Each end checks that every marker reached the other, opened. Each
 /// take is acknowledged (`took`, #806) once what it brought is opened, verified and remembered, as pi² Remote and the
-/// phone take; some items are left in the mailbox after, so that the relay holds them when its storage is read. Pushes: none, since the relay
-/// at this head sends none (P20, #689).
+/// phone take; some items are left in the mailbox after, so that the relay holds them when its storage is read. Pushes
+/// (#689): an alert and a background push, sealed as pi² Remote seals them (`PushSealing`), with markers in their text
+/// and the alert's collapse id an HMAC of a marker, to the phone's push token; and a Live Activity's four numbers, the one
+/// push the relay may read, to an activity's token, then refused once the phone took it back, and a push to a device
+/// that is not the pairing's refused.
 ///
 /// It writes what the relay may not read, for `relay/test/sealed/check.mjs`: the markers, the ends' private keys and
 /// the public keys the relay is never given, the pairing's secret, the channels' bindings and `pair`'s attestation; the
 /// two keys it may be given, and the devices' ids; and the SHA-256 of every Noise message and sealed item it sent.
 ///
 /// `--plant` is the check's own test: a second pairing whose phone sends a marker in clear as the channel's bytes and
-/// whose Mac leaves it in clear in an item, which the check must find everywhere it went (and in the relay's console,
-/// where check.mjs has the recording relay write it).
+/// whose Mac leaves it in clear in an item and pushes it in clear, which the check must find everywhere it went (and in
+/// the relay's console, where check.mjs has the recording relay write it).
 enum SealedSession {
 	/// The places a marker goes, each sent once at least; markers.json gives one marker for each, and no other.
 	static let places = [
 		"device name", "device model", "device system", "Mac name", "method", "method in an item", "message", "transcript", "notification",
 		"secret", "file preview", "project", "long line", "request item", "receipt", "state", "home address", "private address", "device event",
+		"push text", "push collapse", "push gone",
 	]
 
 	static func run(relay url: URL, markers path: String, out: String) async {
@@ -408,11 +412,101 @@ enum SealedSession {
 		try await mac.putState(keptState, id: keptStateID, for: device)
 		print("ok   the mailbox both ways, and the Mac's state")
 
-		// The phone's push token, which the relay keeps (5.3). Pushes themselves are P20's (#689): none at this head.
+		// The phone's push token, which the relay keeps (5.3), and the pushes the Mac asks for (#689), to the relay's stand-in
+		// for Apple's service: an alert and a background push sealed as pi² Remote seals them, the alert's collapse id an
+		// HMAC of the item's id; each opened again as the phone's extension opens it.
 		try await phone.setPushToken(Bytes.random(32).hex, environment: .development)
+		let now = Int64(Date().timeIntervalSince1970 * 1000)
+		let alertBody = JSONValue.object([
+			("v", .integer(1)), ("type", s("need")), ("category", s("pi2.question")), ("title", s(m("push text"))), ("subtitle", s(m("project"))),
+			("body", s(m("notification"))), ("projectId", s(m("project"))), ("need", s(m("push gone"))), ("whole", .bool(true)), ("at", .integer(now)),
+		])
+		let goneBody = JSONValue.object([("v", .integer(1)), ("type", s("gone")), ("needs", .array([s(m("push gone"))])), ("at", .integer(now))])
+		func sealPush(_ body: JSONValue, _ kind: PushSealing.Kind, for target: DeviceID = device) throws -> Data {
+			let sealed = try PushSealing.seal(body, kind: kind, pairing: pairing, device: target, deviceRecordKey: phoneRecord.publicKey, recordKey: macRecord, identity: identity)
+			ledger.items.append(sealed)
+			return sealed
+		}
+		func opened(_ sealed: Data) throws -> PushSealing.Opened {
+			try PushSealing.open(sealed, pairing: pairing, device: device, recordKey: phoneRecord, macRecordKey: macRecord.publicKey, identityKey: identity.publicKey)
+		}
+		let alert = try sealPush(alertBody, .alert)
+		let collapse = try PushSealing.collapse(m("push collapse"), pairing: pairing, device: device, recordKey: macRecord, deviceRecordKey: phoneRecord.publicKey)
+		Check.equal(try await mac.push(.sealed(device: device, kind: .alert, sealed: alert, collapse: collapse)), .sent, "the Mac's sealed alert is sent")
+		if try opened(alert).body == alertBody { ledger.arrived.insert("push text") }
+		if try PushSealing.collapse(m("push collapse"), pairing: pairing, device: device, recordKey: phoneRecord, deviceRecordKey: macRecord.publicKey) == collapse {
+			ledger.arrived.insert("push collapse")
+		}
+		let gone = try sealPush(goneBody, .background)
+		Check.equal(try await mac.push(.sealed(device: device, kind: .background, sealed: gone, collapse: nil)), .sent, "the Mac's sealed background push is sent")
+		if try opened(gone).body == goneBody { ledger.arrived.insert("push gone") }
+		// A Live Activity's numbers, to the token the phone gave for it; refused once the phone takes the token back.
+		let activity = ItemID.random()
+		try await phone.setActivityToken(Bytes.random(64).hex, environment: .development, for: activity)
+		let numbers = ActivityNumbers(working: 3, needs: 1, finished: 2, at: now)!
+		Check.equal(try await mac.push(.activity(device: device, activity: activity, event: .update, numbers: numbers)), .sent, "a Live Activity's numbers are sent")
+		Check.equal(try await mac.push(.activity(device: device, activity: activity, event: .end, numbers: numbers)), .sent, "and its end")
+		try await phone.dropActivity(activity)
+		Check.equal(try await mac.push(.activity(device: device, activity: activity, event: .update, numbers: numbers)), .refused(RelayWhy(word: "no-token")!), "a Live Activity whose token the phone took back is refused no-token")
+		let stray = try sealPush(goneBody, .background, for: DeviceID.random())
+		Check.equal(try await mac.push(.sealed(device: DeviceID.random(), kind: .background, sealed: stray, collapse: nil)), .refused(.unknownDevice), "a push to a device that is not the pairing's is refused unknown-device")
+		print("ok   pushes: sealed alert and background push, a Live Activity's numbers, and two refused")
 
 		await phone.stop()
+
+		// Leaving (3.6, #813): three more phones join one window and are added, and each leaves with its notice for the Mac,
+		// signed over a text naming the Mac's identity key, which the relay must pass on and never see. One leaves while the
+		// Mac is connected (`left`); one while it is away, which the Mac's next `ready` lists; and one while it is away
+		// again, still kept when the relay's storage is read.
+		let leaveToken = Bytes.random(32)
+		try await mac.openJoin(tokenHash: PairingSecrets.joinTokenHash(leaveToken), expires: SystemRelayClock().now() + 300_000)
+		func addLeavingPhone() async throws -> (DeviceID, P256.Signing.PrivateKey) {
+			let key = P256.Signing.PrivateKey()
+			ledger.secrets.append(key.rawRepresentation)
+			ledger.deviceKeys.append(PublicKeys.text(key.publicKey))
+			let attestKey = AttestKeyID(bytes: Bytes.random(32))!
+			let link = try await RelayClient.join(
+				relay: url, pairing: pairing, build: phoneBuild, deviceKey: key.publicKey, token: leaveToken,
+				attest: { hash in RelayAttestation(attestation: hash + Data(base64Encoded: attestKey.text)!, keyId: attestKey) }, connector: connector)
+			let joined = try await macEvents.next("joined") { if case let .phoneJoined(notice) = $0 { notice } else { nil } }
+			ledger.devices.append(joined.slot.text)
+			let id = DeviceID.random()
+			ledger.devices.append(id.text)
+			try await mac.addDevice(id, deviceKey: key.publicKey, attestKeyId: AttestKeyID(bytes: Bytes.random(32))!)
+			await link.close()
+			_ = try await macEvents.next("offline") { $0 == .offline(id) ? true : nil }
+			return (id, key)
+		}
+		let leaving = [try await addLeavingPhone(), try await addLeavingPhone(), try await addLeavingPhone()]
+		try await mac.closeJoin()
+		func leave(_ id: DeviceID, _ key: P256.Signing.PrivateKey, macThere: Bool) async throws {
+			let client = try RelayClient(
+				relay: url, role: .device(pairing, id), build: phoneBuild, signer: RelaySigner(key), connector: connector, options: ProtocolTest.options())
+			let events = Inbox(client.events)
+			await client.start()
+			let online = try await events.next("a leaving phone's ready") { if case let .deviceReady(online, _) = $0 { online } else { nil } }
+			Check.equal(online, macThere, "the leaving phone finds the Mac \(macThere ? "there" : "away")")
+			try await client.leave(mac: identity.publicKey)
+		}
+		func believed(_ left: RelayLeft, _ phone: (DeviceID, P256.Signing.PrivateKey)) -> Bool {
+			left.device == phone.0
+				&& left.verified(pairing: pairing, identityKey: identity.publicKey, deviceKey: phone.1.publicKey, now: SystemRelayClock().now()) != nil
+				&& left.verified(pairing: pairing, identityKey: relayKey.publicKey, deviceKey: phone.1.publicKey, now: SystemRelayClock().now()) == nil
+		}
+		try await leave(leaving[0].0, leaving[0].1, macThere: true)
+		let leftNow = try await macEvents.next("left") { if case let .left(left) = $0 { left } else { nil } }
+		Check.that(believed(leftNow, leaving[0]), "a phone that left while the Mac was there: its notice verifies for this Mac alone")
 		await mac.stop()
+		try await leave(leaving[1].0, leaving[1].1, macThere: false)
+		let macAgain = try RelayClient(
+			relay: url, role: .mac(pairing), build: macBuild, signer: RelaySigner(relayKey), connector: connector, options: ProtocolTest.options())
+		let macAgainEvents = Inbox(macAgain.events)
+		await macAgain.start()
+		let ready = try await macAgainEvents.next("the Mac's ready again") { if case let .macReady(ready) = $0 { ready } else { nil } }
+		Check.that(ready.left.count == 1 && believed(ready.left[0], leaving[1]), "a phone that left while the Mac was away: kept, and its notice verifies")
+		await macAgain.stop()
+		try await leave(leaving[2].0, leaving[2].1, macThere: false)
+		print("ok   three phones left, each with its notice for the Mac")
 	}
 
 	/// A line of some 100 KB, cut into a `more` frame and a `data` frame, with the marker across the cut.
@@ -461,7 +555,19 @@ enum SealedSession {
 		ledger.kept.append(item)
 		Check.equal(try await mac.put(item, id: ItemID.random(), to: .device(device)), .stored, "the planted item is stored")
 		await link.close()
+		// A push whose sealed bytes hold the marker in clear (#689): the check must find it in what the relay posted to
+		// Apple's stand-in, and in the Mac's request.
+		let phone = try RelayClient(
+			relay: url, role: .device(pairing, device), build: RelayBuild("3.1")!, signer: RelaySigner(deviceKey), connector: connector, options: ProtocolTest.options())
+		let phoneEvents = Inbox(phone.events)
+		await phone.start()
+		_ = try await phoneEvents.next("the phone's ready") { if case .deviceReady = $0 { true } else { nil } }
+		try await phone.setPushToken(Bytes.random(32).hex, environment: .development)
+		var push = Data([4]) + Data(repeating: 0, count: 80) + Data(marker.utf8)
+		push += Data(repeating: 0, count: PushSealing.sizes[0] - push.count)
+		Check.equal(try await mac.push(.sealed(device: device, kind: .alert, sealed: push, collapse: nil)), .sent, "the planted push is sent")
+		await phone.stop()
 		await mac.stop()
-		print("ok   planted a marker in clear as bytes and as an item")
+		print("ok   planted a marker in clear as bytes, as an item and as a push")
 	}
 }

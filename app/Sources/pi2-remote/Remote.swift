@@ -39,6 +39,8 @@ package final class Remote: @unchecked Sendable {
 	let vault: any KeyVault
 	let engine: EngineLink
 	let advertiser: (any Advertiser)?
+	/// Pushes the engine chooses, sealed and handed to the relay (Push/, #689).
+	package let pushes: PushHandOver
 
 	/// How long a session waits for its phone after its channel drops (5.8).
 	package var resumeWindow: TimeInterval = 60
@@ -91,6 +93,9 @@ package final class Remote: @unchecked Sendable {
 		self.engine = engine
 		self.queue = queue
 		self.advertiser = advertiser
+		pushes = PushHandOver(queue: queue, keys: keys) { [engine] id, why in
+			engine.request("remote.pushRefused", .object([("id", .string(id)), ("why", .string(why))]))
+		}
 		let kept = try vault.kept()
 		devices = kept.devices
 		homeKey = kept.homeKey
@@ -135,11 +140,13 @@ package final class Remote: @unchecked Sendable {
 		case "pairRefused":
 			if let claim = event["claim"]?.stringValue, let connection = claims.removeValue(forKey: claim) {
 				log("a claim was refused on the Mac; its channel is closed")
-				connection.end()
+				// The engine's word for the phone, when it gives one (#881); its words are never read.
+				if let why = EngineWords.pairRefusal(event["reason"]?.stringValue) { connection.refusePairing(why) } else { connection.end() }
 			}
 			relayEnd.claimAnswered()
 		case "revoke":
 			if let text = event["device"]?.stringValue, let device = DeviceID(text) { revoke(device) }
+		case "push": pushes.take(event, pairing: pairing, devices: devices)
 		case "sessionClosed":
 			// The engine says `revoke` before it closes a revoked device's sessions (#776's 25), so the `revoked` line has
 			// gone already: the channel ends at once.
@@ -437,11 +444,14 @@ package final class Remote: @unchecked Sendable {
 		list.append(device)
 		let connection = event["claim"]?.stringValue.flatMap { claims.removeValue(forKey: $0) }
 		guard keep(list, homeKey: homeKey ?? HomeKey.random()), let homeKey else {
-			// Not on pi² Remote's own list, so never attached, and its phone is told nothing but `bye`. The engine has paired
-			// it already and has no request to undo that (#776): the Devices page shows a device that never attaches, which
-			// the person removes there.
-			log("paired device \(device.id) could not be kept on pi² Remote's own list; its phone is not told it is paired")
-			connection?.end()
+			// Not on pi² Remote's own list, so never attached. The engine has paired it already: it is asked to take the
+			// pairing back (`remote.pairUnkept`, #887), which it does only for this device, the last it sent `paired` for,
+			// within a minute; and the phone is told the Mac could not save it (#881).
+			log("paired device \(device.id) could not be kept on pi² Remote's own list; the engine is asked to take the pairing back")
+			engine.request("remote.pairUnkept", .object([("device", .string(device.id.text))])) { result in
+				if case let .failure(refusal) = result { log("the engine did not take back the pairing of device \(device.id): \(refusal)") }
+			}
+			connection?.refusePairing(.unsaved)
 			return
 		}
 		log("paired device \(device.id): added to pi² Remote's own list")
@@ -484,6 +494,7 @@ package final class Remote: @unchecked Sendable {
 		// fails leaves the list and the key as they were, the device still on the list, and `homeKey` nil: nothing is
 		// advertised, and the next `start`, which no longer names the device, drops it and makes the new key.
 		devices.removeAll { $0.id == device }
+		pushes.forget(device)
 		if keep(devices, homeKey: devices.isEmpty ? nil : HomeKey.random()), homeKey != nil { log("a new home key was made, after a revocation") }
 		// The phone is told first, signed by the identity key, which it acts on alone (3.6); then its channels end.
 		for connection in connections.values where connection.device == device {
