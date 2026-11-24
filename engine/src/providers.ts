@@ -1,5 +1,6 @@
 // Model access: every built-in pi-ai provider, the user's own endpoints, and a scripted demo model.
 
+import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -733,6 +734,17 @@ function localProvider(runner: () => LocalRunner | undefined): Provider {
 
 type ProviderStreamFunction = Provider["stream"];
 
+/** Bind cached entitlements to the account, not a rotating access token; persist no token claims. */
+function codexAccountKey(access: unknown): string | undefined {
+	if (typeof access !== "string") return undefined;
+	try {
+		const claims = JSON.parse(Buffer.from(access.split(".")[1] ?? "", "base64url").toString("utf8"));
+		const account = claims?.["https://api.openai.com/auth"]?.chatgpt_account_id;
+		if (typeof account !== "string" || account === "") return undefined;
+		return createHash("sha256").update(JSON.stringify([account, typeof claims.sub === "string" ? claims.sub : null])).digest("hex");
+	} catch { return undefined; }
+}
+
 export class Providers {
 	readonly models: MutableModels;
 	#local: LocalRunner | undefined;
@@ -753,6 +765,7 @@ export class Providers {
 	readonly #log: (...parts: unknown[]) => void;
 	readonly #discoveredPath: string;
 	#discovered: Model<Api>[] = [];
+	#codexCache: { account: string; models: Model<Api>[] } | undefined;
 	#codexRefresh: Promise<boolean> | undefined;
 	#codexNext = 0;
 	#codexGeneration = 0;
@@ -781,11 +794,12 @@ export class Providers {
 		this.#discoveredPath = join(home, "codex-models.json");
 		try {
 			const cached = JSON.parse(readFileSync(this.#discoveredPath, "utf8"));
-			if (Array.isArray(cached) && cached.every((model) => model !== null && typeof model === "object"
+			if (typeof cached?.account === "string" && /^[a-f0-9]{64}$/.test(cached.account)
+				&& Array.isArray(cached.models) && cached.models.every((model: Model<Api>) => model !== null && typeof model === "object"
 				&& model.provider === "openai-codex" && typeof model.id === "string" && typeof model.name === "string"
 				&& model.api === "openai-codex-responses" && typeof model.baseUrl === "string"
 				&& Array.isArray(model.input) && Number.isInteger(model.contextWindow) && model.contextWindow > 0
-				&& Number.isInteger(model.maxTokens) && model.maxTokens > 0)) this.#discovered = cached;
+				&& Number.isInteger(model.maxTokens) && model.maxTokens > 0)) this.#codexCache = cached;
 		} catch {}
 		this.#addedPath = join(home, "added-models.json");
 		try {
@@ -834,6 +848,16 @@ export class Providers {
 		return [...built, ...this.#discovered.filter((model) => !known.has(model.id))];
 	}
 
+	/** Register disk entries only after verifying the current stored credential's account. */
+	async #syncCodexAccount(): Promise<string | undefined> {
+		const generation = this.#codexGeneration;
+		const credential = await this.#credentials.read("openai-codex").catch(() => undefined);
+		const account = credential?.type === "oauth" ? codexAccountKey(credential.access) : undefined;
+		if (generation !== this.#codexGeneration) return undefined;
+		this.#discovered = account !== undefined && account === this.#codexCache?.account ? this.#codexCache.models : [];
+		return account;
+	}
+
 	/** Background, account-aware discovery. Failures keep the last usable list and never prevent sign-in or startup. */
 	refreshCodexModels(now = Date.now()): Promise<boolean> {
 		if (this.#codexRefresh !== undefined) return this.#codexRefresh;
@@ -842,8 +866,8 @@ export class Providers {
 		const generation = this.#codexGeneration;
 		this.#codexRefresh = (async () => {
 			try {
-				const credential = await this.#credentials.read("openai-codex");
-				if (credential?.type !== "oauth") return false;
+				const account = await this.#syncCodexAccount();
+				if (account === undefined) return false;
 				const listing = await this.askProvider("openai-codex");
 				const catalog = this.#catalog("openai-codex");
 				const discovered: Model<Api>[] = [];
@@ -853,9 +877,11 @@ export class Providers {
 					const template = catalog.getModels().find((model) => model.id === draft.basedOn)!;
 					discovered.push(buildAdded(template, draft, "openai-codex"));
 				}
-				if (generation !== this.#codexGeneration) return false;
+				if (account !== await this.#syncCodexAccount() || generation !== this.#codexGeneration) return false;
 				// Save before publishing: a failed write leaves the previous working list intact.
-				writeFileSync(this.#discoveredPath, JSON.stringify(discovered));
+				const cache = { account, models: discovered };
+				writeFileSync(this.#discoveredPath, JSON.stringify(cache));
+				this.#codexCache = cache;
 				this.#discovered = discovered;
 				this.#codexNext = now + 6 * 60 * 60_000;
 				return true;
@@ -1159,6 +1185,7 @@ export class Providers {
 	}
 
 	async listProviders(): Promise<ProviderInfo[]> {
+		await this.#syncCodexAccount();
 		const providers = this.models.getProviders();
 		return Promise.all(
 			providers.map(async (provider): Promise<ProviderInfo> => {
@@ -1194,6 +1221,7 @@ export class Providers {
 
 	/** Chat models of every provider that is configured. */
 	async listModels(): Promise<ModelInfo[]> {
+		await this.#syncCodexAccount();
 		const names = new Map(this.models.getProviders().map((p) => [p.id, p.name]));
 		const available = await this.models.getAvailable();
 		return available.map((model) => this.#info(model, names));
@@ -1211,6 +1239,7 @@ export class Providers {
 			this.#codexGeneration++;
 			this.#codexNext = 0;
 			this.#discovered = [];
+			this.#codexCache = undefined;
 			try { writeFileSync(this.#discoveredPath, "[]"); } catch {
 				this.#log("could not clear the cached ChatGPT models after sign-out");
 			}
@@ -1226,6 +1255,7 @@ export class Providers {
 			this.#codexGeneration++;
 			this.#codexNext = 0;
 			this.#discovered = [];
+			this.#codexCache = undefined;
 			try { writeFileSync(this.#discoveredPath, "[]"); } catch {
 				this.#log("could not clear the cached ChatGPT models after sign-in");
 			}

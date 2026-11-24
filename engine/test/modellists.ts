@@ -3,13 +3,14 @@
 // 127.0.0.1, answering as ChatGPT's Codex service, Anthropic, OpenAI and Google answer. No real provider is called.
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Api, createModels, type CreateModelsOptions, createProvider, InMemoryCredentialStore, type Model } from "@earendil-works/pi-ai";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { providersEvent, wireDefaultModel } from "../src/defaultmodel.ts";
+import { providerRequests, wireProviderRequests } from "../src/providerrequests.ts";
 import { CODEX_CLIENT_VERSION } from "../src/modellists.ts";
 import { Providers } from "../src/providers.ts";
 
@@ -21,16 +22,24 @@ const home = mkdtempSync(join(tmpdir(), "pi2-lists-"));
 process.on("exit", () => rmSync(home, { recursive: true, force: true }));
 
 /** A ChatGPT token as the Codex service reads it: a JWT naming the account. */
-const token = ["e30", Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-1" } })).toString("base64url"), "sig"].join(".");
+const tokenFor = (account: string, signature = "sig") => ["e30", Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: account } })).toString("base64url"), signature].join(".");
+const token = tokenFor("acct-1");
+let loginToken = token;
 
 type Asked = { path: string; headers: Record<string, string | string[] | undefined> };
 const asked: Asked[] = [];
 const json = (response: import("node:http").ServerResponse, status: number, body: unknown) => response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
 let codexStatus = 200;
-const standIn = createServer((request, response) => {
+let codexGate: { arrived: () => void; released: Promise<void> } | undefined;
+const standIn = createServer(async (request, response) => {
 	const path = request.url ?? "";
 	asked.push({ path, headers: request.headers });
 	if (path === `/backend-api/codex/models?client_version=${CODEX_CLIENT_VERSION}`) {
+		if (codexGate !== undefined) {
+			const gate = codexGate;
+			gate.arrived();
+			await gate.released;
+		}
 		if (codexStatus !== 200) return json(response, codexStatus, { error: "unavailable" });
 		return json(response, 200, {
 			models: [
@@ -70,7 +79,7 @@ const origin = `http://127.0.0.1:${(standIn.address() as { port: number }).port}
 function chat(id: string, api: string, baseUrl: string, extra: Partial<Model<Api>> = {}): Model<Api> {
 	return { id, name: id, api, provider: "", baseUrl, reasoning: true, input: ["text", "image"], cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, contextWindow: 272_000, maxTokens: 64_000, ...extra } as Model<Api>;
 }
-const oauth = { name: "Sign-in", isSubscription: true, login: async () => ({ type: "oauth", access: token, refresh: "r", expires: Date.now() + 3_600_000 }), refresh: async (c: never) => c, toAuth: async (c: { access: string }) => ({ apiKey: c.access }) };
+const oauth = { name: "Sign-in", isSubscription: true, login: async () => ({ type: "oauth", access: loginToken, refresh: "r", expires: Date.now() + 3_600_000 }), refresh: async (c: never) => c, toAuth: async (c: { access: string }) => ({ apiKey: c.access }) };
 const keyAuth = (name: string) => ({ name, resolve: async ({ credential }: { credential?: { key?: string } }) => (credential?.key ? { auth: { apiKey: credential.key } } : undefined) });
 let fetched = 0;
 
@@ -233,7 +242,9 @@ assert.equal(providers.models.getModel("openai-codex", "codex-internal"), undefi
 assert.equal(await providers.refreshCodexModels(now + 1), false);
 assert.equal(asked.length, 1, "successful refresh is throttled");
 providers = open();
-assert.ok(providers.models.getModel("openai-codex", "gpt-6.2-sol"), "cached at startup before any request");
+assert.equal(providers.models.getModel("openai-codex", "gpt-6.2-sol"), undefined, "unverified cache is not registered synchronously");
+await providers.listModels();
+assert.ok(providers.models.getModel("openai-codex", "gpt-6.2-sol"), "same-account cache restored without a network request");
 codexStatus = 503;
 assert.equal(await providers.refreshCodexModels(now), false);
 assert.ok(providers.models.getModel("openai-codex", "gpt-6.2-sol"), "failure preserves cached models");
@@ -255,11 +266,80 @@ assert.deepEqual(JSON.parse(readFileSync(join(home, "codex-models.json"), "utf8"
 await providers.login("openai-codex", { notify: () => {}, prompt: async () => "" });
 assert.equal(await providers.refreshCodexModels(now + 8 * 60 * 60_000), true, "sign-in resets the throttle");
 assert.ok(providers.models.getModel("openai-codex", draft.id));
+const gatePromise = () => {
+	let resolve!: () => void;
+	const promise = new Promise<void>((done) => { resolve = done; });
+	return { promise, resolve };
+};
+const arrived = gatePromise();
+const released = gatePromise();
+codexGate = { arrived: arrived.resolve, released: released.promise };
 const stale = providers.refreshCodexModels(now + 15 * 60 * 60_000);
+await arrived.promise;
 await providers.logout("openai-codex");
+released.resolve();
 await stale;
+codexGate = undefined;
 assert.equal(providers.models.getModel("openai-codex", draft.id), undefined, "an in-flight refresh cannot restore signed-out models");
 step("automatic Codex discovery registers and caches models, coalesces and throttles requests, recovers offline, and preserves manual choices");
+
+// Simulate a crash after saving account B's credentials but before clearing account A's cache.
+await providers.login("openai-codex", { notify: () => {}, prompt: async () => "" });
+assert.equal(await providers.refreshCodexModels(), true);
+const cachePath = join(home, "codex-models.json");
+const accountACache = readFileSync(cachePath, "utf8");
+assert.doesNotMatch(accountACache, /acct-1|sig|e30/);
+const storeToken = async (access: string) => credentials.modify("openai-codex", async () => ({ type: "oauth", access, refresh: "r", expires: Date.now() + 3_600_000 }));
+await storeToken(tokenFor("acct-2"));
+codexStatus = 503;
+providers = open();
+assert.equal((await providers.listModels()).some((model) => model.id === draft.id), false);
+assert.equal(await providers.refreshCodexModels(), false);
+assert.equal(providers.models.getModel("openai-codex", draft.id), undefined, "offline restart never exposes the previous account's models");
+// Token rotation retains the account binding, without retaining the token itself.
+await storeToken(tokenFor("acct-1", "rotated"));
+providers = open();
+assert.equal((await providers.listModels()).some((model) => model.id === draft.id), true);
+// Force the cache-clear write to fail during an actual login, then restore the stale file for a restart.
+renameSync(cachePath, `${cachePath}.saved`);
+mkdirSync(cachePath);
+loginToken = tokenFor("acct-2");
+await providers.login("openai-codex", { notify: () => {}, prompt: async () => "" });
+assert.equal((await providers.listModels()).some((model) => model.id === draft.id), false);
+rmSync(cachePath, { recursive: true });
+renameSync(`${cachePath}.saved`, cachePath);
+providers = open();
+assert.equal(await providers.refreshCodexModels(), false);
+assert.equal((await providers.listModels()).some((model) => model.id === draft.id), false, "failed clear plus offline restart is safe");
+await storeToken("not-a-jwt");
+providers = open();
+assert.equal((await providers.listModels()).some((model) => model.id === draft.id), false, "unknown identity fails closed");
+await storeToken(token);
+writeFileSync(cachePath, JSON.stringify(JSON.parse(accountACache).models));
+providers = open();
+assert.equal((await providers.listModels()).some((model) => model.id === draft.id), false, "legacy unbound caches are ignored");
+assert.equal(await providers.refreshCodexModels(), false);
+assert.equal(providers.models.getModel("openai-codex", draft.id), undefined);
+step("cached discoveries are account-bound across restart, token rotation, failed clearing and offline errors; legacy caches fail closed");
+
+// Exercise the real sign-in request's background refresh and eventual models announcement.
+codexStatus = 200;
+loginToken = tokenFor("acct-2");
+const loginArrived = gatePromise();
+const loginReleased = gatePromise();
+const announced = gatePromise();
+codexGate = { arrived: loginArrived.resolve, released: loginReleased.promise };
+wireProviderRequests({ providers, settings: {}, saveSettings: () => {}, log: () => {}, announceProviders: async () => {
+	if ((await providers.listModels()).some((model) => model.id === draft.id)) announced.resolve();
+} });
+await providerRequests["providers.login"]!({ id: "openai-codex" }, { socket: { destroyed: true } } as never);
+await loginArrived.promise;
+assert.equal(providers.models.getModel("openai-codex", draft.id), undefined, "login returns while discovery waits on the network");
+loginReleased.resolve();
+await announced.promise;
+codexGate = undefined;
+assert.ok(providers.models.getModel("openai-codex", draft.id), "login publishes new account models without another request from the app");
+step("the sign-in request refreshes in the background and announces discovered models");
 
 writeFileSync(join(home, "codex-models.json"), "[null]");
 assert.doesNotThrow(() => open().models.getModels("openai-codex"), "a damaged cache does not break startup");
