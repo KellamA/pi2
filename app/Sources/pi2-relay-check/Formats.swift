@@ -291,6 +291,8 @@ enum Formats {
 		Check.that(!taken(RelayLeft(device: device, at: at, notice: flipped)), "nor a notice with a bit changed")
 		Check.that(!taken(RelayLeft(device: device, at: at, notice: notice.prefix(63))), "nor one of 63 bytes")
 		Check.that(!taken(RelayLeft(device: device, at: at, notice: Data(count: 64))), "nor one of zeros")
+		Check.that(!taken(RelayLeft(device: device, at: .min, notice: notice), now: .max), "times that are none are refused, not a trap")
+		Check.that(!taken(RelayLeft(device: device, at: .max, notice: notice), now: .min), "either way")
 
 		// What else the device key signs is never a leave: the relay's texts, and the JSON of other kinds.
 		let challenge = Data(repeating: 9, count: 32)

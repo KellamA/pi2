@@ -41,6 +41,8 @@ public struct RelayLeft: Equatable, Sendable {
 	/// and this Mac's identity key, at a time within the window by `now` (ms since 1970, the Mac's clock); nil otherwise.
 	/// `deviceKey` is the caller's own, from the engine's verified claim, never what a relay said.
 	public func verified(pairing: PairingID, identityKey: P256.Signing.PublicKey, deviceKey: P256.Signing.PublicKey, now: Int64) -> RelayVerifiedLeave? {
+		// Both times first held to what a time is, so that the window's sums cannot overflow whatever a relay or a clock says.
+		guard at > 0, at <= RelayLimits.maxTime, now > 0, now <= RelayLimits.maxTime else { return nil }
 		guard at >= now - RelayLeaveNotice.longestAge, at <= now + RelayLeaveNotice.aheadAtMost else { return nil }
 		guard notice.count == SignedStatement.signatureLength,
 			let text = try? RelayLeaveNotice.text(pairing: pairing, device: device, identityKey: identityKey, at: at),
