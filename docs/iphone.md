@@ -258,7 +258,7 @@ This table is decision 2's one place. It is the content of the three device list
 - `conversation.export` (`conversationevents.ts`) answers the transcript as text and writes nothing on the Mac: reading, and logged ([4.4](#44-the-devices-log)).
 - `work.act` stays "yes" without `confirmLimit`: it is what the person does by hand on the board, its `assign` starts a run as `submit` does, it merges nothing (merging is `github.merge`), and [4.5](#45-a-stolen-or-unlocked-phone-the-owners-choice) governs it as it governs `submit`.
 
-A handler the engine has that this table does not name is placed by P5 in `MAC_ONLY`, and P5's pull request lists it for the owner. New requests this epic adds that a device may send: `devices.self` (its own record and log, yes), `devices.forgetSelf` (it unpairs itself, yes, [3.6](#36-revoking-and-a-lost-phone)), `projects.folders` (the folders the Mac offers for a new project, yes, P29), `files.preview` (a text file the conversation's transcript links to, under its folder, not ignored by git, at most 256 KB; yes, P29).
+A handler the engine has that this table does not name is placed by P5 in `MAC_ONLY`, and P5's pull request lists it for the owner. New requests this epic adds that a device may send: `devices.self` (its own record and log, yes), `devices.forgetSelf` (it unpairs itself, yes, [3.6](#36-revoking-and-a-lost-phone)), `pushes.set` and `pushes.follow` (what it is pushed, and which project each of its Live Activities follows: its own settings, which widen nothing, yes, P20, [7.1](#71-what-the-engine-pushes)), `projects.folders` (the folders the Mac offers for a new project, yes, P29), `files.preview` (a text file the conversation's transcript links to, under its folder, not ignored by git, at most 256 KB; yes, P29).
 
 The owner answered decision 2 as this table has it. Were it ever narrowed, only the middle and last columns would change; were a second Face ID wanted for some rows after all, the engine's `"face"` answer is still there to give it. For example "answers only, away from home": every row but Reading and Answers becomes "no" when the path is not `home`, which the engine knows from pi² Remote.
 
@@ -543,7 +543,7 @@ pi² does the rest: the relay's code and its configuration in `relay/`; a workfl
 
 ## 7. Notifications
 
-**Who sends them**: the engine decides, pi² Remote seals, the relay sends. The engine sends pi² Remote a `remote` event `{ push: { device, kind, title, body, need?, projectId? } }`; pi² Remote seals it to the device's record key and asks the relay to `push`; the relay signs a token with its APNs key and posts it to Apple's push service.[^apns][^apnskey]
+**Who sends them**: the engine decides, pi² Remote seals, the relay sends. The engine sends pi² Remote a `remote` event `{ kind: "push", push: { id, device, kind, … } }` ([7.1](#71-what-the-engine-pushes) has its exact shapes); pi² Remote seals its body to the device's record key and asks the relay to `push`; the relay signs a token with its APNs key and posts it to Apple's push service.[^apns][^apnskey]
 
 **What triggers one.**
 
@@ -552,7 +552,7 @@ pi² does the rest: the relay's code and its configuration in `relay/`; a workfl
 - An orchestrator's finished answer, only for a message the person sent from the phone with **Tell me when it answers** on.
 - When an item is answered or withdrawn, a background push so the phone takes its notification away (best effort; Apple may hold or drop these[^bgpush]), and the item's removal in the device's mailbox.
 
-The phone's own settings turn each of the first three off.
+The phone's own settings turn each of the first three off, and quiet a project's needs and answers (`pushes.set`, [7.1](#71-what-the-engine-pushes)).
 
 **What the push carries.** An alert push with a generic alert ("pi²", "Something needs you"), `mutable-content` set, a `collapse-id` that is an HMAC of the item's id with a key of the pairing (the item's id itself would be seen by the relay and Apple), and one custom key, `sealed`: the notification's content sealed with HPKE for the device and signed by the Mac's identity key ([5.3](#53-the-relay)), padded to exactly 696, 1,464 or 3,000 bytes, the sizes that make the push's payload at most 1, 2 or 4 KB (an alert's 1,023, 2,047 or 4,095 bytes, a background push's 971, 1,995 or 4,043), so that its size does not tell an approval from a question, within Apple's 4 KB;[^payload] the relay refuses a push of any other size ([relay/README.md](../relay/README.md#pushes)). No category, no thread, no project and no kind are visible outside the seal: the notification service extension sets them when it opens it.[^nse] The relay sees that an alert of so many bytes went to a device at a time, and its collapse id, which ties together the pushes about one item across the pairing's devices (Apple sees the same); nothing else.
 
@@ -586,6 +586,82 @@ The phone's own settings turn each of the first three off.
 5. takes the notification away, and leaves the Outbox entry until the Mac's answer or receipt says what became of it. If even step 4 could not be done before iOS ended the app's time, the app sends it the next time a session opens (an item older than its limit is signed again then), and a local notification tells the person once: "Your answer to Forge is not sent yet. pi² will send it when it can reach your Mac."
 
 **A Live Activity** ([design](design/iphone.md#what-a-phone-adds)) is started on the phone, which sets its static part (the project's name) there; the relay updates it while the app is closed with Live Activity pushes,[^lapush] whose content Apple's system reads directly, so it cannot be sealed. So a Live Activity's pushes carry **numbers only**: `{ working, needs, finished, at }`. The relay can read those numbers. The person turns on each Live Activity, and the switch says so.
+
+### 7.1 What the engine pushes
+
+The engine's choice, as pi² Remote is sent it (`engine/src/pushes.ts`, #689). pi² Remote's sealing and RemoteKit's relay client are built against this.
+
+**When.** The engine follows the events the Mac's own notifications follow (`Notifier` in the app), for each paired device:
+
+| What happened | Pushed | Not pushed |
+|---|---|---|
+| A new item in Needs you (the `needs` event, which holds the Inbox's approvals and questions too) | One `alert` an item, `collapse` `need:<id>` | What waited when the engine started; with the device's `needs` off; an item of a project the device quieted. An item in no project is pushed under `needs` |
+| A provider's limit reached, or work carried on past it (the `limits` event's notices) | One `alert` a stage of a notice, `collapse` `limit:<notice id>`, so the second replaces the first | The 90% stage (the Mac does not notify it either); a stage reached before the engine started; with `limits` off. Not by project: a subscription is the whole Mac's |
+| The orchestrator answered a message sent from the device with **Tell me when it answers** on (`submit` with `tellWhenAnswered: true`, in a session) | One `alert` once that conversation's run ends, `collapse` `answer:<conversation id>` | For any conversation but a project's current one with its orchestrator; with `answers` off; in a quieted project. Never the answer's words: it says who answered and in which project |
+| An item the device was told of answered or withdrawn | One `background` push naming it, with the others gone within two seconds | An item it was never told of |
+| A followed project's numbers changed | An `activity` push, at most one a minute, the latest numbers; `end` once idle | Anything but the numbers |
+
+Nothing is pushed to a device revoked or suspended (what was owed it is dropped, not sent once it is resumed), nor while remote access or the preview is off. While pi² Remote is not running, alerts wait for it, an item only while it still waits. A device is pushed to whether or not it has a session open: a session outlives the app's minute in the background ([4.5](#45-a-stolen-or-unlocked-phone-the-owners-choice)), when a notification is still wanted, and the phone decides itself not to show one while pi² is in front.
+
+**The shapes.** The `remote` event is `{ "event": "remote", "kind": "push", "push": Push }`, on pi² Remote's control connection alone:
+
+```ts
+type Push =
+	| { id: string; device: string; kind: "alert"; collapse: string; body: AlertBody }
+	| { id: string; device: string; kind: "background"; body: GoneBody }
+	| { id: string; device: string; kind: "activity"; activity: string; event: "update" | "end"; state: { working: number; needs: number; finished: number; at: number } };
+
+type AlertBody = {
+	v: 1;
+	type: "need" | "limit" | "answer";
+	category: "pi2.approval" | "pi2.question" | "pi2.decision" | "pi2.reach" | "pi2.rule" | "pi2.limit" | "pi2.notice";
+	title: string; // "Forge needs approval", at most 80 characters
+	subtitle?: string; // the project's name, at most 64
+	body: string; // the card's short line, at most 180
+	projectId?: string; // the notification's thread
+	need?: string; // the item in Needs you
+	conversationId?: number;
+	whole: boolean;
+	partHidden?: true;
+	until?: number; // a limit's runs wait until then (ms since 1970), when the provider named a time
+	at: number; // when the engine chose it
+};
+
+type GoneBody = { v: 1; type: "gone"; needs: string[]; at: number };
+```
+
+- `id` is the engine's own (`p` and a number), and names the push in pi² Remote's answer. `device` is the device's id, its slot at the relay.
+- **`alert` and `background`: pi² Remote seals `body`**, its JSON text as the engine wrote it, to the device's record key, signs it with the Mac's identity key ([5.3](#53-the-relay)), and pads it to 696, 1,464 or 3,000 bytes, the smallest that holds it. The engine keeps a body's JSON to 2,000 bytes at most, which leaves 1,000 of the largest for HPKE's encapsulated key and tag, the signature and pi² Remote's framing. Every text is cut to its length with an ellipsis, cut further in the one case that could pass 2,000 bytes, and `whole` is then false.
+- **`collapse` is the item's own id**, never sent as it is: pi² Remote sends the relay HMAC-SHA256 of it, keyed per pairing and per device, as its 32-byte `collapse`, so that neither the relay nor Apple sees the id, nor two device tokens sharing one collapse id. A background push has none.
+- **`activity` is not sealed.** pi² Remote passes `{ device, kind: "activity", activity, event, state }` to the relay as it is: `activity` is the phone's own 16-byte id for the Live Activity (base64url); pi² Remote holds no activity token. Each count is a whole number from 0 to 99,999, and `at` the engine's clock when it counted them.
+- **`whole`**: the body shows the item's whole text, uncut, with nothing hidden or taken out: an approval's whole call (a call with more than the line it is shown by, or with a question in its place, is not whole), a question, a rule's text. Only then may the phone offer **Allow once**, **Reply** or **Accept** on the notification (the table above).
+- **`partHidden`**: masking hid part of it, or part was too deep to walk, or the gate judges the approval partly hidden: never allowed from a phone, as the channel's own copy says (`partHidden` there too).
+
+**What an alert may say.** The text passes the channel's masks (5.7): the item, as the `needs` event has it, goes through `maskValue` whole, an approval walked from `APPROVAL_DEPTH` wherever it sits, and the title and line are taken from that masked copy, so that cutting it never leaves part of a key that masking would have hidden whole. An approval is marked `partHidden` if the masked copy is (as the channel marks it), or if the gate judges the engine's own record of it partly hidden (`hidesSomething`, as `approvalHidden` does), whichever hides more: a push never shows what the channel hides, nor offers as whole an approval the gate treats as partly hidden. Controls, bidi and zero-width marks are taken out (a tab is a space, a line break stays), and a body that lost any is not whole. The whole body is masked once more before it goes. The engine does not yet replace the values of secrets it knows (agents' variables, providers' keys, MCP servers' variables) beyond their shapes: no event carries one (5.7), so neither does an item.
+
+**Bounds.** At most 100 alerts, 50 background pushes and 50 Live Activity pushes a device an hour, under the relay's 120, 60 and 60 ([6.6](#66-abuse-and-cost)): the relay's limit is never what stops them. Past one, alerts wait their turn (at most 200 for a device, the oldest dropped first), the items gone are named together in the next background push (at most 50), and a Live Activity is sent its latest numbers when the hour allows. A followed project's numbers go at most once a minute, the latest ones; a device follows at most 5 projects, one Live Activity each; a follow is forgotten after 12 hours (iOS ends an activity after 8, the relay drops its token after 12).
+
+**The device's own settings.** Two requests a device sends, of itself, in a session (refused anywhere else), in `FROM_A_DEVICE`, logged, which widen nothing; both answer `{ needs, limits, answers, quiet, follows: { projectId, activity }[] }`, and are kept in `pi2.devicePushes` until the device is revoked:
+
+- `pushes.set { needs?, limits?, answers?, project?: { id, quiet } }`: the three switches, each on until the phone turns it off, and a project quieted (its needs and answers not pushed) or not. With nothing, it only reads, and is not logged.
+- `pushes.follow { projectId, activity, on }`: the phone's Live Activity `activity` follows the project, or no longer does. A project has one on a device: a new one replaces the one before.
+
+**A Live Activity's numbers**, counted as the phone counts them (`ProjectActivityAttributes.ContentState.counted`): `working`, the project's runs going that are not chat mode's (its conversations' and sub-chats'); `needs`, its items in Needs you; `finished`, its runs that ended since the activity was followed, counted in memory (an engine that restarts counts from 0 again); `at`, the engine's own clock when it counted. When the project has been idle (nothing working, nothing waiting) for 30 seconds, and a minute has passed since the last, `event: "end"` goes with the last numbers, and the activity is followed no more: the phone starts a new one, and follows it anew, when it next opens with the project busy.
+
+**pi² Remote's answers.** For a push the relay refused, pi² Remote sends the engine `remote.pushRefused { id, why }` on its connection (`FOR_THE_HELPER`), with the relay's `why`; a push sent needs no answer. It answers `push-later` too when it is not connected to the relay. The engine holds back what the refusal says, and after a hold with an end, what still waits goes:
+
+| `why` | What the engine does |
+|---|---|
+| `no-token` | Alerts and background pushes to the device held until it next attaches (the phone gives the relay its token at every connection), and what was held dropped, since the phone reads what waits as it attaches. For an `activity`: that activity alone held until the phone attaches or follows it again |
+| `token-dead` | As `no-token`; for an `activity`, it has ended, and is followed no more |
+| `unknown-device` | Everything to the device held until it next attaches |
+| `push-limit` | That kind held 15 minutes, what it held owed again |
+| `push-later` | That kind held a minute, what it held owed again |
+| `unavailable` | Everything to the device held an hour (the relay has no push key, or Apple refuses the key) |
+
+Alerts still waiting are owed again and items gone named again after a hold with an end; after one until the next attach, neither. A `why` the engine does not know counts as `push-later`.
+
+**Push tokens.** The engine keeps none. The relay holds each device's push token and each Live Activity's ([5.3](#53-the-relay)); the engine names a device by its id and an activity by the phone's own id for it, and learns only that a token is missing or dead, from pi² Remote's answers.
 
 ## 8. The shared package
 
@@ -698,6 +774,7 @@ What would have forced a redesign had it been left: pairing by account, a relay 
 - App Attest's verifier against Apple's sample attestations, and against ones whose client data, app id or chain is wrong (P37);
 - the iPhone app and its extensions built for the simulator, with its unit tests;
 - the engine's tests for devices (`engine/test/devices.ts`, P5): pairing (digits typed, one claim per window, a second claim closing it, a claim without a good attestation refused), attach and resume (each with a new signature, refused for a revoked or suspended device), the device table for every handler and the listed reason for each "yes", presence signatures on attach, resume and sealed items (good, stale, replayed, wrong key, missing, an hour old on a widening item), `sessionEnd` closing the session at once, `agents.allowEverything` on refused from a device, sealed items from the mailbox, suspension, the log, revocation, `remote.*` refused on the engine's ordinary socket from a process PeerKit takes for pi² Remote, the `devices` event and `s` sent only to the app's connection, the events never sent, and secrets and key-shaped strings never sent, with a stand-in for pi² Remote written in the test;
+- the engine's choice of pushes (`engine/test/pushes.ts`, P20, [7.1](#71-what-the-engine-pushes)): each event pushed and not, a device's own settings, an alert's text masked and marked as the channel's copy is at every depth of the devices test's sweep, sizes, the bounds an hour, each of the relay's refusals, Live Activities' numbers and their minute, and nothing for a device revoked or suspended, against stand-ins; the devices test checks the same marks through a real engine;
 - pi² Remote's own tests (P7): it exits before opening the Keychain when started without the engine's socket, or by a process that is not the engine of `engine.pid`; a release build ignores every argument, variable and file that could steer it; the listener refuses public addresses with **Direct from any address** off;
 - a protocol test (P10): pi² Remote in loopback mode against an engine started as the engine's tests start one, a local relay, and a RemoteKit client in a test program that pairs, attaches, sends a request of each device class, moves from the relay path to the home path and back mid-answer, and takes its mailbox.
 
@@ -746,7 +823,7 @@ Thirty-eight issues, P0 to P37, in the roadmap's steps: the relay added five to 
 | The device lists in `answers.ts`, `deviceMay`, `FOR_THE_HELPER`, and the start-up check | P5 | Every later issue that adds a request places it in the lists and tests its refusal from a device |
 | `pi2.devices`, `pi2.deviceNonces`, `pi2.deviceLog`, `summarize`, the `devices` and `device` events | P5 | An issue that lets a device send a new request adds its `summarize` line |
 | Presence verification in the engine | P5 | P17 signs; P22 signs from a notification |
-| `remote.*` requests and the `remote` event | P5 | P10 adds `remote.mailboxIn`; P20 adds the event's `push` |
+| `remote.*` requests and the `remote` event | P5 | P10 adds `remote.mailboxIn`; P20 adds the event's `push` and `remote.pushRefused` ([7.1](#71-what-the-engine-pushes)) |
 | `RemoteKit`'s channel and sealing (Noise, HPKE, framing, the pairing payload, `pair`, `attach`, `resume`, `presence`) | P6 | Others use it; a change they need is made in its own pull request by the issue that needs it |
 | `RemoteKit`'s relay client | P10 | P12, P22, P23 use it |
 | The relay: `relay/` (code, its tests, its configuration) | P8 | P20 adds the APNs client in `relay/src/apns.ts`; P15 adds the recorder in `relay/test/` |

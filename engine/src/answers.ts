@@ -234,6 +234,8 @@ const OPEN_TO_ANY = new Set([
 	"test-copy.fill",
 	"devices.self", // a device's own record and log; refused outside a device session
 	"devices.forgetSelf", // a device unpairing itself; refused outside a device session
+	"pushes.set", // what a device is pushed: its own settings; refused outside a device session (iphone.md 7)
+	"pushes.follow", // which project a device's Live Activity follows; refused outside a device session
 ]);
 
 const REQUEST_CLASSES: readonly ReadonlySet<string>[] = [new Set(Object.keys(FOR_THE_PERSON)), new Set(Object.keys(FOR_THE_PERSON_SETTINGS)), OPEN_TO_ANY];
@@ -455,6 +457,9 @@ const FROM_A_DEVICE: Record<string, DeviceRow> = {
 	// A device's own (4.2's last paragraph).
 	"devices.self": { why: "its own record and log" },
 	"devices.forgetSelf": { why: "it unpairs itself (3.6)" },
+	// What it is pushed (7, #689): its own settings, which widen nothing; read alone when sent with none.
+	"pushes.set": { why: "its own notifications", reading: (params) => Object.keys(params).length === 0 },
+	"pushes.follow": { why: "its own Live Activities" },
 	// remote.mailboxIn (#678, P10) is pi² Remote's and goes in FOR_THE_HELPER. projects.folders and files.preview (P29)
 	// go here, with their reasons, when they are made.
 };
@@ -562,7 +567,7 @@ const MAC_ONLY: Record<string, string> = {
  * pi² Remote's own requests, taken only on the connection the engine made for the helper it started (5.5), never on
  * its listening socket and never in a device session. remote.mailboxIn (#678, P10) is added here when it is made.
  */
-const FOR_THE_HELPER: ReadonlySet<string> = new Set(["remote.hello", "remote.state", "remote.pairClaim", "remote.pairWrong", "remote.pairRefused", "remote.attachBegin", "remote.attach", "remote.sessionEnd"]);
+const FOR_THE_HELPER: ReadonlySet<string> = new Set(["remote.hello", "remote.state", "remote.pairClaim", "remote.pairWrong", "remote.pairRefused", "remote.attachBegin", "remote.attach", "remote.sessionEnd", "remote.pushRefused"]);
 
 export function forTheHelper(method: string): boolean {
 	return FOR_THE_HELPER.has(method);

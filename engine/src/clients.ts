@@ -18,7 +18,21 @@ export const clients = new Set<Client>();
 export function send(client: Client, message: unknown): void {
 	if (!client.socket.destroyed) client.socket.write(`${JSON.stringify(message)}\n`);
 }
+/**
+ * Told of every event sent to every app, whether any is connected or not: what is pushed to paired phones (pushes.ts)
+ * follows the events the app's own notifications follow. A watcher must be quick, must not change the message, and
+ * never throws into what broadcast.
+ */
+export const broadcastWatchers = new Set<(message: unknown) => void>();
+
 export function broadcast(message: unknown): void {
+	for (const watch of broadcastWatchers) {
+		try {
+			watch(message);
+		} catch {
+			// A watcher's own fault is its own: the apps are sent the event all the same.
+		}
+	}
 	if (clients.size === 0) return;
 	// Made into text once, however many apps are connected.
 	const line = `${JSON.stringify(message)}\n`;

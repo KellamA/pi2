@@ -38,6 +38,7 @@ import { projectAgents } from "./projectagents.ts";
 import { projectLimits } from "./projectlimits.ts";
 import { changes } from "./changes.ts";
 import { needs } from "./needs.ts";
+import { devicePushes } from "./pushes.ts";
 import { orchestrator, projectPrompt } from "./orchestrator.ts";
 import { projectRules, projectRulesPrompt } from "./projectrules.ts";
 import { projects } from "./projects.ts";
@@ -288,6 +289,8 @@ export const FEATURES: Feature[] = [
 	projects,
 	projectRules,
 	needs,
+	// What is pushed to paired phones (#689): it follows the `needs` and `limits` events, with no greeting of its own.
+	devicePushes,
 	reports,
 	work,
 	github,

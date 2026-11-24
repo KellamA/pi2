@@ -18,12 +18,14 @@
 // - the `remote` event, `{"event":"remote","kind",…}`, to pi² Remote alone: `start` (the relay, the switches, the
 //   pairing, the paired devices' keys and the lowest build to attach, sent first), `settings`, `register`,
 //   `openJoin` (the pairing's secret and the relay's token hash) and `closeJoin`, `paired` and `pairRefused` (the
-//   answer to a claim), `revoke`, and `sessionClosed`. #689 (P20) adds `push` here.
+//   answer to a claim), `revoke`, and `sessionClosed`; and `push` (#689, P20), what pushes.ts chose to push to a
+//   device, which pi² Remote seals (but a Live Activity's numbers) and asks the relay to send.
 //
 // pi² Remote's requests: `remote.hello` (the Mac's public keys, the pairing, the Mac's addresses), `remote.state` (the
 // same when they change), `remote.pairClaim`, `remote.pairWrong` and `remote.pairRefused` (pairing, 3.3), `remote.attachBegin` and
 // `remote.attach` (3.4: an attach or a resume, signed by the device key and the presence key), and
-// `remote.sessionEnd` (the phone's session ended, 4.5). `remote.mailboxIn` (#678, P10) is added here, and checks each
+// `remote.sessionEnd` (the phone's session ended, 4.5), and `remote.pushRefused` (the relay refused a push, pushes.ts).
+// `remote.mailboxIn` (#678, P10) is added here, and checks each
 // item with `checkRequestItem` in devices.ts.
 //
 // A device session is a `Client` of its own (clients.ts) with `device` set, so it has its own subscriptions and
@@ -65,6 +67,7 @@ import {
 	summarize,
 } from "./devices.ts";
 import type { SwitchName } from "./projects.ts";
+import { pushes } from "./pushes.ts";
 import type { Params } from "./requests.ts";
 import { refusal } from "./requesterror.ts";
 import { testSwitch } from "./testswitches.ts";
@@ -433,6 +436,12 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 		return {};
 	},
 	// "remote.mailboxIn": #678 (P10), with checkRequestItem (devices.ts).
+	/** `{ id, why }`: the relay refused the push `id` (docs/iphone.md 7); pushes.ts holds back what the refusal says. */
+	"remote.pushRefused": async (_current, params) => {
+		if (typeof params.id !== "string" || typeof params.why !== "string" || Object.keys(params).length !== 2) throw new Error("remote.pushRefused takes a push's id and why");
+		if (pushes?.refused(params.id, params.why) !== true) log("remote: pi² Remote answered for a push the engine does not know, or no longer remembers");
+		return {};
+	},
 };
 
 // ---- Device sessions (4.1)
@@ -634,6 +643,10 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
 		logDevice({ device: device.id, path: session.path, method, summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }, widens).catch((error) =>
 			log("devices: the log could not be written:", error instanceof Error ? error.message : error),
 		);
+	// Tell me when it answers (7): waited for from before the run the message starts, which may end before it is answered.
+	const conversation = (params as Params).id;
+	const tellMe = method === "submit" && (params as Params).tellWhenAnswered === true && typeof conversation === "number";
+	if (tellMe) pushes?.answerWanted(device.id, conversation);
 	try {
 		const result = await handlers[method]!(params as Params, session.client);
 		if (logged) await writeLog("done");
@@ -641,6 +654,7 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
 		if (widens) notify("widening", device.id, `${device.name}: ${summary}`);
 	} catch (error) {
 		const refused = refusal(error);
+		if (tellMe) pushes?.answerNotWanted(device.id, conversation);
 		if (logged) await writeLog("failed", refused.error);
 		reply(refused);
 		if (widens) notify("widening", device.id, `${device.name} tried: ${summary}`);

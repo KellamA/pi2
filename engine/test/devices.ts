@@ -838,6 +838,11 @@ try {
 	);
 	assert.equal(shownToPhone[PART_HIDDEN], true, "marked as shown in part");
 	assert.ok(!JSON.stringify(shownToPhone).includes(keyed));
+	// Its alert, as pushes.ts chose it for pi² Remote to seal (#689): the same mask, the same mark, never whole.
+	const pushOf = (id: string) => until(`the push of ${id}`, () => remote.events.find((event) => event.kind === "push" && event.push.body?.need === id)?.push);
+	const pushedMasked = await pushOf(masked.id);
+	assert.deepEqual([pushedMasked.device, pushedMasked.kind, pushedMasked.body.partHidden, pushedMasked.body.whole], [phone.id, "alert", true, false]);
+	assert.ok(!JSON.stringify(pushedMasked).includes(keyed) && pushedMasked.body.body.includes(KEY_HIDDEN));
 	assert.equal((await ask("inbox.decide", { id: masked.id, decision: "once" })).error, HIDDEN_FROM_THE_PHONE);
 	assert.equal((await ask("needs.answer", { id: masked.id, answer: { kind: "approval", decision: "once" } })).error, HIDDEN_FROM_THE_PHONE);
 	assert.deepEqual((await ask("inbox.decide", { id: masked.id, decision: "deny" })).result, {}, "denying from the phone stays");
@@ -862,6 +867,10 @@ try {
 		const cut = [inInbox, inList].map((copy) => copy[PART_HIDDEN] === true || JSON.stringify(copy).includes(TOO_DEEP));
 		assert.equal(cut[0], cut[1], `both copies cut alike at ${levels}`);
 		assert.equal(cut[0], levels >= cutFrom, `cut from ${cutFrom} levels, at ${levels}`);
+		// And its push: marked as the copies are cut, never whole once cut (#689; engine/test/pushes.ts has the rest).
+		const pushed = await pushOf(deep.id);
+		assert.equal(pushed.body.partHidden === true, cut[0], `the push marked alike at ${levels}`);
+		assert.equal(pushed.body.whole, false, `a call with more than its line is never whole on a notification, at ${levels}`);
 		if (!cut[0]) {
 			assert.deepEqual((await ask("inbox.decide", { id: deep.id, decision: "once" })).result, {}, `shown whole at ${levels}: the phone allows it`);
 			continue;
@@ -987,6 +996,15 @@ try {
 	const afterRevoke = await restarted.call("remote.attachBegin");
 	const channel2 = randomBytes(32);
 	assert.match((await restarted.call("remote.attach", { attach: phone.attach({ pairing: remote.pairing, challenge: afterRevoke.result.challenge, binding: channel2 }), binding: b64url(channel2), path: "relay" })).error, /revoked/);
+	// Nothing is pushed to it (#689): a push goes to pi² Remote before the app is sent the `needs` event that made it, so
+	// one written would be read before the answer to a request sent after that event.
+	void app.call("submit", { id: plain, text: "/bash echo after the revocation" });
+	const afterRevocation = await app.until("an approval after the revocation", () =>
+		app.events.needs?.items?.find((item: any) => item.kind === "approval" && item.arguments?.command === "echo after the revocation"),
+	);
+	await restarted.call("remote.attachBegin");
+	assert.ok(!restarted.events.slice(revokedAt).some((event) => event.kind === "push" && (event.push.device === phone.id || event.push.body?.need === afterRevocation.id)), "nothing is pushed to a revoked device");
+	await app.call("inbox.decide", { id: afterRevocation.id, decision: "deny" });
 	step("pi² Remote stopping closes its sessions and is started again; a revoked device is told, closed, and refused from then on");
 
 	// ---- A revoked device's key cannot pair again (3.3 step 5); pairing needs a running pi² Remote (3.3 step 8)

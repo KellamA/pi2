@@ -617,6 +617,8 @@ export function summarize(given: string, params: Params): string {
 		"github.settle": () => `Marked a write ${params.happened === true ? "done" : "not done"}${inProject}`,
 		"work.act": () => `${clip(String(params.action ?? "Acted on"), 24)} work #${clip(String(params.id), 12)}${inProject}`,
 		"devices.forgetSelf": () => "Unpaired itself",
+		"pushes.set": () => "Changed what it is notified of",
+		"pushes.follow": () => `${params.on === true ? "Followed" : "Stopped following"}${inProject || " a project"} in a Live Activity`,
 		pair: () => "Paired",
 		attach: () => "Attached",
 		resume: () => "Resumed",
