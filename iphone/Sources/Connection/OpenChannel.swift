@@ -8,14 +8,23 @@ import Synchronization
 ///
 /// Sealing and writing go through one queue, so that messages leave in the order their nonces were taken: two lines
 /// sealed by two tasks and sent as each task got there would reach the Mac out of order, which fails the channel.
+///
+/// The writer closes the link once the queue is finished and all of it has gone. After `close`, nothing cuts that
+/// short: a `drop`, or a read that fails because this end has said `bye`, leaves the link to the writer, so that what
+/// was queued before the `bye` (the session's end, 4.5) reaches the Mac however late the writer gets its turn (#888).
 final class OpenChannel: Sendable {
     let channel: Channel
     let link: any MessageLink
     let path: AppSession.Path
     private let order = Mutex(())
     private let outgoing = Inbox<Data>()
+    /// Set by `close`, before its `bye` is sealed.
+    private let closing = Mutex(false)
     /// How many of the Mac's transport messages it opened, and the length of the last: for the log, when one fails.
     private let opened = Mutex((count: 0, last: 0))
+    /// How long a closed channel's writer has to send what was queued before the link is closed under it: only for a
+    /// link whose sends never finish.
+    static let drainWithin: Duration = .seconds(10)
 
     private init(channel: Channel, link: any MessageLink, path: AppSession.Path) {
         self.channel = channel
@@ -24,13 +33,9 @@ final class OpenChannel: Sendable {
         let outgoing = outgoing
         Task {
             while let message = await outgoing.next() {
-                do {
-                    try await link.send(message)
-                } catch {
-                    link.close()
-                    return
-                }
+                guard (try? await link.send(message)) != nil else { break }
             }
+            link.close()
         }
     }
 
@@ -68,20 +73,26 @@ final class OpenChannel: Sendable {
         try order.withLock { _ in outgoing.push(try channel.sealPing()) }
     }
 
-    /// Ends the channel with `bye`, then closes the link once what was queued has gone.
+    /// Ends the channel with `bye`, after what is queued; the writer closes the link once all of it has gone.
     func close() {
+        let first = closing.withLock { closing in
+            defer { closing = true }
+            return !closing
+        }
+        guard first else { return }
         try? order.withLock { _ in outgoing.push(try channel.sealBye()) }
         outgoing.finish()
         let link = link
         Task {
-            // The writer drains what is queued; a short wait lets the bye leave before the link goes.
-            try? await Task.sleep(for: .milliseconds(200))
+            try? await Task.sleep(for: Self.drainWithin)
             link.close()
         }
     }
 
-    /// Closes the link at once, without `bye`: after the channel failed, or the Mac's word was not believed.
+    /// Closes the link at once, without `bye`: after the channel failed, or the Mac's word was not believed. Once
+    /// `close` was called it does nothing: the writer is sending the last of it, and closes the link after.
     func drop() {
+        guard !closing.withLock({ $0 }) else { return }
         outgoing.finish()
         link.close()
     }
@@ -98,6 +109,8 @@ final class OpenChannel: Sendable {
                 // A part of a longer line gives nothing yet.
                 if let event = try channel.open(message) { return event }
             } catch {
+                // This end said `bye`: what the Mac sent before it heard does not open, and is no failure.
+                if closing.withLock({ $0 }) { return nil }
                 drop()
                 let (count, last) = opened.withLock { $0 }
                 throw OpenChannelFailure(after: count, length: last, error: error)
