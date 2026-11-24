@@ -541,10 +541,11 @@ enum Relayed {
 	}
 
 	/// A relay that floods (#921's security read, M2 and S2): `LyingRelay` on 127.0.0.1 registers pi² Remote, takes it as
-	/// the pairing's Mac, then sends 3,000 `anotherMac` and 3,000 `left` notices and hands over 3,000 items that are not
-	/// genuine, a `mail` after every `took`. What that may cost: one `remote.state` (and so one `devices` event to the app)
-	/// for the `anotherMac` notices in a minute, one log line for each kind of the relay's word or of the items in a
-	/// minute, and a take every five seconds at most; the engine is handed none of the items.
+	/// the pairing's Mac, lists 16 devices pi² Remote does not have and refuses each `removeDevice`, then sends 3,000 each
+	/// of `anotherMac`, `left`, `joined` and `held` notices and hands over 3,000 items that are not genuine, a `mail` after
+	/// every `took`. What that may cost: one `remote.state` (and so one `devices` event to the app) for the `anotherMac`
+	/// notices in a minute, one log line for each kind of the relay's word, of its refusals or of the items in a minute,
+	/// and a take every five seconds at most; the engine is handed none of the items.
 	static func flood(helper: URL, home: URL) {
 		Check.section("a relay that floods (#921): bounded in what it costs the engine, the log and the takes")
 		// The day pi² Remote keeps a phone's item is the engine's own bound (RelayEnd.itemOldest, devices.ts's DAY).
@@ -583,7 +584,13 @@ enum Relayed {
 		Check.expect(engine.quiet(for: 1), "and none is handed to the engine")
 		let told = states.filter { $0["relay"]?["anotherMacAt"] != nil }.count
 		Check.expect(told >= 1 && states.count <= minutes, "3,000 anotherMac notices: the engine is told at most once a minute (\(states.count) remote.state in \(minutes) minute(s) begun), so the app at most one devices event", JSON.text(.array(Array(states))))
-		let kinds = 7 // relay anotherMac, relay left, relay items not genuine, relay ready, relay take, relay joined, relay held
+		// relay anotherMac, relay left, relay items not genuine, relay ready, relay take, relay joined, relay held, relay listed,
+		// relay request removeDevice
+		let kinds = 9
+		let joinedLines = lines.filter { $0.contains("a phone joined the pairing window") }.count, heldLines = lines.filter { $0.contains("it held device") }.count
+		Check.expect(joinedLines >= 1 && joinedLines <= minutes && heldLines >= 1 && heldLines <= minutes, "3,000 joined and 3,000 held notices: each in the log at most once a minute", "\(joinedLines) and \(heldLines) lines in \(minutes) minute(s) begun")
+		let refusedLines = logLines().filter { $0.contains("the relay's removeDevice") }.count
+		Check.expect(relay.refused == 16 && refusedLines == 1, "16 removeDevice requests the relay refused, all within the minute: one line in the log", "\(relay.refused) refused, \(refusedLines) lines")
 		Check.expect(lines.count <= kinds * minutes, "3,000 notices and 3,000 items: \(lines.count) lines in pi² Remote's log, at most one for each of the relay's \(kinds) kinds a minute", lines.joined(separator: "\n"))
 		let gaps = zip(relay.takes.dropFirst(), relay.takes).map { $0.timeIntervalSince($1) }
 		Check.expect(relay.takes.count >= 15 && gaps.allSatisfy { $0 >= 4.5 }, "a take at most every five seconds, a mail after every took notwithstanding", gaps.map { String(format: "%.1f", $0) }.joined(separator: " "))
@@ -598,8 +605,9 @@ final class LyingRelay: @unchecked Sendable {
 	private let queue = DispatchQueue(label: "lying relay")
 	let pairing = PairingID.random()
 	private(set) var url = URL(string: "ws://127.0.0.1/v1")!
-	private let state = Locked<(mac: NWConnection?, items: [JSONValue], acknowledged: Int, takes: [Date])>((nil, [], 0, []))
+	private let state = Locked<(mac: NWConnection?, items: [JSONValue], acknowledged: Int, takes: [Date], refused: Int)>((nil, [], 0, [], 0))
 	var acknowledged: Int { state.get().acknowledged }
+	var refused: Int { state.get().refused }
 	var takes: [Date] { state.get().takes }
 
 	init?() {
@@ -626,11 +634,14 @@ final class LyingRelay: @unchecked Sendable {
 		state.get().mac?.cancel()
 	}
 
-	/// `notices` each of `anotherMac` and `left` to the Mac, then `items` that are not genuine, 200 a take.
+	/// `notices` each of `anotherMac`, `left`, `joined` and `held` to the Mac, then `items` that are not genuine, 200 a take.
 	func flood(notices: Int, items: Int) {
 		queue.async { [self] in
 			guard let mac = state.get().mac else { return }
+			let deviceKey = Base64URL.encode(P256.Signing.PrivateKey().publicKey.derRepresentation)
 			for _ in 0 ..< notices {
+				send(mac, "joined", [("device", .string(DeviceID.random().text)), ("deviceKey", .string(deviceKey)), ("keyId", .string(AttestKeyID(bytes: Bytes.random(32))!.text))])
+				send(mac, "held", [("device", .string(DeviceID.random().text)), ("until", .integer(Int64(Date().timeIntervalSince1970 * 1000) + 3_600_000))])
 				send(mac, "anotherMac", [])
 				// As #897's relay writes it: the phone's time and a notice, here 64 bytes no key signed.
 				let at = Int64(Date().timeIntervalSince1970 * 1000)
@@ -672,7 +683,12 @@ final class LyingRelay: @unchecked Sendable {
 				send(connection, "registered", [("pairing", .string(pairing.text))])
 			case "proof":
 				state.update { $0.mac = connection }
-				send(connection, "ready", [("devices", .array([])), ("left", .array([])), ("pending", .bool(false)), ("mail", .integer(0))])
+				// 16 devices pi² Remote's list does not have: it asks to remove each, and is refused.
+				let listed: [JSONValue] = (0 ..< 16).map { _ in .object([("device", .string(DeviceID.random().text)), ("online", .bool(false))]) }
+				send(connection, "ready", [("devices", .array(listed)), ("left", .array([])), ("pending", .bool(false)), ("mail", .integer(0))])
+			case "removeDevice":
+				state.update { $0.refused += 1 }
+				send(connection, "refused", [("what", .string("removeDevice")), ("why", .string("unavailable"))])
 			case "ping":
 				send(connection, "pong", [])
 			case "take":

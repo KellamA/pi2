@@ -251,7 +251,7 @@ final class PhoneConnection: @unchecked Sendable {
 		admission.remember(message, now: remote.now)
 		let (device, handshake) = found
 		guard admission.handshake(for: device.text, now: remote.now) else {
-			log("more than \(Admission.handshakesPerDevicePerMinute) handshakes this minute for device \(device); closed")
+			Seldom.shared.say("\(path) handshakes", "more than \(Admission.handshakesPerDevicePerMinute) handshakes this minute for device \(device); closed")
 			return end()
 		}
 		self.device = device

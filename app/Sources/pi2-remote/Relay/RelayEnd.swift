@@ -414,7 +414,8 @@ final class RelayEnd: @unchecked Sendable {
 			queue.async {
 				guard generation == self.generation else { return request.done(RelayClientError.disconnected) }
 				self.requesting = false
-				if let failure { log("the relay's \(request.what): \(failure)") }
+				// At most once a minute for each request's kind: a relay that refuses every request cannot wash the log.
+				if let failure { Seldom.shared.say("relay request \(request.what)", "the relay's \(request.what): \(failure)") }
 				request.done(failure)
 				self.nextRequest()
 			}
