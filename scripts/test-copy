@@ -705,20 +705,30 @@ helper_pids() {
 	return 0
 }
 
-# Refuses unless the copy's pi² Remote runs, and every socket it has is on 127.0.0.1: what its code holds it to in a
-# development build (Addresses.swift, docs/pi2-remote.md), seen from outside, before a phone is let near it.
-require_loopback_helper() {
+# Why the copy's pi² Remote may not be let near a phone, failing, or nothing: it must run, and every socket it has be
+# on 127.0.0.1, what its code holds it to in a development build (Addresses.swift, docs/pi2-remote.md), seen from
+# outside. An lsof that fails or says nothing is a refusal too. scripts/test-test-copy feeds it a stand-in lsof.
+loopback_helper_problem() {
 	local pids pid names name
 	pids=$(helper_pids)
-	[[ -n $pids ]] || die "the copy's pi² Remote is not running; $(tidy "$DATA")/remote.log may say why"
+	[[ -n $pids ]] || { echo "the copy's pi² Remote is not running; $(tidy "$DATA")/remote.log may say why"; return 1; }
 	for pid in $pids; do
 		names=$(lsof -nP -a -p "$pid" -i 2>/dev/null | awk 'NR > 1 { print $9 }')
-		[[ -n $names ]] || die "the copy's pi² Remote ($pid) has no socket open; $(tidy "$DATA")/remote.log may say why"
+		[[ -n $names ]] || { echo "the copy's pi² Remote ($pid) has no socket open; $(tidy "$DATA")/remote.log may say why"; return 1; }
 		while read -r name; do
 			[[ $name =~ ^127\.0\.0\.1:[0-9]+(-\>127\.0\.0\.1:[0-9]+)?$ ]] ||
-				die "the copy's pi² Remote ($pid) has a socket that is not on 127.0.0.1 ($name): stop the copy"
+				{ echo "the copy's pi² Remote ($pid) has a socket that is not on 127.0.0.1 ($name): stop the copy"; return 1; }
 		done <<<"$names"
 	done
+}
+
+# pair, once it has opened a pairing: unless the copy's pi² Remote is held to 127.0.0.1, closes that pairing, and stops
+# before the phone is given anything.
+require_loopback_helper() {
+	local why
+	why=$(loopback_helper_problem) && return 0
+	engine_call devices.pairCancel >/dev/null
+	die "$why; the pairing was closed, and nothing was given to the phone"
 }
 
 # The simulator a phone command works on: --sim's, or pi2-N for a copy test-N, through scripts/iphone-sim, which

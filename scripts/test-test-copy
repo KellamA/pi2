@@ -288,6 +288,50 @@ else
 	echo "ok: start --remote passes the switch devices.ts reads, which the engine fences"
 fi
 
+# pair gives the phone no code unless the copy's pi² Remote has sockets on 127.0.0.1 alone, and closes the pairing it
+# opened first (#681): its two functions, as test-copy has them, on a stand-in lsof, engine and helper pid.
+loopback_functions=$(sed -n '/^loopback_helper_problem() {$/,/^}$/p; /^require_loopback_helper() {$/,/^}$/p' "$script")
+lsof_header='COMMAND    PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME'
+# loopback <what the stand-in lsof prints, or "fail">: what require_loopback_helper says; the stand-in engine's
+# requests go to $T/loopback-calls.
+loopback() {
+	rm -f "$T/loopback-calls"
+	(
+		LSOF_OUT=$1 DATA=$T/data
+		die() { echo "test-copy: $*"; exit 1; }
+		tidy() { printf '%s' "$1"; }
+		helper_pids() { echo 4242; }
+		engine_call() { echo "$1" >>"$T/loopback-calls"; }
+		lsof() { [[ $LSOF_OUT != fail ]] || return 1; printf '%s\n' "$LSOF_OUT"; }
+		eval "$loopback_functions"
+		require_loopback_helper
+		echo "went on"
+	) 2>&1
+}
+for case in "[::1]:50000 (LISTEN)|an IPv6 loopback" "*:50000 (LISTEN)|all addresses" "0.0.0.0:50000 (LISTEN)|0.0.0.0" \
+	"127.0.0.1:50000->10.0.0.2:443 (ESTABLISHED)|a connection off this Mac" "fail|lsof failing" "|lsof saying nothing"; do
+	name=${case%%|*} what=${case#*|}
+	if [[ $name == fail ]]; then given=fail
+	elif [[ -z $name ]]; then given=$lsof_header
+	else given="$lsof_header"$'\n'"pi2      4242 me     5u  IPv4 0x1      0t0  TCP 127.0.0.1:50001 (LISTEN)"$'\n'"pi2      4242 me     6u  IPv6 0x2      0t0  TCP $name"
+	fi
+	out=$(loopback "$given")
+	if [[ $out == *"the pairing was closed, and nothing was given to the phone"* && $out != *"went on"* &&
+		$(cat "$T/loopback-calls" 2>/dev/null) == devices.pairCancel ]]; then
+		echo "ok: pair closes its pairing and stops on $what"
+	else
+		echo "FAIL: pair on $what: $out; the engine was sent: $(cat "$T/loopback-calls" 2>/dev/null)"
+		failures=$((failures + 1))
+	fi
+done
+out=$(loopback "$lsof_header"$'\n'"pi2      4242 me     5u  IPv4 0x1      0t0  TCP 127.0.0.1:50001 (LISTEN)"$'\n'"pi2      4242 me     6u  IPv4 0x2      0t0  TCP 127.0.0.1:50001->127.0.0.1:50002 (ESTABLISHED)")
+if [[ $out == "went on" && ! -e $T/loopback-calls ]]; then
+	echo "ok: pair goes on when every socket of pi² Remote is on 127.0.0.1, and closes nothing"
+else
+	echo "FAIL: pair on sockets all on 127.0.0.1: $out"
+	failures=$((failures + 1))
+fi
+
 # start --menu prints the file the app writes for PI2_MENU, by a name each keeps for itself.
 sources="$(dirname -- "$script")/../app/Sources/pi2"
 if ! grep -qxF 'MENU_FILE=context-menu.txt' "$script" ||
