@@ -5,7 +5,7 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { base64url, concat, fromBase64url, random } from "../src/bytes.ts";
-import { JOINED_LIMITS, LIMITS, type Limits, PENDING_LIMITS } from "../src/limits.ts";
+import { Counters, JOINED_LIMITS, LIMITS, type Limits, PENDING_LIMITS } from "../src/limits.ts";
 import type { Pairing } from "../src/pairing.ts";
 import { proofText } from "../src/protocol.ts";
 import {
@@ -295,6 +295,22 @@ describe("limits", () => {
 });
 
 describe("what a pairing costs in writes", () => {
+	it("saves a day whose bytes a take added by their weight, not as one entry (#806)", () => {
+		const counters = new Counters({});
+		const now = Date.now();
+		// A phone's full mailbox handed over again, some 2.2 MB: 34 entries of 64 KB each, so the third is due.
+		counters.addToDay("mac", 2_200_000, now);
+		counters.addToDay("mac", 2_200_000, now);
+		expect(counters.due).toBe(false);
+		counters.addToDay("mac", 2_200_000, now);
+		expect(counters.due).toBe(true);
+		expect(counters.days.mac.bytes).toBe(6_600_000);
+		counters.saved();
+		counters.addToDay("mac", 10, now);
+		expect(counters.dirty).toBe(true);
+		expect(counters.due).toBe(false);
+	});
+
 	it("holds off a pending pairing's Mac opening and closing windows after a small allowance, and its writes with it", async () => {
 		const mac = await register();
 		// The allowance alone, without the minute's windows.
