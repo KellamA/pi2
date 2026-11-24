@@ -91,7 +91,7 @@ The QR code is shown only in the app's sheet, never written to disk or a log. Th
 
 The presence key is made at step 4 of pairing, which needs Face ID enrolled but asks for no Face ID; Face ID is first asked when the first session opens, at the end of pairing. Phones with Touch ID in place of Face ID are as safe, since `biometryCurrentSet` covers both; this page says "Face ID" for either ([section 14](#14-questions-for-the-owner), question 8).
 
-A new presence key (Face ID enrolled again, or Face ID turned on later) is sent to the Mac and used only once the person accepts it on the Mac's Devices page (`devices.acceptPresenceKey`, the app's alone), which reads: *Face ID was set up again on Alex's iPhone. Accept only if you did it yourself.* The Mac also posts a notification when one waits ([4.4](#44-the-devices-log)). Otherwise whoever knows the passcode could enrol a face and gain Face ID's answers.
+A new presence key (Face ID enrolled again, or Face ID turned on later) is sent to the Mac and used only once the person accepts it on the Mac's Devices page (`devices.acceptPresenceKey`, the app's alone; `devices.refusePresenceKey` drops it), which reads: *Face ID was set up again on Alex's iPhone. Accept only if you did it yourself.* The Mac also posts a notification when one waits ([4.4](#44-the-devices-log)). Otherwise whoever knows the passcode could enrol a face and gain Face ID's answers. The phone offers it on a channel, as it attaches: pi² Remote passes `remote.presenceKey`, whose `signed` text `{"v":2,"kind":"presenceKey","pairing":…,"device":…,"binding":…,"challenge":…,"presenceKey":…,"build":…,"at":…}` is signed by the device key and by the offered key, with a challenge from `remote.attachBegin` (#786); the key is the uncompressed SPKI CryptoKit writes, the one form RemoteKit reads. One key waits at a time: until the person accepts or refuses it, another offer is refused and counts towards suspending the device ([3.6](#36-revoking-and-a-lost-phone)), and the waiting key signs nothing; the key in use offered again is answered as accepted, uncounted, so the phone can learn it. Accepting replaces the presence key and logs it in one commit, tells pi² Remote, and ends the device's sessions, and an attach under the old key saved meanwhile is refused; revoking drops a waiting key with the others.
 
 The first launch after the app is installed deletes any pi² Keychain items it finds: Keychain items may outlive deleting the app, and a reinstall must not find old keys.
 
@@ -282,7 +282,7 @@ type DeviceLogEntry = {
 	at: number;
 	device: string;
 	path: "relay" | "home" | "direct" | "mailbox";
-	method: string; // or "attach", "resume", "suspend"
+	method: string; // or "attach", "resume", "suspend", "presenceKey" (an offer of a new Face ID key)
 	summary: string; // "Merged #617 “Sidebar badges” (pi2)"; made by `summarize(method, params)` in devices.ts
 	presence: boolean; // the session or item was opened under a valid presence signature
 	outcome: "done" | "refused" | "failed";
@@ -748,7 +748,7 @@ Thirty-eight issues, P0 to P37, in the roadmap's steps: the relay added five to 
 | The device lists in `answers.ts`, `deviceMay`, `FOR_THE_HELPER`, and the start-up check | P5 | Every later issue that adds a request places it in the lists and tests its refusal from a device |
 | `pi2.devices`, `pi2.deviceNonces`, `pi2.deviceLog`, `summarize`, the `devices` and `device` events | P5 | An issue that lets a device send a new request adds its `summarize` line |
 | Presence verification in the engine | P5 | P17 signs; P22 signs from a notification |
-| `remote.*` requests and the `remote` event | P5 | P10 adds `remote.mailboxIn`; P20 adds the event's `push` |
+| `remote.*` requests and the `remote` event | P5 | P10 adds `remote.mailboxIn`; P20 adds the event's `push`; #786 added `remote.presenceKey` and the event's `presenceKey` |
 | `RemoteKit`'s channel and sealing (Noise, HPKE, framing, the pairing payload, `pair`, `attach`, `resume`, `presence`) | P6 | Others use it; a change they need is made in its own pull request by the issue that needs it |
 | `RemoteKit`'s relay client | P10 | P12, P22, P23 use it |
 | The relay: `relay/` (code, its tests, its configuration) | P8 | P20 adds the APNs client in `relay/src/apns.ts`; P15 adds the recorder in `relay/test/` |
