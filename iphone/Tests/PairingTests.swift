@@ -34,6 +34,51 @@ struct PairingTests {
             .run(showDigits: { typed.push($0) })
     }
 
+    /// The failures a stalled runner makes of a pairing that would otherwise have gone through: nothing ran while the
+    /// exchange's limits passed (the dial's ten seconds here, twenty for the Mac's answers), and the phone gave up, as
+    /// it must (#910). A person scans again.
+    static func isStall(_ failure: PairingFailure) -> Bool {
+        failure == .unreachable || failure == .macDidNotPair
+    }
+
+    /// How many times a setup pairing is tried in all.
+    static let setupTries = 3
+
+    /// Pairs as `pair` does, for a test whose subject comes after pairing: after a failure a stall makes, the code is
+    /// scanned again, as a person would, up to `setupTries` in all. Pairing's own tests take one try.
+    static func pairForSetup(_ mac: TestMac, keys: MemoryKeyStore, store: MemoryPairingStore) async throws -> PairingRecord {
+        let address = try await mac.listen()
+        let typed = mac.typed
+        var tries = 0
+        while true {
+            tries += 1
+            do {
+                return try await exchange(mac, payload: try mac.payload(relay: noRelay, addresses: [address]), keys: keys, store: store)
+                    .run(showDigits: { typed.push($0) })
+            } catch let failure as PairingExchange.Failure where tries < setupTries && isStall(PairingFailure(failure)) {
+                continue
+            }
+        }
+    }
+
+    /// The same through the pairing screens' flow: scans `mac`'s code and waits for the digits, scanning again after a
+    /// failure a stall makes. The step it ended on: the digits, or the failure that was not a stall's or came last.
+    static func digitsForSetup(_ flow: PairingFlow, mac: TestMac, address: String) async throws -> PairingFlow.Step {
+        var tries = 0
+        while true {
+            tries += 1
+            flow.scanned(try mac.payload(relay: noRelay, addresses: [address]).text)
+            #expect(await Wait.until {
+                switch flow.step {
+                case .digits, .failed: true
+                default: false
+                }
+            }, "\(flow.step)")
+            guard case let .failed(failure) = flow.step, tries < setupTries, isStall(failure) else { return flow.step }
+            flow.scanAgain()
+        }
+    }
+
     @Test func pairsOverLoopbackTCP() async throws {
         let mac = TestMac()
         defer { mac.stop() }
@@ -82,6 +127,27 @@ struct PairingTests {
         #expect(try store.load() == nil, "nothing kept")
         #expect(try keys.keys() == nil, "the keys made for it are deleted")
         #expect(mac.state.withLock { $0.paired.isEmpty })
+    }
+
+    /// The Mac's word for why it did not pair (#881): shown in place of a silent end, and nothing kept.
+    @Test func theMacSaysWhyItDidNotPair() async throws {
+        for (why, failure) in [(PairRefusal.Why.unsaved, PairingExchange.Failure.macCouldNotSave), (.cancelled, .cancelledOnMac)] {
+            let mac = TestMac(rules: TestMac.Rules(refusePairing: why))
+            defer { mac.stop() }
+            let keys = MemoryKeyStore(), store = MemoryPairingStore()
+            await #expect(throws: failure) {
+                _ = try await Self.pair(mac, keys: keys, store: store)
+            }
+            #expect(try store.load() == nil, "nothing kept after \(why.rawValue)")
+            #expect(try keys.keys() == nil, "the keys made for it are deleted after \(why.rawValue)")
+        }
+        #expect(PairingFailure(.macCouldNotSave).words == "The Mac could not save the pairing. Start again.")
+        // A word this build does not know, from a newer Mac: a plain end.
+        let newer = TestMac(rules: TestMac.Rules(refusePairingLine: Data(#"{"pairRefused":{"why":"later"}}"#.utf8)))
+        defer { newer.stop() }
+        await #expect(throws: PairingExchange.Failure.macDidNotPair) {
+            _ = try await Self.pair(newer, keys: MemoryKeyStore(), store: MemoryPairingStore())
+        }
     }
 
     @Test func aMacThatCannotProveItselfGetsNothing() async throws {
@@ -216,7 +282,8 @@ struct PairingTests {
     @Test func everyFailureHasWordsOfItsOwn() {
         let failures: [PairingFailure] = [
             .notACode, .expired, .unreachable, .relayRefused("token"), .relayRefused("attestation"), .relayRefused("update-required"),
-            .relayRefused("busy"), .relayRefused("something-new"), .noAppAttest, .macNotProved, .macDidNotPair, .attestation, .keys,
+            .relayRefused("busy"), .relayRefused("something-new"), .noAppAttest, .macNotProved, .macDidNotPair, .macCouldNotSave, .cancelledOnMac,
+            .attestation, .keys,
         ]
         let words = failures.map(\.words)
         #expect(Set(words).count == words.count)

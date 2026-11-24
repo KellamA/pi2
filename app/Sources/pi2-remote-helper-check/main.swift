@@ -13,8 +13,14 @@
 // - with `--engine <engine/src/main.ts>`: a real engine on a temporary data folder, which starts the helper from a
 //   stand-in app bundle, and a phone that pairs and attaches over loopback through it.
 //
+// - with `--relay <ws://127.0.0.1:port/v1>`, instead: pi² Remote's relay end (#678) against the relay itself on this
+//   computer, which `scripts/relay-protocol-test --remote` starts for it (Relayed.swift); with `--engine` too, a phone
+//   pairs, attaches and leaves a request in the mailbox through a real engine and that relay; then a relay of its own on
+//   127.0.0.1 that floods pi² Remote with notices and items that are not genuine (Relayed.flood).
+//
 //   cd app && swift build --product pi2-remote-helper && swift build --product pi2-remote-helper-check
 //   .build/debug/pi2-remote-helper-check [--engine ../engine/src/main.ts] [--verbose]
+//   scripts/relay-protocol-test --remote [--engine engine/src/main.ts]
 //
 // It touches no Keychain, advertises nothing, listens on and connects to 127.0.0.1 alone, and works in a temporary
 // folder it removes. It takes about two minutes, one of them the resume window.
@@ -26,6 +32,7 @@ import pi2_remote
 var arguments = Array(CommandLine.arguments.dropFirst())
 var engineMain: String?
 var helperPath: String?
+var relayURL: URL?
 while let argument = arguments.first {
 	arguments.removeFirst()
 	switch argument {
@@ -34,12 +41,20 @@ while let argument = arguments.first {
 		guard let value = arguments.first else { print("--engine needs engine/src/main.ts"); exit(2) }
 		engineMain = URL(fileURLWithPath: value).standardizedFileURL.path
 		arguments.removeFirst()
+	case "--relay":
+		// A relay on this computer alone, which scripts/relay-protocol-test --remote starts for this check.
+		guard let value = arguments.first, let url = URL(string: value), url.scheme == "ws", ["127.0.0.1", "localhost"].contains(url.host ?? "") else {
+			print("--relay needs ws://127.0.0.1:<port>/v1, a relay on this computer")
+			exit(2)
+		}
+		relayURL = url
+		arguments.removeFirst()
 	case "--helper":
 		guard let value = arguments.first else { print("--helper needs a path"); exit(2) }
 		helperPath = value
 		arguments.removeFirst()
 	default:
-		print("unknown argument \(argument)\nusage: pi2-remote-helper-check [--engine <engine/src/main.ts>] [--helper <pi2-remote-helper>] [--verbose]")
+		print("unknown argument \(argument)\nusage: pi2-remote-helper-check [--engine <engine/src/main.ts>] [--relay ws://127.0.0.1:<port>/v1] [--helper <pi2-remote-helper>] [--verbose]")
 		exit(2)
 	}
 }
@@ -80,13 +95,32 @@ guard FileManager.default.isExecutableFile(atPath: built.path) else {
 let bundled = root.appendingPathComponent("pi2 check.app/Contents/Helpers/pi² Remote.app/Contents/MacOS/pi² Remote")
 try! FileManager.default.createDirectory(at: bundled.deletingLastPathComponent(), withIntermediateDirectories: true)
 try! FileManager.default.copyItem(at: built, to: bundled)
+// Its Info.plist, as remote-helper.sh writes one: the build the relay compares with its minimum for a Mac.
+helperInfo(bundled)
 
 let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("pi2-remote")
-Units.run(sources: sources, helper: built)
-Starts.refusals(helper: bundled, home: home)
-Flows.run(helper: bundled, home: home)
-if let engineMain { RealEngine.run(engineMain: engineMain, helper: built, root: root) }
+if let relayURL {
+	// The relay path's own cases (#678), against the relay scripts/relay-protocol-test started; the rest runs without it.
+	Relayed.run(helper: bundled, home: home, relay: relayURL)
+	// And a relay of the check's own that lies and floods, on 127.0.0.1 (#921's security read).
+	Relayed.flood(helper: bundled, home: home)
+	if let engineMain { RealEngine.run(engineMain: engineMain, helper: built, root: root, relay: relayURL) }
+} else {
+	Units.run(sources: sources, helper: built)
+	Pushes.run(home: root)
+	Starts.refusals(helper: bundled, home: home)
+	Flows.run(helper: bundled, home: home)
+	if let engineMain { RealEngine.run(engineMain: engineMain, helper: built, root: root) }
+}
 
 try? FileManager.default.removeItem(at: root)
 print("\(Check.passed) passed, \(Check.failed.count) failed")
 exit(Check.failed.isEmpty ? 0 : 1)
+
+/// The Info.plist `app/remote-helper.sh` puts beside pi² Remote: here only its build, which the relay checks a Mac's
+/// against (`MIN_BUILD_MAC`, 100 in scripts/relay-protocol-test).
+func helperInfo(_ executable: URL) {
+	let contents = executable.deletingLastPathComponent().deletingLastPathComponent()
+	let plist = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>dev.pi2.app.check.remote</string><key>CFBundleExecutable</key><string>pi² Remote</string><key>CFBundleVersion</key><string>100</string></dict></plist>\n"
+	try! plist.write(to: contents.appendingPathComponent("Info.plist"), atomically: true, encoding: .utf8)
+}

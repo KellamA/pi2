@@ -7,20 +7,24 @@ import Foundation
 /// A push's one custom key, `sealed`, as the relay posts it (relay/README.md, "Pushes"): base64url without padding,
 /// exactly 696, 1,464 or 3,000 bytes once decoded, so that its size tells nothing but its class (section 7).
 ///
-/// What those bytes hold is the sealer's (#689, pi² Remote's push part, not built yet), and this is what the phone
-/// reads, as #690 assumed it: the item's 16-byte id, then the item exactly as RemoteKit seals a Mac item for the
-/// mailbox (`SealedItem`, docs/remotekit.md "Sealed items": HPKE's encapsulated key, then the ciphertext), with the
-/// padding inside the seal, as a `pad` member of the signed body, so that nothing outside it can be changed unseen.
-/// The id goes in front because HPKE's `info` binds the item to it and the push carries nowhere else to say it.
+/// What those bytes hold is RemoteKit's `PushSealing`, which pi² Remote seals with (#689; docs/remotekit.md "Sealed
+/// pushes"): the item exactly as RemoteKit seals a Mac item for the mailbox (`SealedItem`, docs/remotekit.md "Sealed
+/// items": HPKE's encapsulated key, then the ciphertext), then the item's 16-byte id, which HPKE's `info` binds the item
+/// to and the push carries nowhere else. The id goes after the item, not in front as #690 first assumed, since the relay
+/// takes only bytes that begin as a sealed item does (`0x04`, relay/src/protocol.ts). The padding is inside the seal
+/// and the signature, so nothing outside it can be changed unseen.
 struct SealedPush: Equatable, Sendable {
     /// The sizes a sealed push may have, in bytes.
     static let sizes = [696, 1_464, 3_000]
     static let idLength = 16
 
-    /// The item's id, its 16 bytes.
+    /// The item's id, its 16 bytes: the last of the push's.
     let id: Data
     /// The sealed item: HPKE's encapsulated key, then the ciphertext.
     let item: Data
+
+    /// The bytes as the push carries them: the item, then its id.
+    var bytes: Data { item + id }
 
     /// The item's id as RemoteKit writes it, base64url.
     var idText: String { PushBase64URL.encode(id) }
@@ -34,8 +38,8 @@ struct SealedPush: Equatable, Sendable {
     static func read(_ text: String) throws -> SealedPush {
         guard let bytes = PushBase64URL.decode(text) else { throw PushRefusal.notBase64URL }
         guard sizes.contains(bytes.count) else { throw PushRefusal.wrongSize }
-        let start = bytes.startIndex
-        return SealedPush(id: Data(bytes[start..<(start + idLength)]), item: Data(bytes[(start + idLength)...]))
+        let split = bytes.endIndex - idLength
+        return SealedPush(id: Data(bytes[split...]), item: Data(bytes[bytes.startIndex..<split]))
     }
 }
 
@@ -54,6 +58,11 @@ enum PushRefusal: Error, Equatable, Sendable {
     case notANotice
     /// It is more than a day old: the relay or anyone else could be handing back an old one.
     case tooOld
+    /// It is dated more than an hour ahead of the phone's clock: a Mac whose clock runs fast must not make a push that
+    /// outlives the phone's memory of the pushes it opened.
+    case tooNew
+    /// The same push was opened before: handed back by the relay or anyone else, it is not shown again as the Mac wrote it.
+    case replayed
 
     var words: String {
         switch self {
@@ -65,6 +74,8 @@ enum PushRefusal: Error, Equatable, Sendable {
         case .doesNotOpen: "does not open or verify"
         case .notANotice: "not a notification"
         case .tooOld: "more than a day old"
+        case .tooNew: "dated more than an hour ahead"
+        case .replayed: "opened before"
         }
     }
 }

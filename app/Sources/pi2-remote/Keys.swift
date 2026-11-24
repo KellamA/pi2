@@ -131,19 +131,24 @@ package struct ListedDevice: Sendable {
 /// key as they were, and the next `start`, which no longer names the device, drops it and makes a new key before
 /// anything is advertised.
 ///
-/// `{"v":1,"devices":[…],"home":<the home key's 32 bytes in base64url>}`, `home` left out while there is no key.
+/// `{"v":1,"devices":[…],"home":<the home key's 32 bytes in base64url>,"relay":{"pairing":…,"address":…}}`, `home` left
+/// out while there is no key, `relay` while pi² Remote registered no pairing at a relay: the pairing it registered and
+/// the relay's address, to which alone the pairing's id is shown (#678).
 package struct KeptDevices: Sendable {
 	package var devices: [ListedDevice]
 	package var homeKey: HomeKey?
+	package var registration: RelayRegistration?
 
-	package init(devices: [ListedDevice] = [], homeKey: HomeKey? = nil) {
+	package init(devices: [ListedDevice] = [], homeKey: HomeKey? = nil, registration: RelayRegistration? = nil) {
 		self.devices = devices
 		self.homeKey = homeKey
+		self.registration = registration
 	}
 
 	package var data: Data {
 		var members: [(String, JSONValue)] = [("v", .integer(1)), ("devices", .array(devices.map(\.json)))]
 		if let homeKey { members.append(("home", .string(Base64URL.encode(homeKey.rawRepresentation)))) }
+		if let registration { members.append(("relay", .object([("pairing", .string(registration.pairing.text)), ("address", .string(registration.relay))]))) }
 		return JSON.write(.object(members))
 	}
 
@@ -157,6 +162,12 @@ package struct KeptDevices: Sendable {
 		if let home = value["home"] {
 			guard let text = home.stringValue, let raw = Base64URL.decode(text), let key = HomeKey(rawRepresentation: raw) else { throw Refused("the home key is not one pi² Remote wrote") }
 			homeKey = key
+		}
+		if let relay = value["relay"] {
+			guard let pairing = relay["pairing"]?.stringValue.flatMap(PairingID.init), let address = relay["address"]?.stringValue else {
+				throw Refused("the relay's pairing is not one pi² Remote wrote")
+			}
+			registration = RelayRegistration(pairing: pairing, relay: address)
 		}
 	}
 }

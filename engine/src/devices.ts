@@ -20,7 +20,8 @@ import { defineDoc, type Harness } from "@earendil-works/pi-durable";
 import { type DevicePath, deviceMay, type DeviceSession, devicePlacement, ONLY_ON_THE_MAC } from "./answers.ts";
 import { AppAttestError, type AppAttestEnvironment, type AppAttestResult, verifyAttestation } from "./appattest.ts";
 import type { Client } from "./clients.ts";
-import { testSwitch } from "./testswitches.ts";
+import { RequestError } from "./requesterror.ts";
+import { releaseEngine, testCopySuffix, testSwitch } from "./testswitches.ts";
 
 // ---- The records (3.2, 4.3, 4.4)
 
@@ -34,7 +35,7 @@ export type Device = {
 	pendingPresenceKey: string | null; // a new one, until the person accepts it on the Mac
 	channelKey: string; // 32 raw Curve25519 bytes in base64url; "" once revoked
 	recordKey: string; // SPKI DER in base64url; "" once revoked
-	attestKeyId: string; // the App Attest key the Mac checked at pairing, as DCAppAttestService names it (base64)
+	attestKeyId: string; // the App Attest key the Mac checked at pairing, as DCAppAttestService names it (base64); "" for a simulator a test copy paired
 	build: string;
 	suspendedAt: number | null;
 	pairedAt: number;
@@ -145,8 +146,8 @@ export type RemoteHooks = {
 	closeSessions: (device: string, why: string) => void;
 	/** The open sessions, for the Devices page and the menu bar (4.4). */
 	sessions: () => { device: string; session: string; path: DevicePath; since: number }[];
-	/** pi² Remote's own state, for the Devices page. */
-	helper: () => { running: boolean; stoppedInLastHour: number };
+	/** pi² Remote's own state, for the Devices page: with what it said of the relay path (`remote.state`'s `relay`). */
+	helper: () => { running: boolean; stoppedInLastHour: number; relay?: Record<string, unknown> | null };
 	/** Each device session's record changed: its `device` event is sent again. */
 	recordChanged: (device: string) => void;
 	/** The Mac's addresses as the running pi² Remote said them, or null when none has said hello. */
@@ -532,9 +533,28 @@ const MAX_DEPTH = 256;
  * (`hidesSomething`), has it at 0. Counting each from here, never from where it sits, cuts the phone's copy exactly
  * where the gate judges it cut. 8 leaves room for a form that nests one deeper; an approval sent deeper than 8 would be
  * cut sooner than the gate judges, so the devices test holds the forms a phone answers from (the `inbox` event,
- * `needs.list`'s answer) to the gate's cut at every depth either side of it.
+ * `needs.list`'s answer) to the gate's cut at every depth either side of it, and a development engine says so when it
+ * meets one deeper in any line (`deepApproval`), so that a new form cannot quietly reopen that gap (#881).
  */
 export const APPROVAL_DEPTH = 8;
+/** When a development engine last said it met an approval deeper than APPROVAL_DEPTH: at most once a minute. */
+let deepSaid = 0;
+
+/**
+ * An approval met `depth` levels down in a line for a device, deeper than APPROVAL_DEPTH, and not inside another
+ * approval: a form the gate's judgement does not match. A release engine says nothing (the phone's copy is still
+ * masked, and marked if cut); a development engine says it in engine.log, and under test
+ * (`PI2_APPROVAL_DEPTH_THROWS`) throws, which drops the line (`forDevice`), so that the test meets it.
+ */
+function deepApproval(depth: number): void {
+	if (releaseEngine) return;
+	const said = `an approval was met ${depth} levels down in a line for a device, deeper than APPROVAL_DEPTH (${APPROVAL_DEPTH}): the phone's copy is cut sooner than the gate judges (devices.ts)`;
+	if (testSwitch("PI2_APPROVAL_DEPTH_THROWS") === "1") throw new Error(said);
+	const now = Date.now();
+	if (now - deepSaid < 60_000) return;
+	deepSaid = now;
+	log?.(`devices: ${said}`);
+}
 /**
  * Set beside an approval a device is sent when masking hid part of it, or part was too deep: the phone does not show
  * the whole call, and the engine takes no allowing answer to it from a device (`approvalHidden`, answers.ts).
@@ -546,9 +566,10 @@ export const PART_HIDDEN = "partHidden";
  * deeper than 256 levels replaced by TOO_DEEP, an approval's insides counted from APPROVAL_DEPTH. Masking the strings
  * rather than the JSON text is what makes it hold: in the text a key after a line break follows `\n`, and one after a
  * colour code follows `\u001b[32m`. `masking.hidden` is set when anything was hidden; an approval (an object of kind
- * "approval" with an id) also gets PART_HIDDEN.
+ * "approval" with an id) also gets PART_HIDDEN. `inApproval`: walking an approval's insides, where another approval
+ * is judged with it, by the gate as here.
  */
-export function maskValue(value: unknown, masking: { hidden: boolean } = { hidden: false }, depth = 0): unknown {
+export function maskValue(value: unknown, masking: { hidden: boolean } = { hidden: false }, depth = 0, inApproval = false): unknown {
 	if (typeof value === "string") {
 		const masked = maskKeys(value);
 		if (masked !== value) masking.hidden = true;
@@ -559,9 +580,10 @@ export function maskValue(value: unknown, masking: { hidden: boolean } = { hidde
 		masking.hidden = true;
 		return TOO_DEEP;
 	}
-	if (Array.isArray(value)) return value.map((item) => maskValue(item, masking, depth + 1));
+	if (Array.isArray(value)) return value.map((item) => maskValue(item, masking, depth + 1, inApproval));
 	const record = value as Record<string, unknown>;
 	const approval = record.kind === "approval" && typeof record.id === "string";
+	if (approval && !inApproval && depth > APPROVAL_DEPTH) deepApproval(depth);
 	const own = approval ? { hidden: false } : masking;
 	// Only ever deeper, so a line is never walked past MAX_DEPTH.
 	const at = approval ? Math.max(depth, APPROVAL_DEPTH) : depth;
@@ -570,7 +592,7 @@ export function maskValue(value: unknown, masking: { hidden: boolean } = { hidde
 	for (const [key, item] of Object.entries(record)) {
 		const name = maskKeys(key);
 		if (name !== key) own.hidden = true;
-		out[name] = maskValue(item, own, at + 1);
+		out[name] = maskValue(item, own, at + 1, inApproval || approval);
 	}
 	if (approval && own.hidden) {
 		out[PART_HIDDEN] = true;
@@ -595,8 +617,9 @@ export function hidesSomething(value: unknown): boolean {
 type Params = Record<string, unknown>;
 
 /**
- * `PI2_DEVICE_FAULT`, a test switch: the method whose log line, and whose handling from a device's line, throw before
- * the request's own `try` (remote.ts), so that engine/test/devices.ts can show that neither ends the engine.
+ * `PI2_DEVICE_FAULT`, a test switch: the method whose log line, and whose handling from a device's line or a mailbox
+ * item, throw before the request's own `try` (remote.ts), so that engine/test/devices.ts can show that neither ends the
+ * engine.
  */
 export const DEVICE_FAULT = testSwitch("PI2_DEVICE_FAULT");
 
@@ -721,21 +744,26 @@ const refusalsMade = new Map<string, { entry: DeviceLogEntry; more: number; last
 let flushTimer: ReturnType<typeof setTimeout> | undefined;
 let flushing: Promise<void> = Promise.resolve();
 
-/** Writes what waits in memory, in one commit, after any write already under way. */
-export function flushDeviceLog(): Promise<void> {
+/**
+ * Writes what waits in memory, in one commit, after any write already under way. `alongside`, a change to the record
+ * of devices made in the same commit, so that neither is stored without the other (a suspension and its entry).
+ */
+export function flushDeviceLog(alongside?: (doc: DevicesState) => void): Promise<void> {
 	clearTimeout(flushTimer);
 	flushTimer = undefined;
-	flushing = flushing.then(writePending, writePending);
+	const write = () => writePending(alongside);
+	flushing = flushing.then(write, write);
 	return flushing;
 }
 
-async function writePending(): Promise<void> {
+async function writePending(alongside?: (doc: DevicesState) => void): Promise<void> {
 	const entries = pendingLog.splice(0);
 	const counts = [...refusalsMade.values()].filter((one) => one.more > 0 && !entries.includes(one.entry)).map((one) => ({ ...one }));
 	for (const one of refusalsMade.values()) if (!entries.includes(one.entry)) one.more = 0;
-	if (entries.length === 0 && counts.length === 0) return;
+	if (entries.length === 0 && counts.length === 0 && alongside === undefined) return;
 	const now = Date.now();
 	await harness.commit(async (tx) => {
+		if (alongside !== undefined) alongside(await tx.doc(Devices));
 		const doc = await tx.doc(DeviceLog);
 		for (const { entry, more, lastAt } of counts) {
 			const stored = doc.entries.findLast((one) => one.at === entry.at && one.device === entry.device && one.path === entry.path && one.method === entry.method && one.why === entry.why && one.outcome === "refused");
@@ -889,9 +917,11 @@ export function sessionsChanged(): void {
  * The characters a phone does not show in a name (RemoteKit's `ShownText`): controls, and the invisible and
  * direction-changing ones, U+200B to U+200F, U+202A to U+202E, U+2066 to U+2069 and U+FEFF. RemoteKit refuses a pairing
  * payload or a `paired` line whose name holds one; the engine strips them instead, so that a Mac named with an emoji
- * sequence (a zero-width joiner) or a right-to-left mark can still pair.
+ * sequence (a zero-width joiner) or a right-to-left mark can still pair. And lone surrogates, half a character, which
+ * a Swift string cannot hold, and which JSON carries as an escape: a claim's name, model and system are stripped of
+ * the same before the Mac shows them (#881).
  */
-const NOT_SHOWN = /[\p{Cc}\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/gu;
+const NOT_SHOWN = /[\p{Cc}\p{Cs}\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/gu;
 /** The longest name RemoteKit takes, in UTF-8 bytes (`PairingPayload.maxNameLength`). */
 export const MAX_NAME_BYTES = 128;
 
@@ -918,8 +948,21 @@ type ClaimedDevice = { name: string; model: string; system: string; build: strin
 type Claim = { id: string; at: number; path: "relay" | "home"; device: ClaimedDevice; attestKeyId: string; digits: string; wrongDigits: number; replaces: string | null };
 type PairingWindow = { secret: Buffer; pairing: string; expires: number; claiming: boolean; claim: Claim | null; wrongTries: number; timer: ReturnType<typeof setTimeout> };
 
+/**
+ * The device the engine's last pairing saved, the path its claim came by, and the device it replaced, if any: the one
+ * `pairUnkept` may take back.
+ */
+let lastPaired: { device: string; path: "relay" | "home"; replaced: string | null } | null = null;
+
 export const SECOND_CLAIM = "Another device tried to use this code. Start again, and don't show the code on a shared or recorded screen.";
 const NO_WINDOW = "No pairing is open on this Mac.";
+
+/**
+ * Why a claim was refused, in a word the phone is told (`pairRefused` on the pairing channel, docs/remotekit.md, #881):
+ * `unsaved`, the Mac could not save the pairing; `cancelled`, the person closed the pairing on the Mac. pi² Remote
+ * passes the word on and never the engine's words; any other refusal carries none, and the phone is told nothing.
+ */
+export type PairRefusalWord = "unsaved" | "cancelled";
 
 /** Closes the join window, for `why`, refusing a claim that waits; the secret is gone with it. */
 function closeWindow(why: string | null): void {
@@ -928,7 +971,8 @@ function closeWindow(why: string | null): void {
 	window = null;
 	clearTimeout(open.timer);
 	open.secret.fill(0);
-	if (open.claim !== null) remoteHooks.toHelper({ kind: "pairRefused", claim: open.claim.id, why: why ?? "The pairing was closed on the Mac." });
+	// No `why`: the person closed it on the Mac (Cancel, a new code, remote access turned off).
+	if (open.claim !== null) remoteHooks.toHelper({ kind: "pairRefused", claim: open.claim.id, why: why ?? "The pairing was closed on the Mac.", ...(why === null ? { reason: "cancelled" satisfies PairRefusalWord } : {}) });
 	remoteHooks.toHelper({ kind: "closeJoin" });
 	closed = why === null ? null : { why, at: Date.now() };
 	if (why !== null) log("devices: the pairing window closed:", why);
@@ -1047,15 +1091,54 @@ export function pairWrong(): void {
  * (`remote.pairWrong`).
  */
 const HELPER_REFUSALS: Record<string, string> = {
-	"not-pair": "its first line was not a claim to pair",
-	"not-bound": "its claim was not signed for its channel",
-	silent: "it went quiet",
+	"not-pair": "A phone's claim was refused: its first line was not a claim to pair.",
+	"not-bound": "A phone's claim was refused: its claim was not signed for its channel.",
+	silent: "A phone's claim was refused: it went quiet.",
+	// Not the claimer's doing (#887): the Keychain or the data folder refused pi² Remote's write of the home key.
+	"not-kept": "pi² Remote could not keep the pairing on this Mac. Start again.",
 };
 
 export function pairRefusedByHelper(why: unknown): void {
 	if (typeof why !== "string" || !Object.hasOwn(HELPER_REFUSALS, why)) throw new Error(`why is one of ${Object.keys(HELPER_REFUSALS).join(", ")}`);
 	if (window === null || window.pairing === "") throw new Error(NO_WINDOW);
-	closeWindow(`A phone's claim was refused: ${HELPER_REFUSALS[why]}.`);
+	closeWindow(HELPER_REFUSALS[why]!);
+}
+
+/** How long after `paired` pi² Remote may take a pairing back (`remote.pairUnkept`). */
+export const UNKEPT_WITHIN = 60_000;
+export const NOT_KEPT = "The Mac could not save the pairing. Start again.";
+
+/**
+ * A pairing the engine made that pi² Remote could not keep on its side (`remote.pairUnkept`, #887): its write of the
+ * device and the home key failed after the engine sent `paired`, so it holds no device and the phone was sent `bye`.
+ * The device goes as if it had never been paired: its record removed, not revoked, so nothing of it is kept to refuse a
+ * new claim with the same keys. A device it replaced stays revoked: pi² Remote has dropped it and made a new home key.
+ *
+ * remote.ts takes it only from the pi² Remote that was sent that `paired`, for that device alone, within a minute of
+ * it, once. Here, whatever remote.ts checked: the device paired, not revoked, never attached, and paired less than a
+ * minute ago. So no older device, nor one a phone has used, can be removed this way.
+ */
+export async function pairUnkept(id: unknown): Promise<void> {
+	const device = pairedDevice(id);
+	const now = Date.now();
+	const last = lastPaired;
+	if (device === undefined || last?.device !== device.id || device.lastSeenAt !== null || now < device.pairedAt || now - device.pairedAt >= UNKEPT_WITHIN) {
+		throw new Error("That device is not one pi² Remote paired this last minute.");
+	}
+	lastPaired = null;
+	await change((doc) => {
+		doc.devices = doc.devices.filter((one) => one.id !== device.id);
+	});
+	failures.delete(device.id);
+	remoteHooks.closeSessions(device.id, "The pairing was not kept.");
+	closed = { why: NOT_KEPT, at: now };
+	log("devices: pi² Remote could not keep the pairing it was sent; the device was taken back");
+	// Which phone, by its name as shown (the record is gone, so the Devices page cannot name it), and the device it
+	// replaced, which stays revoked.
+	const replaced = last.replaced === null ? undefined : state.devices.find((one) => one.id === last.replaced);
+	const summary = `Pairing of “${device.name}” taken back${replaced === undefined ? "" : `; it had replaced “${replaced.name}”, which stays revoked`}`;
+	await logDevice({ device: device.id, path: last.path, method: "pair", summary, presence: false, outcome: "failed", why: "pi² Remote could not keep the pairing on this Mac." }, true);
+	announce();
 }
 
 /**
@@ -1117,34 +1200,43 @@ async function checkClaim(open: PairingWindow, params: Params): Promise<Claim> {
 	const claimedHash = keyHash(device.deviceKey as string);
 	if (state.devices.some((one) => one.deviceKeyHash !== undefined && sameText(one.deviceKeyHash, claimedHash))) throw new Error("That device key was revoked on this Mac.");
 
-	// App Attest (P37): a genuine pi² for iPhone vouches for this very device key on this very channel.
-	const attestation = fromBase64url(claim.attestation);
-	const keyId = fromBase64(claim.keyId, 32);
-	if (attestation === null || attestation.length === 0 || keyId === null) throw new Error("The claim has no App Attest attestation.");
-	if (state.devices.some((one) => sameText(one.attestKeyId, claim.keyId as string))) throw new Error("That App Attest key is tied to another pairing already.");
-	const teamId = testSwitch("PI2_APP_ATTEST_TEAM") ?? IPHONE_TEAM_ID;
-	if (teamId === null) throw new Error("This build of pi² cannot check App Attest yet: it does not know pi²'s team id.");
-	const clientDataHash = createHash("sha256").update(challenge).update(fromBase64url(device.deviceKey)!).update(binding).digest();
-	const check: Verify = testSwitch("PI2_APP_ATTEST_STAND_IN") === "1" ? standInVerify : (bytes, expected) => verifyAttestation(bytes, expected);
-	let attested: AppAttestResult;
-	try {
-		// No `now`: an attestation is checked as it arrives, at the Mac's own time (appattest.ts).
-		attested = await check(attestation, { teamId, bundleId: IPHONE_BUNDLE_ID, keyId, clientDataHash, environments: takenEnvironments() });
-	} catch (error) {
-		throw new Error(`App Attest: ${error instanceof Error ? error.message : String(error)}`);
+	// A build without App Attest (the simulator) sends none (attestation and keyId null). Only a throwaway copy's engine
+	// takes it, one scripts/test-copy started with --remote, and never a release engine, which reads no test switch
+	// (iphone.md 10). Such a device is paired with no App Attest key, and pi² Remote is told none.
+	const unattested = claim.attestation === null && claim.keyId === null && !release && testCopySuffix() !== undefined && testSwitch("PI2_PAIR_UNATTESTED") === "1";
+	if (!unattested) {
+		// App Attest (P37): a genuine pi² for iPhone vouches for this very device key on this very channel.
+		const attestation = fromBase64url(claim.attestation);
+		const keyId = fromBase64(claim.keyId, 32);
+		if (attestation === null || attestation.length === 0 || keyId === null) throw new Error("The claim has no App Attest attestation.");
+		if (state.devices.some((one) => sameText(one.attestKeyId, claim.keyId as string))) throw new Error("That App Attest key is tied to another pairing already.");
+		const teamId = testSwitch("PI2_APP_ATTEST_TEAM") ?? IPHONE_TEAM_ID;
+		if (teamId === null) throw new Error("This build of pi² cannot check App Attest yet: it does not know pi²'s team id.");
+		const clientDataHash = createHash("sha256").update(challenge).update(fromBase64url(device.deviceKey)!).update(binding).digest();
+		const check: Verify = testSwitch("PI2_APP_ATTEST_STAND_IN") === "1" ? standInVerify : (bytes, expected) => verifyAttestation(bytes, expected);
+		let attested: AppAttestResult;
+		try {
+			// No `now`: an attestation is checked as it arrives, at the Mac's own time (appattest.ts).
+			attested = await check(attestation, { teamId, bundleId: IPHONE_BUNDLE_ID, keyId, clientDataHash, environments: takenEnvironments() });
+		} catch (error) {
+			throw new Error(`App Attest: ${error instanceof Error ? error.message : String(error)}`);
+		}
+		if (attested.validationCategory === null || !takenCategories().includes(attested.validationCategory)) {
+			throw new Error(`App Attest: the app was not launched as a ${release ? "distributed" : "distributed or development"} build of pi² for iPhone.`);
+		}
+		if (attested.bundleVersion === null || !sameText(attested.bundleVersion, device.build as string)) throw new Error("App Attest: the app's build is not the one the claim names.");
 	}
-	if (attested.validationCategory === null || !takenCategories().includes(attested.validationCategory)) {
-		throw new Error(`App Attest: the app was not launched as a ${release ? "distributed" : "distributed or development"} build of pi² for iPhone.`);
-	}
-	if (attested.bundleVersion === null || !sameText(attested.bundleVersion, device.build as string)) throw new Error("App Attest: the app's build is not the one the claim names.");
 
-	const replaces = activeDevices().find((one) => one.name === device.name && one.model === device.model)?.id ?? null;
+	// The name, model and system as a phone shows names (`shownName`): the Mac shows them at confirming and at Replace,
+	// and a right-to-left override or an invisible character there could make one device read as another (#881).
+	const shown = { ...(device as ClaimedDevice), name: shownName(device.name, "iPhone"), model: shownName(device.model, "iPhone"), system: shownName(device.system, "iOS") };
+	const replaces = activeDevices().find((one) => one.name === shown.name && one.model === shown.model)?.id ?? null;
 	return {
 		id: `claim_${randomBytes(12).toString("base64url")}`,
 		at: Date.now(),
 		path: params.path,
-		device: device as ClaimedDevice,
-		attestKeyId: claim.keyId as string,
+		device: shown,
+		attestKeyId: unattested ? "" : (claim.keyId as string),
 		digits: pairingDigits(open.secret, binding),
 		wrongDigits: 0,
 		replaces,
@@ -1207,7 +1299,7 @@ async function pairConfirm(params: Params): Promise<{ device: string }> {
 		});
 	} catch (error) {
 		// Nothing was stored: the phone waiting on its pairing channel is told so, rather than left without an answer.
-		remoteHooks.toHelper({ kind: "pairRefused", claim: claim.id, why: "The Mac could not save the pairing. Start again." });
+		remoteHooks.toHelper({ kind: "pairRefused", claim: claim.id, why: NOT_KEPT, reason: "unsaved" satisfies PairRefusalWord });
 		throw error;
 	} finally {
 		saving -= 1;
@@ -1217,14 +1309,16 @@ async function pairConfirm(params: Params): Promise<{ device: string }> {
 		remoteHooks.toHelper({ kind: "revoke", device: replaced });
 		remoteHooks.closeSessions(replaced, "replaced");
 	}
+	lastPaired = { device: device.id, path: claim.path, replaced };
 	remoteHooks.toHelper({
 		kind: "paired",
 		claim: claim.id,
-		device: { id: device.id, deviceKey: device.deviceKey, presenceKey: device.presenceKey, channelKey: device.channelKey, recordKey: device.recordKey, attestKeyId: device.attestKeyId },
+		device: { id: device.id, deviceKey: device.deviceKey, presenceKey: device.presenceKey, channelKey: device.channelKey, recordKey: device.recordKey, attestKeyId: device.attestKeyId === "" ? null : device.attestKeyId },
 		paired: { device: device.id, pairing: state.pairing, name: macName(), addresses },
 	});
 	await logDevice({ device: device.id, path: claim.path, method: "pair", summary: summarize("pair", {}), presence: false, outcome: "done" }, true);
-	notify("paired", device.id, `${device.name} was paired with this Mac.`);
+	// pi² Remote may have taken it back meanwhile (`pairUnkept`).
+	if (pairedDevice(device.id) !== undefined) notify("paired", device.id, `${device.name} was paired with this Mac.`);
 	return { device: device.id };
 }
 
@@ -1318,14 +1412,24 @@ function unsigned(device: string, what: string): void {
 	log(`devices: refused ${what} for ${device} not signed by its device key (said once a minute)`);
 }
 
+/**
+ * Suspends a device. Its `suspend` entry, and the refusals that led to it still waiting in memory, are written in the
+ * same commit as the suspension, or in a write of the log already queued before it (#881): a crash can leave the entry
+ * without the suspension, never a suspended device with no entry saying why.
+ */
 async function suspend(device: Device, path: DevicePath): Promise<void> {
-	await change((doc) => {
-		for (const one of doc.devices) if (one.id === device.id && one.revokedAt === null) one.suspendedAt = Date.now();
+	if (unreadable !== null) throw new Error(unreadable);
+	const why = `${SUSPEND_AFTER} refused presence signatures or attaches in ten minutes`;
+	const at = Date.now();
+	await logDevice({ at, device: device.id, path, method: "suspend", summary: summarize("suspend", {}), presence: false, outcome: "done", why });
+	await flushDeviceLog((doc) => {
+		for (const one of doc.devices) if (one.id === device.id && one.revokedAt === null) one.suspendedAt = at;
 	});
+	state = (await harness.snapshot(Devices, context)) ?? state;
+	announce();
+	remoteHooks.changed();
 	failures.delete(device.id);
 	remoteHooks.closeSessions(device.id, "suspended");
-	const why = `${SUSPEND_AFTER} refused presence signatures or attaches in ten minutes`;
-	await logDevice({ device: device.id, path, method: "suspend", summary: summarize("suspend", {}), presence: false, outcome: "done", why }, true);
 	notify("suspended", device.id, `${device.name} was suspended after ${why}. Resume it on the Devices page if it was you.`);
 }
 
@@ -1333,10 +1437,20 @@ async function suspend(device: Device, path: DevicePath): Promise<void> {
 export type Attached = { device: Device; path: Exclude<DevicePath, "mailbox">; session: string | null; presenceKey: string };
 
 /**
+ * The reasons a refusal of `remote.attach` may carry beside its words (`data.reason`, #818), which pi² Remote turns
+ * into the phone's `refused` line (docs/remotekit.md, "The refused line") without reading the words. Only for an attach
+ * the device key signed: a revoked or unknown device, an attach not signed by the device key, and every other refusal
+ * carry none, and the phone is told nothing.
+ */
+export type AttachRefusal = "update" | "suspended" | "presence" | "clock";
+const attachRefused = (why: string, reason: AttachRefusal) => new RequestError(why, { reason });
+
+/**
  * Checks an attach or a resume (`remote.attach`, 3.4) as the engine's own: the device paired, not revoked or suspended,
  * of a build at or above the minimum; both signatures, the device key's and the presence key's, over the same text,
  * against the engine's own record; the challenge one this engine issued, used once; the binding this channel's; `at`
- * within two minutes. Each refusal of a known device counts towards its suspension and is logged.
+ * within two minutes. Each refusal of a known device counts towards its suspension and is logged. Four refusals carry a
+ * reason for the phone beside their words (`AttachRefusal`).
  */
 export async function checkAttach(params: Params): Promise<Attached> {
 	if (!remoteOn()) throw new Error("Reach from an iPhone is off on this Mac.");
@@ -1350,13 +1464,16 @@ export async function checkAttach(params: Params): Promise<Attached> {
 	const device = state.devices.find((one) => one.id === signed.device);
 	if (device === undefined) throw new Error("No such device is paired with this Mac.");
 	if (device.revokedAt !== null) throw new Error("This device was revoked on the Mac.");
-	if (device.suspendedAt !== null) throw new Error("This device is suspended. Resume it on the Mac's Devices page.");
-	const method = signed.session === null ? "attach" : "resume";
-	const refuse = async (why: string): Promise<never> => {
-		await refused(device, path, method, why);
-		throw new Error(why);
-	};
 	const text = attach.signed as string;
+	if (device.suspendedAt !== null) {
+		const why = "This device is suspended. Resume it on the Mac's Devices page.";
+		throw signedBy(text, attach.signature, p256Key(device.deviceKey)!) ? attachRefused(why, "suspended") : new Error(why);
+	}
+	const method = signed.session === null ? "attach" : "resume";
+	const refuse = async (why: string, reason?: AttachRefusal): Promise<never> => {
+		await refused(device, path, method, why);
+		throw reason === undefined ? new Error(why) : attachRefused(why, reason);
+	};
 	// Until the device key proved the attach is the device's, nothing is counted against it (pi² Remote checks the same
 	// signature first, 3.4, so only a faulty one sends such an attach).
 	if (!signedBy(text, attach.signature, p256Key(device.deviceKey)!)) {
@@ -1364,18 +1481,18 @@ export async function checkAttach(params: Params): Promise<Attached> {
 		throw new Error("The attach is not signed by the device key.");
 	}
 	const presenceKey = device.presenceKey === null ? null : p256Key(device.presenceKey);
-	if (presenceKey === null) return refuse(PRESENCE_KEY_WAITS);
+	if (presenceKey === null) return refuse(PRESENCE_KEY_WAITS, "presence");
 	// A key that waits signs nothing: only the accepted one is tried, and a phone whose new key waits is told so.
-	if (!signedBy(text, attach.presence, presenceKey)) return refuse(device.pendingPresenceKey === null ? "The attach's presence signature is not the presence key's." : PRESENCE_KEY_WAITS);
+	if (!signedBy(text, attach.presence, presenceKey)) return refuse(device.pendingPresenceKey === null ? "The attach's presence signature is not the presence key's." : PRESENCE_KEY_WAITS, "presence");
 	if (typeof signed.challenge !== "string" || !takeChallenge(signed.challenge)) return refuse("The attach's challenge is not one this Mac issued, or was used.");
 	if (typeof signed.pairing !== "string" || state.pairing === null || !sameText(signed.pairing, state.pairing)) return refuse("The attach is for another pairing.");
 	if (typeof signed.binding !== "string" || fromBase64url(params.binding, 32) === null || !sameText(signed.binding, params.binding as string)) {
 		return refuse("The attach was signed for another channel.");
 	}
-	if (typeof signed.at !== "number" || !Number.isSafeInteger(signed.at) || Math.abs(Date.now() - signed.at) > AT_WITHIN) return refuse("The attach's time is more than two minutes from the Mac's.");
+	if (typeof signed.at !== "number" || !Number.isSafeInteger(signed.at) || Math.abs(Date.now() - signed.at) > AT_WITHIN) return refuse("The attach's time is more than two minutes from the Mac's.", "clock");
 	if (signed.session !== null && (typeof signed.session !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(signed.session))) return refuse("The attach names no session.");
 	if (!buildText(signed.build)) return refuse("The attach names no build.");
-	if (!buildAtLeast(signed.build, MINIMUM_PHONE_BUILD)) throw new Error("This build of pi² for iPhone is too old for this Mac. Update it.");
+	if (!buildAtLeast(signed.build, MINIMUM_PHONE_BUILD)) throw attachRefused("This build of pi² for iPhone is too old for this Mac. Update it.", "update");
 	const build = signed.build;
 	await change((doc) => {
 		for (const one of doc.devices) {
@@ -1572,15 +1689,21 @@ async function refusePresenceKey(id: string): Promise<void> {
 const ITEM_FIELDS = ["v", "kind", "pairing", "device", "method", "params", "nonce", "at"] as const;
 export const ITEM_TOO_OLD = "Not sent: more than a day passed before your Mac saw it.";
 export const ITEM_TOO_OLD_FACE = "Not sent: more than an hour passed before your Mac saw it.";
+/** A sealed item whose nonce was taken before: the relay handed it over again, or it was copied. */
+export const ITEM_TAKEN_BEFORE = "The item was taken before.";
+
+/** A sealed item that could not be taken now but could later (its nonce not stored): left at the relay, which hands it over again (#806). */
+export class ItemNotYet extends Error {}
 
 /**
  * Checks a request a device sealed into the mailbox, once opened by pi² Remote, before it is handled
  * (remote.mailboxIn, #678, calls this): remote access on; the device paired and not suspended; first its form and the
  * device key's signature over the exact `signed` text, before anything is written or counted, since the relay, which
- * the contract does not trust, can hand pi² Remote any item "from" a device; then, logged and counted, the presence
- * key's signature, that the request is the one signed, for this pairing, its row of the device's table allowing the
- * mailbox, `at` at most a day old (an hour for one that widens) and not ahead of the Mac's clock by more than five
- * minutes, and its nonce never taken before, stored before this answers, after a restart too.
+ * the contract does not trust, can hand pi² Remote any item "from" a device; then, logged and not counted, `at` at most
+ * a day old and not ahead of the Mac's clock by more than five minutes, and its nonce not taken before (read); then,
+ * logged and counted, the presence key's signature; then, logged, that the request is the one signed, for this
+ * pairing, its row of the device's table allowing the mailbox, `at` at most an hour old for one that widens, and its
+ * nonce never taken before, stored before this answers, after a restart too.
  */
 export async function checkRequestItem(device: string, item: unknown, approvals: Omit<DeviceSession, "path">, now = Date.now()): Promise<{ method: string; params: Params; widens: boolean }> {
 	if (!remoteOn()) throw new Error("Reach from an iPhone is off on this Mac.");
@@ -1607,6 +1730,21 @@ export async function checkRequestItem(device: string, item: unknown, approvals:
 		}
 		throw new Error(why);
 	};
+	// A relay can hand over again any item it ever held, long after the device's Face ID key changed: an item past the
+	// longest any item waits, or one taken before, is refused before the presence signature, whose failures count
+	// towards suspension, so that replaying a device's own old items cannot suspend it (#921's security read).
+	const nonce = signed.nonce;
+	if (fromBase64url(nonce, 16) === null) return refuse("The item's nonce is not one.");
+	const at = signed.at;
+	if (typeof at !== "number" || !Number.isSafeInteger(at) || at > now + ITEM_AHEAD) return refuse("The item's time is ahead of the Mac's.");
+	if (now - at > DAY) return refuse(ITEM_TOO_OLD);
+	let seen: boolean;
+	try {
+		seen = Object.hasOwn((await harness.snapshot(DeviceNonces, context))?.taken ?? {}, `${device}:${nonce as string}`);
+	} catch (error) {
+		throw new ItemNotYet(`The item's nonce could not be read: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	if (seen) return refuse(ITEM_TAKEN_BEFORE);
 	const presenceKey = record.presenceKey === null ? null : p256Key(record.presenceKey);
 	if (presenceKey === null || !signedBy(item.signed as string, item.presence, presenceKey)) {
 		await refused(record, "mailbox", requestLogged(String(request.method)), "The item's presence signature is not the presence key's.", request.params as Params);
@@ -1618,20 +1756,20 @@ export async function checkRequestItem(device: string, item: unknown, approvals:
 	const params = request.params as Params;
 	const answer = deviceMay(method, params, { path: "mailbox", ...approvals });
 	if (answer === "no") return refuse(ONLY_ON_THE_MAC);
-	const nonce = signed.nonce;
-	if (fromBase64url(nonce, 16) === null) return refuse("The item's nonce is not one.");
-	const at = signed.at;
-	if (typeof at !== "number" || !Number.isSafeInteger(at) || at > now + ITEM_AHEAD) return refuse("The item's time is ahead of the Mac's.");
 	if (now - at > (answer === "face" ? 3_600_000 : DAY)) return refuse(answer === "face" ? ITEM_TOO_OLD_FACE : ITEM_TOO_OLD);
 	let replayed = false;
-	await harness.commit(async (tx) => {
-		const doc = await tx.doc(DeviceNonces);
-		const key = `${device}:${nonce as string}`;
-		if (Object.hasOwn(doc.taken, key)) replayed = true;
-		else doc.taken[key] = now;
-		for (const [taken, when] of Object.entries(doc.taken)) if (now - when > NONCES_KEPT) delete doc.taken[taken];
-	}, context);
-	if (replayed) return refuse("The item was taken before.");
+	try {
+		await harness.commit(async (tx) => {
+			const doc = await tx.doc(DeviceNonces);
+			const key = `${device}:${nonce as string}`;
+			if (Object.hasOwn(doc.taken, key)) replayed = true;
+			else doc.taken[key] = now;
+			for (const [taken, when] of Object.entries(doc.taken)) if (now - when > NONCES_KEPT) delete doc.taken[taken];
+		}, context);
+	} catch (error) {
+		throw new ItemNotYet(`The item's nonce could not be stored: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	if (replayed) return refuse(ITEM_TAKEN_BEFORE);
 	return { method, params, widens: answer === "face" };
 }
 

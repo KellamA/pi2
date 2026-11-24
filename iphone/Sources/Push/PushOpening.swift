@@ -14,8 +14,8 @@ struct PushKeys: Sendable {
 }
 
 /// An item that opened and verified: sealed for this phone by its Mac's record key and signed inside by its identity
-/// key, for this pairing, this device and this id (RemoteKit's `SealedItem.openMacItem`). Nothing gives one but an
-/// opener, so nothing reads what a push says before it is verified.
+/// key, for this pairing, this device and this id (RemoteKit's `PushSealing.open`). Nothing gives one but an opener, so
+/// nothing reads what a push says before it is verified.
 struct OpenedPush: Equatable, Sendable {
     /// The Mac item's kind: `push` for a notification, `pushGone` for one to take away.
     let kind: String
@@ -23,7 +23,7 @@ struct OpenedPush: Equatable, Sendable {
     let at: Int64
     /// The item's id, base64url.
     let id: String
-    /// Its body, as JSON text.
+    /// The engine's body, as JSON text, without the sealer's padding.
     let body: Data
 }
 

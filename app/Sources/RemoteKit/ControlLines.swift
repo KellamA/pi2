@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 // The lines a channel carries on top of the engine's own (iphone.md 5.6): its first lines (the Mac's proof, `pair` and
-// `paired`, `attach` and `attached` or `refused`, resuming through `attach`), `presence` inside `attach`, `sessionEnd`,
+// `paired` or `pairRefused`, `attach` and `attached` or `refused`, resuming through `attach`), `presence` inside `attach`, `sessionEnd`,
 // `revoked` and `homeKey`.
 // Each is one JSON object with one member, named for what it is. Every byte string is base64url; every P-256 public
 // key is SPKI DER, a channel key its 32 raw bytes; every signature is ECDSA P-256 over the exact `signed` text
@@ -484,6 +484,44 @@ public struct Refusal: Sendable, Equatable {
 	}
 }
 
+/// pi² Remote's word to a phone whose claim to pair did not end paired, and why, from a fixed list (#881):
+/// `{"pairRefused":{"why":…}}`, sent just before the pairing channel's `bye` (`Channel.sealPairRefusal`), in place of
+/// `paired`. Never free text: the engine's words stay on the Mac. Only a phone that proved the code's secret and sent a
+/// claim reads it, and only for a refusal the Mac gives a word for; any other refusal ends the channel with `bye` alone.
+/// A word this build does not know, from a newer Mac, is read as no word (`why` nil), never as an error.
+public struct PairRefusal: Sendable, Equatable {
+	public enum Why: String, Sendable, CaseIterable {
+		/// The Mac could not save the pairing: the engine's record, or pi² Remote's own list of devices and the home key.
+		case unsaved
+		/// The person closed the pairing on the Mac (Cancel, a new code, Reach from an iPhone turned off).
+		case cancelled
+	}
+
+	/// Nil for a word this build does not know.
+	public var why: Why? { Why.allCases.first { $0.rawValue.sameBytes(text) } }
+
+	/// The word as written: one this build knows, or one of the same form it does not.
+	private let text: String
+
+	public init(_ why: Why) { text = why.rawValue }
+
+	private init(text: String) { self.text = text }
+
+	public static func == (lhs: PairRefusal, rhs: PairRefusal) -> Bool { lhs.text.sameBytes(rhs.text) }
+
+	var json: JSONValue { .object([("pairRefused", .object([("why", .string(text))]))]) }
+
+	static func read(_ value: JSONValue) throws -> PairRefusal {
+		let part = "pairRefused"
+		let fields = try Fields(value, part: part, keys: ["why"])
+		let text = try fields.string("why", maxLength: Refusal.maxReasonLength)
+		guard !text.isEmpty, text.utf8.allSatisfy({ (UInt8(ascii: "a")...UInt8(ascii: "z")).contains($0) }) else {
+			throw RemoteKitError(part, "why is not a word")
+		}
+		return PairRefusal(text: text)
+	}
+}
+
 /// The home path's new key, which pi² Remote gives each remaining device after it revoked one (3.6, 5.4, #845):
 /// `{"homeKey":{"key":<32 bytes>}}`. Mac to phone only, and only on a connection channel after `attached`, so only a
 /// device that proved its device key and presence key reads it; the phone keeps the one it read last, in place of the
@@ -508,6 +546,8 @@ public enum ControlLine: Sendable {
 	case revoked(Revocation)
 	/// pi² Remote did not attach the phone, and says why; the channel's `bye` follows.
 	case refused(Refusal)
+	/// The phone's claim to pair did not end paired, and the Mac says why; the pairing channel's `bye` follows.
+	case pairRefused(PairRefusal)
 	/// The phone's session ended (4.5): `{"sessionEnd":{}}`.
 	case sessionEnd
 	/// The home path's new key, after a revocation (3.6): Mac to phone, on an attached channel.
@@ -523,7 +563,7 @@ public enum ControlLine: Sendable {
 	/// Which end writes this line: every line of the channel's own has one writer, and the other end never sends it.
 	public var sender: Side {
 		switch self {
-		case .mac, .paired, .attached, .revoked, .refused, .homeKey: .mac
+		case .mac, .paired, .attached, .revoked, .refused, .pairRefused, .homeKey: .mac
 		case .pair, .attach, .sessionEnd: .phone
 		}
 	}
@@ -560,6 +600,7 @@ public enum ControlLine: Sendable {
 		if name.sameBytes("attached") { return .attached(try Attached.read(inner)) }
 		if name.sameBytes("revoked") { return .revoked(try Revocation.read(inner)) }
 		if name.sameBytes("refused") { return .refused(try Refusal.read(inner)) }
+		if name.sameBytes("pairRefused") { return .pairRefused(try PairRefusal.read(inner)) }
 		if name.sameBytes("homeKey") { return .homeKey(try HomeKeyLine.read(inner)) }
 		if name.sameBytes("sessionEnd") {
 			guard case let .object(fields) = inner, fields.isEmpty else { throw RemoteKitError("sessionEnd", "not empty") }
@@ -578,6 +619,7 @@ public enum ControlLine: Sendable {
 		case let .attached(attached): JSON.write(attached.json)
 		case let .revoked(revocation): JSON.write(revocation.json)
 		case let .refused(refusal): JSON.write(refusal.json)
+		case let .pairRefused(refusal): JSON.write(refusal.json)
 		case .sessionEnd: JSON.write(.object([("sessionEnd", .object([]))]))
 		case let .homeKey(key): JSON.write(HomeKeyLine.json(key))
 		}

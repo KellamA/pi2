@@ -24,7 +24,7 @@ struct ConnectionTests {
     static func paired(_ rules: TestMac.Rules = TestMac.Rules()) async throws -> PairedPhone {
         let mac = TestMac()
         let keys = MemoryKeyStore(), store = MemoryPairingStore()
-        let record = try await PairingTests.pair(mac, keys: keys, store: store)
+        let record = try await PairingTests.pairForSetup(mac, keys: keys, store: store)
         mac.rules.withLock { $0 = rules }
         return PairedPhone(mac: mac, keys: keys, store: store, record: record)
     }
@@ -39,14 +39,25 @@ struct ConnectionTests {
         if case .connected = connection.connection { true } else { false }
     }
 
-    /// Whether the presence key signed each attach the Mac was sent, once, in order, and nothing else: one signature for
-    /// one attempt, and one more for each attempt the phone gave up and made again on a new channel (an answer later than
-    /// 3.4's ten seconds, on a runner that stalls). Waits only for an attach on its way to the Mac.
-    static func eachAttachSignedOnce(_ paired: PairedPhone) async throws -> Bool {
-        let presence = try #require(paired.keys.software).softwarePresence
-        return await Wait.until {
-            presence.signed.withLock { $0 } == paired.mac.state.withLock { $0.attaches.map { Data($0.statement.text.utf8) } }
+    /// What is wrong with the presence key's signatures, if anything: each must be over an attach, one for each channel
+    /// whose proof the Mac sent (its challenge, which the Mac keeps before sending), and every attach the Mac read must be
+    /// among them. One signature for one attempt, and one more for each attempt the phone gave up and made again on a new
+    /// channel (an answer later than 3.4's ten seconds, on a runner that stalls). An attach given up on may never reach
+    /// the Mac (a reset under a stall loses it, #910), so the count is not the Mac's.
+    static func presenceSignedOncePerChannel(_ paired: PairedPhone) throws -> String? {
+        let signed = try #require(paired.keys.software).softwarePresence.signed.withLock { $0 }
+        let (challenges, attaches) = paired.mac.state.withLock { state in
+            (Set(state.challenges.map(Base64URL.encode)), state.attaches.map { Data($0.statement.text.utf8) })
         }
+        var seen = Set<String>()
+        for text in signed {
+            guard let fields = try? JSONSerialization.jsonObject(with: text) as? [String: Any], fields["kind"] as? String == "attach",
+                  let challenge = fields["challenge"] as? String else { return "signed what is not an attach" }
+            guard challenges.contains(challenge) else { return "signed an attach for a challenge the Mac never sent" }
+            guard seen.insert(challenge).inserted else { return "signed twice for one channel" }
+        }
+        guard attaches.allSatisfy(signed.contains) else { return "an attach the Mac read was not signed by the presence key" }
+        return nil
     }
 
     @Test func attachesAndCarriesTheEngine() async throws {
@@ -71,7 +82,7 @@ struct ConnectionTests {
         let kept = try #require(paired.keys.software)
         let presence = try P256.Signing.ECDSASignature(rawRepresentation: attach.presence)
         #expect(kept.softwarePresence.publicKey.isValidSignature(presence, for: Data(attach.statement.text.utf8)), "the presence key signed the attach")
-        #expect(try await Self.eachAttachSignedOnce(paired), "once, and nothing else")
+        #expect(try Self.presenceSignedOncePerChannel(paired) == nil, "once, and nothing else")
 
         // A request goes over the channel and its answer comes back, as from the engine.
         let orchestrator = try #require(app.engine.projects.first { $0.name == "Demo project" }?.conversation)
@@ -90,10 +101,11 @@ struct ConnectionTests {
         defer { connection.stop() }
         #expect(await Wait.until { connection.connection == .connected(.direct, relayReachable: false) })
         let attaches = paired.mac.state.withLock { $0.attaches }
-        #expect(attaches.count == 2 && attaches.allSatisfy { $0.session == nil }, "no session was attached, so both are fresh")
-        #expect(attaches.first?.binding != attaches.last?.binding, "the second on a new channel")
-        #expect(try await Self.eachAttachSignedOnce(paired))
-        #expect(paired.mac.state.withLock { $0.attachedCount } == 1)
+        // Two at least: a runner that stalls may make the phone give up another.
+        #expect(attaches.count >= 2 && attaches.allSatisfy { $0.session == nil }, "no session was attached before, so each is fresh")
+        #expect(attaches.first?.binding != attaches.last?.binding, "the next on a new channel")
+        #expect(try Self.presenceSignedOncePerChannel(paired) == nil)
+        #expect((paired.keys.software?.softwarePresence.signed.withLock { $0.count } ?? 0) >= 2, "the one made again is signed again")
     }
 
     @Test func resumesTheSessionOnANewChannel() async throws {
@@ -382,6 +394,100 @@ struct ConnectionTests {
         #expect(try paired.store.load() == nil && (try paired.keys.keys()) == nil)
     }
 
+    // MARK: - Two paths: the first channel, not the first link (#898)
+
+    /// A connection with both paths: the home path's dial through `dialer`, and a relay that is `relay`.
+    static func connection(_ paired: PairedPhone, relay: any RelayConnector, dialer: any Dialer) throws -> RemoteConnection {
+        var routes = PairingTests.routes()
+        routes.relayConnector = relay
+        routes.dialer = dialer
+        var record = paired.record
+        record.relay = "wss://relay.example.dev/v1"
+        let connection = try RemoteConnection(record: record, keys: try #require(try paired.keys.keys()), keyStore: paired.keys, store: paired.store, routes: routes)
+        connection.backoff = RelayBackoff(first: 100, longest: 400)
+        return connection
+    }
+
+    /// The relay is ready before the dial to the Mac at home has connected, so its link comes first, at once, at every
+    /// attempt; but no answer comes through it, the Mac not being connected to it or the relay saying nothing. The home
+    /// path's channel is the first to come, and the phone attaches there, once.
+    @Test(arguments: ["macAway", "silent"])
+    func aRelayWithNoAnswerDoesNotKeepThePhoneFromHome(relay: String) async throws {
+        let paired = try await Self.paired()
+        defer { paired.mac.stop() }
+        let connector: any RelayConnector = relay == "silent" ? LyingRelay(.readyThenSilent) : PassingRelay(.away)
+        let connection = try Self.connection(paired, relay: connector, dialer: LateDialer())
+        connection.start()
+        defer { connection.stop() }
+        #expect(await Wait.until { connection.connection == .connected(.direct, relayReachable: true) }, "\(connection.connection)")
+        #expect(try Self.presenceSignedOncePerChannel(paired) == nil)
+        #expect(paired.mac.state.withLock { $0.attachedCount } == 1, "one session, on the home path: the relay passes nothing to the Mac")
+    }
+
+    /// The relay passes the Mac's answer, but late: the home path's channel comes first and is attached, and the relay's,
+    /// once its answer comes, is dropped with nothing signed on it. With home out of reach, the relay's is attached
+    /// once its answer comes.
+    @Test(arguments: [true, false])
+    func aRelayThatAnswersLate(homeReachable: Bool) async throws {
+        let paired = try await Self.paired()
+        defer { paired.mac.stop() }
+        let late: Duration = .seconds(4)
+        let relay = PassingRelay(.connected(paired.mac, late: late))
+        let connection = try Self.connection(paired, relay: relay, dialer: homeReachable ? LateDialer() : UnansweredDialer())
+        connection.start()
+        defer { connection.stop() }
+        let path: AppSession.Path = homeReachable ? .direct : .relay
+        #expect(await Wait.until { connection.connection == .connected(path, relayReachable: true) }, "\(connection.connection)")
+        if homeReachable {
+            // The Mac's proof on the relay's channel, which comes after the home path's attach, is answered by nothing.
+            // (No channel through the relay at all, if the home path's came before the relay was ready, is fine too.)
+            _ = await Wait.until(15) { paired.mac.state.withLock { $0.challenges.count } == 2 }
+            try await Task.sleep(for: .seconds(1))
+        }
+        #expect(connection.connection == .connected(path, relayReachable: true))
+        #expect(try Self.presenceSignedOncePerChannel(paired) == nil)
+        #expect(paired.mac.state.withLock { [$0.attachedCount, $0.sessionEnds] as [Int] } == [1, 0], "one session, and none ended")
+        if homeReachable {
+            #expect(relay.fromPhone.withLock { $0 }.allSatisfy { $0 == 1 }, "the relay's channel carried the handshake's first message alone: no attach, no bye")
+        }
+    }
+
+    @Test func homeOutOfReachAndTheRelayGood() async throws {
+        let paired = try await Self.paired()
+        defer { paired.mac.stop() }
+        let connection = try Self.connection(paired, relay: PassingRelay(.connected(paired.mac)), dialer: UnansweredDialer())
+        let app = AppSession()
+        app.start(connection.transport(), as: .connecting)
+        connection.start()
+        defer { connection.stop() }
+        #expect(await Wait.until { connection.connection == .connected(.relay, relayReachable: true) }, "\(connection.connection)")
+        #expect(await Wait.until { !app.engine.projects.isEmpty }, "the engine's lines come through the relay")
+        #expect(try Self.presenceSignedOncePerChannel(paired) == nil)
+        #expect(paired.mac.state.withLock { $0.attachedCount } == 1)
+    }
+
+    /// Both paths reach the Mac: whichever channel comes first is attached, once, and the other is dropped, with no
+    /// attach and nothing the Mac takes for the session's end.
+    @Test func bothPathsGood() async throws {
+        let paired = try await Self.paired()
+        defer { paired.mac.stop() }
+        let relay = PassingRelay(.connected(paired.mac))
+        let connection = try Self.connection(paired, relay: relay, dialer: TCPDialer())
+        let app = AppSession()
+        app.start(connection.transport(), as: .connecting)
+        connection.start()
+        defer { connection.stop() }
+        #expect(await Wait.until { if case .connected(_, relayReachable: true) = connection.connection { true } else { false } }, "\(connection.connection)")
+        #expect(await Wait.until { !app.engine.projects.isEmpty })
+        try await Task.sleep(for: .seconds(1))
+        #expect(Self.isConnected(connection))
+        #expect(try Self.presenceSignedOncePerChannel(paired) == nil)
+        #expect(paired.mac.state.withLock { [$0.attachedCount, $0.sessionEnds] as [Int] } == [1, 0], "one session, and none ended")
+        if case .connected(.direct, _) = connection.connection {
+            #expect(relay.fromPhone.withLock { $0 }.allSatisfy { $0 == 1 }, "the relay's channel carried the handshake's first message alone: no attach, no bye")
+        }
+    }
+
     @Test func everyProblemHasWordsOfItsOwn() {
         let problems: [ConnectionProblem] = [.update, .suspended, .presence, .clock, .faceID(.sessionNotOpen), .faceID(.faceIDNotPassed), .macNotProved, .relaySaid("left"), .relaySaid("update-required"), .relaySaid("new-word")]
         let words = problems.map(\.words)
@@ -411,6 +517,24 @@ final class SlowLink: MessageLink {
     }
 
     func close() { link.close() }
+}
+
+/// TCP links that connect late: a dial to the Mac at home that takes longer than the relay takes to be ready (#898).
+struct LateDialer: Dialer {
+    var by: Duration = .milliseconds(300)
+
+    func dial(_ endpoint: NWEndpoint, within limit: Duration) async throws -> any MessageLink {
+        try await Task.sleep(for: by)
+        return try await TCPDialer().dial(endpoint, within: limit)
+    }
+}
+
+/// A home path whose dial nothing answers: it waits its whole limit, as a network with no way to the Mac.
+struct UnansweredDialer: Dialer {
+    func dial(_ endpoint: NWEndpoint, within limit: Duration) async throws -> any MessageLink {
+        try await Task.sleep(for: limit)
+        throw LinkError.timedOut
+    }
 }
 
 /// Bonjour as the test plays it: one service, with the TXT record pi² Remote would give it, found only if its tag is

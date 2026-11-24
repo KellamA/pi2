@@ -69,6 +69,10 @@ final class FakeEngine {
 	/// Requests and lines heard while waiting for something else, in order.
 	private var heard: [JSONValue] = []
 	private var sessionLines: [(String, Data)] = []
+	/// Answer every `remote.state` at once and keep it in `states`, rather than among the requests the check waits for:
+	/// the relay path's state comes whenever the relay's connection changes (#678).
+	var answersStates = false
+	private(set) var states: [JSONValue] = []
 
 	init(descriptor: Int32) { lines = LineReader(descriptor: descriptor) }
 
@@ -80,8 +84,9 @@ final class FakeEngine {
 		lines.write(JSON.write(.object([("id", id), ("result", result)])))
 	}
 
-	func refuse(_ id: JSONValue, _ why: String) {
-		lines.write(JSON.write(.object([("id", id), ("error", .string(why))])))
+	/// An error, with `data` beside it when given, as remote.ts writes `refusal(error)`.
+	func refuse(_ id: JSONValue, _ why: String, data: JSONValue? = nil) {
+		lines.write(JSON.write(.object([("id", id), ("error", .string(why))] + (data.map { [("data", $0)] } ?? []))))
 	}
 
 	/// A line of the engine's to a session, as remote.ts writes it.
@@ -95,6 +100,11 @@ final class FakeEngine {
 			let value = try? JSON.parse(line)
 			sessionLines.append((value?["session"]?.stringValue ?? "", line))
 		} else if let value = try? JSON.parse(line) {
+			if answersStates, value["method"]?.stringValue == "remote.state" {
+				answer(value["id"] ?? .null)
+				states.append(value["params"] ?? .null)
+				return true
+			}
 			heard.append(value)
 		} else {
 			heard.append(.string("not JSON: \(String(decoding: line, as: UTF8.self))"))
@@ -118,6 +128,20 @@ final class FakeEngine {
 		}
 	}
 
+	/// The first `remote.state` from `index` on that `matches`, waiting up to `seconds` for it (with `answersStates`).
+	func state(from index: Int = 0, within seconds: Double = 30, where matches: (JSONValue) -> Bool) -> JSONValue? {
+		let deadline = Date().addingTimeInterval(seconds)
+		while true {
+			if let found = states.dropFirst(index).first(where: matches) { return found }
+			guard read(within: max(0, deadline.timeIntervalSinceNow)) else { return states.dropFirst(index).first(where: matches) }
+		}
+	}
+
+	/// The relay path's state pi² Remote last told, waiting up to `seconds` for `wanted`.
+	func relayState(_ wanted: String, from index: Int = 0, within seconds: Double = 30) -> JSONValue? {
+		state(from: index, within: seconds) { $0["relay"]?["state"]?.stringValue == wanted }?["relay"]
+	}
+
 	/// Whether pi² Remote sends any request within `seconds`.
 	func quiet(for seconds: Double) -> Bool {
 		let deadline = Date().addingTimeInterval(seconds)
@@ -138,9 +162,12 @@ final class FakeEngine {
 	}
 }
 
-/// The check as a phone: a TCP connection to the home listener, a Noise handshake made with RemoteKit, then a channel.
+/// The check as a phone: a TCP connection to the home listener, or a socket at the relay (`RelayWire`, #678), a Noise
+/// handshake made with RemoteKit, then a channel. The same checks run over either.
 final class Phone {
 	let descriptor: Int32
+	/// The phone's socket at the relay, when this channel runs over it: each Noise message one WebSocket message.
+	let relay: RelayWire?
 	private var framing = LengthFraming()
 	private var messages: [Data] = []
 	private(set) var closed = false
@@ -149,8 +176,19 @@ final class Phone {
 	var homeKey: HomeKey?
 	/// Lines the phone has received on this channel.
 	private(set) var received: UInt64 = 0
+	/// The Mac's `bye` was read on this channel.
+	private(set) var sawBye = false
+
+	/// A channel over the relay: a new one on the phone's socket there, as a phone opens one (its first message ends
+	/// the channel before it at the Mac).
+	init(relay: RelayWire) {
+		self.relay = relay
+		descriptor = -1
+		relay.clear()
+	}
 
 	init?(port: UInt16, address: String = "127.0.0.1") {
+		relay = nil
 		descriptor = socket(AF_INET, SOCK_STREAM, 0)
 		var target = sockaddr_in()
 		target.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
@@ -166,16 +204,26 @@ final class Phone {
 		}
 	}
 
-	deinit { if !closed { close(descriptor) } }
+	deinit { if !closed, descriptor >= 0 { close(descriptor) } }
 
 	@discardableResult
 	func raw(_ bytes: Data) -> Bool { writeAll(descriptor, bytes) }
 
 	@discardableResult
-	func send(_ message: Data) -> Bool { raw(try! LengthFraming.encode(message)) }
+	func send(_ message: Data) -> Bool {
+		if let relay { return relay.send(message) }
+		return raw(try! LengthFraming.encode(message))
+	}
 
-	/// The next whole message, or nil within `seconds` or once closed.
+	/// The next whole message, or nil within `seconds` or once closed. Over the relay, the Mac ending a channel is its
+	/// `bye`, or for a channel that never began nothing more: `closed` is set only when the socket itself closed.
 	func message(within seconds: Double = 30) -> Data? {
+		if let relay {
+			guard !closed else { return nil }
+			let next = relay.next(within: seconds)
+			if next == nil, relay.isClosed { closed = true }
+			return next
+		}
 		let deadline = Date().addingTimeInterval(seconds)
 		while messages.isEmpty {
 			let left = deadline.timeIntervalSinceNow
@@ -195,8 +243,29 @@ final class Phone {
 		return messages.removeFirst()
 	}
 
-	/// Whether the other side closed the connection within `seconds` (after any messages still to come).
+	/// Whether the other side closed the connection within `seconds` (after any messages still to come). Over the relay,
+	/// which does not tell a phone that a channel ended: with a channel, whether the Mac's `bye` came; before one, whether
+	/// the Mac sent nothing more for three seconds.
 	func closesWithin(_ seconds: Double = 30) -> Bool {
+		if relay != nil {
+			if sawBye {
+				closed = true
+				return true
+			}
+			guard let channel else {
+				while message(within: min(seconds, 3)) != nil {}
+				closed = true
+				return true
+			}
+			let deadline = Date().addingTimeInterval(seconds)
+			while let next = message(within: max(0, deadline.timeIntervalSinceNow)) {
+				if case .bye? = try? channel.open(next) {
+					closed = true
+					return true
+				}
+			}
+			return false
+		}
 		let deadline = Date().addingTimeInterval(seconds)
 		while deadline.timeIntervalSinceNow > 0 {
 			if message(within: deadline.timeIntervalSinceNow) == nil { return closed }
@@ -221,7 +290,9 @@ final class Phone {
 			case .line:
 				received += 1
 				return event
-			case .bye: return .bye
+			case .bye:
+				sawBye = true
+				return .bye
 			case .ack, .ping: continue
 			}
 		}
@@ -253,7 +324,7 @@ final class Phone {
 
 	func end() {
 		closed = true
-		close(descriptor)
+		if descriptor >= 0 { close(descriptor) }
 	}
 }
 

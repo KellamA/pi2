@@ -4,7 +4,8 @@
 // The engine starts pi² Remote with its control connection as file descriptor 3: one end of a Unix socket pair, which
 // libuv makes for a `pipe` in `spawn`'s stdio, as `pi2-peer` is given a connection. It starts one at a time, while the
 // preview and remote access are on and a device is paired or a pairing is open, again if it dies (waiting twice as
-// long after each failure, up to a minute), and stops it when they go off or the engine stops. It gives it nothing
+// long after each failure, up to a minute, and a second again only after a run that lasted, `restartWait`), and stops
+// it when they go off or the engine stops. It gives it nothing
 // through arguments or the environment: the relay, the switches and the paired devices' keys come over the connection.
 // The engine takes `remote.*` requests, and device sessions, only on that connection; on its listening socket a
 // `remote.*` request is refused whoever sends it (main.ts), whatever PeerKit says of the process.
@@ -23,12 +24,15 @@
 //   Live Activity's numbers) and asks the relay to send.
 //
 // pi² Remote's requests: `remote.hello` (the Mac's public keys, the pairing, the Mac's addresses), `remote.state` (the
-// same when they change), `remote.pairClaim`, `remote.pairWrong` and `remote.pairRefused` (pairing, 3.3), `remote.attachBegin` and
-// `remote.attach` (3.4: an attach or a resume, signed by the device key and the presence key), and
+// same when they change), `remote.pairClaim`, `remote.pairWrong` and `remote.pairRefused` (pairing, 3.3), `remote.pairUnkept`
+// (a pairing pi² Remote could not keep, taken back, #887), `remote.attachBegin` and `remote.attach` (3.4: an attach or
+// a resume, signed by the device key and the presence key; a refusal may carry a reason for the phone, #818), and
 // `remote.sessionEnd` (the phone's session ended, 4.5), `remote.presenceKey` (a phone's offer of a new Face ID key, signed
-// as an attach is, 3.2, #786), and `remote.pushRefused` (the relay refused a push, pushes.ts). `remote.mailboxIn` (#678,
-// P10) is added here, and checks each
-// item with `checkRequestItem` in devices.ts.
+// as an attach is, 3.2, #786), `remote.pushRefused` (the relay refused a push, pushes.ts), and `remote.mailboxIn` (#678,
+// P10: a request a phone left in the relay's mailbox, checked again with `checkRequestItem` in devices.ts and handled on
+// the path `mailbox`). `remote.state` also carries what pi² Remote can do with the relay (`relay`, 6.5), which the
+// Devices page is told (`helper.relay`). The event's `mailboxOut` asks pi² Remote to leave a sealed item for a phone (a
+// receipt, 5.3).
 //
 // A device session is a `Client` of its own (clients.ts) with `device` set, so it has its own subscriptions and
 // greeting, and is sent the broadcasts every app is. What it is sent passes `forDevice`: never the events of 5.7,
@@ -43,6 +47,11 @@ import { join } from "node:path";
 import { allowsHiddenApproval, type DevicePath, deviceLogged, deviceMay, forTheHelper, HIDDEN_FROM_THE_PHONE, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID } from "./answers.ts";
 import { type Client, clients, send, type Wire } from "./clients.ts";
 import {
+	checkRequestItem,
+	ITEM_TAKEN_BEFORE,
+	ItemNotYet,
+	maskKeys,
+	remoteOn,
 	attachChallenge,
 	attachHolds,
 	attachTaken,
@@ -63,7 +72,9 @@ import {
 	pairClaim,
 	pairedDevice,
 	pairRefusedByHelper,
+	pairUnkept,
 	pairWrong,
+	UNKEPT_WITHIN,
 	helperGone,
 	activeDevices,
 	remoteHooks,
@@ -101,7 +112,19 @@ let drop: RemoteParts["drop"];
 let approvalSwitch: RemoteParts["approvalSwitch"];
 let approvalHidden: RemoteParts["approvalHidden"];
 
-type Helper = { child: ChildProcess; wire: Socket; hello: { addresses: string[] } | null; stopping: boolean };
+type Helper = {
+	child: ChildProcess;
+	wire: Socket;
+	hello: { addresses: string[] } | null;
+	stopping: boolean;
+	relay: Record<string, unknown> | null;
+	/** When it said hello: a run counts as one that lasted from then on (`restartWait`). */
+	helloAt?: number;
+	/** Stopped for a line over MAX_HELPER_LINE. */
+	overCap?: boolean;
+	/** The device of the last `paired` this helper was sent, and when: the one it may take back (`remote.pairUnkept`). */
+	paired?: { device: string; at: number };
+};
 let helper: Helper | null = null;
 let stopping = false;
 let restartDelay = 1_000;
@@ -145,7 +168,7 @@ export function wireRemote(parts: RemoteParts): void {
 		helper: () => {
 			const now = Date.now();
 			stops = stops.filter((at) => now - at < 3_600_000);
-			return { running: helper !== null && helper.hello !== null, stoppedInLastHour: stops.length };
+			return { running: helper !== null && helper.hello !== null, stoppedInLastHour: stops.length, relay: helper?.relay ?? null };
 		},
 		recordChanged: (device: string) => {
 			const record = pairedDevice(device);
@@ -240,7 +263,7 @@ function startHelper(): void {
 	// One end of a socket pair as descriptor 3, and nothing else: no arguments, no environment (5.5).
 	const child = spawn(program.command, program.args, { stdio: ["ignore", "ignore", "ignore", "pipe"], env: {} });
 	const wire = child.stdio[3] as Socket;
-	const current: Helper = { child, wire, hello: null, stopping: false };
+	const current: Helper = { child, wire, hello: null, stopping: false, relay: null };
 	helper = current;
 	log("remote: started pi² Remote, process", child.pid);
 	const unfinished: string[] = [];
@@ -255,6 +278,7 @@ function startHelper(): void {
 				// A line longer than any a phone may send stops pi² Remote, as a crash does: it faces the network.
 				if (held > MAX_HELPER_LINE && !current.stopping) {
 					log(`remote: pi² Remote sent a line longer than ${MAX_HELPER_LINE} characters, and was stopped`);
+					current.overCap = true;
 					unfinished.length = 0;
 					wire.destroy();
 					current.child.kill("SIGKILL");
@@ -301,13 +325,30 @@ function gone(current: Helper): void {
 		return;
 	}
 	stops.push(Date.now());
-	const delay = restartDelay;
-	restartDelay = Math.min(restartDelay * 2, 60_000);
+	const { wait, next } = restartWait(restartDelay, current);
+	restartDelay = next;
+	log(`remote: pi² Remote will be started again in ${wait / 1000} s`);
 	restartTimer = setTimeout(() => {
 		restartTimer = undefined;
 		reconsider();
-	}, delay);
+	}, wait);
 	restartTimer.unref();
+}
+
+/** A run of pi² Remote that lasted: this long from its hello, and not stopped for a line over the cap. */
+export const RUN_THAT_LASTED = 60_000;
+
+/**
+ * How long to wait before starting pi² Remote again after it stopped by itself (`wait`), given the wait due (`delay`),
+ * and the wait due after that (`next`): twice as long after each stop, up to a minute, and back to a second only after
+ * a run that lasted (#881). A stop for a line over MAX_HELPER_LINE never counts as one, whatever its length, and nor does
+ * a hello: a pi² Remote that kept passing on such a line would otherwise be started again every few seconds, ending
+ * every phone's session each time.
+ */
+export function restartWait(delay: number, run: { helloAt?: number; overCap?: boolean }, now = Date.now()): { wait: number; next: number } {
+	const lasted = run.overCap !== true && run.helloAt !== undefined && now - run.helloAt >= RUN_THAT_LASTED;
+	const wait = lasted ? 1_000 : delay;
+	return { wait, next: Math.min(wait * 2, 60_000) };
 }
 
 /** Waits for a pi² Remote that said hello, starting one. */
@@ -376,8 +417,9 @@ function toSession(id: string, out: string): void {
 	if (line !== null) write(helper, line);
 }
 
-/** A `remote` event, to pi² Remote alone. */
+/** A `remote` event, to pi² Remote alone. A `paired` is the one pairing that helper may take back (`remote.pairUnkept`). */
 function toHelper(event: Record<string, unknown>): void {
+	if (event.kind === "paired" && helper !== null) helper.paired = { device: (event.device as { id: string }).id, at: Date.now() };
 	write(helper, `${JSON.stringify({ event: "remote", ...event })}\n`);
 }
 
@@ -433,7 +475,8 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 		const macKeys = { identity: keys.identity as string, channel: keys.channel as string, record: keys.record as string, relay: keys.relay as string, secureEnclave: keys.secureEnclave };
 		await helperReported({ macKeys, pairing: pairing as string | null });
 		current.hello = { addresses };
-		restartDelay = 1_000;
+		// Not the restart's wait: that goes back to a second only after a run that lasted (`restartWait`).
+		current.helloAt ??= Date.now();
 		for (const waiter of [...waiters]) {
 			waiters.delete(waiter);
 			waiter.resolve(current.hello);
@@ -446,6 +489,12 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 		if (params.pairing !== undefined) {
 			if (fromBase64url(params.pairing, 16) === null) throw new Error("The pairing is not a pairing's id.");
 			await helperReported({ pairing: params.pairing as string });
+		}
+		if (params.relay !== undefined) {
+			const relay = relayState(params.relay);
+			if (relay === null) throw new Error("The relay's state is not one pi² Remote reports.");
+			current.relay = relay;
+			sessionsChanged();
 		}
 		if (params.addresses !== undefined) {
 			if (!addressList(params.addresses)) throw new Error("The addresses are not the Mac's addresses.");
@@ -464,6 +513,17 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 	},
 	"remote.pairRefused": async (_current, params) => {
 		pairRefusedByHelper(params.why);
+		return {};
+	},
+	// Only the device of the last `paired` this very helper was sent, within a minute, once (#887); devices.ts checks
+	// the record again (`pairUnkept`).
+	"remote.pairUnkept": async (current, params) => {
+		const paired = current.paired;
+		if (Object.keys(params).some((key) => key !== "device") || typeof params.device !== "string" || paired === undefined || paired.device !== params.device || Date.now() - paired.at >= UNKEPT_WITHIN) {
+			throw new Error("pi² Remote may take back only the device it was last sent paired for, within a minute.");
+		}
+		current.paired = undefined;
+		await pairUnkept(params.device);
 		return {};
 	},
 	"remote.attachBegin": async (_current, params) => {
@@ -500,7 +560,7 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 		return {};
 	},
 	"remote.presenceKey": async (_current, params) => offerPresenceKey(params),
-	// "remote.mailboxIn": #678 (P10), with checkRequestItem (devices.ts).
+	"remote.mailboxIn": async (current, params) => mailboxIn(current, params),
 	/** `{ id, why }`: the relay refused the push `id` (docs/iphone.md 7); pushes.ts holds back what the refusal says. */
 	"remote.pushRefused": async (_current, params) => {
 		if (typeof params.id !== "string" || typeof params.why !== "string" || Object.keys(params).length !== 2) throw new Error("remote.pushRefused takes a push's id and why");
@@ -508,6 +568,91 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 		return {};
 	},
 };
+
+/** What pi² Remote may say of the relay path (6.5): none wanted, why it cannot run, or how it runs. */
+const RELAY_STATES = ["off", "unavailable", "connecting", "ready", "down", "stopped"];
+
+/** `remote.state`'s `relay` as the Devices page is told it, or null for one pi² Remote does not send. */
+function relayState(value: unknown): Record<string, unknown> | null {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+	const given = value as Record<string, unknown>;
+	if (Object.keys(given).some((key) => !["available", "state", "why", "retryAt", "anotherMacAt"].includes(key))) return null;
+	if (typeof given.available !== "boolean") return null;
+	if (given.state !== undefined && !RELAY_STATES.includes(given.state as string)) return null;
+	if (given.why !== undefined && typeof given.why !== "string") return null;
+	for (const time of [given.retryAt, given.anotherMacAt]) if (time !== undefined && !Number.isSafeInteger(time)) return null;
+	return {
+		available: given.available,
+		state: given.state ?? (given.available ? "ready" : "unavailable"),
+		...(given.why === undefined ? {} : { why: maskKeys((given.why as string).slice(0, 500)) }),
+		...(given.retryAt === undefined ? {} : { retryAt: given.retryAt }),
+		...(given.anotherMacAt === undefined ? {} : { anotherMacAt: given.anotherMacAt }),
+	};
+}
+
+// ---- The mailbox (5.3, 4.3; #678, #806)
+
+/**
+ * A request a phone left in the relay's mailbox, which pi² Remote took, opened and verified with the device's keys on
+ * its own list: checked again here (`checkRequestItem`: the device key's signature first, then the presence key's, the
+ * pairing, its row's mailbox column, its age and its nonce, stored once) and handled as from the device, on the path
+ * `mailbox`, in a connection of its own that lasts the one request, by `deviceRequest`, as a live session's request is
+ * (logged, on disk first and the person notified when it widens). Answered `{ taken: true }` once it was handled or
+ * refused for good, and only then does pi² Remote tell the relay `took` (#806); an error is what could pass later
+ * (remote access off, the device suspended, the nonce not stored), and the relay hands the item over again until it
+ * expires. The phone is left a receipt either way (5.3), but for an item taken before, which had one.
+ */
+async function mailboxIn(current: Helper, params: Params): Promise<{ taken: true; outcome: "done" | "failed" | "refused" }> {
+	if (current.hello === null) throw new Error("pi² Remote has not said hello.");
+	if (Object.keys(params).some((key) => !["device", "id", "item"].includes(key)) || typeof params.device !== "string" || fromBase64url(params.id, 16) === null) {
+		throw new Error("remote.mailboxIn takes a device, an item's id and the item.");
+	}
+	const device = params.device;
+	const id = params.id as string;
+	if (!remoteOn()) throw new Error("Reach from an iPhone is off on this Mac.");
+	const record = pairedDevice(device);
+	if (record !== undefined && record.suspendedAt !== null) throw new Error("This device is suspended. Resume it on the Mac's Devices page.");
+	const item = params.item as { request?: { method?: unknown }; signed?: unknown } | undefined;
+	const named = typeof item?.request?.method === "string" ? item.request.method.slice(0, 128) : null;
+	let checked: Awaited<ReturnType<typeof checkRequestItem>>;
+	try {
+		checked = await checkRequestItem(device, params.item, { approvalSwitch, approvalHidden });
+		// pi² Remote opened it at this id, which HPKE's info binds; its signed nonce must be the same.
+		if ((JSON.parse(item!.signed as string) as { nonce?: unknown }).nonce !== id) throw new Error("The item's nonce is not its id.");
+	} catch (error) {
+		if (error instanceof ItemNotYet) throw error;
+		const why = error instanceof Error ? error.message : String(error);
+		if (record !== undefined && why !== ITEM_TAKEN_BEFORE) receipt(device, id, named, "refused", why);
+		return { taken: true, outcome: "refused" };
+	}
+	const { method, params: given } = checked;
+	const client: Client = { socket: { destroyed: false, write: () => true, destroy: () => {} }, subscriptions: new Map(), shown: new Set(), device: { id: device, session: "mailbox" } };
+	let outcome: "done" | "failed" | "refused";
+	let why: string | undefined;
+	try {
+		// What a live session's request does, the same function: its table on the path, the log (on disk first when it
+		// widens), and the person notified of a widening request (4.4).
+		outcome = await deviceRequest(pairedDevice(device)!, "mailbox", client, method, given, (body) => {
+			why = typeof body.error === "string" ? body.error : undefined;
+		});
+	} catch (error) {
+		// A fault of the engine's, as a live session's line has it (deviceLineFailed): logged, and the item refused in fixed
+		// words. Its nonce is stored, so it is taken: handed over again it would only be refused as taken before.
+		log("remote: a device's request failed in the engine:", error instanceof Error ? (error.stack ?? error.message) : error);
+		outcome = "failed";
+		why = DEVICE_LINE_FAILED;
+	} finally {
+		drop(client);
+	}
+	receipt(device, id, method, outcome, why);
+	return { taken: true, outcome };
+}
+
+/** A receipt for the phone (5.3): what became of the item it left, which pi² Remote seals for it and puts in its mailbox. */
+function receipt(device: string, nonce: string, method: string | null, outcome: "done" | "failed" | "refused", why?: string): void {
+	const body = { nonce, method, outcome, ...(why === undefined ? {} : { why: maskKeys(why.slice(0, 500)) }) };
+	toHelper({ kind: "mailboxOut", device, item: { kind: "receipt", body } });
+}
 
 // ---- Device sessions (4.1)
 
@@ -716,26 +861,39 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
 		reply({ error: "Request parameters must be an object" });
 		return;
 	}
-	const gate = { path: session.path, approvalSwitch, approvalHidden };
+	await deviceRequest(device, session.path, session.client, method, params as Params, reply);
+}
+
+/**
+ * A device's request once the device is known, on either path: a live session's line (`deviceLine`) or an item from the
+ * mailbox that `checkRequestItem` passed (`mailboxIn`). Checked against the device's table on its path, handled as from
+ * the app, logged under the log's own rule for a device's names (#786), on disk before it is answered when it widens
+ * (4.4), and the person notified of a widening request, done or tried (4.2, 4.4, 4.5). Both paths call this, so that no
+ * duty is kept on one alone (#921's security read). `reply` is given the result or the refusal; the outcome is
+ * returned. What throws here outside the handler's own `try` (a fault of the engine's) is the caller's to catch, with
+ * `DEVICE_LINE_FAILED`'s words.
+ */
+async function deviceRequest(device: Device, path: DevicePath, client: Client, method: string, params: Params, reply: (body: Record<string, unknown>) => void): Promise<"done" | "failed" | "refused"> {
+	const gate = { path, approvalSwitch, approvalHidden };
 	const answer = deviceMay(method, params as Params, gate);
 	// The log's own names (a pairing, an offer of a Face ID key) are the engine's to write: a device's are "unknown" (#786).
 	const summary = summarize(requestLogged(method), params as Params);
 	if (DEVICE_FAULT !== undefined && method === DEVICE_FAULT) throw new Error("PI2_DEVICE_FAULT: the device's line");
 	const record = (outcome: "done" | "refused" | "failed", why?: string) =>
-		void logDevice({ device: device.id, path: session.path, method: requestLogged(method), summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }).catch((error) =>
+		void logDevice({ device: device.id, path, method: requestLogged(method), summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }).catch((error) =>
 			log("devices: the log could not be written:", error instanceof Error ? error.message : error),
 		);
 	if (answer === "no" || !Object.hasOwn(handlers, method)) {
 		const why = answer !== "no" ? `Unknown method: ${method}` : allowsHiddenApproval(method, params as Params, gate) ? HIDDEN_FROM_THE_PHONE : ONLY_ON_THE_MAC;
 		reply({ error: why });
 		record("refused", why);
-		return;
+		return "refused";
 	}
 	const logged = deviceLogged(method, params as Params);
 	// A request that widens is on disk before it is answered (4.4): the log keeps the rest in memory a moment.
 	const widens = answer === "face";
 	const writeLog = (outcome: "done" | "failed", why?: string) =>
-		logDevice({ device: device.id, path: session.path, method, summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }, widens).catch((error) =>
+		logDevice({ device: device.id, path, method, summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }, widens).catch((error) =>
 			log("devices: the log could not be written:", error instanceof Error ? error.message : error),
 		);
 	// Tell me when it answers (7): waited for from before the run the message starts, which may end before it is answered.
@@ -743,15 +901,17 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
 	const tellMe = method === "submit" && (params as Params).tellWhenAnswered === true && typeof conversation === "number";
 	if (tellMe) pushes?.answerWanted(device.id, conversation);
 	try {
-		const result = await handlers[method]!(params as Params, session.client);
+		const result = await handlers[method]!(params as Params, client);
 		if (logged) await writeLog("done");
 		reply({ result });
 		if (widens) notify("widening", device.id, `${device.name}: ${summary}`);
+		return "done";
 	} catch (error) {
 		const refused = refusal(error);
 		if (tellMe) pushes?.answerNotWanted(device.id, conversation);
 		if (logged) await writeLog("failed", refused.error);
 		reply(refused);
 		if (widens) notify("widening", device.id, `${device.name} tried: ${summary}`);
+		return "failed";
 	}
 }

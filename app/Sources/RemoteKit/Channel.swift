@@ -273,7 +273,21 @@ public final class Channel: Sendable, CustomStringConvertible, CustomDebugString
 	/// `bye` alone; refuse a `refused` line that arrives from a phone, which never sends one; and never turn the engine's
 	/// "revoked" into another reason: a revoked device is sent `bye` alone, or the signed `revoked` line.
 	public func sealRefusal(_ refusal: Refusal, at instant: ContinuousClock.Instant = .now) throws -> [Data] {
-		let frames = try Lines.frames(for: ControlLine.refused(refusal).line)
+		try sealLast(ControlLine.refused(refusal).line, at: instant)
+	}
+
+	/// pi² Remote's last messages to a phone whose claim to pair did not end paired (#881): the `pairRefused` line, then
+	/// `bye`, padded as `sealRefusal` pads, so that its length tells the relay or the network nothing of the word.
+	///
+	/// The caller's duties (remotekit.md, "The pairRefused line"): call it only on a pairing channel whose claimer proved
+	/// the code's secret and sent a claim, in place of `paired`; and refuse a `pairRefused` line from a phone.
+	public func sealPairRefusal(_ refusal: PairRefusal, at instant: ContinuousClock.Instant = .now) throws -> [Data] {
+		try sealLast(ControlLine.pairRefused(refusal).line, at: instant)
+	}
+
+	/// A last line, padded to 256 bytes whatever this end's padding, then `bye`.
+	private func sealLast(_ line: Data, at instant: ContinuousClock.Instant) throws -> [Data] {
+		let frames = try Lines.frames(for: line)
 		return try state.withLock { state in
 			try usable(state, at: instant)
 			var messages = try frames.map { try Self.seal($0, &state, padTo: max(state.padding ?? 0, Frame.paddingBlock)) }

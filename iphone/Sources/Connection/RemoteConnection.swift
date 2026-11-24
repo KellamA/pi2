@@ -117,8 +117,10 @@ final class RemoteConnection {
             // The leave keeps the client; `stop` below must not close its socket under it.
             self.relay = nil
             let client = relay.client
+            // The notice the Mac believes names its identity key, which the relay never sees (#813).
+            let identityKey = mac.identityKey
             Task {
-                try? await client.leave()
+                try? await client.leave(mac: identityKey)
                 await client.stop()
             }
         }
@@ -157,9 +159,11 @@ final class RemoteConnection {
         var resumeRefused = false
         while !Task.isCancelled, !unpaired {
             do {
-                let reached = try await Race.first(attempts())
+                // A channel that loses is dropped: its link closed, with no `bye` and no attach, so the Mac has no
+                // session to end on it.
+                let proved = try await Race.first(attempts(), closing: { $0.channel.drop() })
                 let resume = session.flatMap { session in current.map { Attach.Resume(session: session, received: $0.received) } }
-                let outcome = try await Attach.run(over: reached.link, path: reached.path, mac: mac, keys: keys, resume: resume, build: build, now: now)
+                let outcome = try await Attach.attach(proved, mac: mac, keys: keys, resume: resume, build: build, now: now)
                 guard !Task.isCancelled else {
                     if case let .attached(_, channel) = outcome { channel.close() }
                     return
@@ -207,14 +211,22 @@ final class RemoteConnection {
         }
     }
 
-    /// The paths for one attempt: the Mac's last addresses and Bonjour, and the relay unless it stopped.
-    private func attempts() -> [@Sendable () async throws -> Reached] {
-        var attempts = HomeReach.attempts(addresses: mac.addresses, homeKey: mac.homeKey, pairing: mac.pairing, routes: routes)
+    /// The paths for one attempt: the Mac's last addresses and Bonjour, and the relay unless it stopped. Each goes as far
+    /// as a channel whose Mac proved itself, and the first such channel is kept (5.1), not the first link: once ready,
+    /// the relay gives a link at once, whether or not the Mac answers through it, and would win every race (#898).
+    private func attempts() -> [@Sendable () async throws -> Attach.Proved] {
+        var links = HomeReach.attempts(addresses: mac.addresses, homeKey: mac.homeKey, pairing: mac.pairing, routes: routes)
         if let relay, relay.status.stopped == nil {
             let within = routes.relayWithin
-            attempts.append { Reached(link: try await relay.openLink(within: within), path: .relay) }
+            links.append { Reached(link: try await relay.openLink(within: within), path: .relay) }
         }
-        return attempts
+        let mac = mac, keys = keys
+        return links.map { link in
+            {
+                let reached = try await link()
+                return try await Attach.prove(over: reached.link, path: reached.path, mac: mac, keys: keys)
+            }
+        }
     }
 
     /// Carries the session's lines on `channel` until it drops.
