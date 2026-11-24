@@ -81,6 +81,11 @@ final class PhoneLink {
     /// Whether the channel attached in this Face ID session: a drop after it keeps the client on the channel, which
     /// resumes, rather than showing the store.
     @ObservationIgnored private var attachedInSession = false
+    /// Whether this Face ID session started the connection. Until it has, the connection's state is the stopped one's,
+    /// which chooses no transport: followed after a new session opened (an unlock right after the lock, before the main
+    /// actor ran what the stop queued), its `.outOfReach` with the store not yet open would put the client on the
+    /// channel, and the carrier set then would keep `sessionOpened` from starting the connection (#899).
+    @ObservationIgnored private var startedInSession = false
     @ObservationIgnored private var watched: RemoteConnection?
     @ObservationIgnored private let log = Logger(subsystem: "dev.pi2.ios", category: "link")
 
@@ -197,10 +202,6 @@ final class PhoneLink {
         guard paired, keyring.session.state == .open, !opening, carrier == .none else { return }
         opening = true
         defer { opening = false }
-        if let key = try? keyring.session.cacheKey() {
-            store.open(key: key)
-            step(.storeOpened)
-        }
         if connection == nil {
             connection = await RemoteConnection.paired(keyStore: keyring, store: pairingStore, routes: routes)
         }
@@ -212,8 +213,15 @@ final class PhoneLink {
             forget(.keysGone)
             return
         }
+        // Opened after the wait above, with the key of the session that starts the connection: a session that ended
+        // during it closed the store, and one opened after that found this call opening and left its start to it.
+        if let key = try? keyring.session.cacheKey() {
+            store.open(key: key)
+            step(.storeOpened)
+        }
         session.macName = connection.macName
         attachedInSession = false
+        startedInSession = true
         connection.start()
         step(.connectionStarted)
         watch(connection)
@@ -227,6 +235,7 @@ final class PhoneLink {
         if reason != .revoked { store.close() }
         connection?.stop()
         attachedInSession = false
+        startedInSession = false
         if carrier != .none {
             carrier = .none
             session.start(LockedTransport(), as: paired ? .outOfReach(lastSeen: store.lastHeard) : .notPaired)
@@ -254,10 +263,11 @@ final class PhoneLink {
         follow(state)
     }
 
-    /// Mirrors the connection's state into the session, and puts the client on the channel or on the store's last state.
+    /// Mirrors the connection's state into the session, and puts the client on the channel or on the store's last state:
+    /// only once this session has started the connection (`startedInSession`).
     private func follow(_ state: AppSession.Connection) {
         guard paired else { return }
-        guard keyring.session.state == .open, let connection else {
+        guard keyring.session.state == .open, startedInSession, let connection else {
             session.connection = state
             return
         }
@@ -339,6 +349,7 @@ final class PhoneLink {
         connection = nil
         paired = false
         attachedInSession = false
+        startedInSession = false
         carrier = .none
         session.engine.forgetConversations()
         session.macName = nil
