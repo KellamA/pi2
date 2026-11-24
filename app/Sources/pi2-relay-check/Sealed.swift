@@ -354,6 +354,8 @@ enum SealedSession {
 		let plainMethod = m("method")
 		let itemMethod = m("method in an item")
 		let macTook = try await mac.take { taken in
+			// Each opened and verified, or the closure throws: nothing here could be judged false for good.
+			var done = Set<ItemID>()
 			for (item, (id, method, params)) in zip(taken.items, sent) {
 				let opened = try SealedItem.openRequest(
 					item.item, at: ItemAddress(pairing: pairing, reader: .mac, id: id), readerKey: macRecord, writer: device,
@@ -362,12 +364,13 @@ enum SealedSession {
 					ledger.arrived.insert(method == plainMethod ? "method" : "method in an item")
 					if method == itemMethod { ledger.arrived.insert("request item") }
 				}
+				done.insert(item.id)
 			}
 			await mac.remember(taken.items)
-			return taken
+			return done
 		}
 		Check.equal(macTook.items.map(\.id), sent.map(\.0), "the Mac takes the phone's two request items")
-		Check.equal(try await mac.take { $0 }, RelayTaken(items: [], state: nil, repeats: 0), "and once acknowledged, the relay has deleted them")
+		Check.equal(try await mac.take { $0.ids }, RelayTaken(items: [], state: nil, repeats: 0), "and once acknowledged, the relay has deleted them")
 		_ = try await request(m("method"), .object([("text", s(m("message")))]), presence: false, keep: true)
 
 		// The Mac's way: a receipt and the phone's state, taken by the phone; then another of each, left.
@@ -389,12 +392,14 @@ enum SealedSession {
 			try SealedItem.openMacItem(item, at: ItemAddress(pairing: pairing, reader: .device(device), id: id), readerKey: readerKey, writerRecordKey: macRecord.publicKey, identityKey: identity.publicKey)
 		}
 		// The phone's take, acknowledged once it has opened, verified and remembered the receipt and the state.
-		try await phone.take { phoneTook in
+		_ = try await phone.take { phoneTook in
 			if let taken = phoneTook.items.first, phoneTook.items.count == 1, try open(taken.item, taken.id).body == receiptBody { ledger.arrived.insert("receipt") }
 			if let taken = phoneTook.state, try open(taken.item, taken.id).body == stateBody { ledger.arrived.insert("state") }
 			await phone.remember(phoneTook.items)
+			// Both opened and verified: `open` throws otherwise, and nothing is acknowledged.
+			return phoneTook.ids
 		}
-		Check.equal(try await phone.take { $0 }, RelayTaken(items: [], state: nil, repeats: 0), "and once acknowledged, the relay has deleted the receipt and the state")
+		Check.equal(try await phone.take { $0.ids }, RelayTaken(items: [], state: nil, repeats: 0), "and once acknowledged, the relay has deleted the receipt and the state")
 		let (keptID, keptReceipt) = try macItem(kind: "receipt", number: nil, body: receiptBody)
 		ledger.kept.append(keptReceipt)
 		Check.equal(try await mac.put(keptReceipt, id: keptID, to: .device(device)), .stored, "another receipt, left for the phone")

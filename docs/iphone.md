@@ -531,7 +531,7 @@ pi² does the rest: the relay's code and its configuration in `relay/`; a workfl
 | Join windows opened | 10 a minute for each pairing; past them, "busy" |
 | A message | 70 KB (a Noise message and its header) |
 | Messages | 100 a second; 300,000 a day |
-| Data | 2 MB a second; 500 MB a day. What a `take` hands over counts against its reader's day, so that a reader that never acknowledges ([5.3](#53-the-relay)) is not sent its mailbox without end |
+| Data | 2 MB a second; 500 MB a day. What a `take` hands over **again**, after its reader did not acknowledge it ([5.3](#53-the-relay)), counts against the reader's day, so that a reader that never acknowledges is not sent its mailbox without end; what it is handed the first time is its writer's, paid by its `put`, and never spends the reader's day. Marking what was handed over costs a row write for each item, once |
 | Mailbox | As [5.3](#53-the-relay) |
 | Pushes | 120 alerts an hour per device, 60 background pushes, 60 Live Activity updates; five times each for the pairing as a whole |
 

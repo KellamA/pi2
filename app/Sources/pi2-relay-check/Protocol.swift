@@ -126,22 +126,22 @@ enum ProtocolTest {
 		// A take whose caller could not keep it acknowledges nothing, and the relay hands the item over again.
 		struct NotKept: Error {}
 		do {
-			try await macClient.take { _ in throw NotKept() }
+			_ = try await macClient.take { _ -> Set<ItemID> in throw NotKept() }
 			Check.that(false, "a take whose caller throws throws")
 		} catch is NotKept {}
-		let macTook = try await macClient.take { $0 }
+		let macTook = try await macClient.take { $0.ids }
 		Check.equal(macTook.items, [RelayMailItem(from: .device(device), id: toMac, item: sealed, presence: false)], "the Mac takes it, handed over again since it was not kept")
-		Check.equal(try await macClient.take { $0 }.items, [], "and once acknowledged it is gone")
+		Check.equal(try await macClient.take { $0.ids }.items, [], "and once acknowledged it is gone")
 		let face = ItemID.random()
 		_ = try await phoneClient.put(sealed, id: face, to: .mac, presence: true)
-		Check.equal(try await macClient.take { $0 }.items.map(\.presence), [true], "an item marked presence keeps its flag")
+		Check.equal(try await macClient.take { $0.ids }.items.map(\.presence), [true], "an item marked presence keeps its flag")
 		let toPhone = ItemID.random()
 		let state = ItemID.random()
 		Check.equal(try await macClient.put(sealed, id: toPhone, to: .device(device)), .stored, "the Mac's item for the phone")
 		try await macClient.putState(sealed, id: state, for: device)
 		_ = try await phoneEvents.next("mail") { $0 == .mail ? true : nil }
-		let phoneTook = try await phoneClient.take { $0 }
-		Check.equal(try await phoneClient.take { $0 }, RelayTaken(items: [], state: nil, repeats: 0), "and once acknowledged, the item and the state are gone")
+		let phoneTook = try await phoneClient.take { $0.ids }
+		Check.equal(try await phoneClient.take { $0.ids }, RelayTaken(items: [], state: nil, repeats: 0), "and once acknowledged, the item and the state are gone")
 		Check.equal(phoneTook.items.map(\.id), [toPhone], "the phone takes the Mac's item")
 		Check.equal(phoneTook.state, RelayStateItem(id: state, item: sealed), "and its state")
 		await Check.throwsError("an item for a device not listed", .refused(.unknownDevice)) {
