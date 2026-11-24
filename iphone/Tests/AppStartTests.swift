@@ -129,6 +129,124 @@ struct AppStartTests {
         #expect(await Wait.until { phone.session.engine.status == .connected && phone.link.carrier == .live })
     }
 
+    // MARK: - Ends and opens in a row (#899)
+
+    // Each of these ends and opens the session with no `await` between that could let the main actor run anything else,
+    // so that what the end queued (the stopped connection's state, which its watch follows; the keyring's state, which
+    // `watchPresence` follows) runs only after all of it: the order a person gets with an unlock right after the lock.
+
+    /// Lets the main actor run what is queued on it, and what that queues in turn, by waiting for tasks queued after it.
+    /// (A wait for the Mac can end at once: its channel's writer runs off the main actor.)
+    private static func settle() async {
+        for _ in 0..<3 { await Task { @MainActor in }.value }
+    }
+
+    /// A phone paired with the test Mac, its first session on the channel and its Outbox sent.
+    private static func livePhone() async throws -> Phone {
+        let phone = try await pairedPhone()
+        phone.link.didPair(phone.record)
+        #expect(await Wait.until { phone.link.steps.contains(.outboxSent) && phone.session.engine.projects.count == 2 })
+        #expect(phone.link.carrier == .live)
+        return phone
+    }
+
+    @Test func faceIDRightAfterTheEndStartsTheConnectionAgain() async throws {
+        let phone = try await Self.livePhone()
+        defer { phone.mac.stop() }
+        let before = phone.link.steps.count
+
+        phone.keyring.session.end(.lockButton)
+        await phone.keyring.session.open()
+        #expect(phone.keyring.session.state == .open)
+        #expect(Array(phone.link.steps.dropFirst(before)) == [.sessionEnded], "nothing queued has run yet")
+
+        // The stopped connection's `.outOfReach` is followed now, in a session open with the store not yet opened: it
+        // must not choose the channel and so stand in for the session's start.
+        #expect(await Wait.until { phone.mac.state.withLock { $0.attachedCount } == 2 }, "a new session at the Mac")
+        #expect(await Wait.until { phone.session.engine.status == .connected && phone.link.carrier == .live })
+        let steps = Array(phone.link.steps.dropFirst(before))
+        #expect(Array(steps.prefix(3)) == [.sessionEnded, .storeOpened, .connectionStarted], "\(steps)")
+        #expect(phone.store.isOpen)
+    }
+
+    @Test func aLockWhileReachingTheMacThenFaceIDStartsItAgain() async throws {
+        let phone = try await Self.pairedPhone()
+        defer { phone.mac.stop() }
+        let before = phone.link.steps.count
+        phone.link.startPaired(phone.record)
+        await phone.keyring.session.open()
+        // The session's start, run here rather than by the task `watchPresence` queued, which comes later and must do
+        // nothing: the connection is started and reaching the Mac, its loop not yet run.
+        await phone.link.sessionOpened()
+        #expect(Array(phone.link.steps.dropFirst(before)) == [.storeOpened, .connectionStarted, .live])
+        #expect(phone.link.connection?.connection == .connecting)
+
+        phone.keyring.session.end(.lockButton)
+        await phone.keyring.session.open()
+
+        #expect(await Wait.until { phone.session.engine.status == .connected && phone.link.carrier == .live })
+        #expect(await Wait.until { phone.link.steps.contains(.outboxSent) })
+        let steps = Array(phone.link.steps.dropFirst(before))
+        #expect(Array(steps.prefix(6)) == [.storeOpened, .connectionStarted, .live, .sessionEnded, .storeOpened, .connectionStarted], "\(steps)")
+        #expect(phone.mac.state.withLock { $0.attachedCount } == 1, "the first start never reached the Mac")
+    }
+
+    @Test func unlockLockUnlockStartsTheConnectionOnce() async throws {
+        let phone = try await Self.livePhone()
+        defer { phone.mac.stop() }
+        let before = phone.link.steps.count
+
+        phone.keyring.session.end(.lockButton)
+        await phone.keyring.session.open()
+        phone.keyring.session.end(.lockButton)
+        await phone.keyring.session.open()
+
+        #expect(await Wait.until { phone.mac.state.withLock { $0.attachedCount } == 2 })
+        #expect(await Wait.until { phone.session.engine.status == .connected && phone.link.carrier == .live })
+        let steps = Array(phone.link.steps.dropFirst(before))
+        #expect(Array(steps.prefix(4)) == [.sessionEnded, .sessionEnded, .storeOpened, .connectionStarted], "\(steps)")
+        #expect(steps.filter { $0 == .connectionStarted }.count == 1, "\(steps)")
+    }
+
+    @Test func unlockThenLockLeavesTheConnectionStopped() async throws {
+        let phone = try await Self.livePhone()
+        defer { phone.mac.stop() }
+        let before = phone.link.steps.count
+
+        phone.keyring.session.end(.lockButton)
+        await phone.keyring.session.open()
+        phone.keyring.session.end(.lockButton)
+        // Everything the ends and the open queued runs now, before what is queued after it.
+        await Self.settle()
+        #expect(await Wait.until { phone.mac.state.withLock { $0.sessionEnds } == 1 })
+        #expect(await Wait.until { phone.session.engine.status != .connected })
+        #expect(Array(phone.link.steps.dropFirst(before)) == [.sessionEnded, .sessionEnded], "nothing started while locked")
+        #expect(phone.link.carrier == .none && !phone.store.isOpen)
+        #expect({ if case .outOfReach = phone.session.connection { true } else { false } }(), "\(phone.session.connection)")
+
+        await phone.keyring.session.open()
+        #expect(await Wait.until { phone.mac.state.withLock { $0.attachedCount } == 2 })
+        #expect(await Wait.until { phone.session.engine.status == .connected && phone.link.carrier == .live })
+    }
+
+    @Test func aWipeAfterTheEndLeavesNothingStarted() async throws {
+        let phone = try await Self.livePhone()
+        defer { phone.mac.stop() }
+        let before = phone.link.steps.count
+
+        phone.keyring.session.end(.lockButton)
+        await phone.link.unpairThisIPhone()
+        await phone.keyring.session.open()
+        #expect(phone.keyring.session.state == .failed(.keysGone), "no keys to open with")
+
+        await Self.settle()
+        #expect(await Wait.until { phone.mac.state.withLock { $0.sessionEnds } == 1 })
+        #expect(Array(phone.link.steps.dropFirst(before)) == [.sessionEnded, .wiped(.unpaired)])
+        #expect(!phone.link.paired && phone.link.connection == nil && phone.link.carrier == .none)
+        #expect(phone.session.connection == .notPaired, "the stopped connection's state is not shown")
+        #expect(phone.link.ended == .unpaired)
+    }
+
     @Test func theMacsRevocationWipesTheStoreAndTheKeysAndShowsWhatWasNotSent() async throws {
         let phone = try await Self.pairedPhone()
         defer { phone.mac.stop() }
