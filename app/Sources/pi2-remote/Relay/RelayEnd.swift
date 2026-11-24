@@ -721,6 +721,11 @@ final class RelayEnd: @unchecked Sendable {
 			case let .enclave(key):
 				request = try SealedItem.openRequest(item.item, at: address, readerKey: key, writer: writer, writerRecordKey: listed.recordKey, deviceKey: listed.deviceKey, presenceKey: presence)
 			}
+		} catch let error as RemoteKitError where error == RemoteKitError("request item", "no valid presence signature") {
+			// Sealed and signed by the device, and not by the presence key on pi² Remote's own list: a new presence key the
+			// person accepted on the Mac is not on the list until the engine's `presenceKey` event is taken there (#891). It
+			// could pass then, so it is left, and expires at the relay if it never does.
+			return .later("its presence signature is not the presence key's on pi² Remote's own list")
 		} catch {
 			return .notGenuine("its seal or its signatures do not hold")
 		}
