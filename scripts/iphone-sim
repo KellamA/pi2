@@ -50,7 +50,8 @@ pi2-681); every command but create works only on a simulator this checkout's cre
                          pairing, no keys, no store.
   face-id <name> enrol|match|no-match
                          The simulator's Face ID, as Simulator's Features › Face ID does: enrol a face (pairing
-                         needs one), or answer the prompt on screen with a matching face or another one.
+                         needs one; it lasts until the simulator shuts down), or answer the prompt on screen with a
+                         matching face or another one.
   shot <name> <file.png> Take a picture of its screen. --appearance light|dark and --text-size <size> set them first.
   appearance <name> light|dark
   text-size <name> <size>  extra-small, small, medium, large (the default), extra-large, extra-extra-large,
@@ -322,8 +323,16 @@ face-id)
 	# is asked of the Mac: notifyutil runs in the simulator's own launchd.
 	case $2 in
 	enrol)
-		xcrun simctl spawn "$udid" notifyutil -s com.apple.BiometricKit.enrollmentChanged 1 &&
-			xcrun simctl spawn "$udid" notifyutil -p com.apple.BiometricKit.enrollmentChanged || die "could not enrol a face"
+		# Just after a boot, the simulator's Face ID can still set its own state back to none: set it again until it
+		# reads back as enrolled. The state lasts until the simulator shuts down.
+		for _ in 1 2 3 4 5 6 7 8 9 10; do
+			xcrun simctl spawn "$udid" notifyutil -s com.apple.BiometricKit.enrollmentChanged 1 &&
+				xcrun simctl spawn "$udid" notifyutil -p com.apple.BiometricKit.enrollmentChanged || die "could not enrol a face"
+			sleep 1
+			[[ $(xcrun simctl spawn "$udid" notifyutil -g com.apple.BiometricKit.enrollmentChanged) == *" 1" ]] && exit 0
+			sleep 2
+		done
+		die "the simulator's Face ID did not keep a face enrolled"
 		;;
 	match) xcrun simctl spawn "$udid" notifyutil -p com.apple.BiometricKit_Sim.pearl.match || die "could not answer Face ID" ;;
 	no-match) xcrun simctl spawn "$udid" notifyutil -p com.apple.BiometricKit_Sim.pearl.nomatch || die "could not answer Face ID" ;;

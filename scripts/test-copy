@@ -1232,6 +1232,9 @@ JS
 
 		if [[ $cmd == attach ]]; then
 			[[ $SIM == "$PHONE_SIM" ]] || die "the phone paired with $SUFFIX is in the simulator $PHONE_SIM, not $SIM"
+			# The simulator forgets its enrolled face when it shuts down: enrolled again, the phone's presence key still
+			# signs under its Face ID there.
+			"$ROOT/scripts/iphone-sim" face-id "$SIM" enrol >/dev/null || die "could not enrol a face in $SIM"
 			before=$(engine_call devices.watch | from_json "r.sessions.map((s) => s.session).join(' ')")
 			pid=$(launch_phone "${phone_env[@]}")
 			echo "Launched the app in $SIM (process $pid); answering its Face ID with a matching face."
@@ -1248,6 +1251,10 @@ JS
 			save_state
 		fi
 
+		# Face ID enrolled, which making the phone's keys needs; this boots the simulator too, which can take a minute or
+		# two, before the pairing's five minutes start.
+		"$ROOT/scripts/iphone-sim" face-id "$SIM" enrol >/dev/null || die "could not enrol a face in $SIM"
+
 		# 1. A pairing, opened as the Devices page opens one: the payload the Mac would show as a QR code. pi² Remote starts
 		#    for it, and is held to 127.0.0.1 before the phone is given the code.
 		devices=$(engine_call devices.watch)
@@ -1261,8 +1268,7 @@ JS
 		echo "Opened a pairing on $NAME; its pi² Remote listens on $addresses alone."
 
 		# 2. The code, as the phone would scan it: a fresh install of the debug build, given it in PI2_PAIR, which it takes
-		#    as scanned. Face ID enrolled first, which making the phone's keys needs.
-		"$ROOT/scripts/iphone-sim" face-id "$SIM" enrol >/dev/null || die "could not enrol a face in $SIM"
+		#    as scanned.
 		pid=$(launch_phone --fresh "${phone_env[@]}" --env "PI2_PAIR=$payload")
 		echo "Gave the code to a fresh install of the app in $SIM (process $pid)."
 
@@ -1279,6 +1285,10 @@ JS
 			logged=$(xcrun simctl spawn "$UDID" log show --last 10m --style compact \
 				--predicate "subsystem == \"dev.pi2.ios\" AND category == \"pairing\" AND processID == $pid" 2>/dev/null || true)
 			shown=$(grep -o 'digits shown: [0-9]\{6\}' <<<"$logged" | sort -u || true)
+			if [[ $logged == *"the keys were not made"* ]]; then
+				engine_call devices.pairCancel >/dev/null
+				die "the phone could not make its keys, so it sent no claim: ${logged##*\] }"
+			fi
 			if [[ -n $claim && -n $shown ]]; then
 				# One claim, and one set of digits from this launch: anything else is not typed.
 				(($(wc -l <<<"$shown") == 1)) || { engine_call devices.pairCancel >/dev/null; die "the phone showed more than one set of digits: $shown"; }

@@ -61,7 +61,15 @@ delete)
 	jq --arg u "$2" '.devices[] |= map(select(.udid != $u))' "$DEVICES" >"$DEVICES.new" && mv "$DEVICES.new" "$DEVICES"
 	;;
 launch) env | grep '^SIMCTL_CHILD_' | sort | sed 's/^/child-env /' >>"$LOG" ;;
-install | uninstall | spawn | ui) ;;
+install | uninstall | ui) ;;
+# notifyutil -g answers with the state set last, as the simulator's own does.
+spawn)
+	if [[ $3 == notifyutil && $4 == -s ]]; then
+		echo "$6" >"$DEVICES.notify"
+	elif [[ $3 == notifyutil && $4 == -g ]]; then
+		echo "$5 $(cat "$DEVICES.notify" 2>/dev/null || echo 0)"
+	fi
+	;;
 io) for last in "$@"; do :; done; echo png >"$last" ;;
 *) echo "stand-in xcrun: no simctl $1" >&2; exit 1 ;;
 esac
@@ -311,6 +319,7 @@ run "face-id enrol" face-id pi2-1 enrol
 expect_status 0
 expect_log "xcrun simctl spawn $U1 notifyutil -s com.apple.BiometricKit.enrollmentChanged 1"
 expect_log "xcrun simctl spawn $U1 notifyutil -p com.apple.BiometricKit.enrollmentChanged"
+expect_log "xcrun simctl spawn $U1 notifyutil -g com.apple.BiometricKit.enrollmentChanged"
 run "face-id match" face-id pi2-1 match
 expect_status 0
 expect_log "xcrun simctl spawn $U1 notifyutil -p com.apple.BiometricKit_Sim.pearl.match"
