@@ -270,8 +270,9 @@ final class RelayEnd: @unchecked Sendable {
 		// cannot wash pi² Remote's log, nor hide the home path's lines (#921's security read).
 		case .phoneJoined:
 			Seldom.shared.say("relay joined", "the relay says a phone joined the pairing window (its word: the channel and the engine decide)")
-		case let .left(device):
-			Seldom.shared.say("relay left", "the relay says device \(device) left it: its word alone, so nothing is revoked or forgotten (a signed leave is #897's)")
+		case let .left(left):
+			// The device alone: never the phone's notice, which only a check against its key may read (#813).
+			Seldom.shared.say("relay left", "the relay says device \(left.device) left it: its word alone, so nothing is revoked or forgotten (a signed leave is #897's)")
 		case .anotherMac:
 			// Told to the engine at most once a minute, with the first time in that minute: each report is a `remote.state`, and
 			// a `devices` event to the app.

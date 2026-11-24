@@ -582,7 +582,9 @@ final class LyingRelay: @unchecked Sendable {
 			guard let mac = state.get().mac else { return }
 			for _ in 0 ..< notices {
 				send(mac, "anotherMac", [])
-				send(mac, "left", [("device", .string(DeviceID.random().text))])
+				// As #897's relay writes it: the phone's time and a notice, here 64 bytes no key signed.
+				let at = Int64(Date().timeIntervalSince1970 * 1000)
+				send(mac, "left", [("device", .string(DeviceID.random().text)), ("at", .integer(at)), ("notice", .string(Base64URL.encode(Bytes.random(64))))])
 			}
 			let made: [JSONValue] = (0 ..< items).map { _ in
 				.object([("from", .string(DeviceID.random().text)), ("id", .string(ItemID.random().text)), ("item", .string(Base64URL.encode(Data([4]) + Bytes.random(100)))), ("presence", .bool(true))])
