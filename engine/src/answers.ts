@@ -738,6 +738,17 @@ export class AppCheck {
 			} catch (error) {
 				unchecked(error instanceof Error ? error.message : String(error));
 				return;
+			} finally {
+				// On macOS libuv starts the helper with posix_spawn, and first clears O_NONBLOCK on each descriptor it hands over,
+				// in this process: on the open file description the connection is, so this end of it too (#927). Left so, the
+				// next write to an app that is not reading would hold the engine's one thread until it read. It is set back
+				// before spawn's caller goes on: nothing else of the engine's runs in between, so nothing can write to it
+				// blocking. A duplicate would share the flag, and the helper only asks the socket about its other end.
+				// Should that fail, the connection is closed rather than kept blocking; the app connects again.
+				if ((socket as unknown as { _handle?: { setBlocking?: (blocking: boolean) => number } })._handle?.setBlocking?.(false) !== 0) {
+					this.#log("answers: a connection could not be made non-blocking again after its check, so it is closed");
+					socket.destroy();
+				}
 			}
 			const timer = setTimeout(() => {
 				child.kill("SIGKILL");
