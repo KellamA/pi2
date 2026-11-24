@@ -2,20 +2,21 @@ import Foundation
 import UserNotifications
 
 /// Taking a notification away once its card is answered or withdrawn (docs/iphone.md section 7): the Mac sends a
-/// background push, `pushGone` sealed inside, which iOS hands to the app, not to the service extension (it has no
+/// background push, `pushGone` sealed inside and the needs gone named in it, which iOS hands to the app, not to the service extension (it has no
 /// alert), best effort, since Apple may hold or drop these. The app also takes one away itself when it learns, from the
 /// engine, that a need is gone, and when the person answers it.
 enum PushRemoval {
     /// For the app's `application(_:didReceiveRemoteNotification:fetchCompletionHandler:)`: opens and verifies the
-    /// background push and takes away the notifications of the need it names. Returns whether it named one; a push that
-    /// does not open, or is not a `pushGone`, takes nothing away.
+    /// background push and takes away the notifications of the needs it names. Returns whether it named any; a push
+    /// that does not open, or is not a `pushGone`, takes nothing away.
     @discardableResult @MainActor
     static func handle(
         _ userInfo: [AnyHashable: Any], opener: (any PushOpening)? = PushOpeners.standard,
-        keys: () throws -> PushKeys? = { try PushKeychain().keys() }, center: UNUserNotificationCenter = .current(), now: Date = Date()
+        keys: () throws -> PushKeys? = { try PushKeychain().keys() }, seen: PushSeen? = PushSeen.shared, center: UNUserNotificationCenter = .current(),
+        now: Date = Date()
     ) async -> Bool {
-        guard case let .gone(need)? = try? PushDelivery.item(userInfo, opener: opener, keys: keys, now: now) else { return false }
-        await takeAway(needs: [need], center: center)
+        guard case let .gone(needs)? = try? PushDelivery.item(userInfo, opener: opener, keys: keys, seen: seen, now: now) else { return false }
+        await takeAway(needs: Set(needs), center: center)
         return true
     }
 

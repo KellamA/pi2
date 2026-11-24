@@ -1,8 +1,9 @@
 // The recorder (docs/iphone.md 10, #683): it stands at the relay's edge, in front of the relay's own Worker, and keeps
 // everything the relay is given and gives: each connection's request (its address and every header), every message
 // in and out, text or bytes, in order, and how each side closed. It passes everything on as it came, so the relay and
-// its clients behave as they would without it. It reads back what the relay's objects keep (`dump`), and the pushes the
-// local stand-in for Apple's service is asked to send (`push`, for P20, #689: the relay sends none yet).
+// its clients behave as they would without it. It reads back what the relay's objects keep (`dump`); the pushes the
+// local stand-in for Apple's service is asked to send go with the recording from worker.ts (#689), and `push` keeps any
+// other.
 //
 // For tests only, in relay/test: never imported by relay/src, so never in the deployed bundle, which
 // scripts/check-bundle.mjs refuses if any of its inputs is outside relay/src.
@@ -94,7 +95,7 @@ export class Recorder {
 		return new Response(null, { status: 101, webSocket: client });
 	}
 
-	/** Keeps a push the stand-in for Apple's service was asked to send (P20 hands each to this). */
+	/** Keeps a push for the recording (worker.ts gives the stand-in for Apple's own beside these). */
 	push(push: Push): void {
 		this.pushes.push(push);
 	}

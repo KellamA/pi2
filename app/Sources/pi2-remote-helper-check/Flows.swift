@@ -566,6 +566,7 @@ enum Flows {
 			Check.expect(phone.closesWithin(10), "a revoked device's handshake is closed")
 			Check.expect(engine.quiet(for: 0.5), "before anything reaches the engine")
 		}
+		Pushes.flow(engine: engine, remaining: other, revoked: device)
 		Check.section("pi² Remote's own list against the engine's start (3.4, 5.5)")
 		close(engine.lines.descriptor)
 		Check.expect(child.wait(15) == 0, "the engine's connection ended, pi² Remote stops")

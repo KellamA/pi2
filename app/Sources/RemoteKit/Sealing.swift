@@ -224,8 +224,9 @@ public struct RequestItem: Sendable {
 /// "signature":…}`, `signed` being `{"v":2,"kind":…,"pairing":…,"device":…,"nonce":<the item's id>,"at":…,"body":…}`, with
 /// `"number"` before `body` in a state, signed by the Mac's identity key.
 public struct MacItem: Sendable {
-	/// Kinds a Mac item may not have, since the identity key signs statements of theirs elsewhere.
-	static let reservedKinds = ["mac", "pair", "attach", "request"]
+	/// Kinds a Mac item may not have, since statements of theirs are signed elsewhere: the Mac's proof, and the device
+	/// key's `pair`, `attach`, `request` and `leave` (the leave text for the Mac, `RelayLeaveNotice`, #813).
+	static let reservedKinds = ["mac", "pair", "attach", "request", "leave"]
 
 	public let statement: SignedStatement
 	/// `state`, `receipt`, `revoked`, or another kind the issue that needs it names: a lower-case letter, then up to 31

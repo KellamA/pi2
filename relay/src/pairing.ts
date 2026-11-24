@@ -37,6 +37,7 @@ import {
 	deviceIdBytes,
 	type Hello,
 	type Join,
+	type Left,
 	MAX_BINARY,
 	type Message,
 	PAIRING_HEADER,
@@ -91,8 +92,11 @@ type Meta = {
 	/** The ends past their day's limit, by "mac" or device id, and until when each is held off (6.6). */
 	blocked: Record<string, number>;
 	window: Window | null;
-	/** Devices that left while the Mac was away, which it is told when it next connects (3.6). */
-	left: string[];
+	/**
+	 * Devices that left while the Mac was away, which it is told when it next connects (3.6), each with the time and the
+	 * notice its phone signed for the Mac. At most five: only the Mac adds a device, and the list is emptied when it connects.
+	 */
+	left: Left[];
 	/** When the join windows of the last minute were opened, for their limit (`WINDOWS_A_MINUTE`). */
 	opened?: number[];
 };
@@ -635,10 +639,12 @@ export class Pairing extends DurableObject<Env> {
 					return this.refuse(ws, "signature");
 				}
 				await this.removeDevice(id, "left");
+				// The phone's notice goes to the Mac as it came: the relay cannot check it, and the Mac believes nothing else.
+				const left: Left = { device: id, at: message.at, notice: message.notice };
 				const mac = this.mac();
-				if (mac !== null) send(mac, { left: { device: id } });
+				if (mac !== null) send(mac, { left });
 				else if (this.meta !== null) {
-					this.meta.left.push(id);
+					this.meta.left.push(left);
 					await this.save();
 				}
 				return;

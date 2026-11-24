@@ -39,6 +39,8 @@ package final class Remote: @unchecked Sendable {
 	let vault: any KeyVault
 	let engine: EngineLink
 	let advertiser: (any Advertiser)?
+	/// Pushes the engine chooses, sealed and handed to the relay (Push/, #689).
+	package let pushes: PushHandOver
 
 	/// How long a session waits for its phone after its channel drops (5.8).
 	package var resumeWindow: TimeInterval = 60
@@ -84,6 +86,9 @@ package final class Remote: @unchecked Sendable {
 		self.engine = engine
 		self.queue = queue
 		self.advertiser = advertiser
+		pushes = PushHandOver(queue: queue, keys: keys) { [engine] id, why in
+			engine.request("remote.pushRefused", .object([("id", .string(id)), ("why", .string(why))]))
+		}
 		let kept = try vault.kept()
 		devices = kept.devices
 		homeKey = kept.homeKey
@@ -130,6 +135,7 @@ package final class Remote: @unchecked Sendable {
 			}
 		case "revoke":
 			if let text = event["device"]?.stringValue, let device = DeviceID(text) { revoke(device) }
+		case "push": pushes.take(event, pairing: pairing, devices: devices)
 		case "sessionClosed":
 			// The engine says `revoke` before it closes a revoked device's sessions (#776's 25), so the `revoked` line has
 			// gone already: the channel ends at once.
@@ -454,6 +460,7 @@ package final class Remote: @unchecked Sendable {
 		// fails leaves the list and the key as they were, the device still on the list, and `homeKey` nil: nothing is
 		// advertised, and the next `start`, which no longer names the device, drops it and makes the new key.
 		devices.removeAll { $0.id == device }
+		pushes.forget(device)
 		if keep(devices, homeKey: devices.isEmpty ? nil : HomeKey.random()), homeKey != nil { log("a new home key was made, after a revocation") }
 		// The phone is told first, signed by the identity key, which it acts on alone (3.6); then its channels end.
 		for connection in connections.values where connection.device == device {

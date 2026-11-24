@@ -17,5 +17,8 @@
 	{ "place": "state", "text": "marker state body e15a" },
 	{ "place": "home address", "text": "192.168.77.41:52731" },
 	{ "place": "private address", "text": "[fd7a:115c:a1e0::4d1]:52731" },
-	{ "place": "device event", "text": "marker device event: a phone was added 7a3e" }
+	{ "place": "device event", "text": "marker device event: a phone was added 7a3e" },
+	{ "place": "push text", "text": "Marker push: Forge needs approval b81c" },
+	{ "place": "push collapse", "text": "need:marker-collapse-id-5e07" },
+	{ "place": "push gone", "text": "marker-need-gone-c3d9" }
 ]
