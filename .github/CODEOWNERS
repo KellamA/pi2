@@ -24,7 +24,8 @@
 
 # What decides who is the person: the relay, the channel and sealing, the helper, the devices in the engine, the
 # device lists (in answers.ts) and App Attest's verifier, with the test and the fixtures that hold it to Apple's samples
-# (a weakened test would let a weakened verifier pass).
+# (a weakened test would let a weakened verifier pass), and the devices' test, which names every request of the
+# person's a device may send (a request taken out of it would reach a phone unreviewed).
 /relay/ @KellamA
 /app/Sources/RemoteKit/ @KellamA
 # RemoteKit's checks: the published vectors it is held to, the check that runs them, and the fuzzer (#674). Weakening
@@ -42,6 +43,7 @@
 /app/Sources/pi2-remote/ @KellamA
 /engine/src/devices.ts @KellamA
 /engine/src/remote.ts @KellamA
+/engine/test/devices.ts @KellamA
 /engine/src/appattest.ts @KellamA
 /engine/test/appattest.ts @KellamA
 /engine/test/appattest.json @KellamA
