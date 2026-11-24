@@ -504,6 +504,7 @@ pi² does the rest: the relay's code and its configuration in `relay/`; a workfl
 ### 6.5 When the relay is down, or the person wants none
 
 - **At home it still works**, directly: the whole of pi² over the `home` path, with the same channel.
+- **The Mac says which**: pi² Remote tells the engine whether the relay path is off as the person chose, cannot run and why, is down and when it tries again, or stopped on the relay's word (`remote.state`'s `relay`), and the Devices page shows it; nothing on the home path waits on the relay.
 - **Away, over a private network** the person has (Tailscale and the like), it works directly too, at the Mac's addresses.
 - **Otherwise, away**: the phone shows "pi²'s relay can't be reached", with its last state dated, and keeps what is written in the Outbox until a path returns.
 - **No pushes** while the relay is down. When it returns, the Mac sends pushes only for what still waits, not the ones it missed.
@@ -746,7 +747,7 @@ Thirty-eight issues, P0 to P37, in the roadmap's steps: the relay added five to 
 | The device lists in `answers.ts`, `deviceMay`, `FOR_THE_HELPER`, and the start-up check | P5 | Every later issue that adds a request places it in the lists and tests its refusal from a device |
 | `pi2.devices`, `pi2.deviceNonces`, `pi2.deviceLog`, `summarize`, the `devices` and `device` events | P5 | An issue that lets a device send a new request adds its `summarize` line |
 | Presence verification in the engine | P5 | P17 signs; P22 signs from a notification |
-| `remote.*` requests and the `remote` event | P5 | P10 adds `remote.mailboxIn`; P20 adds the event's `push` |
+| `remote.*` requests and the `remote` event | P5 | P10 adds `remote.mailboxIn`, `remote.state`'s `relay` and the event's `mailboxOut`; P20 adds the event's `push` |
 | `RemoteKit`'s channel and sealing (Noise, HPKE, framing, the pairing payload, `pair`, `attach`, `resume`, `presence`) | P6 | Others use it; a change they need is made in its own pull request by the issue that needs it |
 | `RemoteKit`'s relay client | P10 | P12, P22, P23 use it |
 | The relay: `relay/` (code, its tests, its configuration) | P8 | P20 adds the APNs client in `relay/src/apns.ts`; P15 adds the recorder in `relay/test/` |

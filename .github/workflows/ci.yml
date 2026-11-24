@@ -187,7 +187,8 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.macos != 'false' || needs.changes.outputs.relay == 'true') }}
     runs-on: macos-26
-    timeout-minutes: 20
+    # Ten more than before pi² Remote's relay end ran here (#678), which builds the helper and waits out two minutes.
+    timeout-minutes: 30
     steps:
       # Pinned by commit (v7), so that a moved tag cannot change what this job runs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -212,6 +213,18 @@ jobs:
       - name: Check that the relay sees only sealed bytes
         if: ${{ !cancelled() }}
         run: scripts/relay-protocol-test --sealed
+      # pi² Remote's relay end (#678): pi2-remote-helper-check --relay against the same relay, and through a real engine.
+      - name: Install the engine's packages
+        if: ${{ !cancelled() }}
+        working-directory: engine
+        run: npm ci
+      - name: Build pi² Remote and its check
+        if: ${{ !cancelled() }}
+        working-directory: app
+        run: swift build --product pi2-remote-helper && swift build --product pi2-remote-helper-check
+      - name: Run pi² Remote's relay end against the relay
+        if: ${{ !cancelled() }}
+        run: scripts/relay-protocol-test --remote --engine engine/src/main.ts
 
   app:
     name: App (build)

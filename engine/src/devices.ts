@@ -145,8 +145,8 @@ export type RemoteHooks = {
 	closeSessions: (device: string, why: string) => void;
 	/** The open sessions, for the Devices page and the menu bar (4.4). */
 	sessions: () => { device: string; session: string; path: DevicePath; since: number }[];
-	/** pi² Remote's own state, for the Devices page. */
-	helper: () => { running: boolean; stoppedInLastHour: number };
+	/** pi² Remote's own state, for the Devices page: with what it said of the relay path (`remote.state`'s `relay`). */
+	helper: () => { running: boolean; stoppedInLastHour: number; relay?: Record<string, unknown> | null };
 	/** Each device session's record changed: its `device` event is sent again. */
 	recordChanged: (device: string) => void;
 	/** The Mac's addresses as the running pi² Remote said them, or null when none has said hello. */
@@ -1308,6 +1308,11 @@ export async function attachTaken(device: string, path: DevicePath, resumed: boo
 const ITEM_FIELDS = ["v", "kind", "pairing", "device", "method", "params", "nonce", "at"] as const;
 export const ITEM_TOO_OLD = "Not sent: more than a day passed before your Mac saw it.";
 export const ITEM_TOO_OLD_FACE = "Not sent: more than an hour passed before your Mac saw it.";
+/** A sealed item whose nonce was taken before: the relay handed it over again, or it was copied. */
+export const ITEM_TAKEN_BEFORE = "The item was taken before.";
+
+/** A sealed item that could not be taken now but could later (its nonce not stored): left at the relay, which hands it over again (#806). */
+export class ItemNotYet extends Error {}
 
 /**
  * Checks a request a device sealed into the mailbox, once opened by pi² Remote, before it is handled
@@ -1360,14 +1365,18 @@ export async function checkRequestItem(device: string, item: unknown, approvals:
 	if (typeof at !== "number" || !Number.isSafeInteger(at) || at > now + ITEM_AHEAD) return refuse("The item's time is ahead of the Mac's.");
 	if (now - at > (answer === "face" ? 3_600_000 : DAY)) return refuse(answer === "face" ? ITEM_TOO_OLD_FACE : ITEM_TOO_OLD);
 	let replayed = false;
-	await harness.commit(async (tx) => {
-		const doc = await tx.doc(DeviceNonces);
-		const key = `${device}:${nonce as string}`;
-		if (Object.hasOwn(doc.taken, key)) replayed = true;
-		else doc.taken[key] = now;
-		for (const [taken, when] of Object.entries(doc.taken)) if (now - when > NONCES_KEPT) delete doc.taken[taken];
-	}, context);
-	if (replayed) return refuse("The item was taken before.");
+	try {
+		await harness.commit(async (tx) => {
+			const doc = await tx.doc(DeviceNonces);
+			const key = `${device}:${nonce as string}`;
+			if (Object.hasOwn(doc.taken, key)) replayed = true;
+			else doc.taken[key] = now;
+			for (const [taken, when] of Object.entries(doc.taken)) if (now - when > NONCES_KEPT) delete doc.taken[taken];
+		}, context);
+	} catch (error) {
+		throw new ItemNotYet(`The item's nonce could not be stored: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	if (replayed) return refuse(ITEM_TAKEN_BEFORE);
 	return { method, params, widens: answer === "face" };
 }
 

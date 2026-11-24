@@ -906,6 +906,42 @@ try {
 	assert.ok(app.events.providers.providers.some((one: any) => one.endpoint?.baseUrl?.includes(secrets.endpoint)), "the app is sent the endpoint whole");
 	step("with a provider's key, an agent's variable and an endpoint's token set, none reaches a device; a key-shaped string typed is masked");
 
+	// ---- The mailbox (5.3, 4.3; #678): a request a phone left, opened by pi² Remote, checked again and handled here
+	{
+		const leave = async (item: ReturnType<Phone["item"]>, id: string = JSON.parse(item.signed).nonce) => {
+			const before = remote.events.length;
+			return { before, reply: await remote.call("remote.mailboxIn", { device: phone.id, id, item }) };
+		};
+		const receipts = (before: number) => remote.events.slice(before).filter((event) => event.kind === "mailboxOut");
+		const aborted = phone.item(remote.pairing, "abort", { id: 987_654 });
+		const failed = await leave(aborted);
+		assert.deepEqual(failed.reply.result, { taken: true, outcome: "failed" }, "an abort of no conversation is taken, and failed");
+		const receipt = await remote.event("mailboxOut", failed.before);
+		assert.equal(receipt.device, phone.id);
+		assert.equal(receipt.item.kind, "receipt");
+		assert.deepEqual(Object.keys(receipt.item.body), ["nonce", "method", "outcome", "why"]);
+		assert.deepEqual([receipt.item.body.nonce, receipt.item.body.method, receipt.item.body.outcome], [JSON.parse(aborted.signed).nonce, "abort", "failed"], "the phone is left a receipt for its item");
+		const again = await leave(aborted);
+		assert.deepEqual(again.reply.result, { taken: true, outcome: "refused" }, "the same item again is refused, and taken: the relay may delete it");
+		await app.call("engine.info");
+		assert.equal(receipts(again.before).length, 0, "with no second receipt");
+		const kept = await leave(phone.item(remote.pairing, "github.merge", { projectId: "p", number: 1 }));
+		assert.deepEqual(kept.reply.result, { taken: true, outcome: "refused" }, "a request its row keeps from the mailbox is refused");
+		const refusedReceipt = await remote.event("mailboxOut", kept.before);
+		assert.deepEqual([refusedReceipt.item.body.outcome, refusedReceipt.item.body.why], ["refused", ONLY_ON_THE_MAC], "and its receipt says why");
+		const moved = await leave(phone.item(remote.pairing, "abort", { id: 987_655 }), b64url(randomBytes(16)));
+		assert.deepEqual(moved.reply.result, { taken: true, outcome: "refused" }, "an item whose nonce is not the id it was opened at is refused");
+		assert.match((await remote.call("remote.mailboxIn", { device: phone.id, item: aborted })).error, /takes a device, an item's id and the item/);
+		assert.match((await remote.call("remote.mailboxIn", { device: phone.id, id: b64url(randomBytes(16)), item: aborted, extra: 1 })).error, /takes a device, an item's id and the item/);
+		await assert.rejects(app.call("remote.mailboxIn", { device: phone.id, id: b64url(randomBytes(16)), item: aborted }), (error: Error) => error.message === ONLY_FROM_THE_HELPER, "remote.mailboxIn on the engine's socket");
+		const stated = await remote.call("remote.state", { relay: { available: false, state: "down", why: "the connection to the relay was lost", retryAt: Date.now() + 1_000 } });
+		assert.deepEqual(stated.result, {});
+		await app.until("the relay's state on the Devices page", () => app.devicesEvents.at(-1)?.helper?.relay?.state === "down");
+		assert.match((await remote.call("remote.state", { relay: { available: "no" } })).error, /relay's state is not one/);
+		assert.match((await remote.call("remote.state", { relay: { available: false, state: "gone" } })).error, /relay's state is not one/);
+	}
+	step("the mailbox: a request a phone left is checked again, handled on the path mailbox and taken, with a receipt left for the phone; the same item again is refused and taken with no receipt; remote.state carries the relay path's state to the Devices page");
+
 	// ---- Resume, refusals, suspension (3.4, 3.6, 5.8)
 	const resumed = await attach({ session });
 	assert.deepEqual(resumed.reply.result, { session, resume: true }, "a resume, with a new signature over a new channel");

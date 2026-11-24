@@ -455,8 +455,8 @@ const FROM_A_DEVICE: Record<string, DeviceRow> = {
 	// A device's own (4.2's last paragraph).
 	"devices.self": { why: "its own record and log" },
 	"devices.forgetSelf": { why: "it unpairs itself (3.6)" },
-	// remote.mailboxIn (#678, P10) is pi² Remote's and goes in FOR_THE_HELPER. projects.folders and files.preview (P29)
-	// go here, with their reasons, when they are made.
+	// remote.mailboxIn (#678, P10) is pi² Remote's, in FOR_THE_HELPER. projects.folders and files.preview (P29) go here,
+	// with their reasons, when they are made.
 };
 
 /** What a phone may send that always widens reach: the Mac notifies the person of each (4.4). */
@@ -560,9 +560,9 @@ const MAC_ONLY: Record<string, string> = {
 
 /**
  * pi² Remote's own requests, taken only on the connection the engine made for the helper it started (5.5), never on
- * its listening socket and never in a device session. remote.mailboxIn (#678, P10) is added here when it is made.
+ * its listening socket and never in a device session; remote.mailboxIn (#678, P10) among them.
  */
-const FOR_THE_HELPER: ReadonlySet<string> = new Set(["remote.hello", "remote.state", "remote.pairClaim", "remote.pairWrong", "remote.pairRefused", "remote.attachBegin", "remote.attach", "remote.sessionEnd"]);
+const FOR_THE_HELPER: ReadonlySet<string> = new Set(["remote.hello", "remote.state", "remote.pairClaim", "remote.pairWrong", "remote.pairRefused", "remote.attachBegin", "remote.attach", "remote.sessionEnd", "remote.mailboxIn"]);
 
 export function forTheHelper(method: string): boolean {
 	return FOR_THE_HELPER.has(method);

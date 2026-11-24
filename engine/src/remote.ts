@@ -23,8 +23,10 @@
 // pi² Remote's requests: `remote.hello` (the Mac's public keys, the pairing, the Mac's addresses), `remote.state` (the
 // same when they change), `remote.pairClaim`, `remote.pairWrong` and `remote.pairRefused` (pairing, 3.3), `remote.attachBegin` and
 // `remote.attach` (3.4: an attach or a resume, signed by the device key and the presence key), and
-// `remote.sessionEnd` (the phone's session ended, 4.5). `remote.mailboxIn` (#678, P10) is added here, and checks each
-// item with `checkRequestItem` in devices.ts.
+// `remote.sessionEnd` (the phone's session ended, 4.5), and `remote.mailboxIn` (#678, P10: a request a phone left in the
+// relay's mailbox, checked again with `checkRequestItem` in devices.ts and handled on the path `mailbox`). `remote.state`
+// also carries what pi² Remote can do with the relay (`relay`, 6.5), which the Devices page is told (`helper.relay`).
+// The event's `mailboxOut` asks pi² Remote to leave a sealed item for a phone (a receipt, 5.3).
 //
 // A device session is a `Client` of its own (clients.ts) with `device` set, so it has its own subscriptions and
 // greeting, and is sent the broadcasts every app is. What it is sent passes `forDevice`: never the events of 5.7,
@@ -39,6 +41,11 @@ import { join } from "node:path";
 import { allowsHiddenApproval, type DevicePath, deviceLogged, deviceMay, forTheHelper, HIDDEN_FROM_THE_PHONE, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID } from "./answers.ts";
 import { type Client, clients, send, type Wire } from "./clients.ts";
 import {
+	checkRequestItem,
+	ITEM_TAKEN_BEFORE,
+	ItemNotYet,
+	maskKeys,
+	remoteOn,
 	attachChallenge,
 	attachTaken,
 	checkAttach,
@@ -92,7 +99,7 @@ let drop: RemoteParts["drop"];
 let approvalSwitch: RemoteParts["approvalSwitch"];
 let approvalHidden: RemoteParts["approvalHidden"];
 
-type Helper = { child: ChildProcess; wire: Socket; hello: { addresses: string[] } | null; stopping: boolean };
+type Helper = { child: ChildProcess; wire: Socket; hello: { addresses: string[] } | null; stopping: boolean; relay: Record<string, unknown> | null };
 let helper: Helper | null = null;
 let stopping = false;
 let restartDelay = 1_000;
@@ -136,7 +143,7 @@ export function wireRemote(parts: RemoteParts): void {
 		helper: () => {
 			const now = Date.now();
 			stops = stops.filter((at) => now - at < 3_600_000);
-			return { running: helper !== null && helper.hello !== null, stoppedInLastHour: stops.length };
+			return { running: helper !== null && helper.hello !== null, stoppedInLastHour: stops.length, relay: helper?.relay ?? null };
 		},
 		recordChanged: (device: string) => {
 			const record = pairedDevice(device);
@@ -217,7 +224,7 @@ function startHelper(): void {
 	// One end of a socket pair as descriptor 3, and nothing else: no arguments, no environment (5.5).
 	const child = spawn(program.command, program.args, { stdio: ["ignore", "ignore", "ignore", "pipe"], env: {} });
 	const wire = child.stdio[3] as Socket;
-	const current: Helper = { child, wire, hello: null, stopping: false };
+	const current: Helper = { child, wire, hello: null, stopping: false, relay: null };
 	helper = current;
 	log("remote: started pi² Remote, process", child.pid);
 	const unfinished: string[] = [];
@@ -382,6 +389,12 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 			if (fromBase64url(params.pairing, 16) === null) throw new Error("The pairing is not a pairing's id.");
 			await helperReported({ pairing: params.pairing as string });
 		}
+		if (params.relay !== undefined) {
+			const relay = relayState(params.relay);
+			if (relay === null) throw new Error("The relay's state is not one pi² Remote reports.");
+			current.relay = relay;
+			sessionsChanged();
+		}
 		if (params.addresses !== undefined) {
 			if (!addressList(params.addresses)) throw new Error("The addresses are not the Mac's addresses.");
 			current.hello = { addresses: params.addresses };
@@ -432,8 +445,94 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 		closeSession(params.session, "The session ended on the phone.");
 		return {};
 	},
-	// "remote.mailboxIn": #678 (P10), with checkRequestItem (devices.ts).
+	"remote.mailboxIn": async (current, params) => mailboxIn(current, params),
 };
+
+/** What pi² Remote may say of the relay path (6.5): none wanted, why it cannot run, or how it runs. */
+const RELAY_STATES = ["off", "unavailable", "connecting", "ready", "down", "stopped"];
+
+/** `remote.state`'s `relay` as the Devices page is told it, or null for one pi² Remote does not send. */
+function relayState(value: unknown): Record<string, unknown> | null {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+	const given = value as Record<string, unknown>;
+	if (Object.keys(given).some((key) => !["available", "state", "why", "retryAt", "anotherMacAt"].includes(key))) return null;
+	if (typeof given.available !== "boolean") return null;
+	if (given.state !== undefined && !RELAY_STATES.includes(given.state as string)) return null;
+	if (given.why !== undefined && typeof given.why !== "string") return null;
+	for (const time of [given.retryAt, given.anotherMacAt]) if (time !== undefined && !Number.isSafeInteger(time)) return null;
+	return {
+		available: given.available,
+		state: given.state ?? (given.available ? "ready" : "unavailable"),
+		...(given.why === undefined ? {} : { why: maskKeys((given.why as string).slice(0, 500)) }),
+		...(given.retryAt === undefined ? {} : { retryAt: given.retryAt }),
+		...(given.anotherMacAt === undefined ? {} : { anotherMacAt: given.anotherMacAt }),
+	};
+}
+
+// ---- The mailbox (5.3, 4.3; #678, #806)
+
+/**
+ * A request a phone left in the relay's mailbox, which pi² Remote took, opened and verified with the device's keys on
+ * its own list: checked again here (`checkRequestItem`: the device key's signature first, then the presence key's, the
+ * pairing, its row's mailbox column, its age and its nonce, stored once) and handled as from the device, on the path
+ * `mailbox`, in a connection of its own that lasts the one request. Answered `{ taken: true }` once it was handled or
+ * refused for good, and only then does pi² Remote tell the relay `took` (#806); an error is what could pass later
+ * (remote access off, the device suspended, the nonce not stored), and the relay hands the item over again until it
+ * expires. The phone is left a receipt either way (5.3), but for an item taken before, which had one.
+ */
+async function mailboxIn(current: Helper, params: Params): Promise<{ taken: true; outcome: "done" | "failed" | "refused" }> {
+	if (current.hello === null) throw new Error("pi² Remote has not said hello.");
+	if (Object.keys(params).some((key) => !["device", "id", "item"].includes(key)) || typeof params.device !== "string" || fromBase64url(params.id, 16) === null) {
+		throw new Error("remote.mailboxIn takes a device, an item's id and the item.");
+	}
+	const device = params.device;
+	const id = params.id as string;
+	if (!remoteOn()) throw new Error("Reach from an iPhone is off on this Mac.");
+	const record = pairedDevice(device);
+	if (record !== undefined && record.suspendedAt !== null) throw new Error("This device is suspended. Resume it on the Mac's Devices page.");
+	const item = params.item as { request?: { method?: unknown }; signed?: unknown } | undefined;
+	const named = typeof item?.request?.method === "string" ? item.request.method.slice(0, 128) : null;
+	let checked: Awaited<ReturnType<typeof checkRequestItem>>;
+	try {
+		checked = await checkRequestItem(device, params.item, { approvalSwitch, approvalHidden });
+		// pi² Remote opened it at this id, which HPKE's info binds; its signed nonce must be the same.
+		if ((JSON.parse(item!.signed as string) as { nonce?: unknown }).nonce !== id) throw new Error("The item's nonce is not its id.");
+	} catch (error) {
+		if (error instanceof ItemNotYet) throw error;
+		const why = error instanceof Error ? error.message : String(error);
+		if (record !== undefined && why !== ITEM_TAKEN_BEFORE) receipt(device, id, named, "refused", why);
+		return { taken: true, outcome: "refused" };
+	}
+	const { method, params: given } = checked;
+	if (!Object.hasOwn(handlers, method)) {
+		receipt(device, id, method, "refused", `Unknown method: ${method}`);
+		return { taken: true, outcome: "refused" };
+	}
+	const client: Client = { socket: { destroyed: false, write: () => true, destroy: () => {} }, subscriptions: new Map(), shown: new Set(), device: { id: device, session: "mailbox" } };
+	let outcome: "done" | "failed" = "done";
+	let why: string | undefined;
+	try {
+		await handlers[method]!(given, client);
+	} catch (error) {
+		outcome = "failed";
+		why = refusal(error).error;
+	} finally {
+		drop(client);
+	}
+	if (deviceLogged(method, given)) {
+		await logDevice({ device, path: "mailbox", method, summary: summarize(method, given), presence: true, outcome, ...(why === undefined ? {} : { why }) }).catch((error) =>
+			log("devices: the log could not be written:", error instanceof Error ? error.message : error),
+		);
+	}
+	receipt(device, id, method, outcome, why);
+	return { taken: true, outcome };
+}
+
+/** A receipt for the phone (5.3): what became of the item it left, which pi² Remote seals for it and puts in its mailbox. */
+function receipt(device: string, nonce: string, method: string | null, outcome: "done" | "failed" | "refused", why?: string): void {
+	const body = { nonce, method, outcome, ...(why === undefined ? {} : { why: maskKeys(why.slice(0, 500)) }) };
+	toHelper({ kind: "mailboxOut", device, item: { kind: "receipt", body } });
+}
 
 // ---- Device sessions (4.1)
 
