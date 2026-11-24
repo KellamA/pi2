@@ -10,8 +10,8 @@
 # a broader one takes the file out, and scripts/auto-merge refuses everything while such a line is here. Keep the
 # patterns plain too (letters, digits, . _ - /, * within a name, ** as a whole one), which is all the script reads.
 
-# The guard itself: this file, the script that refuses, its test, and every workflow (relay.yml and iphone.yml among
-# them), since any workflow can be changed to use a protected environment, and one run from main can use it once the
+# The guard itself: this file, the script that refuses, its test, and every workflow (relay.yml, and ci.yml with the
+# iPhone app's job, among them), since any workflow can be changed to use a protected environment, and one run from main can use it once the
 # owner approves the run.
 /.github/CODEOWNERS @KellamA
 /.github/workflows/ @KellamA
