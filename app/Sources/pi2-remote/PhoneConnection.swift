@@ -618,11 +618,8 @@ final class PhoneConnection: @unchecked Sendable {
 	private func sendLast(_ messages: [Data]?) {
 		if case .ended = phase { return }
 		guard let messages else { return end() }
-		for message in messages {
-			guard let framed = try? LengthFraming.encode(message) else { break }
-			io.send(framed)
-		}
-		io.finish()
+		for message in messages { link.send(message) }
+		link.finish()
 	}
 
 	/// Ends the channel with `bye` and closes the connection.
