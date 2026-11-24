@@ -3,12 +3,13 @@
 // 127.0.0.1, answering as ChatGPT's Codex service, Anthropic, OpenAI and Google answer. No real provider is called.
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Api, createModels, type CreateModelsOptions, createProvider, InMemoryCredentialStore, type Model } from "@earendil-works/pi-ai";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
+import { providersEvent, wireDefaultModel } from "../src/defaultmodel.ts";
 import { CODEX_CLIENT_VERSION } from "../src/modellists.ts";
 import { Providers } from "../src/providers.ts";
 
@@ -25,10 +26,12 @@ const token = ["e30", Buffer.from(JSON.stringify({ "https://api.openai.com/auth"
 type Asked = { path: string; headers: Record<string, string | string[] | undefined> };
 const asked: Asked[] = [];
 const json = (response: import("node:http").ServerResponse, status: number, body: unknown) => response.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+let codexStatus = 200;
 const standIn = createServer((request, response) => {
 	const path = request.url ?? "";
 	asked.push({ path, headers: request.headers });
 	if (path === `/backend-api/codex/models?client_version=${CODEX_CLIENT_VERSION}`) {
+		if (codexStatus !== 200) return json(response, codexStatus, { error: "unavailable" });
 		return json(response, 200, {
 			models: [
 				{ slug: "gpt-6.1-sol", display_name: "GPT-6.1 Sol", visibility: "list" },
@@ -67,7 +70,7 @@ const origin = `http://127.0.0.1:${(standIn.address() as { port: number }).port}
 function chat(id: string, api: string, baseUrl: string, extra: Partial<Model<Api>> = {}): Model<Api> {
 	return { id, name: id, api, provider: "", baseUrl, reasoning: true, input: ["text", "image"], cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, contextWindow: 272_000, maxTokens: 64_000, ...extra } as Model<Api>;
 }
-const oauth = { name: "Sign-in", isSubscription: true, login: async () => Promise.reject(new Error("not in a test")), refresh: async (c: never) => c, toAuth: async (c: { access: string }) => ({ apiKey: c.access }) };
+const oauth = { name: "Sign-in", isSubscription: true, login: async () => ({ type: "oauth", access: token, refresh: "r", expires: Date.now() + 3_600_000 }), refresh: async (c: never) => c, toAuth: async (c: { access: string }) => ({ apiKey: c.access }) };
 const keyAuth = (name: string) => ({ name, resolve: async ({ credential }: { credential?: { key?: string } }) => (credential?.key ? { auth: { apiKey: credential.key } } : undefined) });
 let fetched = 0;
 
@@ -212,4 +215,52 @@ assert.equal(fetched, 2, "no credential stored: not asked");
 assert.deepEqual(providers.models.getModels("dynamic").map((m) => m.id), ["dyn-1", "dyn-2"]);
 step("the catalogs the library refreshes itself are refreshed at start and on asking, and kept for the next start");
 
+asked.length = 0;
+const now = Date.now();
+const refresh = providers.refreshCodexModels(now);
+assert.equal(providers.refreshCodexModels(now), refresh, "concurrent refreshes share one request");
+assert.equal(await refresh, true);
+assert.equal(asked.length, 1);
+const discovered = (await providers.listModels()).find((model) => model.id === "gpt-6.2-sol")!;
+assert.equal(discovered.name, "GPT-6.2 Sol");
+assert.equal(discovered.contextWindow, 600_000);
+assert.equal(discovered.addedByHand, undefined);
+const settings = { hiddenModels: { "openai-codex": ["gpt-6.2-sol"] } };
+wireDefaultModel({ settings, providers, saveSettings: () => {}, host: { features: [] } as never, log: () => {}, followersChanged: () => {} });
+assert.equal((await providersEvent()).models.find((model) => model.id === "gpt-6.2-sol")?.hidden, true, "discovery respects an explicitly hidden id");
+assert.deepEqual(settings.hiddenModels, { "openai-codex": ["gpt-6.2-sol"] });
+assert.equal(providers.models.getModel("openai-codex", "codex-internal"), undefined);
+assert.equal(await providers.refreshCodexModels(now + 1), false);
+assert.equal(asked.length, 1, "successful refresh is throttled");
+providers = open();
+assert.ok(providers.models.getModel("openai-codex", "gpt-6.2-sol"), "cached at startup before any request");
+codexStatus = 503;
+assert.equal(await providers.refreshCodexModels(now), false);
+assert.ok(providers.models.getModel("openai-codex", "gpt-6.2-sol"), "failure preserves cached models");
+const attempts = asked.length;
+assert.equal(await providers.refreshCodexModels(now + 1), false);
+assert.equal(asked.length, attempts, "errors are throttled too");
+codexStatus = 200;
+assert.equal(await providers.refreshCodexModels(now + 15 * 60_000), true, "retry recovers");
+await providers.addModel({ ...draft, provider: "openai-codex", name: "My chosen name" });
+assert.equal(await providers.refreshCodexModels(now + 7 * 60 * 60_000), true);
+assert.equal(providers.models.getModel("openai-codex", draft.id)?.name, "My chosen name", "manual choices win");
+await providers.logout("openai-codex");
+providers.removeModel("openai-codex", draft.id);
+assert.equal(providers.models.getModel("openai-codex", draft.id), undefined);
+const beforeLogoutRefresh = asked.length;
+assert.equal(await providers.refreshCodexModels(now + 8 * 60 * 60_000), false);
+assert.equal(asked.length, beforeLogoutRefresh, "signed out: no network request");
+assert.deepEqual(JSON.parse(readFileSync(join(home, "codex-models.json"), "utf8")), []);
+await providers.login("openai-codex", { notify: () => {}, prompt: async () => "" });
+assert.equal(await providers.refreshCodexModels(now + 8 * 60 * 60_000), true, "sign-in resets the throttle");
+assert.ok(providers.models.getModel("openai-codex", draft.id));
+const stale = providers.refreshCodexModels(now + 15 * 60 * 60_000);
+await providers.logout("openai-codex");
+await stale;
+assert.equal(providers.models.getModel("openai-codex", draft.id), undefined, "an in-flight refresh cannot restore signed-out models");
+step("automatic Codex discovery registers and caches models, coalesces and throttles requests, recovers offline, and preserves manual choices");
+
+writeFileSync(join(home, "codex-models.json"), "[null]");
+assert.doesNotThrow(() => open().models.getModels("openai-codex"), "a damaged cache does not break startup");
 standIn.close();

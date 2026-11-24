@@ -187,7 +187,7 @@ A development build measures this when asked: see [Measuring the app's speed](de
 | `src/versions.ts` | A chat's versions: Try Again, Edit and the step between them. See [A chat's versions](#a-chats-versions) |
 | `src/subchats.ts` | `sub_chats`: an agent lists the sub-chats it opened, stops the run of one that was overtaken as the person's Stop does (#789), and archives the finished ones. See [archive.md](archive.md#sub-chats-an-agent-puts-away) |
 | `src/subchatusage.ts` | The line saying what a sub-chat used (its requests and the time it worked, the tokens it read new and from the cache, what it wrote, its largest prompt), which `delegate` and `sub_chats` give the agent that handed out the work |
-| `src/providers.ts` | Built-in providers, models added to them by hand (`added-models.json`), custom endpoints, the scripted demo model |
+| `src/providers.ts` | Built-in providers, models added to them by hand (`added-models.json`), automatically discovered ChatGPT models (`codex-models.json`), custom endpoints, the scripted demo model |
 | `src/promptchanges.ts` | A changed section of the system prompt sent where it changed, as a note marked as pi²'s, to a model that does not take a later system message (#629), so the prompt's start and its cache stay. See [The system prompt's sections](#the-system-prompts-sections) |
 | `src/thinkingretry.ts` | A thinking level the provider refuses, naming those it takes (#363): reading that list, trying the nearest level once, the line in the conversation that says so, and the corrected list for the menus. See [A thinking level refused by a provider](#a-thinking-level-refused-by-a-provider) |
 | `src/networkwait.ts` | A request that failed because the network was away or the provider closed the stream (#550), told apart from an error the provider answered with, and waited out in the run's own retry, its count kept across restarts. See [limits.md](limits.md#when-the-network-drops) |
@@ -263,7 +263,13 @@ A development build measures this when asked: see [Measuring the app's speed](de
 
 Conversations, runs and tool calls are pi durable's. pi² adds a few documents of its own on top: the list of conversations with their titles and settings, the agents, the schedules, and a per-day record of spend.
 
-### A thinking level refused by a provider
+### Automatic ChatGPT models
+
+With a stored ChatGPT sign-in, the engine asks Codex for account-available models in the background at startup and after sign-in. A fifteen-minute timer checks whether another refresh is due: six hours after success, fifteen minutes after failure. Concurrent refreshes share one request. The existing listing request has a twenty-second network timeout and never follows redirects.
+
+Models missing from the library's catalog are registered using the provider's reported metadata, with unspecified capabilities taken from the nearest catalog model. They are cached in `codex-models.json`, separately from manual additions; manual settings and catalog entries take precedence. A failed refresh keeps the previous list. Signing out or signing in clears the discovered list and invalidates an older request. Discovery never writes `hiddenModels`: an explicitly hidden id stays hidden. The Codex client version used for listing still needs maintenance as the service evolves.
+
+## A thinking level refused by a provider
 
 If a provider refuses a request before the answer starts and explicitly lists the thinking levels it accepts, the engine tries the nearest one once (the lower one on a tie). A line in the conversation explains the retry; it is not sent to the model. Once the retry is accepted, the menus use the provider's list, even for a model from the catalog. For a model added by hand the list is also saved in `added-models.json`; a catalog correction lasts until the model is replaced or the engine restarts. If pi² cannot tell what the provider accepts, the error is shown as before.
 

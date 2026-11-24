@@ -93,6 +93,13 @@ export const providerRequests: Record<string, (params: Params, client: Client) =
 					}),
 			});
 			await announceProviders();
+			if (params.id === "openai-codex") {
+				void providers.refreshCodexModels().then(async () => {
+					// A refresh already running during sign-in belongs to the previous credential.
+					await providers.refreshCodexModels();
+					await announceProviders();
+				}).catch((error) => log("announcing ChatGPT models failed:", error));
+			}
 			return {};
 		} finally {
 			logins.delete(loginId);

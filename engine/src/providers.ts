@@ -751,6 +751,11 @@ export class Providers {
 	/** What each provider said of its models when last asked, by id: for adding one of them. */
 	readonly #listed = new Map<string, Map<string, ListedModel>>();
 	readonly #log: (...parts: unknown[]) => void;
+	readonly #discoveredPath: string;
+	#discovered: Model<Api>[] = [];
+	#codexRefresh: Promise<boolean> | undefined;
+	#codexNext = 0;
+	#codexGeneration = 0;
 
 	/**
 	 * `deviceId` returns this installation's stable UUID; some sign-ins (ChatGPT) identify the app by it. `builtins`
@@ -773,6 +778,15 @@ export class Providers {
 				identity: { attribution: { name: "pi2", url: "https://github.com/earendil-works/pi" } },
 			}),
 		);
+		this.#discoveredPath = join(home, "codex-models.json");
+		try {
+			const cached = JSON.parse(readFileSync(this.#discoveredPath, "utf8"));
+			if (Array.isArray(cached) && cached.every((model) => model !== null && typeof model === "object"
+				&& model.provider === "openai-codex" && typeof model.id === "string" && typeof model.name === "string"
+				&& model.api === "openai-codex-responses" && typeof model.baseUrl === "string"
+				&& Array.isArray(model.input) && Number.isInteger(model.contextWindow) && model.contextWindow > 0
+				&& Number.isInteger(model.maxTokens) && model.maxTokens > 0)) this.#discovered = cached;
+		} catch {}
 		this.#addedPath = join(home, "added-models.json");
 		try {
 			this.#added = JSON.parse(readFileSync(this.#addedPath, "utf8"));
@@ -815,7 +829,42 @@ export class Providers {
 			});
 			this.#built.set(providerId, built);
 		}
-		return built;
+		if (providerId !== "openai-codex") return built;
+		const known = new Set([...(this.#catalogs.get(providerId)?.getModels() ?? []), ...built].map((model) => model.id));
+		return [...built, ...this.#discovered.filter((model) => !known.has(model.id))];
+	}
+
+	/** Background, account-aware discovery. Failures keep the last usable list and never prevent sign-in or startup. */
+	refreshCodexModels(now = Date.now()): Promise<boolean> {
+		if (this.#codexRefresh !== undefined) return this.#codexRefresh;
+		if (now < this.#codexNext) return Promise.resolve(false);
+		this.#codexNext = now + 15 * 60_000;
+		const generation = this.#codexGeneration;
+		this.#codexRefresh = (async () => {
+			try {
+				const credential = await this.#credentials.read("openai-codex");
+				if (credential?.type !== "oauth") return false;
+				const listing = await this.askProvider("openai-codex");
+				const catalog = this.#catalog("openai-codex");
+				const discovered: Model<Api>[] = [];
+				for (const item of listing.models) {
+					if (item.known || item.addedByHand) continue;
+					const draft = this.draftModel("openai-codex", item.id);
+					const template = catalog.getModels().find((model) => model.id === draft.basedOn)!;
+					discovered.push(buildAdded(template, draft, "openai-codex"));
+				}
+				if (generation !== this.#codexGeneration) return false;
+				// Save before publishing: a failed write leaves the previous working list intact.
+				writeFileSync(this.#discoveredPath, JSON.stringify(discovered));
+				this.#discovered = discovered;
+				this.#codexNext = now + 6 * 60 * 60_000;
+				return true;
+			} catch {
+				this.#log("ChatGPT model refresh failed; keeping the previous models and retrying later");
+				return false;
+			}
+		})().finally(() => { this.#codexRefresh = undefined; });
+		return this.#codexRefresh;
 	}
 
 	/** Whether `id` is a model added by hand to `providerId` that its catalog does not list, so is in use as added. */
@@ -1158,6 +1207,14 @@ export class Providers {
 
 	async logout(providerId: string): Promise<void> {
 		await this.models.logout(providerId);
+		if (providerId === "openai-codex") {
+			this.#codexGeneration++;
+			this.#codexNext = 0;
+			this.#discovered = [];
+			try { writeFileSync(this.#discoveredPath, "[]"); } catch {
+				this.#log("could not clear the cached ChatGPT models after sign-out");
+			}
+		}
 	}
 
 	/** Subscription or OAuth sign-in. pi-ai drives the flow and stores the credential. */
@@ -1165,6 +1222,14 @@ export class Providers {
 		const provider = this.models.getProvider(providerId);
 		if (provider?.auth.oauth === undefined) throw new Error(`${providerId} has no sign-in flow`);
 		await this.models.login(providerId, "oauth", interaction, { getDeviceId: this.#deviceId, agentName: "pi2" });
+		if (providerId === "openai-codex") {
+			this.#codexGeneration++;
+			this.#codexNext = 0;
+			this.#discovered = [];
+			try { writeFileSync(this.#discoveredPath, "[]"); } catch {
+				this.#log("could not clear the cached ChatGPT models after sign-in");
+			}
+		}
 	}
 
 	// ---- The user's own endpoints

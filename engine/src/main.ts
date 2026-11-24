@@ -1484,6 +1484,13 @@ void providers
 	})
 	.catch((error) => log("refreshing the providers' lists of models failed:", error));
 
+// Account-available ChatGPT models are independent of the library's static catalog.
+const refreshCodexModels = async () => {
+	if (await providers.refreshCodexModels()) await announceProviders();
+};
+void refreshCodexModels().catch((error) => log("announcing ChatGPT models failed:", error));
+setInterval(() => void refreshCodexModels().catch((error) => log("announcing ChatGPT models failed:", error)), 15 * 60_000).unref();
+
 // ---- Schedules
 
 await harness.commit(async (tx) => void (await tx.doc(Schedules)), context);
