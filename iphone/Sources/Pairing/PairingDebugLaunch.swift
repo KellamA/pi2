@@ -1,6 +1,7 @@
 
 #if DEBUG
 import Foundation
+import os
 
 /// A debug build's way to hand the pairing screens a code, since the simulator has no camera (docs/iphone.md 10): the
 /// payload's text in `PI2_PAIR` (`scripts/iphone-sim run … --env PI2_PAIR='pi2://pair?…'`), taken as if scanned, by
@@ -9,6 +10,15 @@ import Foundation
 enum PairingDebugLaunch {
     static var payload: String? {
         ProcessInfo.processInfo.environment["PI2_PAIR"].flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    /// Says the six digits in the log, in the simulator and only for a code given in `PI2_PAIR`, so that
+    /// `scripts/test-copy pair` can type them on the Mac as the person would after reading them here (section 10).
+    static func shown(digits: String) {
+        #if targetEnvironment(simulator)
+        guard payload != nil else { return }
+        Logger(subsystem: "dev.pi2.ios", category: "pairing").notice("digits shown: \(digits, privacy: .public)")
+        #endif
     }
 }
 #endif

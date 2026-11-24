@@ -34,7 +34,7 @@ export type Device = {
 	pendingPresenceKey: string | null; // a new one, until the person accepts it on the Mac
 	channelKey: string; // 32 raw Curve25519 bytes in base64url; "" once revoked
 	recordKey: string; // SPKI DER in base64url; "" once revoked
-	attestKeyId: string; // the App Attest key the Mac checked at pairing, as DCAppAttestService names it (base64)
+	attestKeyId: string; // the App Attest key the Mac checked at pairing, as DCAppAttestService names it (base64); "" for a simulator a test copy paired
 	build: string;
 	suspendedAt: number | null;
 	pairedAt: number;
@@ -1039,26 +1039,32 @@ async function checkClaim(open: PairingWindow, params: Params): Promise<Claim> {
 	const claimedHash = keyHash(device.deviceKey as string);
 	if (state.devices.some((one) => one.deviceKeyHash !== undefined && sameText(one.deviceKeyHash, claimedHash))) throw new Error("That device key was revoked on this Mac.");
 
-	// App Attest (P37): a genuine pi² for iPhone vouches for this very device key on this very channel.
-	const attestation = fromBase64url(claim.attestation);
-	const keyId = fromBase64(claim.keyId, 32);
-	if (attestation === null || attestation.length === 0 || keyId === null) throw new Error("The claim has no App Attest attestation.");
-	if (state.devices.some((one) => sameText(one.attestKeyId, claim.keyId as string))) throw new Error("That App Attest key is tied to another pairing already.");
-	const teamId = testSwitch("PI2_APP_ATTEST_TEAM") ?? IPHONE_TEAM_ID;
-	if (teamId === null) throw new Error("This build of pi² cannot check App Attest yet: it does not know pi²'s team id.");
-	const clientDataHash = createHash("sha256").update(challenge).update(fromBase64url(device.deviceKey)!).update(binding).digest();
-	const check: Verify = testSwitch("PI2_APP_ATTEST_STAND_IN") === "1" ? standInVerify : (bytes, expected) => verifyAttestation(bytes, expected);
-	let attested: AppAttestResult;
-	try {
-		// No `now`: an attestation is checked as it arrives, at the Mac's own time (appattest.ts).
-		attested = await check(attestation, { teamId, bundleId: IPHONE_BUNDLE_ID, keyId, clientDataHash, environments: takenEnvironments() });
-	} catch (error) {
-		throw new Error(`App Attest: ${error instanceof Error ? error.message : String(error)}`);
+	// A build without App Attest (the simulator) sends none (attestation and keyId null). Only a throwaway copy's engine
+	// takes it, one scripts/test-copy started with --remote, and never a release engine, which reads no test switch
+	// (iphone.md 10). Such a device is paired with no App Attest key, and pi² Remote is told none.
+	const unattested = claim.attestation === null && claim.keyId === null && !release && testSwitch("PI2_TEST_COPY") !== undefined && testSwitch("PI2_PAIR_UNATTESTED") === "1";
+	if (!unattested) {
+		// App Attest (P37): a genuine pi² for iPhone vouches for this very device key on this very channel.
+		const attestation = fromBase64url(claim.attestation);
+		const keyId = fromBase64(claim.keyId, 32);
+		if (attestation === null || attestation.length === 0 || keyId === null) throw new Error("The claim has no App Attest attestation.");
+		if (state.devices.some((one) => sameText(one.attestKeyId, claim.keyId as string))) throw new Error("That App Attest key is tied to another pairing already.");
+		const teamId = testSwitch("PI2_APP_ATTEST_TEAM") ?? IPHONE_TEAM_ID;
+		if (teamId === null) throw new Error("This build of pi² cannot check App Attest yet: it does not know pi²'s team id.");
+		const clientDataHash = createHash("sha256").update(challenge).update(fromBase64url(device.deviceKey)!).update(binding).digest();
+		const check: Verify = testSwitch("PI2_APP_ATTEST_STAND_IN") === "1" ? standInVerify : (bytes, expected) => verifyAttestation(bytes, expected);
+		let attested: AppAttestResult;
+		try {
+			// No `now`: an attestation is checked as it arrives, at the Mac's own time (appattest.ts).
+			attested = await check(attestation, { teamId, bundleId: IPHONE_BUNDLE_ID, keyId, clientDataHash, environments: takenEnvironments() });
+		} catch (error) {
+			throw new Error(`App Attest: ${error instanceof Error ? error.message : String(error)}`);
+		}
+		if (attested.validationCategory === null || !takenCategories().includes(attested.validationCategory)) {
+			throw new Error(`App Attest: the app was not launched as a ${release ? "distributed" : "distributed or development"} build of pi² for iPhone.`);
+		}
+		if (attested.bundleVersion === null || !sameText(attested.bundleVersion, device.build as string)) throw new Error("App Attest: the app's build is not the one the claim names.");
 	}
-	if (attested.validationCategory === null || !takenCategories().includes(attested.validationCategory)) {
-		throw new Error(`App Attest: the app was not launched as a ${release ? "distributed" : "distributed or development"} build of pi² for iPhone.`);
-	}
-	if (attested.bundleVersion === null || !sameText(attested.bundleVersion, device.build as string)) throw new Error("App Attest: the app's build is not the one the claim names.");
 
 	const replaces = activeDevices().find((one) => one.name === device.name && one.model === device.model)?.id ?? null;
 	return {
@@ -1066,7 +1072,7 @@ async function checkClaim(open: PairingWindow, params: Params): Promise<Claim> {
 		at: Date.now(),
 		path: params.path,
 		device: device as ClaimedDevice,
-		attestKeyId: claim.keyId as string,
+		attestKeyId: unattested ? "" : (claim.keyId as string),
 		digits: pairingDigits(open.secret, binding),
 		wrongDigits: 0,
 		replaces,
@@ -1142,7 +1148,7 @@ async function pairConfirm(params: Params): Promise<{ device: string }> {
 	remoteHooks.toHelper({
 		kind: "paired",
 		claim: claim.id,
-		device: { id: device.id, deviceKey: device.deviceKey, presenceKey: device.presenceKey, channelKey: device.channelKey, recordKey: device.recordKey, attestKeyId: device.attestKeyId },
+		device: { id: device.id, deviceKey: device.deviceKey, presenceKey: device.presenceKey, channelKey: device.channelKey, recordKey: device.recordKey, attestKeyId: device.attestKeyId === "" ? null : device.attestKeyId },
 		paired: { device: device.id, pairing: state.pairing, name: macName(), addresses },
 	});
 	await logDevice({ device: device.id, path: claim.path, method: "pair", summary: summarize("pair", {}), presence: false, outcome: "done" }, true);

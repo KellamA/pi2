@@ -37,6 +37,8 @@ import { fileURLToPath } from "node:url";
  * (localmodels.ts), and for paired devices (#673): `PI2_REMOTE_STAND_IN`, a program run with the engine's own Node in place
  * of pi² Remote (remote.ts); `PI2_APP_ATTEST_STAND_IN`, which takes a test's own attestations in place of App Attest's,
  * and `PI2_APP_ATTEST_TEAM`, the team id a pairing claim's attestation is checked against (devices.ts);
+ * `PI2_PAIR_UNATTESTED`, which with `PI2_TEST_COPY` takes a claim with no attestation, from the simulator (devices.ts,
+ * set by `scripts/test-copy start --remote`, #681);
  * `PI2_UNPLACED_HANDLER`, a request added to the engine's table and placed in no list, which must stop it starting
  * (main.ts); `PI2_DEVICE_SESSION_MS`, the engine's own bound on a device session, shortened (remote.ts). The tunings
  * only tests change: `PI2_AWAKE_GRACE_MS`, `PI2_AWAKE_POLL_MS` (keepawake.ts),
@@ -79,6 +81,7 @@ export const TEST_SWITCHES = [
 	"PI2_LOCAL_RUN_RETRY_MS",
 	"PI2_LOCAL_STALL_MS",
 	"PI2_OUTPUT_WAIT_SECONDS",
+	"PI2_PAIR_UNATTESTED",
 	"PI2_REMOTE_STAND_IN",
 	"PI2_RESTORE_COMMIT_GATE",
 	"PI2_TEST_ALLOW_ADDRESS",

@@ -487,6 +487,55 @@ class Phone {
 	step("a pairing whose device cannot be saved is refused to the phone, not left without an answer");
 }
 
+// ---- A claim with no attestation, from the simulator: only a test copy's engine started with --remote takes it (10)
+
+{
+	const unattested = async (release: boolean, env: Record<string, string | undefined>) => {
+		for (const [name, value] of Object.entries(env)) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+		const harness = await Harness.open(await openNodeSqliteStorage(join(mkdtempSync(join(work, "unattested-")), "session.sqlite")), { registry: createRegistry(), models: createModels() }, context);
+		const pairing = b64url(randomBytes(16));
+		await harness.commit(async (tx) => {
+			const doc = await tx.doc(Devices);
+			Object.assign(doc, { pairing, relay: "ws://127.0.0.1:9/v1", macKeys: { identity: spki(p256().publicKey), channel: b64url(randomBytes(32)), record: spki(p256().publicKey), relay: spki(p256().publicKey), secureEnclave: false } });
+			doc.remote = { ...doc.remote, preview: true, on: true };
+		}, context);
+		await wireDevices({ harness, context, log: () => {}, release, names: { conversation: () => undefined, project: () => undefined } });
+		const told: any[] = [];
+		Object.assign(remoteHooks, { toHelper: (event: unknown) => told.push(event), ready: async () => ({ addresses: [] }), addresses: () => [], changed: () => {} });
+		const client = { socket: { write: () => true, destroyed: false, destroy: () => {} }, subscriptions: new Map(), shown: new Set() } as unknown as Client;
+		const { payload } = (await deviceRequests["devices.pairStart"]!({}, client)) as { payload: string };
+		const secret = Buffer.from(new URL(payload).searchParams.get("s")!, "base64url");
+		const binding = randomBytes(32);
+		const challenge = randomBytes(32);
+		const line: any = new Phone("Simulator").claim(pairing, binding, challenge);
+		line.attestation = null;
+		line.keyId = null;
+		const digits = String(createHmac("sha256", secret).update(Buffer.concat([Buffer.from("pi2-digits"), Buffer.from([0]), binding])).digest().readUInt32BE(0) % 1_000_000).padStart(6, "0");
+		try {
+			await pairClaim({ claim: line, binding: b64url(binding), challenge: b64url(challenge), path: "home" });
+			await deviceRequests["devices.pairConfirm"]!({ digits }, client);
+			return { paired: told.find((event) => event.kind === "paired"), devices: devicesState().devices };
+		} finally {
+			await harness.close(context);
+		}
+	};
+	const copy = { PI2_TEST_COPY: "test-681", PI2_PAIR_UNATTESTED: "1" };
+	const { paired, devices } = await unattested(false, copy);
+	assert.equal(paired.device.attestKeyId, null, "pi² Remote is told the device has no App Attest key");
+	assert.equal(devices.length, 1);
+	assert.equal(devices[0]!.attestKeyId, "", "and the engine keeps none");
+	await assert.rejects(unattested(false, { ...copy, PI2_PAIR_UNATTESTED: undefined }), /no App Attest attestation/, "a test copy not started with --remote");
+	await assert.rejects(unattested(false, { ...copy, PI2_TEST_COPY: undefined }), /no App Attest attestation/, "the switch outside a test copy");
+	await assert.rejects(unattested(false, { ...copy, PI2_PAIR_UNATTESTED: "yes" }), /no App Attest attestation/, "a switch that is not 1");
+	await assert.rejects(unattested(true, copy), /no App Attest attestation/, "a release engine");
+	delete process.env.PI2_TEST_COPY;
+	delete process.env.PI2_PAIR_UNATTESTED;
+	step("a claim with no attestation pairs only in a test copy's development engine started with --remote, with no App Attest key kept or told");
+}
+
 // ---- A real engine, and this test as its pi² Remote
 
 const home = mkdtempSync(join(work, "home-"));

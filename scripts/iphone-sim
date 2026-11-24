@@ -6,7 +6,8 @@
 #   scripts/iphone-sim create <name> [--type <device type>] [--runtime <runtime>] [--derived-data <folder>]
 #   scripts/iphone-sim build <name> [--release] [--derived-data <folder>] [-- <xcodebuild options>]
 #   scripts/iphone-sim test <name> [--derived-data <folder>] [-- <xcodebuild options>]
-#   scripts/iphone-sim run <name> [--release] [--derived-data <folder>] [--env NAME=VALUE]... [-- <launch arguments>]
+#   scripts/iphone-sim run <name> [--release] [--fresh] [--derived-data <folder>] [--env NAME=VALUE]... [-- <launch arguments>]
+#   scripts/iphone-sim face-id <name> enrol|match|no-match
 #   scripts/iphone-sim shot <name> <file.png> [--appearance light|dark] [--text-size <size>]
 #   scripts/iphone-sim appearance <name> light|dark
 #   scripts/iphone-sim text-size <name> <size>
@@ -45,6 +46,11 @@ pi2-681); every command but create works only on a simulator this checkout's cre
                          -resultBundlePath <path>, and nothing else.
   run <name>             Boot it, install what build made and launch it. --release for the Release build,
                          --env NAME=VALUE (repeatable) for the app's environment; after --, its launch arguments.
+                         --fresh uninstalls the app first, so it starts with nothing of an earlier run: no
+                         pairing, no keys, no store.
+  face-id <name> enrol|match|no-match
+                         The simulator's Face ID, as Simulator's Features › Face ID does: enrol a face (pairing
+                         needs one), or answer the prompt on screen with a matching face or another one.
   shot <name> <file.png> Take a picture of its screen. --appearance light|dark and --text-size <size> set them first.
   appearance <name> light|dark
   text-size <name> <size>  extra-small, small, medium, large (the default), extra-large, extra-extra-large,
@@ -275,9 +281,11 @@ run)
 	configuration=Debug
 	child_env=()
 	arguments=()
+	fresh=0
 	while (($#)); do
 		case $1 in
 		--release) configuration=Release ;;
+		--fresh) fresh=1 ;;
 		--derived-data) (($# >= 2)) || refuse "--derived-data needs a folder"; derived_data=$2; shift ;;
 		--env)
 			(($# >= 2)) || refuse "--env needs NAME=VALUE"
@@ -287,7 +295,7 @@ run)
 			shift
 			;;
 		--) shift; arguments=("$@"); break ;;
-		*) refuse "run takes --release, --derived-data, --env NAME=VALUE and, after --, the app's arguments, not $1" ;;
+		*) refuse "run takes --release, --fresh, --derived-data, --env NAME=VALUE and, after --, the app's arguments, not $1" ;;
 		esac
 		shift
 	done
@@ -295,9 +303,31 @@ run)
 	app="$derived_data/Build/Products/$configuration-iphonesimulator/pi2.app"
 	[[ -d $app ]] || refuse "no $configuration build in $derived_data: scripts/iphone-sim build $name$([[ $configuration == Release ]] && echo ' --release') first"
 	boot
+	# An app not installed is no failure here: there is nothing of an earlier run to remove.
+	((fresh == 0)) || xcrun simctl uninstall "$udid" "$bundle_id" || true
 	xcrun simctl install "$udid" "$app" || die "could not install $app"
 	env ${child_env[@]+"${child_env[@]}"} xcrun simctl launch --terminate-running-process "$udid" "$bundle_id" \
 		${arguments[@]+"${arguments[@]}"} || die "could not launch $bundle_id"
+	;;
+
+face-id)
+	(($# == 2)) || refuse "face-id takes a simulator's name and enrol, match or no-match"
+	case $2 in
+	enrol | match | no-match) ;;
+	*) refuse "face-id takes enrol, match or no-match, not '$2'" ;;
+	esac
+	resolve "$1"
+	boot
+	# What Simulator's Features › Face ID menu does, by the notifications its items post inside the simulator. Nothing
+	# is asked of the Mac: notifyutil runs in the simulator's own launchd.
+	case $2 in
+	enrol)
+		xcrun simctl spawn "$udid" notifyutil -s com.apple.BiometricKit.enrollmentChanged 1 &&
+			xcrun simctl spawn "$udid" notifyutil -p com.apple.BiometricKit.enrollmentChanged || die "could not enrol a face"
+		;;
+	match) xcrun simctl spawn "$udid" notifyutil -p com.apple.BiometricKit_Sim.pearl.match || die "could not answer Face ID" ;;
+	no-match) xcrun simctl spawn "$udid" notifyutil -p com.apple.BiometricKit_Sim.pearl.nomatch || die "could not answer Face ID" ;;
+	esac
 	;;
 
 shot)

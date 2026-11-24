@@ -84,6 +84,7 @@ const SWITCHES: Record<string, string> = {
 	PI2_REMOTE_STAND_IN: join(work, "no-remote.mjs"),
 	PI2_APP_ATTEST_STAND_IN: "1",
 	PI2_APP_ATTEST_TEAM: "ABCDE12345",
+	PI2_PAIR_UNATTESTED: "1",
 	PI2_UNPLACED_HANDLER: "",
 	PI2_DEVICE_SESSION_MS: "86400000",
 	// The tunings, at their usual values.

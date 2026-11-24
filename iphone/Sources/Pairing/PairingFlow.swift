@@ -112,6 +112,9 @@ final class PairingFlow {
 
     private func showDigits(_ digits: String, mac: String, path: AppSession.Path) {
         if case .reaching = step { step = .digits(digits, mac: mac, path: path) }
+        #if DEBUG
+        PairingDebugLaunch.shown(digits: digits)
+        #endif
     }
 }
 
