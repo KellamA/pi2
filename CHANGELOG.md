@@ -6,6 +6,18 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 What the next version will have is in [changelog.d](changelog.d/), a file for each entry, until a release gathers them here.
 
+## 0.8.11
+
+### Fixed
+- In a test copy of pi² parked off the screen, the computer tool's click or context menu at a point in the picture went as a real click, which the copy ignored, instead of acting on the listed control there; it now acts on that control.
+- While pi²'s window was busy for a while, such as drawing a long conversation, every conversation, agent and connected phone could stop until the window caught up; now they carry on.
+
+### For contributors
+- pi² Remote, the helper the engine starts for a paired iPhone (docs/pi2-remote.md), is built into the app as `Contents/Helpers/pi² Remote.app`, packaged and signed by `app/remote-helper.sh` (an owner's path), and `app/check-release-build.mts` checks a release build's helper: its signature, team, hardened runtime, entitlements and that it is not a development build. A development build's runs in loopback mode only and cannot ask macOS for anything; `pi2-remote-helper-check` checks it in CI, with a real engine and a phone pairing and attaching over 127.0.0.1. `scripts/check-protected-targets` now also holds pi² Remote's targets, the Swift tools version and the package's language mode, and refuses `@testable import` of RemoteKit or pi² Remote.
+- The relay has a check that it sees only sealed bytes: `scripts/relay-protocol-test --sealed` runs a marker session of RemoteKit's two ends through the relay with a recorder at its edge, and fails if any marker or secret shows in what the relay saw, kept or left in its files, if any message or stored field is not on the allow-list of what the relay may see, or if a marker planted in clear goes unfound. `relay/test/sealed.test.ts` checks that its logs stay off and nothing writes to the console. CI runs both.
+- The iPhone app's check, `iPhone app (tests and Release build)`, is now a job of CI (`ci.yml`) rather than a workflow of its own. The same first job that decides on the macOS jobs decides on it. It runs for a change to what the phone is built from, including the transcript page its conversation screen draws (`app/Web/transcript/`). Otherwise it is skipped, which reports the check as passed. So the check can be one of `main`'s required checks once the owner adds it. A run of it that no runner took is now run again by itself, as the other CI jobs are.
+- What CI's first job decides is now `scripts/ci-changes`, an owner's path, held to its cases by `scripts/test-ci-changes` in `Scripts (tests)`. A run on `main` is no longer cancelled as a whole by the next push: the phone's job finishes for every merge that touches the phone, and the macOS jobs on `main` still cancel their own older runs.
+
 ## 0.8.10
 
 ### Added
