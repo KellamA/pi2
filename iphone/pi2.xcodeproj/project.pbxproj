@@ -13,9 +13,11 @@
 		680E00000000000000000311 /* PiModels in Frameworks */ = {isa = PBXBuildFile; productRef = 680E00000000000000000401 /* PiModels */; };
 		680E00000000000000000312 /* PiModels in Frameworks */ = {isa = PBXBuildFile; productRef = 680E00000000000000000402 /* PiModels */; };
 		680E00000000000000000313 /* PiModels in Frameworks */ = {isa = PBXBuildFile; productRef = 680E00000000000000000403 /* PiModels */; };
+		680E00000000000000000314 /* RemoteKit in Frameworks */ = {isa = PBXBuildFile; productRef = 680E00000000000000000404 /* RemoteKit */; };
 		680000000000000000000301 /* PiModels in Frameworks */ = {isa = PBXBuildFile; productRef = 680000000000000000000401 /* PiModels */; };
 		680000000000000000000302 /* EngineKit in Frameworks */ = {isa = PBXBuildFile; productRef = 680000000000000000000402 /* EngineKit */; };
 		680000000000000000000303 /* TranscriptKit in Frameworks */ = {isa = PBXBuildFile; productRef = 680000000000000000000403 /* TranscriptKit */; };
+		680000000000000000000304 /* RemoteKit in Frameworks */ = {isa = PBXBuildFile; productRef = 680000000000000000000404 /* RemoteKit */; };
 		680000000000000000000305 /* session.jsonl in Resources */ = {isa = PBXBuildFile; fileRef = 680000000000000000000103 /* session.jsonl */; };
 /* End PBXBuildFile section */
 
@@ -119,6 +121,7 @@
 				680000000000000000000301 /* PiModels in Frameworks */,
 				680000000000000000000302 /* EngineKit in Frameworks */,
 				680000000000000000000303 /* TranscriptKit in Frameworks */,
+				680000000000000000000304 /* RemoteKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -134,6 +137,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				680E00000000000000000311 /* PiModels in Frameworks */,
+				680E00000000000000000314 /* RemoteKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -215,6 +219,7 @@
 				680000000000000000000401 /* PiModels */,
 				680000000000000000000402 /* EngineKit */,
 				680000000000000000000403 /* TranscriptKit */,
+				680000000000000000000404 /* RemoteKit */,
 			);
 			productName = pi2;
 			productReference = 680000000000000000000101 /* pi2.app */;
@@ -262,6 +267,7 @@
 			name = NotificationService;
 			packageProductDependencies = (
 				680E00000000000000000401 /* PiModels */,
+				680E00000000000000000404 /* RemoteKit */,
 			);
 			productName = NotificationService;
 			productReference = 680E00000000000000000101 /* NotificationService.appex */;
@@ -804,6 +810,11 @@
 			package = 680000000000000000000901 /* XCLocalSwiftPackageReference "../app" */;
 			productName = PiModels;
 		};
+		680E00000000000000000404 /* RemoteKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 680000000000000000000901 /* XCLocalSwiftPackageReference "../app" */;
+			productName = RemoteKit;
+		};
 		680E00000000000000000402 /* PiModels */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 680000000000000000000901 /* XCLocalSwiftPackageReference "../app" */;
@@ -828,6 +839,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 680000000000000000000901 /* XCLocalSwiftPackageReference "../app" */;
 			productName = TranscriptKit;
+		};
+		680000000000000000000404 /* RemoteKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 680000000000000000000901 /* XCLocalSwiftPackageReference "../app" */;
+			productName = RemoteKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
