@@ -252,6 +252,113 @@ struct AppCallsTests {
         _ = surfaces
     }
 
+    // MARK: - The Live Activity (#700)
+
+    /// ActivityKit standing in: what runs, and every call.
+    @MainActor
+    final class StandInActivities: ProjectActivityControl {
+        var areAllowed = true
+        var refusal: ProjectActivityRefusal?
+        var running: [String: ProjectActivities.State] = [:]
+        var calls: [String] = []
+
+        func shown(projectID: String) -> ProjectActivities.State? { running[projectID] }
+
+        func start(projectID: String, projectName: String, state: ProjectActivities.State) async throws {
+            calls.append("start \(projectName)")
+            if let refusal { throw refusal }
+            running[projectID] = state
+        }
+
+        func end(projectID: String) async {
+            calls.append("end \(projectID)")
+            running[projectID] = nil
+        }
+
+        func endAll() async {
+            calls.append("endAll")
+            running = [:]
+        }
+
+        func reconcile(followed: [(id: String, name: String)], state: (String) -> ProjectActivities.State?) async -> [String: ProjectActivityRefusal] {
+            calls.append("reconcile \(followed.map(\.name).joined(separator: ","))")
+            for project in followed { running[project.id] = state(project.id) }
+            return [:]
+        }
+    }
+
+    @Test func theSwitchStartsAndEndsTheProjectsActivityAndIsKept() async throws {
+        let session = try await Self.replay()
+        let control = StandInActivities()
+        let file = try Self.folder("live").appending(path: "followed.json")
+        let surfaces = PhoneSurfaces(session: session, widgets: try Widgets().publisher, paired: { true }, lastHeard: { nil }, activityControl: control, activitiesFile: file)
+        let project = try #require(session.engine.projects.first { $0.name == "Demo project" })
+        let following = surfaces.activities
+        #expect(!following.isOn(project.id), "off by default")
+
+        await following.turnOn(project)
+        #expect(control.calls == ["start Demo project"])
+        let started = try #require(control.running[project.id])
+        let counted = ProjectActivities.State.counted(projectID: project.id, activity: session.engine.activity, needs: session.engine.needs, finished: 0, at: Date())
+        #expect((started.working, started.needs, started.finished) == (counted.working, counted.needs, 0), "the project's numbers, as the Mac counts them")
+        #expect(following.isOn(project.id))
+        #expect(ProjectActivityFollowing(session: session, control: control, file: file, heardAt: { nil }).isOn(project.id), "kept on the phone")
+
+        await following.turnOff(project.id)
+        #expect(control.calls.last == "end \(project.id)")
+        #expect(!following.isOn(project.id))
+        #expect(!ProjectActivityFollowing(session: session, control: control, file: file, heardAt: { nil }).isOn(project.id))
+    }
+
+    @Test func aRefusalShowsUnderTheSwitchWhichStaysOff() async throws {
+        let session = try await Self.replay()
+        let control = StandInActivities()
+        let surfaces = PhoneSurfaces(session: session, widgets: try Widgets().publisher, paired: { true }, lastHeard: { nil }, activityControl: control, activitiesFile: nil)
+        let project = try #require(session.engine.projects.first)
+
+        control.areAllowed = false
+        await surfaces.activities.turnOn(project)
+        #expect(!surfaces.activities.allowed)
+        #expect(surfaces.activities.problems[project.id] == ProjectActivityRefusal.notAllowed.words)
+        #expect(control.calls.isEmpty, "nothing asked of iOS while it has them off")
+
+        control.areAllowed = true
+        control.refusal = ProjectActivityRefusal(words: "iOS shows too many Live Activities already. End one, then try again.")
+        await surfaces.activities.turnOn(project)
+        #expect(surfaces.activities.problems[project.id] == control.refusal?.words)
+        #expect(!surfaces.activities.isOn(project.id))
+    }
+
+    @Test func theForegroundReconcilesAndTheEndOfThePairingEndsThemAll() async throws {
+        let session = try await Self.replay()
+        let control = StandInActivities()
+        let file = try Self.folder("live").appending(path: "followed.json")
+        let surfaces = PhoneSurfaces(session: session, widgets: try Widgets().publisher, paired: { true }, lastHeard: { nil }, activityControl: control, activitiesFile: file)
+        let project = try #require(session.engine.projects.first { $0.name == "Demo project 2" })
+        await surfaces.activities.turnOn(project)
+        control.calls = []
+        // iOS ended it meanwhile (eight hours): coming to the foreground brings it back in line.
+        control.running = [:]
+        surfaces.movedToForeground()
+        #expect(await Wait.until { control.calls.contains("reconcile Demo project 2") })
+        #expect(control.running[project.id] != nil)
+        surfaces.movedToBackground()
+
+        surfaces.pairingEnded()
+        #expect(await Wait.until { control.calls.last == "endAll" })
+        #expect(surfaces.activities.followed.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+    }
+
+    @Test func aLiveActivitysTapOpensTheProjectsHubOnNow() {
+        #expect(PhoneSurfaces.route(for: ProjectActivityLink(projectID: "p-1").url) == .project("p-1", tab: .now))
+    }
+
+    @Test func theSwitchsWordsAreTheContracts() {
+        #expect(ProjectLiveActivitySection.line.contains("can read these three numbers; never the project’s name"))
+        #expect(ProjectActivityRefusal.notAllowed.words == "Live Activities are off for pi². Turn them on in Settings › pi² › Live Activities.")
+    }
+
     @Test func aTapWaitsAsTheRouteToOpen() async throws {
         let session = AppSession()
         let surfaces = PhoneSurfaces(session: session, widgets: try Widgets().publisher, paired: { false }, lastHeard: { nil })

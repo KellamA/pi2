@@ -35,12 +35,15 @@ struct RootView: View {
                 switch phase {
                 case .active:
                     if let swept = link?.store.sweep() { surfaces?.swept(swept) }
-                    surfaces?.movedToForeground()
                 case .background:
                     link?.store.saveNow()
                     surfaces?.movedToBackground()
                 default: break
                 }
+            }
+            // At launch too: the share sheet's drafts and the Live Activities are taken in hand in the foreground.
+            .onChange(of: phase, initial: true) { _, phase in
+                if phase == .active { surfaces?.movedToForeground() }
             }
             // A widget's or a Live Activity's tap: its route waits until Face ID has opened the session.
             .onOpenURL { url in surfaces?.open(url) }

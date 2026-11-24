@@ -92,6 +92,7 @@ struct ProjectSettingsForm: View {
                 orchestratorSection.id("orchestrator")
                 switchesSection.id("switches")
                 reportsSection.id("reports")
+                ProjectLiveActivitySection(project: project).id("live-activity")
                 limitsSection.id("limits")
                 schedulesSection.id("schedules")
                 lifecycleSection.id("lifecycle")

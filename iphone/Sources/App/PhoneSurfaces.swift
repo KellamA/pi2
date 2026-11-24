@@ -15,6 +15,9 @@ import PiModels
 /// A notification's tap opens its card's screen (`AppNotifications`); a need the Mac no longer lists takes its
 /// notifications away, and so does the end of the pairing, with the service extension's own file (`PushInbox`).
 ///
+/// The followed projects' Live Activities (`activities`) are brought in line as the app comes to the foreground and as
+/// the Mac's numbers change while it is in front, and all ended when the pairing ends; a tap on one opens its hub.
+///
 /// It follows the session's state itself (`withObservationTracking`), not a view, so that it keeps the widgets in step
 /// while iOS has pi² running in the background with no scene, as for a Shortcut. What is written for an extension goes
 /// in the app group's container, which an unsigned build does not have (#682): there each write does nothing.
@@ -23,6 +26,10 @@ import PiModels
 final class PhoneSurfaces {
     let session: AppSession
     @ObservationIgnored let widgets: WidgetsPublisher
+    /// The projects whose Live Activity the person turned on, which a project's settings switch.
+    let activities: ProjectActivityFollowing
+    /// Whether the app is in the foreground: only then may a Live Activity be started.
+    @ObservationIgnored private(set) var inForeground = false
     /// The share extension's folder: nil without the app group (#682), as in an unsigned build.
     @ObservationIgnored let share: ShareDrop?
     /// How a draft from the share sheet can go now: on the channel, into the Outbox, or not at all.
@@ -62,7 +69,9 @@ final class PhoneSurfaces {
         keep: @escaping @MainActor (_ method: String, _ params: [String: Any]) throws -> Void = { _, _ in throw StoreError("Open pi² with Face ID first.") },
         pushInbox: PushInbox? = nil,
         takeAway: @escaping @MainActor (Set<String>) async -> Void = { _ in },
-        notificationsBack: @escaping @MainActor () -> Void = {}
+        notificationsBack: @escaping @MainActor () -> Void = {},
+        activityControl: any ProjectActivityControl = SystemProjectActivities(),
+        activitiesFile: URL? = ProjectActivityFollowing.standardFile
     ) {
         self.pushInbox = pushInbox
         self.takeAway = takeAway
@@ -77,6 +86,15 @@ final class PhoneSurfaces {
             guard let session else { throw EngineError(message: "pi² is closing.", unanswered: true) }
             _ = try await session.engine.call(method, params)
         }, keep: keep)
+        // The numbers' time: now while connected, the last time the Mac was heard from out of reach.
+        let heardAt: @MainActor () -> Date? = { [weak session] in
+            switch session?.connection {
+            case .connected: Date()
+            case .outOfReach: lastHeard()
+            default: nil
+            }
+        }
+        self.activities = ProjectActivityFollowing(session: session, control: activityControl, file: activitiesFile, heardAt: heardAt)
         follow()
     }
 
@@ -131,6 +149,7 @@ final class PhoneSurfaces {
         }
         if before == .demo, seen.connection != .demo { notificationsBack() }
         followNeeds(seen)
+        if inForeground, seen.paired, !activities.followed.isEmpty { Task { await activities.reconcile() } }
         if let snapshot = widgetsSnapshot(seen) { widgets.update(snapshot) }
         writeShareList(seen)
         if seen.shareWay != lastShareWay {
@@ -223,13 +242,18 @@ final class PhoneSurfaces {
 
     // MARK: - The app's moments
 
-    /// The app came to the foreground: what the share sheet left goes, if a session is open.
+    /// The app came to the foreground: what the share sheet left goes, if a session is open, and the Live Activities are
+    /// brought in line with the Mac's numbers (iOS may have ended one, or the person allowed them again).
     func movedToForeground() {
+        inForeground = true
+        activities.refreshAllowed()
         Task { await pickUpShares() }
+        if paired() { Task { await activities.reconcile() } }
     }
 
     /// The app left the foreground: the widgets show the phone's last state.
     func movedToBackground() {
+        inForeground = false
         widgets.flush()
     }
 
@@ -246,6 +270,7 @@ final class PhoneSurfaces {
     func pairingEnded() {
         forgetTheMac()
         lastNeeds = nil
+        Task { await activities.endAll() }
         do {
             try pushInbox?.wipe()
         } catch {
@@ -269,9 +294,11 @@ final class PhoneSurfaces {
         return true
     }
 
-    /// The route a URL names: a widget's (`WidgetsLink`), or nil for anything else.
+    /// The route a URL names: a widget's (`WidgetsLink`), a Live Activity's (`ProjectActivityLink`: the project's hub on
+    /// Now), or nil for anything else.
     nonisolated static func route(for url: URL) -> Route? {
         if let link = WidgetsLink(url) { return link.route }
+        if let link = ProjectActivityLink(url) { return .project(link.projectID, tab: .now) }
         return nil
     }
 }
