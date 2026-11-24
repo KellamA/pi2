@@ -22,6 +22,14 @@ enum Flows {
 	nonisolated(unsafe) static var hello0: JSONValue?
 	nonisolated(unsafe) static var relayKeyText: String?
 
+	/// The home key pi² Remote keeps, read from its file in the data folder.
+	static func storedHomeKey(_ home: URL) -> HomeKey? {
+		guard let data = FileManager.default.contents(atPath: home.appendingPathComponent("remote-home-key.json").path), let value = try? JSON.parse(data),
+		      let text = value["key"]?.stringValue, let raw = Base64URL.decode(text)
+		else { return nil }
+		return HomeKey(rawRepresentation: raw)
+	}
+
 	static func listed(_ home: URL) -> [String] {
 		guard let data = FileManager.default.contents(atPath: home.appendingPathComponent("remote-devices.json").path), let value = try? JSON.parse(data),
 		      case let .array(items)? = value["devices"]
@@ -54,6 +62,8 @@ enum Flows {
 	}
 
 	/// Pairs a phone through a window the check opens, as the engine would; returns the device's id.
+	nonisolated(unsafe) static var home = URL(fileURLWithPath: "/nonexistent")
+
 	static func pair(_ engine: FakeEngine, mac: Mac, keys: PhoneKeys, claim: String) -> DeviceID? {
 		let secret = Bytes.random(32)
 		let expires = Int64(Date().timeIntervalSince1970) + 300
@@ -76,11 +86,12 @@ enum Flows {
 			("claim", .string(claim)), ("device", keys.paired(id: device)),
 			("paired", .object([("device", .string(device.text)), ("pairing", .string(mac.pairing.text)), ("name", .string("Check Mac")), ("addresses", .array([.string("127.0.0.1:\(mac.port)")]))])),
 		])
-		guard let line = phone.line(), case let .paired(answer)? = try? ControlLine.parse(line) else {
+		guard let line = phone.line(), case let .paired(answer)? = try? ControlLine.parse(line, from: .mac) else {
 			Check.expect(false, "the phone is told it is paired")
 			return nil
 		}
 		Check.expect(answer.device == device && answer.pairing == mac.pairing && answer.addresses == ["127.0.0.1:\(mac.port)"], "the phone is told its device id, the pairing and the Mac's addresses")
+		Check.expect(storedHomeKey(home) == answer.homeKey, "and the home key pi² Remote keeps (#845)")
 		Check.expect(phone.event() == .bye && phone.closesWithin(), "then the pairing channel ends")
 		return device
 	}
@@ -107,15 +118,18 @@ enum Flows {
 		Check.expect(request.params.keys == ["attach", "binding", "path"] && attach?.keys == ["signed", "signature", "presence"], "remote.attach takes the attach without received, as the engine reads it", JSON.text(request.params))
 		Check.expect(attach?["signed"]?.stringValue == claim.statement.text && attach?["presence"]?.stringValue == Base64URL.encode(claim.presence), "the attach's signed text and presence signature as the phone made them")
 		engine.answer(request.id, .object([("session", .string(session)), ("resume", .bool(resumed))]))
-		guard let line = phone.line(), case let .attached(attached)? = try? ControlLine.parse(line) else {
+		guard let line = phone.line(), case let .attached(attached)? = try? ControlLine.parse(line, from: .mac) else {
 			Check.expect(false, "the phone is told it is attached")
 			return nil
 		}
+		let key = phone.readHomeKey()
+		Check.expect(key != nil && key == storedHomeKey(home), "after attached, the phone is sent the home key (#845)")
 		return (phone, attached)
 	}
 
 	static func run(helper: URL, home: URL) {
 		Check.section("pi² Remote in loopback mode, this check its engine and a phone")
+		Flows.home = home
 		let (child, engine) = Starts.start(helper: helper, home: home)
 		defer { child.stop() }
 		Check.expect(engine.quiet(for: 0.5), "pi² Remote says nothing before the engine's start")
@@ -191,16 +205,18 @@ enum Flows {
 		}
 		if let quiet = provenClaimer(), let channel = quiet.channel {
 			quiet.send(try! channel.sealPing())
-			Check.expect(engine.request("remote.pairWrong", within: 30) != nil && quiet.closesWithin(5), "a claimer that proves the secret with a ping and goes quiet is counted when its ten seconds run out")
+			let refused = engine.request("remote.pairRefused", within: 30)
+			Check.expect(refused?.params["why"]?.stringValue == "silent" && quiet.closesWithin(5), "a claimer that proves the secret with a ping and goes quiet: remote.pairRefused silent when its ten seconds run out (#776's 28)")
 		}
 		if let other = provenClaimer() {
 			other.sendLine(Data(#"{"hello":1}"#.utf8))
-			Check.expect(engine.request("remote.pairWrong") != nil && other.closesWithin(5), "a claimer whose first line is not a claim to pair is counted")
+			Check.expect(engine.request("remote.pairRefused")?.params["why"]?.stringValue == "not-pair" && other.closesWithin(5), "a claimer whose first line is not a claim to pair: remote.pairRefused not-pair")
 		}
 		if let forged = provenClaimer() {
 			let claim = try! PairClaim.make(device: keys.description(), attestation: Data("x".utf8), keyId: keys.keyId, pairing: mac.pairing, binding: Bytes.random(32), deviceKey: keys.device)
 			forged.sendLine(ControlLine.pair(claim).line)
-			Check.expect(engine.request("remote.pairWrong") != nil && forged.closesWithin(5), "a claim not signed for this channel is refused by pi² Remote, and counted")
+			Check.expect(engine.request("remote.pairRefused")?.params["why"]?.stringValue == "not-bound" && forged.closesWithin(5), "a claim not signed for this channel: remote.pairRefused not-bound")
+			Check.expect(forged.homeKey == nil, "and none of them is sent a home key")
 		}
 		Check.expect(engine.quiet(for: 1), "and no claim pi² Remote refused reached the engine as a claim")
 		engine.event("closeJoin")
@@ -370,7 +386,8 @@ enum Flows {
 				claimRequest = engine.request("remote.pairClaim")
 				if let attachRequest = engine.request("remote.attach") { engine.answer(attachRequest.id, .object([("session", .string("s_six")), ("resume", .bool(false))])) }
 			}
-			let attachedLine = joining.line().flatMap { try? ControlLine.parse($0) }
+			let attachedLine = joining.line().flatMap { try? ControlLine.parse($0, from: .mac) }
+			joining.readHomeKey()
 			if case .attached? = attachedLine {
 				Check.expect(true, "a second phone attaches while the first is held back")
 			} else {
@@ -444,13 +461,53 @@ enum Flows {
 			Check.expect(seventh.closesWithin(10), "the Mac's proof sent by a phone in a session closes its channel")
 			Check.expect(engine.sessionLine(within: 1) == nil, "and never reaches the engine")
 			engine.event("sessionClosed", [("session", .string("s_seven")), ("why", .string("check"))])
+			eighth.sendLine(ControlLine.homeKey(HomeKey.random()).line)
+			Check.expect(eighth.closesWithin(10), "a homeKey line sent by a phone, which only the Mac sends, closes its channel")
+			Check.expect(engine.sessionLine(within: 1) == nil, "and never reaches the engine")
 			engine.event("sessionClosed", [("session", .string("s_eight")), ("why", .string("check"))])
 		} else {
 			Check.expect(false, "a device attaches two connections more")
 		}
 
+		Check.section("a pair line RemoteKit cannot read goes to the engine; a pairing the engine could not save (#776's 26, 28)")
+		let secret4 = Bytes.random(32)
+		let expires4 = Int64(Date().timeIntervalSince1970) + 300
+		engine.event("openJoin", [("secret", .string(Base64URL.encode(secret4))), ("tokenHash", .string("x")), ("expires", .integer(expires4 * 1000))])
+		let payload4 = try! PairingPayload(
+			pairing: mac.pairing, macName: "Check Mac", channelKey: mac.channel, identityKey: mac.identity, recordKey: mac.record, secret: secret4,
+			relay: "ws://127.0.0.1:9/v1", addresses: [], expires: expires4)
+		if let odd = Phone(port: mac.port) {
+			let handshake = try! ChannelHandshake.pairingInitiator(payload: payload4, channelKey: PhoneKeys().channel)
+			odd.send(try! handshake.writeMessage())
+			if let answer = odd.message(), (try? handshake.readMessage(answer)) != nil, let channel = try? handshake.channel() {
+				odd.channel = channel
+				_ = odd.line()
+				odd.sendLine(Data(#"{"pair":{"v":2}}"#.utf8))
+				let passed = engine.request("remote.pairClaim")
+				Check.expect(passed?.params["claim"] == .object([("v", .integer(2))]), "a pair line RemoteKit cannot read goes on as remote.pairClaim, for the engine to refuse", passed.map { JSON.text($0.params) } ?? "nothing")
+				if let passed { engine.refuse(passed.id, "The claim is not in the form pi² Remote sends.") }
+				Check.expect(odd.closesWithin(10) && odd.homeKey == nil, "refused by the engine, its channel ends with no home key")
+			}
+		}
+		engine.event("openJoin", [("secret", .string(Base64URL.encode(secret4))), ("tokenHash", .string("x")), ("expires", .integer(expires4 * 1000))])
+		let unsaved = Phone(port: mac.port)!
+		if unsaved.pair(payload: payload4, keys: PhoneKeys(), team: team) != nil, let claimed = engine.request("remote.pairClaim") {
+			engine.answer(claimed.id, .object([("claim", .string("claim_4"))]))
+			usleep(300_000)
+			// As pairConfirm does when the save fails: closeJoin, then pairRefused for the claim.
+			engine.event("closeJoin")
+			engine.event("pairRefused", [("claim", .string("claim_4")), ("why", .string("The Mac could not save the pairing. Start again."))])
+			Check.expect(unsaved.event() == .bye && unsaved.homeKey == nil, "a claim the engine refuses after taking it (the pairing could not be saved) is ended at once, with no paired and no home key")
+		} else {
+			Check.expect(false, "a fifth claim reached the engine")
+		}
+
+		Check.section("revocation: revoked, then a new home key to the phones that remain (#776's 25, #845)")
+		guard let (staying, _) = attach(engine, mac: mac, device: other, keys: second2, session: "s_nine") else { Check.stop("the second phone attached again") }
+		let oldKey = staying.homeKey
 		guard let (revoked, _) = attach(engine, mac: mac, device: device, keys: keys, session: "s_four") else { Check.stop("attached once more") }
 		engine.event("revoke", [("device", .string(device.text))])
+		engine.event("sessionClosed", [("session", .string("s_four")), ("why", .string("revoked"))])
 		if let line = revoked.line(), case let .revoked(revocation)? = try? ControlLine.parse(line) {
 			Check.expect((try? revocation.verify(identityKey: mac.identity, pairing: mac.pairing, device: device)) != nil, "a revoked device is told so, signed by the Mac's identity key")
 		} else {
@@ -458,6 +515,8 @@ enum Flows {
 		}
 		Check.expect(revoked.event() == .bye, "then its channel ends")
 		Check.expect(listed(home) == [other.text], "and it is dropped from pi² Remote's own list")
+		let newKey = staying.readHomeKey()
+		Check.expect(newKey != nil && newKey != oldKey && newKey == storedHomeKey(home), "the phone that remains attached is sent a new home key at once, the one pi² Remote now keeps")
 		if let phone = Phone(port: mac.port) {
 			let handshake = try! ChannelHandshake.connection(initiator: true, pairing: mac.pairing, device: device, channelKey: keys.channel, remoteChannelKey: mac.channel)
 			phone.send(try! handshake.writeMessage())
@@ -470,7 +529,9 @@ enum Flows {
 		let (restarted, engine2) = Starts.start(helper: helper, home: home)
 		defer { restarted.stop() }
 		let written = DeviceID.random()
+		let keptBefore = storedHomeKey(home)
 		guard hello(engine2, pairing: pairing, devices: [written.text]) != nil else { Check.stop("pi² Remote said hello again") }
+		Check.expect(storedHomeKey(home) != nil && storedHomeKey(home) != keptBefore, "a device revoked while pi² Remote was not running: a new home key at the next start, before anything is advertised")
 		Check.expect(listed(home).isEmpty, "a device revoked while pi² Remote was not running is dropped at the next start, and a device the engine lists that was never paired through pi² Remote is not added")
 	}
 

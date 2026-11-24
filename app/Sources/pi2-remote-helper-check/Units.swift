@@ -133,14 +133,15 @@ enum Units {
 	}
 
 	static func homeTag() {
-		Check.section("the Bonjour tag (5.4): RemoteKit's, as pi² Remote advertises it")
-		let key = try! Curve25519.KeyAgreement.PublicKey(rawRepresentation: Data(repeating: 7, count: 32))
+		Check.section("the Bonjour tag (5.4): RemoteKit's, under the home key (#845)")
+		let key = HomeKey(rawRepresentation: Data(0 ..< 32))!
 		let pairing = PairingID(Base64URL.encode(Data(repeating: 1, count: 16)))!
 		let day = Date(timeIntervalSince1970: 1_795_000_000)
-		let tag = HomeTag.tag(macChannelKey: key, pairing: pairing, date: day)
-		Check.expect(tag == "c6b71440d4d049db", "the tag of 2026-11-18 is remotekit.md's test value", tag)
-		Check.expect(HomeTag.recognises(tag, macChannelKey: key, pairing: pairing, now: day), "and a phone recognises it")
+		let tag = HomeTag.tag(key: key, pairing: pairing, date: day)
+		Check.expect(tag == "3871f8b1b7ba63ee", "the tag of 2026-11-18 is remotekit.md's test value", tag)
+		Check.expect(HomeTag.recognises(tag, key: key, pairing: pairing, now: day), "and a phone holding the key recognises it")
 		Check.expect(HomeTXT.record(tag: tag) == Data([3]) + Data("v=2".utf8) + Data([18]) + Data("t=\(tag)".utf8), "the TXT record is v=2 and t=<tag>")
+		Check.expect(EngineLink.maxLineToEngine == 16 * 1024 * 1024 + 64 * 1024 && Remote.phoneLineLimit + 256 <= EngineLink.maxLineToEngine, "a phone's longest line, wrapped in its session, fits the engine's cap on pi² Remote's lines (#776's 29)")
 	}
 
 	static func dataFolder() {
@@ -243,6 +244,13 @@ enum Units {
 		try! vault.saveDevices([device])
 		let back = try? vault.devices()
 		Check.expect(back?.map(\.id) == [device.id] && back?.first?.attestKeyId == "a2V5+aWQ/=", "the list of devices is kept in the Keychain and read back, with each one's App Attest key id")
+		let home = HomeKey.random()
+		Check.expect((try? vault.homeKey()) == .some(nil), "no home key before the first device is paired")
+		try! vault.saveHomeKey(home)
+		Check.expect((try? vault.homeKey()) == home && place("home") == "software", "the home key is kept in the Keychain, not the Secure Enclave (its bytes go to the phones)")
+		let next = HomeKey.random()
+		try! vault.saveHomeKey(next)
+		Check.expect((try? vault.homeKey()) == next, "and a new one replaces it")
 		Check.expect((try? KeyVaults.forBuild(.release, folder: URL(fileURLWithPath: "/nonexistent"))) == nil, "a development build cannot make a release build's vault: the Keychain is not compiled into it")
 	}
 
@@ -267,6 +275,10 @@ enum Units {
 		Check.expect((try? vault.devices()) == nil, "a list of devices that is a link is refused")
 		unlink(link.path)
 		Check.expect((try? vault.devices())?.isEmpty == true, "no list yet is an empty list")
+		let home = HomeKey.random()
+		try! vault.saveHomeKey(home)
+		let homeMode = (try? FileManager.default.attributesOfItem(atPath: folder.appendingPathComponent("remote-home-key.json").path)[.posixPermissions] as? Int) ?? -1
+		Check.expect((try? vault.homeKey()) == home && homeMode == 0o600, "the home key is kept in a file of its own, readable by the person alone")
 	}
 
 	static func sessionLines() {

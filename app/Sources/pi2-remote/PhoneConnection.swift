@@ -276,19 +276,31 @@ final class PhoneConnection: @unchecked Sendable {
 	/// signed for this channel by the device key it names, or naming another channel key than the handshake proved), is
 	/// counted as a wrong try when the channel ends (`closed`): the engine hears of it. The engine has no request that
 	/// closes the window at once for a claim pi² Remote refused; one is named for #776 (`remote.pairRefused`).
+	/// What the engine hears of a claimer that proved the secret (#776's 28): a `pair` line pi² Remote can read and check
+	/// goes on as `remote.pairClaim`; one not signed for this channel, or naming another channel key than the handshake
+	/// proved, is `remote.pairRefused` `not-bound`; a first line that is not `pair` at all, `not-pair`; and a `pair` line
+	/// RemoteKit cannot read goes on as `remote.pairClaim` too, for the engine to refuse in its own words, unless it names
+	/// a channel key, which must then be this channel's. Each closes the window, as 3.3 step 5 asks.
 	private func claim(_ line: Data, channel: Channel, challenge: Data) {
-		guard let pairing = remote.pairing, case let .pair(claim)? = try? ControlLine.parse(line) else {
+		guard let pairing = remote.pairing, let value = try? JSON.parse(line), value.keys?.count == 1, let inner = value["pair"] else {
 			log("a claimer holding the code sent a first line that is not a claim to pair; closed")
+			refusedClaim("not-pair")
 			return end()
 		}
-		do {
-			try claim.verify(pairing: pairing, binding: channel.handshakeHash, handshakeChannelKey: channel.remoteChannelKey)
-		} catch {
-			log("a pairing claim was not signed for this channel by the device key it names; closed")
+		if case let .pair(claim)? = try? ControlLine.parse(line, from: .phone) {
+			do {
+				try claim.verify(pairing: pairing, binding: channel.handshakeHash, handshakeChannelKey: channel.remoteChannelKey)
+			} catch {
+				log("a pairing claim was not signed for this channel by the device key it names; closed")
+				refusedClaim("not-bound")
+				return end()
+			}
+		} else if let named = inner["device"]?["channelKey"]?.stringValue, !named.utf8.elementsEqual(Base64URL.encode(channel.remoteChannelKey).utf8) {
+			log("a pairing claim names another channel key than its handshake's; closed")
+			refusedClaim("not-bound")
 			return end()
 		}
 		// The claim as the phone wrote it, passed on whole: the engine checks it again, with its attestation.
-		guard let inner = (try? JSON.parse(line))?["pair"] else { return end() }
 		phase = .claiming(channel)
 		claimReported = true
 		// With the engine now: its answer, not the ten seconds, decides; bounded by the window's own time.
@@ -323,18 +335,28 @@ final class PhoneConnection: @unchecked Sendable {
 		}
 	}
 
+	/// A claim that did not decrypt: a wrong secret, one of the window's three tries (`remote.pairWrong`).
 	private func wrongTry(_ why: String) {
-		guard awaitingClaimerProof || (claimerProven && !claimReported) else { return }
+		guard awaitingClaimerProof else { return }
 		awaitingClaimerProof = false
 		claimReported = true
 		log("a wrong pairing try: \(why)")
 		remote.engine.request("remote.pairWrong")
 	}
 
+	/// A claimer that proved the secret and whose claim never reaches the engine: `remote.pairRefused`, which closes the
+	/// window as a refused claim does (#776's 28). `why` is `not-pair`, `not-bound` or `silent`.
+	private func refusedClaim(_ why: String) {
+		guard claimerProven, !claimReported else { return }
+		claimReported = true
+		log("a claimer holding the code was refused (\(why)); the window closes")
+		remote.engine.request("remote.pairRefused", .object([("why", .string(why))]))
+	}
+
 	// ---- Attaching (3.4, 5.8)
 
 	private func attach(_ line: Data, channel: Channel, challenge: Data) {
-		guard let pairing = remote.pairing, let device, let listed = remote.listed(device), case let .attach(claim)? = try? ControlLine.parse(line) else { return end() }
+		guard let pairing = remote.pairing, let device, let listed = remote.listed(device), case let .attach(claim)? = try? ControlLine.parse(line, from: .phone) else { return end() }
 		do {
 			try claim.verifyDevice(deviceKey: listed.deviceKey, pairing: pairing, device: device, binding: channel.handshakeHash)
 		} catch {
@@ -383,6 +405,14 @@ final class PhoneConnection: @unchecked Sendable {
 		attachedAt = .now
 		if remote.phonesPaused { io.pauseReading() }
 		sendLine(ControlLine.attached(Attached(session: session.id, resume: resumed)).line)
+		sendHomeKey()
+	}
+
+	/// The home key, on an attached channel alone (remotekit.md, "The home key"): on every attach, and at once when it
+	/// changes. Never on a pairing channel, where `paired` carries it.
+	func sendHomeKey() {
+		guard case .attached = phase, let key = remote.homeKey else { return }
+		sendLine(ControlLine.homeKey(key).line)
 	}
 
 	/// The connection is past its first lines: it no longer counts against the listener's limit, and has no deadline.
@@ -400,6 +430,7 @@ final class PhoneConnection: @unchecked Sendable {
 		case .claiming, .claimed, .attaching, .attached, .closing, .ended: return
 		default:
 			wrongTry("no message from the claimer within ten seconds")
+			refusedClaim("silent")
 			end()
 		}
 	}
@@ -415,14 +446,14 @@ final class PhoneConnection: @unchecked Sendable {
 			log("device \(session.device) sent a line that is not one JSON object; closed")
 			return end()
 		}
-		if names.count == 1, names[0].utf8.elementsEqual("sessionEnd".utf8) {
-			remote.end(session, why: "the phone's session ended")
-			return
-		}
-		// The channel's own lines are the Mac's to send, or a phone's first lines (5.6): none is taken from a phone in a
-		// session, nor passed to the engine as a request. A `refused` line, the Mac's word that it did not attach the phone
-		// (#820), is refused from a phone above all.
+		// The channel's own lines (5.6), named by a one-member object (or the Mac's proof, by `challenge`), are read as
+		// RemoteKit reads a phone's (`parse(_:from: .phone)`): `sessionEnd` ends the session; any other, a line of the
+		// Mac's (`refused`, `homeKey`, …) or a first line again, is passed to no one and closes the channel.
 		if (names.count == 1 && Self.macLines.contains(where: { names[0].utf8.elementsEqual($0.utf8) })) || names.contains(where: { $0.utf8.elementsEqual("challenge".utf8) }) {
+			if case .sessionEnd? = try? ControlLine.parse(line, from: .phone) {
+				remote.end(session, why: "the phone's session ended")
+				return
+			}
 			log("device \(session.device) sent one of the channel's own lines in its session; closed")
 			return end()
 		}
@@ -440,7 +471,7 @@ final class PhoneConnection: @unchecked Sendable {
 	}
 
 	/// The channel's own lines (remotekit.md), and `refused` (#820), by their one member's name.
-	static let macLines = ["pair", "paired", "attach", "attached", "revoked", "refused", "mac"]
+	static let macLines = ["pair", "paired", "attach", "attached", "revoked", "refused", "homeKey", "mac", "sessionEnd"]
 
 	private func sendAck() {
 		guard case let .attached(channel, _) = phase, let ack = try? channel.sealAck(received), let framed = try? LengthFraming.encode(ack) else { return }
@@ -513,7 +544,7 @@ final class PhoneConnection: @unchecked Sendable {
 			remote.admission.release(key: admissionKey)
 		}
 		if awaitingClaimerProof { wrongTry("the claimer closed the connection before its first message") }
-		if claimerProven, !claimReported { wrongTry("a claimer holding the code ended without a claim pi² Remote could pass on") }
+		refusedClaim("silent")
 		switch was {
 		case let .claimed(_, claim): remote.claims.removeValue(forKey: claim)
 		case let .attached(_, session): session.lost(self)

@@ -145,6 +145,8 @@ final class Phone {
 	private var messages: [Data] = []
 	private(set) var closed = false
 	var channel: Channel?
+	/// The home key the Mac sent last, in `paired` or `homeKey`.
+	var homeKey: HomeKey?
 	/// Lines the phone has received on this channel.
 	private(set) var received: UInt64 = 0
 
@@ -291,6 +293,14 @@ struct PhoneKeys {
 }
 
 extension Phone {
+	/// The `homeKey` line pi² Remote sends after `attached` (remotekit.md, "The home key"), read and kept.
+	@discardableResult
+	func readHomeKey() -> HomeKey? {
+		guard let line = line(), case let .homeKey(key)? = try? ControlLine.parse(line, from: .mac) else { return nil }
+		homeKey = key
+		return key
+	}
+
 	/// Pairs over this connection: the IKpsk2 handshake with `payload`'s secret, the Mac's proof, the claim. Returns the
 	/// channel's binding and the Mac's challenge, or nil when the handshake failed.
 	func pair(payload: PairingPayload, keys: PhoneKeys, team: String) -> (binding: Data, challenge: Data, claimLine: Data)? {
@@ -326,8 +336,9 @@ extension Phone {
 			pairing: pairing, device: device, session: session, received: received, binding: channel!.handshakeHash, challenge: challenge, build: keys.build,
 			deviceKey: signer ?? keys.device, presenceKey: keys.presence)
 		sendLine(ControlLine.attach(claim).line)
-		guard let line = line(), case let .attached(attached)? = try? ControlLine.parse(line) else { return nil }
-		// The session's lines are counted from here: the channel's own first lines are not the session's (5.8).
+		guard let line = line(), case let .attached(attached)? = try? ControlLine.parse(line, from: .mac) else { return nil }
+		readHomeKey()
+		// The session's lines are counted from here: the channel's own lines are not the session's (5.8).
 		self.received = 0
 		return attached
 	}

@@ -54,6 +54,9 @@ package final class Remote: @unchecked Sendable {
 	package var sessionBufferLimit = 4 * 1024 * 1024
 
 	package private(set) var devices: [ListedDevice]
+	/// The home tag's key (#845; remotekit.md, "The home key"): made when the first device is paired, given in `paired`
+	/// and on every attach, made anew at every revocation. Never sent to the engine, never logged.
+	package private(set) var homeKey: HomeKey?
 	private var started = false
 	var switches = Switches()
 	var relay = ""
@@ -80,6 +83,7 @@ package final class Remote: @unchecked Sendable {
 		self.queue = queue
 		advertiser = Advertisers.forBuild(kind, queue: queue)
 		devices = try vault.devices()
+		homeKey = try vault.homeKey()
 		engine.onEvent = { [unowned self] in self.heard($0) }
 		engine.onSessionLine = { [unowned self] in self.fromEngine(session: $0, message: $1) }
 		engine.onDrained(below: Self.engineDrained) { [unowned self] in self.engineDrained() }
@@ -123,10 +127,10 @@ package final class Remote: @unchecked Sendable {
 		case "revoke":
 			if let text = event["device"]?.stringValue, let device = DeviceID(text) { revoke(device) }
 		case "sessionClosed":
-			// The engine closes a revoked device's sessions before it says `revoke` (remote.ts, devices.ts): the channel
-			// is kept two seconds more, so that the phone can be told it was revoked before the channel ends (5.6, 3.6).
+			// The engine says `revoke` before it closes a revoked device's sessions (#776's 25), so the `revoked` line has
+			// gone already: the channel ends at once.
 			if let id = event["session"]?.stringValue, let session = sessions.removeValue(forKey: id) {
-				session.closed(grace: 2)
+				session.closed()
 				log("the engine closed session \(id)")
 			}
 		default:
@@ -150,6 +154,9 @@ package final class Remote: @unchecked Sendable {
 		let kept = devices.filter { listed.contains($0.id.text) }
 		if kept.count != devices.count {
 			log("\(devices.count - kept.count) device(s) the engine no longer lists were dropped from pi² Remote's own list")
+			// Revoked while pi² Remote was not running, or before it kept the new home key: the key goes too, before
+			// anything is advertised.
+			renewHomeKey()
 			devices = kept
 			saveDevices()
 		}
@@ -275,7 +282,14 @@ package final class Remote: @unchecked Sendable {
 			advertised = nil
 			return
 		}
-		let tag = HomeTag.tag(macChannelKey: keys.channel.publicKey, pairing: pairing, date: Date())
+		// No home key before the first device is paired: nothing to recognise, so nothing is advertised (a claimer finds
+		// the Mac by the payload's addresses).
+		guard let homeKey else {
+			advertiser.stop()
+			advertised = nil
+			return
+		}
+		let tag = HomeTag.tag(key: homeKey, pairing: pairing, date: Date())
 		let key = "\(listener.port) \(tag)"
 		guard key != advertised else { return }
 		advertised = key
@@ -387,15 +401,30 @@ package final class Remote: @unchecked Sendable {
 			log("paired: the engine named a device pi² Remote cannot read; left")
 			return
 		}
+		// The first device: the home key is made, and kept before it is given (#845).
+		if homeKey == nil {
+			let made = HomeKey.random()
+			do {
+				try vault.saveHomeKey(made)
+				homeKey = made
+				advertise()
+			} catch {
+				log("the home key could not be kept: \(error); the device is not told it is paired")
+			}
+		}
 		devices.removeAll { $0.id == device.id }
 		devices.append(device)
 		saveDevices()
 		log("paired device \(device.id): added to pi² Remote's own list")
 		guard let claim = event["claim"]?.stringValue, let connection = claims.removeValue(forKey: claim) else { return }
+		guard let homeKey else {
+			connection.end()
+			return
+		}
 		let answer = event["paired"]
 		guard let pairingText = answer?["pairing"]?.stringValue, let pairingID = PairingID(pairingText), let name = answer?["name"]?.stringValue,
 		      case let .array(items)? = answer?["addresses"],
-		      let line = try? Paired(device: device.id, pairing: pairingID, name: name, addresses: items.compactMap(\.stringValue))
+		      let line = try? Paired(device: device.id, pairing: pairingID, name: name, addresses: items.compactMap(\.stringValue), homeKey: homeKey)
 		else {
 			log("paired: the answer for the phone is not one RemoteKit writes; its channel is closed")
 			connection.end()
@@ -406,6 +435,8 @@ package final class Remote: @unchecked Sendable {
 	}
 
 	private func revoke(_ device: DeviceID) {
+		// A new home key, kept first, so that a restart cannot bring back the one the revoked phone holds; then the list.
+		renewHomeKey()
 		let before = devices.count
 		devices.removeAll { $0.id == device }
 		if devices.count != before { saveDevices() }
@@ -421,6 +452,24 @@ package final class Remote: @unchecked Sendable {
 		}
 		for connection in connections.values where connection.device == device { connection.end() }
 		log("revoked device \(device): dropped from pi² Remote's own list")
+		// The remaining phones attached now are sent the new key at once; the others at their next attach.
+		for connection in connections.values where connection.isAttached { connection.sendHomeKey() }
+	}
+
+	/// Makes a new home key and keeps it, then advertises its tag at once, never the old one beside it (#845). Nothing
+	/// before the first pairing. A key that cannot be kept stops advertising, rather than go on with the old one.
+	private func renewHomeKey() {
+		guard homeKey != nil else { return }
+		let made = HomeKey.random()
+		do {
+			try vault.saveHomeKey(made)
+			homeKey = made
+			log("a new home key was made, after a revocation")
+		} catch {
+			homeKey = nil
+			log("a new home key could not be kept: \(error); nothing is advertised")
+		}
+		advertise()
 	}
 
 	private func saveDevices() {

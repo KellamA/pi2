@@ -209,6 +209,28 @@ enum RealEngine {
 		}
 		Check.expect(told, "a device revoked on the Mac is told so by pi² Remote, signed by the Mac's identity key, and its channel ends")
 
+		// A claimer that proves the secret and sends no claim: pi² Remote's `remote.pairRefused`, which the engine takes and
+		// closes the window on (#776's 28).
+		if case let .success(again) = app.call("devices.pairStart", within: 180), let text = again["payload"]?.stringValue, let second = try? PairingPayload.parse(text),
+		   let claimer = Phone(port: port) {
+			let handshake = try! ChannelHandshake.pairingInitiator(payload: second, channelKey: PhoneKeys().channel)
+			claimer.send(try! handshake.writeMessage())
+			if let answer = claimer.message(), (try? handshake.readMessage(answer)) != nil, let channel = try? handshake.channel() {
+				claimer.channel = channel
+				_ = claimer.line()
+				claimer.sendLine(Data(#"{"hello":1}"#.utf8))
+				_ = claimer.closesWithin(10)
+			}
+			var closedWhy = ""
+			for _ in 0 ..< 100 where closedWhy.isEmpty {
+				if case let .success(state) = app.call("devices.watch"), state["pairingWindow"]?.isNull == true { closedWhy = state["closed"]?["why"]?.stringValue ?? "closed" }
+				if closedWhy.isEmpty { usleep(100_000) }
+			}
+			Check.expect(closedWhy.contains("refused") && closedWhy.contains("not a claim to pair"), "the engine takes remote.pairRefused not-pair and closes the window", closedWhy)
+		} else {
+			Check.expect(false, "a second pairing window opened")
+		}
+
 		let log = (try? String(contentsOf: home.appendingPathComponent("remote.log"), encoding: .utf8)) ?? ""
 		Check.expect(log.contains("a development build") && !log.contains(Base64URL.encode(payload.secret)) && !log.contains(digits), "pi² Remote's log holds neither the pairing's secret nor the digits", log)
 

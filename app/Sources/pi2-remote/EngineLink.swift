@@ -16,6 +16,10 @@ package final class EngineLink: @unchecked Sendable {
 	/// The longest line taken from the engine: RemoteKit's limit on an attached device's lines (`Lines.defaultMaxLength`),
 	/// since what the engine sends a session goes on to the phone whole.
 	package static let maxLineLength = Lines.defaultMaxLength
+	/// The longest line the engine takes from pi² Remote (#776's 29, `MAX_HELPER_LINE` in remote.ts): a phone's longest
+	/// line (`Remote.phoneLineLimit`) in its session's wrapping, with room. A longer line would stop pi² Remote as a crash
+	/// does; none is written.
+	package static let maxLineToEngine = 16 * 1024 * 1024 + 64 * 1024
 
 	private let io: SocketIO
 	private var partial = Data()
@@ -125,6 +129,10 @@ package final class EngineLink: @unchecked Sendable {
 		nextID += 1
 		waiting[id] = answer
 		var line = JSON.write(.object([("id", .integer(id)), ("method", .string(method)), ("params", params)]))
+		guard line.count < Self.maxLineToEngine else {
+			waiting.removeValue(forKey: id)
+			return answer(.failure(Refused("\(method) would be longer than the engine takes")))
+		}
 		line.append(0x0A)
 		io.send(line)
 	}
@@ -137,6 +145,10 @@ package final class EngineLink: @unchecked Sendable {
 		line.append(contentsOf: #","message":"#.utf8)
 		line.append(message)
 		line.append(contentsOf: "}\n".utf8)
+		guard line.count <= Self.maxLineToEngine else {
+			log("a device's line in session \(session) would be longer than the engine takes; it is not passed on")
+			return
+		}
 		io.send(line)
 	}
 }

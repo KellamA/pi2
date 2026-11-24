@@ -146,6 +146,10 @@ package protocol KeyVault: Sendable {
 	func macKeys() throws -> MacKeys
 	/// The relay key for the relay at `address`, made the first time that address is used: one key for each relay.
 	func relayKey(for address: String) throws -> SigningKey
+	/// The home key (#845, remotekit.md "The home key"), or nil before the first device is paired.
+	func homeKey() throws -> HomeKey?
+	/// Keeps `key` as the home key, in place of the one before.
+	func saveHomeKey(_ key: HomeKey) throws
 	func devices() throws -> [ListedDevice]
 	func saveDevices(_ devices: [ListedDevice]) throws
 }
@@ -212,6 +216,16 @@ package struct KeychainVault: KeyVault {
 
 	/// The relay key for `address`, in its own item, `relay <address>`.
 	package func relayKey(for address: String) throws -> SigningKey { try signing("relay \(address)") }
+
+	/// The home key, in its own item, `home`: in the Keychain, never the Secure Enclave, since it is a secret the phones
+	/// share and its bytes are sent to them.
+	package func homeKey() throws -> HomeKey? {
+		guard let (inEnclave, data) = try stored("home") else { return nil }
+		guard !inEnclave, let key = HomeKey(rawRepresentation: data) else { throw Refused("the Keychain's home key is not one pi² Remote wrote") }
+		return key
+	}
+
+	package func saveHomeKey(_ key: HomeKey) throws { try items.write("home", encoded(false, key.rawRepresentation)) }
 
 	private func stored(_ account: String) throws -> (inEnclave: Bool, key: Data)? {
 		guard let data = try items.read(account) else { return nil }
@@ -293,6 +307,19 @@ package struct KeyFiles: KeyVault {
 	package init(folder: URL) { self.folder = folder }
 
 	package var keysFile: URL { folder.appendingPathComponent("remote-keys.json") }
+	package var homeKeyFile: URL { folder.appendingPathComponent("remote-home-key.json") }
+
+	package func homeKey() throws -> HomeKey? {
+		guard let data = try PrivateFile.read(homeKeyFile) else { return nil }
+		guard let value = try? JSON.parse(data), value["v"]?.integerValue == 1, let text = value["key"]?.stringValue, let raw = Base64URL.decode(text),
+		      let key = HomeKey(rawRepresentation: raw)
+		else { throw Refused("remote-home-key.json is not one pi² Remote wrote") }
+		return key
+	}
+
+	package func saveHomeKey(_ key: HomeKey) throws {
+		try PrivateFile.write(homeKeyFile, JSON.write(.object([("v", .integer(1)), ("key", .string(Base64URL.encode(key.rawRepresentation)))])))
+	}
 	package var devicesFile: URL { folder.appendingPathComponent("remote-devices.json") }
 
 	/// The file read: `{"v":1,"identity","channel","record","relays":{<address>:<key>}}`, each key's raw bytes in base64url.
