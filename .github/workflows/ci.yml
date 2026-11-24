@@ -8,8 +8,12 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels its run still going. On main, each push has a run of its own, which a later push
+# does not cancel as a whole: the iPhone app's job runs only for a merge that touches the phone, so the next merge's run
+# would not build it again (#871). The macOS jobs that run on every push to main cancel their own runs still going on
+# main, as before, by a concurrency group each.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -17,7 +21,8 @@ jobs:
   # changes only files no macOS job reads (the docs, the changelog, the version) skips them, and a skipped job reports
   # its check as passed, so their required checks do not hold it up. Anything else, any doubt, and every push to main
   # runs them: they run unless this job says "false", so if it fails they run too. The iPhone app's job is decided the
-  # other way round, on a push to main too: it runs only for a change to what the phone is built from (#871).
+  # other way round, on a push to main too: it runs only for a change to what the phone is built from, and if this job
+  # fails (#871). scripts/ci-changes decides both.
   changes:
     name: Which jobs the change needs
     runs-on: ubuntu-latest
@@ -39,73 +44,16 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}
-        run: |
-          set -euo pipefail
-          # What the commit being tested changes from main as it is now, both names of a moved file. On a push, what
-          # the pushed commit changes from its first parent, when that parent is what main was before the push (a
-          # merge, as every change reaches main); for any other push, nothing is known.
-          changed=
-          if [[ $EVENT == pull_request ]] || [[ $(git rev-parse -q --verify HEAD^1 || true) == "$BEFORE" ]]; then
-            changed=$(git diff --no-renames --name-only HEAD^1 HEAD)
-          fi
-
-          # The iPhone app's job: for a change to the app, the package it links from app/Package.swift, the targets it
-          # shares with the Mac app, the transcript page its conversation screen draws, how it is built here, or this
-          # workflow; and when what changed is not known. Skipped otherwise, which reports its check as passed.
-          iphone=false
-          [[ -n $changed ]] || iphone=true
-          while IFS= read -r file; do
-            case $file in
-              iphone/* | app/Package.swift | app/Package.resolved | scripts/iphone-sim | .github/workflows/ci.yml) ;;
-              app/Sources/PiModels/* | app/Sources/EngineKit/* | app/Sources/TranscriptKit/* | app/Sources/RemoteKit/*) ;;
-              app/Sources/pi2-client-check/Fixture/* | app/Web/transcript/*) ;;
-              *) continue ;;
-            esac
-            echo "Needs the iPhone app's job: $file"
-            iphone=true
-          done <<<"$changed"
-          [[ $iphone == true ]] || echo "Nothing the iPhone app is built from: skipping its job."
-          echo "iphone=$iphone" >> "$GITHUB_OUTPUT"
-
-          if [[ $EVENT != pull_request ]]; then
-            echo "A $EVENT: running every macOS job."
-            echo macos=true >> "$GITHUB_OUTPUT"
-            echo relay=true >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          macos=false
-          relay=false
-          [[ -n $changed ]] || { echo "No file changed: running every job."; macos=true; relay=true; }
-          while IFS= read -r file; do
-            case $file in
-              "") ;;
-              # Read by no macOS job. A file one of them starts reading comes off this list.
-              docs/* | README.md | CONTRIBUTING.md | CHANGELOG.md | SECURITY.md | CLAUDE.md) ;;
-              # Changelog entries: Transcript page (tests) checks them on Linux.
-              changelog.d/*) ;;
-              # Checked by the Linux job Scripts (tests), or by nothing else in CI (rerun-if-no-runner).
-              scripts/issue | scripts/issue-hook | scripts/test-issue | scripts/test-issue-hook) ;;
-              scripts/test-auto-merge | scripts/auto-merge | scripts/rerun-if-no-runner | scripts/test-docs-lists) ;;
-              # Checked by Scripts (tests) with stand-ins; the iPhone app's job, decided above, runs the script itself.
-              scripts/iphone-sim | scripts/test-iphone-sim) ;;
-              # The relay: checked by the Linux job Relay (tests), and by the protocol test, which runs on macOS for it.
-              relay/*) relay=true ;;
-              # Copied into the app's Info.plist by app/build.sh, which drops white space: checked here for what
-              # could break that.
-              app/VERSION)
-                version=$(tr -d '[:space:]' < app/VERSION)
-                [[ $version =~ ^[0-9A-Za-z.+-]+$ ]] || { echo "::error::app/VERSION is not a version: $version"; exit 1; } ;;
-              *) echo "Needs the macOS jobs: $file"; macos=true ;;
-            esac
-          done <<<"$changed"
-          [[ $macos == true ]] || echo "Only files no macOS job reads: skipping the engine's tests and the app's build."
-          echo "macos=$macos" >> "$GITHUB_OUTPUT"
-          echo "relay=$relay" >> "$GITHUB_OUTPUT"
+        # The decision is in the script, which scripts/test-ci-changes holds to its cases (Scripts (tests)).
+        run: scripts/ci-changes "$EVENT" "$BEFORE"
 
   engine:
     name: Engine (type-check and tests)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' }}
+    concurrency:
+      group: ci-engine-${{ github.ref }}
+      cancel-in-progress: true
     runs-on: macos-26
     timeout-minutes: 20
     defaults:
@@ -164,6 +112,8 @@ jobs:
     # GitHub issue: the hook's test has a stand-in gh. So does the test of scripts/auto-merge, and it touches no pull
     # request (#553). scripts/test-docs-lists checks that the docs' lists of the engine's files keep up with them (#640).
     # scripts/test-iphone-sim checks scripts/iphone-sim with stand-ins for xcrun and xcodebuild: no simulator (#681).
+    # scripts/test-ci-changes checks what the first job decides, in throwaway repositories, and that every path the
+    # phone's project and links reach outside iphone/ is one its job runs for (#871).
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -177,6 +127,7 @@ jobs:
       # scripts/check-protected-targets against package descriptions made in the test, one for each tampering (#674).
       - run: scripts/test-check-protected-targets
       - run: scripts/test-iphone-sim
+      - run: scripts/test-ci-changes
 
   relay:
     name: Relay (tests)
@@ -215,6 +166,9 @@ jobs:
     # Deploys nothing.
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.macos != 'false' || needs.changes.outputs.relay == 'true') }}
+    concurrency:
+      group: ci-relay-protocol-${{ github.ref }}
+      cancel-in-progress: true
     runs-on: macos-26
     timeout-minutes: 20
     steps:
@@ -246,6 +200,9 @@ jobs:
     name: App (build)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' }}
+    concurrency:
+      group: ci-app-${{ github.ref }}
+      cancel-in-progress: true
     runs-on: macos-26
     timeout-minutes: 20
     steps:

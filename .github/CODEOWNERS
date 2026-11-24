@@ -11,12 +11,15 @@
 # patterns plain too (letters, digits, . _ - /, * within a name, ** as a whole one), which is all the script reads.
 
 # The guard itself: this file, the script that refuses, its test, and every workflow (relay.yml, and ci.yml with the
-# iPhone app's job, among them), since any workflow can be changed to use a protected environment, and one run from main can use it once the
-# owner approves the run.
+# iPhone app's job, among them), since any workflow can be changed to use a protected environment, and one run from
+# main can use it once the owner approves the run. And what decides which of CI's jobs run, with its test: it can make
+# a required check skip, and a skipped check reports as passed (#871).
 /.github/CODEOWNERS @KellamA
 /.github/workflows/ @KellamA
 /scripts/auto-merge @KellamA
 /scripts/test-auto-merge @KellamA
+/scripts/ci-changes @KellamA
+/scripts/test-ci-changes @KellamA
 
 # The owner's own instructions for the settings that guard all this: an edit cannot change a setting, but it can mislead
 # the person following them.

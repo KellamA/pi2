@@ -1,0 +1,127 @@
+#!/bin/bash
+# Which of CI's jobs a change needs (#245, #871): the deciding step of ci.yml's first job, "Which jobs the change needs",
+# kept in a file of its own so that scripts/test-ci-changes can hold it to its cases. It decides whether a required check
+# runs or is skipped, and a skipped job reports its check as passed, so it is an owner's path (.github/CODEOWNERS).
+#
+#   scripts/ci-changes <event> [<before>]
+#       In a checkout of the commit CI tests, with its first parent (fetch-depth 2). Writes macos=, relay= and iphone= to
+#       the file $GITHUB_OUTPUT names, all three once everything is decided, or none: a job whose condition reads an
+#       output that is not there runs, so if this fails, everything runs.
+#   scripts/ci-changes phone-reads <path>...
+#       Exits 0 if every path is one the iPhone app's job is run for, 1 if any is not (scripts/test-ci-changes).
+#
+# What a change makes: for a pull request, the merge commit CI tests against main as it is now (its first parent); for
+# a push, the pushed commit against its first parent, when that parent is `before`, what main was before the push. For
+# any other push, nothing is known. Both names of a moved file count. Names are read as git writes them with -z, never
+# quoted, so that a name with a quote, a backslash, a tab, a line break or a letter outside ASCII is matched as it is.
+
+set -euo pipefail
+# Bytes, not a locale's letters: [:print:] below is ASCII's, and case is folded for ASCII letters only.
+export LC_ALL=C
+
+usage() {
+	echo "usage: scripts/ci-changes <event> [<before>]" >&2
+	echo "       scripts/ci-changes phone-reads <path>..." >&2
+	exit 2
+}
+
+# A file the iPhone app's build or tests read, or what decides how it is built and checked: the app; the package it
+# links from app/ (SwiftPM reads Package@swift-<version>.swift in place of Package.swift when one matches); the
+# targets it shares with the Mac app; the recorded session its tests read; the transcript page its conversation screen
+# draws (iphone/Sources/Conversation/transcript is a link to it); how files are checked out (.gitattributes, anywhere);
+# the script that builds it here, this script, and the workflow. In any letter case: the xcode-27 runner's file system
+# ignores case, so App/Sources/RemoteKit/N.swift is checked out into app/Sources/RemoteKit and built.
+phone_reads() {
+	local hit=1
+	shopt -s nocasematch
+	case $1 in
+	iphone/* | app/Package*.swift | app/Package.resolved) hit=0 ;;
+	app/Sources/PiModels/* | app/Sources/EngineKit/* | app/Sources/TranscriptKit/* | app/Sources/RemoteKit/*) hit=0 ;;
+	app/Sources/pi2-client-check/Fixture/* | app/Web/transcript/*) hit=0 ;;
+	.gitattributes | */.gitattributes) hit=0 ;;
+	scripts/iphone-sim | scripts/ci-changes | .github/workflows/ci.yml) hit=0 ;;
+	esac
+	shopt -u nocasematch
+	return $hit
+}
+
+[[ $# -ge 1 ]] || usage
+if [[ $1 == phone-reads ]]; then
+	shift
+	[[ $# -ge 1 ]] || usage
+	for path in "$@"; do phone_reads "$path" || exit 1; done
+	exit 0
+fi
+event=$1
+before=${2:-}
+[[ $# -le 2 ]] || usage
+: "${GITHUB_OUTPUT:?names the file the outputs go in}"
+
+names=$(mktemp)
+trap 'rm -f "$names"' EXIT
+if [[ $event == pull_request ]] ||
+	[[ -n $before && $(git rev-parse -q --verify 'HEAD^1' || true) == "$before" ]]; then
+	git diff -z --no-renames --name-only 'HEAD^1' HEAD >"$names"
+fi
+
+# The iPhone app's job runs only for a change to what it is built from, and when what changed is not known.
+iphone=false
+[[ -s $names ]] || { echo "What changed is not known, or nothing did: running the iPhone app's job."; iphone=true; }
+while IFS= read -r -d '' file; do
+	phone_reads "$file" || continue
+	# Each name printed after words of its own, and quoted, so that no name can be read as a workflow command.
+	printf "Needs the iPhone app's job: %q\n" "$file"
+	iphone=true
+done <"$names"
+[[ $iphone == true ]] || echo "Nothing the iPhone app is built from: skipping its job."
+
+# The macOS jobs run for every push, and for any pull request that changes a file not on this list, which no macOS job
+# reads. Matched as written: a name in another case is not on the list, and runs them.
+if [[ $event != pull_request ]]; then
+	echo "A $event: running every macOS job."
+	macos=true
+	relay=true
+else
+	macos=false
+	relay=false
+	[[ -s $names ]] || { echo "No file changed: running every job."; macos=true; relay=true; }
+	while IFS= read -r -d '' file; do
+		# A name git would have quoted (a quote, a backslash, a control character or a byte outside ASCII) runs them, as
+		# it did when this list was matched against git's quoted names: reading the names with -z for the phone's list
+		# makes nothing skip here that ran before.
+		if [[ $file == *[![:print:]]* || $file == *[\"\\]* ]]; then
+			printf "Needs the macOS jobs: %q\n" "$file"
+			macos=true
+			continue
+		fi
+		case $file in
+		# Read by no macOS job. A file one of them starts reading comes off this list.
+		docs/* | README.md | CONTRIBUTING.md | CHANGELOG.md | SECURITY.md | CLAUDE.md) ;;
+		# Changelog entries: Transcript page (tests) checks them on Linux.
+		changelog.d/*) ;;
+		# Checked by the Linux job Scripts (tests), or by nothing else in CI (rerun-if-no-runner).
+		scripts/issue | scripts/issue-hook | scripts/test-issue | scripts/test-issue-hook) ;;
+		scripts/test-auto-merge | scripts/auto-merge | scripts/rerun-if-no-runner | scripts/test-docs-lists) ;;
+		# Checked by Scripts (tests) with stand-ins; the iPhone app's job, decided above, runs the script itself.
+		scripts/iphone-sim | scripts/test-iphone-sim) ;;
+		# The relay: checked by the Linux job Relay (tests), and by the protocol test, which runs on macOS for it.
+		relay/*) relay=true ;;
+		# Copied into the app's Info.plist by app/build.sh, which drops white space: checked here for what could
+		# break that. A failure here writes no output, so every job runs.
+		app/VERSION)
+			version=$(tr -d '[:space:]' <app/VERSION)
+			[[ $version =~ ^[0-9A-Za-z.+-]+$ ]] || { echo "::error::app/VERSION is not a version: $version"; exit 1; } ;;
+		# Everything else, this script and its test among them: it decides which jobs run, so a change to it runs them.
+		*)
+			printf "Needs the macOS jobs: %q\n" "$file"
+			macos=true ;;
+		esac
+	done <"$names"
+	[[ $macos == true ]] || echo "Only files no macOS job reads: skipping the engine's tests and the app's build."
+fi
+
+{
+	echo "macos=$macos"
+	echo "relay=$relay"
+	echo "iphone=$iphone"
+} >>"$GITHUB_OUTPUT"
