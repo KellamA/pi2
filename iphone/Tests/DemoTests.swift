@@ -39,6 +39,20 @@ enum DemoScreens {
             ("The Dashboard at the second project (#688)", .dashboard(project: second.id)),
             ("An orchestrator waiting on a switch's approval (#687)", .conversation(try #require(second.conversation))),
             ("A sub-chat at work (#687)", .conversation(subChat)),
+            ("Usage (#697)", .usage),
+            ("The app's settings (#697)", .settings),
+            ("A project's settings and limits (#697)", .projectSettings(project.id)),
+            ("Schedules (#697)", .schedules),
+            ("The board's Agents (#696)", .board(project: project.id, page: .agents)),
+            ("The board's Rules (#696)", .board(project: project.id, page: .rules)),
+            ("The board's Notes (#696)", .board(project: project.id, page: .notes)),
+            ("The board's Branches (#696)", .board(project: project.id, page: .branches)),
+            ("An agent's page (#696)", .agent(project.orchestratorId, project: project.id)),
+            ("A template's page (#696)", .agent(try #require(engine.agents.first?.id))),
+            ("The templates (#696)", .templates),
+            ("Work, the list (#694)", .work(project: project.id)),
+            ("Work, a piece of work (#694)", .work(project: project.id, item: 3)),
+            ("Work, a piece that is not in the list (#694)", .work(project: project.id, item: 999)),
             ("A project's other conversations (#698)", .conversations(project: project.id)),
             ("Chats and conversations outside projects (#698)", .conversations()),
             ("The archive (#698)", .archive),
@@ -247,13 +261,14 @@ struct DemoTests {
         let (session, transport) = try await demo()
         let projects = session.engine.projects
         do {
-            try await session.engine.call("projects.delete", ["id": projects[0].id])
+            // The Mac's own upkeep, which no screen of the phone sends and the demo never answers.
+            try await session.engine.call("backup.create", ["directory": "/tmp"])
             Issue.record("the demo answered a request its script has no answer for")
         } catch {
-            #expect(error.localizedDescription.contains("The demo does not do projects.delete"))
+            #expect(error.localizedDescription.contains("The demo does not do backup.create"))
         }
         #expect(session.engine.projects == projects)
-        #expect(transport.world.unanswered == ["projects.delete"])
+        #expect(transport.world.unanswered == ["backup.create"])
         // A project's folder is the Mac's: answered with a refusal that changes nothing.
         await #expect(throws: (any Error).self) {
             try await session.engine.call("projects.set", ["id": projects[0].id, "folder": "/tmp"])

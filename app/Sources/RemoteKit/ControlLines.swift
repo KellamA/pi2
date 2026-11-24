@@ -2,8 +2,8 @@ import CryptoKit
 import Foundation
 
 // The lines a channel carries on top of the engine's own (iphone.md 5.6): its first lines (the Mac's proof, `pair` and
-// `paired`, `attach` and `attached` or `refused`, resuming through `attach`), `presence` inside `attach`, `sessionEnd`
-// and `revoked`.
+// `paired`, `attach` and `attached` or `refused`, resuming through `attach`), `presence` inside `attach`, `sessionEnd`,
+// `revoked` and `homeKey`.
 // Each is one JSON object with one member, named for what it is. Every byte string is base64url; every P-256 public
 // key is SPKI DER, a channel key its 32 raw bytes; every signature is ECDSA P-256 over the exact `signed` text
 // (SignedStatement), and every `signed` is checked field by field, with no field missing and none unknown.
@@ -194,15 +194,20 @@ public struct PairClaim: Sendable {
 	}
 }
 
-/// The Mac's answer once the person typed the digits (3.3 step 8).
+/// The Mac's answer once the person typed the digits (3.3 step 8), the last line of a pairing channel:
+/// `{"paired":{"device":…,"pairing":…,"name":…,"addresses":[…],"homeKey":<32 bytes>}}`. It is sent only once the Mac
+/// proved itself, the engine took the claim and the digits matched, so a claim refused at any step never reads the home
+/// key, which travels in it and nowhere else at pairing (#845).
 public struct Paired: Sendable, Equatable {
 	public let device: DeviceID
 	public let pairing: PairingID
 	/// The Mac's name.
 	public let name: String
 	public let addresses: [String]
+	/// The key of the home path's tag (5.4), which the phone keeps in its Keychain.
+	public let homeKey: HomeKey
 
-	public init(device: DeviceID, pairing: PairingID, name: String, addresses: [String]) throws {
+	public init(device: DeviceID, pairing: PairingID, name: String, addresses: [String], homeKey: HomeKey) throws {
 		guard !name.isEmpty, name.utf8.count <= PairingPayload.maxNameLength, ShownText.isShowable(name) else {
 			throw RemoteKitError("paired", "name is not a Mac's name")
 		}
@@ -213,23 +218,25 @@ public struct Paired: Sendable, Equatable {
 		self.pairing = pairing
 		self.name = name
 		self.addresses = addresses
+		self.homeKey = homeKey
 	}
 
 	public static func == (lhs: Paired, rhs: Paired) -> Bool {
 		lhs.device == rhs.device && lhs.pairing == rhs.pairing && lhs.name.sameBytes(rhs.name)
 			&& lhs.addresses.count == rhs.addresses.count && zip(lhs.addresses, rhs.addresses).allSatisfy { $0.sameBytes($1) }
+			&& lhs.homeKey == rhs.homeKey
 	}
 
 	var json: JSONValue {
 		.object([("paired", .object([
 			("device", .string(device.text)), ("pairing", .string(pairing.text)), ("name", .string(name)),
-			("addresses", .array(addresses.map(JSONValue.string))),
+			("addresses", .array(addresses.map(JSONValue.string))), ("homeKey", .string(homeKey.text)),
 		]))])
 	}
 
 	static func read(_ value: JSONValue) throws -> Paired {
 		let part = "paired"
-		let fields = try Fields(value, part: part, keys: ["device", "pairing", "name", "addresses"])
+		let fields = try Fields(value, part: part, keys: ["device", "pairing", "name", "addresses", "homeKey"])
 		guard let device = DeviceID(try fields.string("device")) else { throw RemoteKitError(part, "device is not a device's id") }
 		guard let pairing = PairingID(try fields.string("pairing")) else { throw RemoteKitError(part, "pairing is not a pairing's id") }
 		guard case let .array(items) = fields.value("addresses")!, items.count <= PairingPayload.maxAddresses else {
@@ -239,7 +246,9 @@ public struct Paired: Sendable, Equatable {
 			guard let text = item.stringValue else { throw RemoteKitError(part, "addresses are not addresses") }
 			return text
 		}
-		return try Paired(device: device, pairing: pairing, name: try fields.string("name", maxLength: PairingPayload.maxNameLength), addresses: addresses)
+		return try Paired(
+			device: device, pairing: pairing, name: try fields.string("name", maxLength: PairingPayload.maxNameLength), addresses: addresses,
+			homeKey: try HomeKey.read(fields, "homeKey"))
 	}
 }
 
@@ -475,6 +484,19 @@ public struct Refusal: Sendable, Equatable {
 	}
 }
 
+/// The home path's new key, which pi² Remote gives each remaining device after it revoked one (3.6, 5.4, #845):
+/// `{"homeKey":{"key":<32 bytes>}}`. Mac to phone only, and only on a connection channel after `attached`, so only a
+/// device that proved its device key and presence key reads it; the phone keeps the one it read last, in place of the
+/// one it had. What each end does with one that comes where it should not is in remotekit.md ("The home key").
+enum HomeKeyLine {
+	static func read(_ value: JSONValue) throws -> HomeKey {
+		let fields = try Fields(value, part: "homeKey", keys: ["key"])
+		return try HomeKey.read(fields, "key")
+	}
+
+	static func json(_ key: HomeKey) -> JSONValue { .object([("homeKey", .object([("key", .string(key.text))]))]) }
+}
+
 /// One of a channel's own lines (5.6), as read from or written to the channel.
 public enum ControlLine: Sendable {
 	/// The Mac's first message: a challenge and its proof.
@@ -488,8 +510,37 @@ public enum ControlLine: Sendable {
 	case refused(Refusal)
 	/// The phone's session ended (4.5): `{"sessionEnd":{}}`.
 	case sessionEnd
+	/// The home path's new key, after a revocation (3.6): Mac to phone, on an attached channel.
+	case homeKey(HomeKey)
 
-	/// Reads one of these lines and nothing else: the line must be exactly one of them.
+	/// The two ends of a channel.
+	public enum Side: Sendable, Equatable {
+		/// pi² Remote.
+		case mac
+		case phone
+	}
+
+	/// Which end writes this line: every line of the channel's own has one writer, and the other end never sends it.
+	public var sender: Side {
+		switch self {
+		case .mac, .paired, .attached, .revoked, .refused, .homeKey: .mac
+		case .pair, .attach, .sessionEnd: .phone
+		}
+	}
+
+	/// Reads one of these lines from `sender`'s end, as the other end reads it: a line the other end does not send is
+	/// refused as well as anything `parse(_:)` refuses, so a phone that sends `homeKey` or `refused`, or a Mac that sends
+	/// `pair`, is never taken. Which lines may come at which point of a channel stays the caller's to keep.
+	public static func parse(_ line: Data, from sender: Side) throws -> ControlLine {
+		let read = try parse(line)
+		guard read.sender == sender else {
+			throw RemoteKitError("channel line", sender == .phone ? "a line the phone never sends" : "a line the Mac never sends")
+		}
+		return read
+	}
+
+	/// Reads one of these lines and nothing else: the line must be exactly one of them. It does not say which end wrote
+	/// it; `parse(_:from:)` does.
 	public static func parse(_ line: Data) throws -> ControlLine {
 		guard line.count <= maxControlLineLength else { throw RemoteKitError("channel line", "too long") }
 		let value: JSONValue
@@ -509,6 +560,7 @@ public enum ControlLine: Sendable {
 		if name.sameBytes("attached") { return .attached(try Attached.read(inner)) }
 		if name.sameBytes("revoked") { return .revoked(try Revocation.read(inner)) }
 		if name.sameBytes("refused") { return .refused(try Refusal.read(inner)) }
+		if name.sameBytes("homeKey") { return .homeKey(try HomeKeyLine.read(inner)) }
 		if name.sameBytes("sessionEnd") {
 			guard case let .object(fields) = inner, fields.isEmpty else { throw RemoteKitError("sessionEnd", "not empty") }
 			return .sessionEnd
@@ -527,6 +579,7 @@ public enum ControlLine: Sendable {
 		case let .revoked(revocation): JSON.write(revocation.json)
 		case let .refused(refusal): JSON.write(refusal.json)
 		case .sessionEnd: JSON.write(.object([("sessionEnd", .object([]))]))
+		case let .homeKey(key): JSON.write(HomeKeyLine.json(key))
 		}
 	}
 }

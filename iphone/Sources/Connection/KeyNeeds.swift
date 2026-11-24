@@ -53,6 +53,9 @@ struct PairingRecord: Codable, Equatable, Sendable {
     var macChannelKey: String
     var macIdentityKey: String
     var macRecordKey: String
+    /// The home tag's key (remotekit.md, "The home key"): from `paired`, and in place of it the last a `homeKey` line
+    /// gave. A secret: kept only here, with the keys.
+    var homeKey: String
     var relay: String
     /// The Mac's last addresses, `a.b.c.d:port` or `[v6]:port`.
     var addresses: [String]
@@ -65,6 +68,7 @@ struct PairingRecord: Codable, Equatable, Sendable {
         macChannelKey = PublicKeys.text(payload.channelKey)
         macIdentityKey = PublicKeys.text(payload.identityKey)
         macRecordKey = PublicKeys.text(payload.recordKey)
+        homeKey = Base64URL.encode(paired.homeKey.rawRepresentation)
         relay = payload.relay
         addresses = paired.addresses
         pairedAt = date
@@ -76,9 +80,10 @@ struct PairingRecord: Codable, Equatable, Sendable {
               let channel = PublicKeys.channelKey(fromBase64URL: macChannelKey),
               let identity = PublicKeys.signingKey(fromBase64URL: macIdentityKey),
               let record = PublicKeys.agreementKey(fromBase64URL: macRecordKey),
+              let homeBytes = Base64URL.decode(homeKey, count: HomeKey.length), let home = HomeKey(rawRepresentation: homeBytes),
               let relayURL = URL(string: relay), PairingPayload.isRelayAddress(relay)
         else { throw RemoteKitError("pairing record", "does not read") }
-        return PairedMac(pairing: pairing, device: device, name: macName, channelKey: channel, identityKey: identity, recordKey: record, relay: relayURL, addresses: addresses)
+        return PairedMac(pairing: pairing, device: device, name: macName, channelKey: channel, identityKey: identity, recordKey: record, homeKey: home, relay: relayURL, addresses: addresses)
     }
 }
 
@@ -91,6 +96,8 @@ struct PairedMac: Sendable {
     /// The key every channel's proof must be signed by: the `i` scanned at pairing, kept since (3.4).
     let identityKey: P256.Signing.PublicKey
     let recordKey: P256.KeyAgreement.PublicKey
+    /// The key the Mac's Bonjour tag is made from (5.4).
+    let homeKey: HomeKey
     let relay: URL
     let addresses: [String]
 }

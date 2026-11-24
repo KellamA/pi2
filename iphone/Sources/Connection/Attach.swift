@@ -64,7 +64,7 @@ enum Attach {
         on channel: OpenChannel, mac: PairedMac, keys: PairedKeys, resume: Resume?, build: String, now: @Sendable () -> Date
     ) async throws -> Outcome {
         guard let first = try await channel.nextLine(within: answerWithin) else { return .closed }
-        guard case let .mac(proof)? = try? ControlLine.parse(first) else { throw Failure.macNotProved }
+        guard case let .mac(proof)? = try? ControlLine.parse(first, from: .mac) else { throw Failure.macNotProved }
         do {
             try proof.verify(identityKey: mac.identityKey, pairing: mac.pairing, binding: channel.channel.handshakeHash)
         } catch {
@@ -84,7 +84,7 @@ enum Attach {
         try channel.send(.attach(claim))
 
         guard let answer = try await channel.nextLine(within: answerWithin) else { return .closed }
-        switch try? ControlLine.parse(answer) {
+        switch try? ControlLine.parse(answer, from: .mac) {
         case let .attached(attached)?:
             channel.channel.maxLineLength = Lines.defaultMaxLength
             return .attached(attached, channel)
