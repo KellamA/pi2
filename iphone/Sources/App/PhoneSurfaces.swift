@@ -12,6 +12,9 @@ import PiModels
 /// The share sheet's drafts are picked up as the app comes to the foreground and as a session Face ID opened reaches its
 /// Mac or the store's last state, and the conversation the newest went to is opened if it was shared moments ago.
 ///
+/// A notification's tap opens its card's screen (`AppNotifications`); a need the Mac no longer lists takes its
+/// notifications away, and so does the end of the pairing, with the service extension's own file (`PushInbox`).
+///
 /// It follows the session's state itself (`withObservationTracking`), not a view, so that it keeps the widgets in step
 /// while iOS has pi² running in the background with no scene, as for a Shortcut. What is written for an extension goes
 /// in the app group's container, which an unsigned build does not have (#682): there each write does nothing.
@@ -28,6 +31,14 @@ final class PhoneSurfaces {
     /// The list last written for the share sheet, dated `.distantPast`, so that a change is told from the time moving on.
     @ObservationIgnored private var sharedList: ShareDestinations?
     @ObservationIgnored private var lastShareWay: AppShareSender.Way = .none
+    /// Takes away the notifications of needs that are gone (`PushRemoval.takeAway`).
+    @ObservationIgnored private let takeAway: @MainActor (Set<String>) async -> Void
+    /// Makes the app's notification delegate and categories current again, when the demo (which sets its own) is left.
+    @ObservationIgnored private let notificationsBack: @MainActor () -> Void
+    /// The service extension's file, wiped when the pairing ends: nil without the app group (#682).
+    @ObservationIgnored private let pushInbox: PushInbox?
+    /// The needs the Mac listed when last connected, to tell which went.
+    @ObservationIgnored private var lastNeeds: Set<String>?
     /// Whether a Mac is paired (`PhoneLink.paired`): nothing of the Mac is written for an extension before pairing.
     @ObservationIgnored private let paired: @MainActor () -> Bool
     /// When the phone last heard from its Mac (`PhoneStore.lastHeard`), for the widgets' "Updated" while out of reach.
@@ -48,8 +59,14 @@ final class PhoneSurfaces {
         paired: @escaping @MainActor () -> Bool,
         lastHeard: @escaping @MainActor () -> Date?,
         shareWay: @escaping @MainActor () -> AppShareSender.Way = { .none },
-        keep: @escaping @MainActor (_ method: String, _ params: [String: Any]) throws -> Void = { _, _ in throw StoreError("Open pi² with Face ID first.") }
+        keep: @escaping @MainActor (_ method: String, _ params: [String: Any]) throws -> Void = { _, _ in throw StoreError("Open pi² with Face ID first.") },
+        pushInbox: PushInbox? = nil,
+        takeAway: @escaping @MainActor (Set<String>) async -> Void = { _ in },
+        notificationsBack: @escaping @MainActor () -> Void = {}
     ) {
+        self.pushInbox = pushInbox
+        self.takeAway = takeAway
+        self.notificationsBack = notificationsBack
         self.session = session
         self.widgets = widgets
         self.share = share
@@ -73,7 +90,10 @@ final class PhoneSurfaces {
             keep: { [weak link] method, params in
                 guard let link else { throw StoreError("Open pi² with Face ID first.") }
                 _ = try link.outbox.add(method, params)
-            }
+            },
+            pushInbox: PushInbox.shared,
+            takeAway: { needs in await PushRemoval.takeAway(needs: needs) },
+            notificationsBack: { AppNotifications.shared.install() }
         )
     }
 
@@ -109,6 +129,8 @@ final class PhoneSurfaces {
             // The demo's values are not the Mac's.
             widgets.clear()
         }
+        if before == .demo, seen.connection != .demo { notificationsBack() }
+        followNeeds(seen)
         if let snapshot = widgetsSnapshot(seen) { widgets.update(snapshot) }
         writeShareList(seen)
         if seen.shareWay != lastShareWay {
@@ -178,6 +200,27 @@ final class PhoneSurfaces {
         return report
     }
 
+    // MARK: - Notifications (#690)
+
+    /// A notification's tap or button: its card's screen, once Face ID has opened the session.
+    func pushTapped(_ response: PushResponse) {
+        pendingRoute = response.route
+    }
+
+    /// A need the Mac listed and lists no more (answered here, on the Mac, or withdrawn) takes its notifications away.
+    /// Only while connected to the Mac: the store's last state and the demo say nothing of what is gone.
+    private func followNeeds(_ seen: Seen) {
+        guard seen.paired, case .connected = seen.connection, session.engine.hasLoadedLibrary else {
+            lastNeeds = nil
+            return
+        }
+        let now = Set(session.engine.needs.map(\.id))
+        defer { lastNeeds = now }
+        guard let last = lastNeeds else { return }
+        let gone = last.subtracting(now)
+        if !gone.isEmpty { Task { await takeAway(gone) } }
+    }
+
     // MARK: - The app's moments
 
     /// The app came to the foreground: what the share sheet left goes, if a session is open.
@@ -196,6 +239,18 @@ final class PhoneSurfaces {
         widgets.clear()
         share?.wipe()
         sharedList = nil
+    }
+
+    /// The pairing ended (unpaired, revoked, the keys gone): beside what `forgetTheMac` takes away, the service
+    /// extension's notices go (3.6).
+    func pairingEnded() {
+        forgetTheMac()
+        lastNeeds = nil
+        do {
+            try pushInbox?.wipe()
+        } catch {
+            log.error("The notices the service extension kept could not be wiped: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     /// The store's sweep at launch and at each return to the foreground: when it wiped the Mac's last state, so does this.

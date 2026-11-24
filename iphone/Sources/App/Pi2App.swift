@@ -8,6 +8,8 @@ import SwiftUI
 /// the session registered for Shortcuts; and one navigation root, `RootView`.
 @main
 struct Pi2App: App {
+    /// For a background push, which only an app delegate is handed (`PushRemoval`).
+    @UIApplicationDelegateAdaptor(Pi2AppDelegate.self) private var appDelegate
     @State private var session: AppSession
     @State private var link: PhoneLink
     @State private var surfaces: PhoneSurfaces
@@ -21,7 +23,10 @@ struct Pi2App: App {
         let link = PhoneLink(session: session, keyring: keyring, store: store)
         let surfaces = PhoneSurfaces(link: link)
         surfaces.swept(swept)
-        link.onEnded = { [surfaces] _ in surfaces.forgetTheMac() }
+        link.onEnded = { [surfaces] _ in surfaces.pairingEnded() }
+        // Section 7's categories before the first push, and a notification's tap to its card's screen.
+        AppNotifications.shared.surfaces = surfaces
+        AppNotifications.shared.install()
         Launch.start(link)
         // App Intents run in this process, which iOS may start for one with no scene: they use this session, and open
         // pi² for Face ID first while no session Face ID opened is open (#701).

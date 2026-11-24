@@ -206,6 +206,52 @@ struct AppCallsTests {
         #expect(!FileManager.default.fileExists(atPath: drop.folder.path))
     }
 
+    // MARK: - Notifications (#690)
+
+    @Test func aNotificationOpensItsCardsScreen() {
+        func route(_ info: [AnyHashable: Any], action: String = "com.apple.UNNotificationDefaultActionIdentifier") -> Route {
+            PushResponse(action: action, userInfo: info, reply: nil).route
+        }
+        #expect(route(["need": "n-1", "kind": "approval", "projectId": "p-1", "conversationId": 9]) == .needs(project: "p-1"))
+        #expect(route(["need": "n-1", "kind": "question", "projectId": ""], action: "reply") == .needs(), "a card outside projects")
+        #expect(route(["kind": "notice", "projectId": "p-1", "conversationId": 9]) == .conversation(9), "an orchestrator's answer")
+        #expect(route(["kind": "notice", "projectId": "p-1"]) == .project("p-1", tab: .chat))
+        #expect(route([:]) == .needs(), "the placeholder names nothing: all of Needs you")
+    }
+
+    @Test func theCategoriesAreSetAtLaunchAndATapWaitsForFaceID() throws {
+        let surfaces = PhoneSurfaces(session: AppSession(), widgets: try Widgets().publisher, paired: { false }, lastHeard: { nil })
+        surfaces.pushTapped(PushResponse(action: "open", userInfo: ["need": "n-1", "kind": "rule", "projectId": "p-2"], reply: nil))
+        #expect(surfaces.pendingRoute == .needs(project: "p-2"))
+        // Pi2App.init installs the app's delegate in the test host too.
+        #expect(AppNotifications.shared.surfaces != nil)
+        #expect(PushCategories.all.count == PushKind.allCases.count + PushKind.allCases.filter(\.hasCutCategory).count)
+    }
+
+    @Test func aNeedTheMacNoLongerListsTakesItsNotificationsAway() async throws {
+        // The demo answers needs.answer as the engine does; started as a connected Mac for this test.
+        let session = AppSession()
+        session.start(try #require(DemoTransport.recorded()), as: .connected(.home))
+        #expect(await Wait.until { session.engine.hasLoadedLibrary && !session.engine.needs.isEmpty })
+        var gone: [Set<String>] = []
+        var paired = true
+        let surfaces = PhoneSurfaces(
+            session: session, widgets: try Widgets().publisher, paired: { paired }, lastHeard: { nil }, takeAway: { gone.append($0) })
+        let need = try #require(session.engine.needs.first { $0.kind == "question" })
+        _ = try await session.engine.call("needs.answer", ["id": need.id, "answer": ["kind": "question", "text": "Everyone"]])
+        #expect(await Wait.until { gone.contains([need.id]) })
+        #expect(gone == [[need.id]], "only the need that went")
+
+        // The pairing ends: the extension's notices go too.
+        let inbox = PushInbox(folder: try Self.folder("push"))
+        let ending = PhoneSurfaces(session: AppSession(), widgets: try Widgets().publisher, paired: { false }, lastHeard: { nil }, pushInbox: inbox)
+        try FileManager.default.createDirectory(at: inbox.folder, withIntermediateDirectories: true)
+        ending.pairingEnded()
+        #expect(!FileManager.default.fileExists(atPath: inbox.folder.path))
+        paired = false
+        _ = surfaces
+    }
+
     @Test func aTapWaitsAsTheRouteToOpen() async throws {
         let session = AppSession()
         let surfaces = PhoneSurfaces(session: session, widgets: try Widgets().publisher, paired: { false }, lastHeard: { nil })
