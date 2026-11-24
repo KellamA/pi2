@@ -239,10 +239,10 @@ REMOTE=0 PHONE_SIM="" PHONE_DEVICE=""
 REMOTE_ENV=PI2_PAIR_UNATTESTED=1
 # The relay address the copy's engine is given: the engine opens no pairing without one (devices.ts, pairStart), and no
 # relay runs. An address on loopback where nothing of pi² listens. It is not a port nobody can use: only root can bind
-# 127.0.0.1:9 itself, but on macOS any process may bind *:9, which takes connections to 127.0.0.1:9. Nothing connects
-# there today: the copy's pi² Remote has no relay client yet, the simulator never joins a relay (it has no App Attest
-# attestation), and the phone pairs and attaches over the home path. Once pi² Remote has a relay client (#678), a copy
-# is given a local relay of its own, or none.
+# 127.0.0.1:9 itself, but on macOS any process may bind *:9, which takes connections to 127.0.0.1:9. So remote_on turns
+# the relay switch off: pi² Remote has a relay client now (#678), and with the switch on it would register there at the
+# first pairing. With it off, pi² Remote makes the pairing's id itself and dials no relay (RelayEnd.register), and the
+# phone pairs and attaches over the home path; the address is only what the pairing's code names.
 REMOTE_RELAY=ws://127.0.0.1:9/v1
 TEST_ENV=()
 # Only explicit demo switches may cross the clean launch boundary. Never accept an open-ended PI2_* prefix:
@@ -687,12 +687,12 @@ from_json() {
 
 # start --remote: remote access on in the copy's engine, as the person would turn it on in Settings › Devices, with the
 # preview on, Find on this network on (the home path, which a development pi² Remote holds on 127.0.0.1 alone),
-# Direct from any address off, and REMOTE_RELAY, on loopback, where nothing of pi² listens. pi² Remote itself starts
-# only with a pairing.
+# Direct from any address off, the relay off, and REMOTE_RELAY, on loopback, where nothing of pi² listens. pi² Remote
+# itself starts only with a pairing.
 remote_on() {
 	local out
-	out=$(engine_call devices.set "{\"on\":true,\"preview\":true,\"home\":true,\"direct\":false,\"relayAddress\":\"$REMOTE_RELAY\"}")
-	[[ $(from_json 'r.remote.on && r.remote.preview && r.remote.home && !r.remote.direct && r.relay' <<<"$out") == "$REMOTE_RELAY" ]] ||
+	out=$(engine_call devices.set "{\"on\":true,\"preview\":true,\"home\":true,\"direct\":false,\"relay\":false,\"relayAddress\":\"$REMOTE_RELAY\"}")
+	[[ $(from_json 'r.remote.on && r.remote.preview && r.remote.home && !r.remote.direct && !r.remote.relay && r.relay' <<<"$out") == "$REMOTE_RELAY" ]] ||
 		die "the copy's engine did not turn remote access on as asked: $out"
 }
 

@@ -9,6 +9,11 @@
 #   (cd relay && npm ci) && (cd app && swift build --product pi2-relay-check) && scripts/relay-protocol-test
 #
 #   scripts/relay-protocol-test [--sealed] [--check PATH]   PATH: the pi2-relay-check to run (app/.build/debug/pi2-relay-check)
+#   scripts/relay-protocol-test --remote [--engine MAIN] [--check PATH]
+#
+# With --remote, pi² Remote's relay end (#678) instead: `pi2-remote-helper-check --relay` (PATH defaults to
+# app/.build/debug/pi2-remote-helper-check, beside a pi2-remote-helper built with it) against the same relay, and with
+# --engine engine/src/main.ts a real engine on a temporary data folder too.
 #
 # With --sealed, the check that the relay sees only sealed bytes (docs/iphone.md 10, #683) instead: the same relay with
 # the recorder at its edge (relay/test/sealed/wrangler.jsonc), a marker session (`pi2-relay-check --sealed`), the check
@@ -20,16 +25,25 @@
 set -uo pipefail
 
 root="$(cd -P -- "$(dirname -- "$0")/.." && pwd -P)"
-check="$root/app/.build/debug/pi2-relay-check"
+check=""
 sealed=""
+remote=""
+engine_main=""
 while [[ $# -gt 0 ]]; do
 	case $1 in
 		--sealed) sealed=1; shift ;;
+		--remote) remote=1; shift ;;
+		--engine) [[ $# -ge 2 ]] || { echo "relay-protocol-test: --engine needs engine/src/main.ts" >&2; exit 2; }; engine_main=$2; shift 2 ;;
 		--check) [[ $# -ge 2 ]] || { echo "relay-protocol-test: --check needs a path" >&2; exit 2; }; check=$2; shift 2 ;;
 		*) echo "relay-protocol-test: unknown argument $1" >&2; exit 2 ;;
 	esac
 done
-[[ -x $check ]] || { echo "relay-protocol-test: no $check; build it: cd app && swift build --product pi2-relay-check" >&2; exit 2; }
+[[ -z $remote || -z $sealed ]] || { echo "relay-protocol-test: --remote and --sealed are two runs" >&2; exit 2; }
+[[ -n $remote || -z $engine_main ]] || { echo "relay-protocol-test: --engine goes with --remote" >&2; exit 2; }
+product=pi2-relay-check
+[[ -z $remote ]] || product=pi2-remote-helper-check
+[[ -n $check ]] || check="$root/app/.build/debug/$product"
+[[ -x $check ]] || { echo "relay-protocol-test: no $check; build it: cd app && swift build --product $product" >&2; exit 2; }
 [[ -x $root/relay/node_modules/.bin/wrangler ]] || { echo "relay-protocol-test: the relay's packages are not installed: cd relay && npm ci" >&2; exit 2; }
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/pi2-relay-protocol.XXXXXX") || exit 2
@@ -92,7 +106,14 @@ if [[ -z $ready ]]; then
 	exit 2
 fi
 
-if [[ -z $sealed ]]; then
+if [[ -n $remote ]]; then
+	if [[ -n $engine_main ]]; then
+		"$check" --relay "ws://127.0.0.1:$port/v1" --engine "$engine_main"
+	else
+		"$check" --relay "ws://127.0.0.1:$port/v1"
+	fi
+	status=$?
+elif [[ -z $sealed ]]; then
 	"$check" --relay "ws://127.0.0.1:$port/v1"
 	status=$?
 else

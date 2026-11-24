@@ -301,6 +301,13 @@ cd app && swift build --product pi2-remote-helper && swift build --product pi2-r
 cd app && .build/debug/pi2-remote-helper-check --engine ../engine/src/main.ts
 ```
 
+Its relay path (#678) is checked against the relay itself, which `scripts/relay-protocol-test --remote` starts on 127.0.0.1 as it does for [the protocol test](#the-relays-protocol-test) (the relay's own package, through `relay/scripts/isolated.mjs`, nothing deployed) and gives the check as `--relay`: registering, pairing, a session and #675's hostile cases over the relay, the mailbox both ways, and, with `--engine`, the same through a real engine. It needs the relay's packages (`cd relay && npm ci`) too, and takes about five minutes, two of them waiting out a device's handshakes a minute. CI runs it in the protocol test's job:
+
+```bash
+cd app && swift build --product pi2-remote-helper && swift build --product pi2-remote-helper-check
+scripts/relay-protocol-test --remote --engine engine/src/main.ts
+```
+
 `app/build.sh` puts the helper in the app as `Contents/Helpers/pi² Remote.app`, where the engine starts it from, through `app/remote-helper.sh`, which packages and signs it (an owner's path); `app/check-release-build.mts` checks a release build's helper ([pi2-remote.md](pi2-remote.md#packaging-and-signing)). A throwaway copy's helper runs in loopback mode: to see it, turn remote access on through the copy's engine and open a pairing, then read `remote.log` in the copy's data folder:
 
 ```bash

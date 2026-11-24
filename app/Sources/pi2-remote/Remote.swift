@@ -65,7 +65,14 @@ package final class Remote: @unchecked Sendable {
 	var relay = ""
 	/// The relay key of the relay in use (`relay`): one for each relay address, never shown to another relay.
 	package private(set) var relayKey: SigningKey?
+	/// Why there is no relay key for the relay in use, when there is none.
+	private(set) var relayKeyProblem: String?
 	package private(set) var pairing: PairingID?
+	/// The pairing pi² Remote registered at a relay, and that relay's address, kept with the list of devices: the relay
+	/// path runs only for that pairing at that address (#678).
+	package private(set) var registration: RelayRegistration?
+	/// The relay's end (`Relay/`, #678): the relay path's channels go to the same `PhoneConnection`s as the home path's.
+	private(set) lazy var relayEnd = RelayEnd(remote: self)
 	var minimumBuild = "1"
 	var window: JoinWindow?
 	package private(set) var listener: Listener?
@@ -92,6 +99,7 @@ package final class Remote: @unchecked Sendable {
 		let kept = try vault.kept()
 		devices = kept.devices
 		homeKey = kept.homeKey
+		registration = kept.registration
 		engine.onEvent = { [unowned self] in self.heard($0) }
 		engine.onSessionLine = { [unowned self] in self.fromEngine(session: $0, message: $1) }
 		engine.onDrained(below: Self.engineDrained) { [unowned self] in self.engineDrained() }
@@ -118,6 +126,7 @@ package final class Remote: @unchecked Sendable {
 			}
 			window = JoinWindow(secret: secret, expires: TimeInterval(expires) / 1000)
 			log("a pairing window is open until \(Date(timeIntervalSince1970: TimeInterval(expires) / 1000))")
+			relayEnd.openJoin(tokenHash: event["tokenHash"]?.stringValue.flatMap { Base64URL.decode($0, count: 32) }, expires: expires)
 		case "closeJoin":
 			// Only channels with no claim yet: the engine says `closeJoin` before `paired` (devices.ts, pairConfirm).
 			window = nil
@@ -125,6 +134,7 @@ package final class Remote: @unchecked Sendable {
 			// A claim with the engine is answered right after: `paired` follows `closeJoin` within one save, `pairRefused`
 			// at once. Neither within 30 seconds, and its channel ends, with no try counted.
 			for connection in connections.values where connection.isClaim { connection.endIfUnanswered(after: PhoneConnection.answerAfterCloseJoin) }
+			relayEnd.closeJoin(claimWaiting: connections.values.contains { $0.isClaim })
 			log("the pairing window closed")
 		case "paired": paired(event)
 		case "pairRefused":
@@ -133,6 +143,7 @@ package final class Remote: @unchecked Sendable {
 				// The engine's word for the phone, when it gives one (#881); its words are never read.
 				if let why = EngineWords.pairRefusal(event["reason"]?.stringValue) { connection.refusePairing(why) } else { connection.end() }
 			}
+			relayEnd.claimAnswered()
 		case "revoke":
 			if let text = event["device"]?.stringValue, let device = DeviceID(text) { revoke(device) }
 		case "push": pushes.take(event, pairing: pairing, devices: devices)
@@ -143,6 +154,13 @@ package final class Remote: @unchecked Sendable {
 				session.closed()
 				log("the engine closed session \(id)")
 			}
+		case "mailboxOut":
+			// What the engine leaves for a phone in the relay's mailbox: sealed to the device on pi² Remote's own list.
+			guard let text = event["device"]?.stringValue, let device = DeviceID(text), let item = event["item"], let kind = item["kind"]?.stringValue, let body = item["body"] else {
+				log("mailboxOut: not an item for a device; left")
+				return
+			}
+			relayEnd.leave(kind: kind, number: item["number"]?.integerValue, body: body, for: device)
 		default:
 			break
 		}
@@ -190,6 +208,7 @@ package final class Remote: @unchecked Sendable {
 			unavailable = "the relay key for this address could not be read or made (\(error)); the relay path is off, home and direct carry on"
 			log(unavailable!)
 		}
+		relayKeyProblem = unavailable
 		addresses = listener?.addresses ?? []
 		let shown = relayKey ?? .software(P256.Signing.PrivateKey())
 		let hello: [(String, JSONValue)] = [
@@ -200,11 +219,10 @@ package final class Remote: @unchecked Sendable {
 				log("the engine refused remote.hello: \(refusal); stopping")
 				exit(1)
 			}
-			// After the hello, which the engine takes `remote.state` only after.
-			if let unavailable {
-				self.engine.request("remote.state", .object([("relay", .object([("available", .bool(false)), ("why", .string(Log.oneLine(unavailable)))]))]))
-			}
+			// After the hello, which the engine takes `remote.state` only after: the relay path, as it can run now (a relay
+			// key that cannot be read or made among the reasons it cannot).
 			log("said hello: \(self.devices.count) device(s) on pi² Remote's own list, keys in \(self.vault.name)")
+			self.relayEnd.reconsider()
 		}
 	}
 
@@ -215,32 +233,37 @@ package final class Remote: @unchecked Sendable {
 		applySwitches()
 		// Direct from any address turned off: the connections it let in end now, not when they next connect (M4). Their
 		// sessions keep the resume window, for another path.
-		for connection in connections.values where !admits(peer: connection.peer, arrivedOn: connection.arrivedOn, kind: kind, direct: switches.direct) {
+		for connection in connections.values {
+			guard let peer = connection.peer, !admits(peer: peer, arrivedOn: connection.arrivedOn, kind: kind, direct: switches.direct) else { continue }
 			log("a connection from outside the local and private ranges ended: Direct from any address is off")
 			connection.windowClosed()
 		}
 		if relay.utf8.elementsEqual(before.utf8) {
 			reportAddresses()
+			relayEnd.reconsider()
 		} else {
 			log("the relay's address changed: its own relay key is told to the engine")
 			hello()
 		}
 	}
 
-	/// The relay's `register`. The relay's client is #678's (P10, `Relay/`); until it is here, a development build gives
-	/// itself a pairing's id, as a local relay would, so that pairing and attaching on the home path can be tried in a
-	/// throwaway copy with no relay at all. A release build has no relay to register with yet, and says so.
+	/// The relay's `register`: the engine has no pairing yet (`RelayEnd.register`).
 	private func register(_ event: JSONValue) {
-		#if PI2_DEVELOPMENT
-		if pairing == nil {
-			let made = PairingID.random()
-			pairing = made
-			log("register: no relay client yet (#678); a development build made its own pairing's id")
-			engine.request("remote.state", .object([("pairing", .string(made.text))]))
+		relayEnd.register()
+	}
+
+	/// The pairing the relay gave, or pi² Remote made for the home path alone (`registration` nil), kept with the list of
+	/// devices before the engine hears of it.
+	func adopt(pairing made: PairingID, registration given: RelayRegistration?) {
+		pairing = made
+		registration = given
+		guard given != nil else { return }
+		do {
+			try vault.keep(KeptDevices(devices: devices, homeKey: homeKey, registration: given))
+		} catch {
+			registration = nil
+			log("the relay's pairing could not be kept with the list of devices (\(error)): the relay path stays off for it")
 		}
-		#else
-		log("register: this build has no relay client yet (#678)")
-		#endif
 	}
 
 	// ---- The home path
@@ -260,7 +283,8 @@ package final class Remote: @unchecked Sendable {
 		} else if !switches.home, let current = listener {
 			current.stop()
 			listener = nil
-			for connection in connections.values { connection.windowClosed() }
+			// The home path's connections alone: the relay's are not this switch's.
+			for connection in connections.values where connection.peer != nil { connection.windowClosed() }
 			log("stopped listening: Find on this network is off")
 		}
 		advertise()
@@ -321,7 +345,7 @@ package final class Remote: @unchecked Sendable {
 		while true {
 			let admitted = admission.admit(key: key)
 			if admitted == .taken { break }
-			let idle = connections.values.filter { $0.waitingForFirstMessage && (admitted == .allFull || $0.admissionKey == key) }
+			let idle = connections.values.filter { $0.admission === admission && $0.waitingForFirstMessage && (admitted == .allFull || $0.admissionKey == key) }
 			guard let oldest = idle.min(by: { $0.acceptedAt < $1.acceptedAt }) else {
 				Seldom.shared.say("pending", "a connection from \(peer) refused: \(admission.pendingCount) wait to authenticate already")
 				close(descriptor)
@@ -329,7 +353,8 @@ package final class Remote: @unchecked Sendable {
 			}
 			oldest.end()
 		}
-		let connection = PhoneConnection(remote: self, descriptor: descriptor, peer: peer, admissionKey: key, arrivedOn: arrivedOn)
+		let link = TCPLink(descriptor: descriptor, queue: queue)
+		let connection = PhoneConnection(remote: self, link: link, route: .tcp(peer, arrivedOn: arrivedOn), admission: admission, admissionKey: key)
 		connections[ObjectIdentifier(connection)] = connection
 		connection.start()
 	}
@@ -427,10 +452,14 @@ package final class Remote: @unchecked Sendable {
 				if case let .failure(refusal) = result { log("the engine did not take back the pairing of device \(device.id): \(refusal)") }
 			}
 			connection?.refusePairing(.unsaved)
+			// The claim is answered: the relay's window, and the phone's joined slot with it, go now, not 30 seconds on.
+			relayEnd.claimAnswered()
 			return
 		}
 		log("paired device \(device.id): added to pi² Remote's own list")
-		guard let connection else { return }
+		// Listed at the relay too, with the keys of the engine's verified claim, before its window closes (3.3 step 8). A
+		// phone pairing on the relay path is told once it is listed, under the engine's id; on the home path, at once.
+		guard let connection else { return relayEnd.paired(device, link: nil) {} }
 		let answer = event["paired"]
 		guard let pairingText = answer?["pairing"]?.stringValue, let pairingID = PairingID(pairingText), let name = answer?["name"]?.stringValue,
 		      case let .array(items)? = answer?["addresses"],
@@ -438,10 +467,17 @@ package final class Remote: @unchecked Sendable {
 		else {
 			log("paired: the answer for the phone is not one RemoteKit writes; its channel is closed")
 			connection.end()
-			return
+			return relayEnd.paired(device, link: nil) {}
 		}
-		connection.sendLine(ControlLine.paired(line).line)
-		connection.end()
+		let tell = {
+			connection.sendLine(ControlLine.paired(line).line)
+			connection.end()
+		}
+		guard let link = connection.relayLink else {
+			tell()
+			return relayEnd.paired(device, link: nil) {}
+		}
+		relayEnd.paired(device, link: link, then: tell)
 	}
 
 	/// The first pairing's claim is about to go to the engine: its home key is made and kept now, with the list as it is,
@@ -474,6 +510,7 @@ package final class Remote: @unchecked Sendable {
 		}
 		for connection in connections.values where connection.device == device { connection.end() }
 		log("revoked device \(device): dropped from pi² Remote's own list")
+		relayEnd.removeDevice(device)
 		// The remaining phones attached now are sent the new key at once; the others at their next attach.
 		for connection in connections.values where connection.isAttached { connection.sendHomeKey() }
 	}
@@ -487,7 +524,7 @@ package final class Remote: @unchecked Sendable {
 	private func keep(_ list: [ListedDevice], homeKey key: HomeKey?) -> Bool {
 		let kept: Bool
 		do {
-			try vault.keep(KeptDevices(devices: list, homeKey: key))
+			try vault.keep(KeptDevices(devices: list, homeKey: key, registration: registration))
 			devices = list
 			homeKey = key
 			kept = true

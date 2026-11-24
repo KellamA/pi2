@@ -56,6 +56,12 @@ enum Flows {
 		}
 		Check.expect(keys?["secureEnclave"]?.boolValue == false, "a development build says its keys are not in a Secure Enclave")
 		Check.expect(hello.params["pairing"]?.stringValue == pairing.text, "and names the pairing start gave it")
+		// The relay path, after the hello: off for a pairing pi² Remote did not register at this relay (#678), the home
+		// path on.
+		let relay = engine.request("remote.state")
+		if let relay { engine.answer(relay.id) }
+		Check.expect(relay?.params["relay"]?["state"]?.stringValue == "unavailable" && relay?.params["relay"]?["why"]?.stringValue?.contains("not registered at this relay") == true,
+		             "then the engine is told the relay path is off for a pairing registered at no relay, and why", relay.map { JSON.text($0.params) } ?? "nothing")
 		return Mac(pairing: pairing, port: port, identity: identity, channel: channel, record: record)
 	}
 
@@ -95,8 +101,9 @@ enum Flows {
 	}
 
 	/// A connection's channel and attach, as the engine answers it; returns the phone and the engine's session.
-	static func attach(_ engine: FakeEngine, mac: Mac, device: DeviceID, keys: PhoneKeys, session: String, resume: (SessionID, UInt64)? = nil, resumed: Bool = false) -> (Phone, Attached)? {
-		guard let phone = Phone(port: mac.port) else { return nil }
+	/// `make` gives the phone's connection, by default a TCP one to the home listener; `path` is the path the engine is told.
+	static func attach(_ engine: FakeEngine, mac: Mac, device: DeviceID, keys: PhoneKeys, session: String, resume: (SessionID, UInt64)? = nil, resumed: Bool = false, path: String = "home", make: (() -> Phone?)? = nil) -> (Phone, Attached)? {
+		guard let phone = make?() ?? Phone(port: mac.port) else { return nil }
 		let challenge = Bytes.random(32)
 		let handshake = try! ChannelHandshake.connection(initiator: true, pairing: mac.pairing, device: device, channelKey: keys.channel, remoteChannelKey: mac.channel)
 		phone.send(try! handshake.writeMessage())
@@ -115,6 +122,7 @@ enum Flows {
 		let attach = request.params["attach"]
 		Check.expect(request.params.keys == ["attach", "binding", "path"] && attach?.keys == ["signed", "signature", "presence"], "remote.attach takes the attach without received, as the engine reads it", JSON.text(request.params))
 		Check.expect(attach?["signed"]?.stringValue == claim.statement.text && attach?["presence"]?.stringValue == Base64URL.encode(claim.presence), "the attach's signed text and presence signature as the phone made them")
+		Check.expect(request.params["path"]?.stringValue == path, "and the path it came by, \(path)", JSON.text(request.params))
 		engine.answer(request.id, .object([("session", .string(session)), ("resume", .bool(resumed))]))
 		guard let line = phone.line(), case let .attached(attached)? = try? ControlLine.parse(line, from: .mac) else {
 			Check.expect(false, "the phone is told it is attached")
@@ -252,6 +260,9 @@ enum Flows {
 		engine.event("settings", [("relay", .string("ws://127.0.0.1:9/v1")), ("switches", switches)])
 		let restored = engine.request("remote.hello")
 		if let restored { engine.answer(restored.id) }
+		let unregistered = engine.request("remote.state")
+		if let unregistered { engine.answer(unregistered.id) }
+		Check.expect(unregistered?.params["relay"]?["why"]?.stringValue?.contains("not registered at this relay") == true, "with its key, the relay path is off only for the pairing it never registered there", unregistered.map { JSON.text($0.params) } ?? "nothing")
 		Check.expect(restored?.params["macKeys"]?["relay"]?.stringValue == firstRelay, "back to a relay whose key it has: that key again")
 
 		Check.section("Find on this network off and on: the engine hears of the new port (#675's security read B, M5)")

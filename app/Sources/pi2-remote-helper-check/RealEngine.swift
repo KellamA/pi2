@@ -48,7 +48,10 @@ enum RealEngine {
 	}
 
 	static func findNode() -> String? {
-		for folder in (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":") + ["/opt/homebrew/bin", "/usr/local/bin"] {
+		// Each folder as text: an array literal added to the split's result once made it an array of characters' arrays,
+		// so that PATH was never searched and only the two folders after it were.
+		let folders: [String] = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init) + ["/opt/homebrew/bin", "/usr/local/bin"]
+		for folder in folders {
 			let candidate = "\(folder)/node"
 			if access(candidate, X_OK) == 0 { return candidate }
 		}
@@ -88,18 +91,30 @@ enum RealEngine {
 
 	static func run(engineMain: String, helper: URL, root: URL) {
 		Check.section("through a real engine: a phone pairs and attaches over loopback (#675's done when)")
-		guard let node = findNode() else { return Check.expect(false, "a node to run the engine with is on the PATH") }
-		let home = root.appendingPathComponent("e", isDirectory: true)
+		guard let (engine, app, home) = startEngine(engineMain: engineMain, helper: helper, root: root, name: "e") else { return }
+		defer { engine.stop() }
+		home675(engine: engine, app: app, home: home)
+	}
+
+	/// A development engine on a temporary data folder of its own, `root/<name>`, its app bundle a stand-in holding this
+	/// check's pi² Remote; this check is its app.
+	static func startEngine(engineMain: String, helper: URL, root: URL, name: String) -> (Child, App, URL)? {
+		guard let node = findNode() else {
+			Check.expect(false, "a node to run the engine with is on the PATH")
+			return nil
+		}
+		let home = root.appendingPathComponent(name, isDirectory: true)
 		try! FileManager.default.createDirectory(at: home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-		let bundle = root.appendingPathComponent("pi2 engine check.app", isDirectory: true)
+		let bundle = root.appendingPathComponent("pi2 engine check \(name).app", isDirectory: true)
 		let helpers = bundle.appendingPathComponent("Contents/Helpers/pi² Remote.app/Contents/MacOS", isDirectory: true)
 		try! FileManager.default.createDirectory(at: helpers, withIntermediateDirectories: true)
 		try! FileManager.default.createDirectory(at: bundle.appendingPathComponent("Contents/MacOS"), withIntermediateDirectories: true)
 		try! FileManager.default.copyItem(at: helper, to: helpers.appendingPathComponent("pi² Remote"))
+		helperInfo(helpers.appendingPathComponent("pi² Remote"))
 		let peer = bundle.appendingPathComponent("Contents/MacOS/pi2-peer")
 		try! "#!/bin/sh\necho '{\"app\":true,\"why\":\"a stand-in takes every connection for the app'\"'\"'s\"}'\n".write(to: peer, atomically: true, encoding: .utf8)
 		chmod(peer.path, 0o755)
-		let awake = root.appendingPathComponent("awake.sh")
+		let awake = root.appendingPathComponent("awake-\(name).sh")
 		try! "#!/bin/sh\nwhile kill -0 \"$3\" 2>/dev/null; do sleep 1; done\n".write(to: awake, atomically: true, encoding: .utf8)
 		chmod(awake.path, 0o755)
 		let environment = [
@@ -114,7 +129,6 @@ enum RealEngine {
 			"PI2_AWAKE_POWER": "ac",
 		]
 		let engine = Child.spawn(node, [engineMain], environment: environment)
-		defer { engine.stop() }
 		let socketPath = home.appendingPathComponent("engine.sock").path
 		var app: App?
 		let started = Date()
@@ -122,10 +136,20 @@ enum RealEngine {
 			if FileManager.default.fileExists(atPath: socketPath) { app = App(socket: socketPath) }
 			if app == nil { usleep(200_000) }
 		}
-		guard let app else { return Check.expect(false, "the engine started and listened", engine.stderrText) }
+		guard let app else {
+			Check.expect(false, "the engine started and listened", engine.stderrText)
+			engine.stop()
+			return nil
+		}
 		Check.expect(true, "the engine started on a temporary data folder")
+		return (engine, app, home)
+	}
 
-		guard case .success = app.call("devices.set", .object([("on", .bool(true)), ("preview", .bool(true)), ("relayAddress", .string("ws://127.0.0.1:9/v1"))])) else {
+	static func home675(engine: Child, app: App, home: URL) {
+
+		// The relay switch off: the home path alone, so that pi² Remote dials no relay at 127.0.0.1:9, where any process may
+		// listen (#921's security read); it makes the pairing's id itself, and the payload still names the address.
+		guard case .success = app.call("devices.set", .object([("on", .bool(true)), ("preview", .bool(true)), ("relay", .bool(false)), ("relayAddress", .string("ws://127.0.0.1:9/v1"))])) else {
 			return Check.expect(false, "remote access turned on")
 		}
 		let opened = app.call("devices.pairStart", within: 180)
@@ -262,5 +286,114 @@ enum RealEngine {
 			}
 			Check.expect(gone, "with remote access off, the engine stops pi² Remote")
 		}
+	}
+
+	/// The relay path through a real engine (#678): a phone pairs through the relay on this computer, with the digits it
+	/// shows typed on the Mac, attaches over it, asks the engine, leaves a request in the Mac's mailbox that the engine
+	/// checks and answers with a receipt, and is revoked; the Devices page is told what the relay path does.
+	static func run(engineMain: String, helper: URL, root: URL, relay: URL) {
+		Check.section("through a real engine and the relay on this computer: pairing, a session and the mailbox (#678)")
+		guard let (engine, app, home) = startEngine(engineMain: engineMain, helper: helper, root: root, name: "er") else { return }
+		defer { engine.stop() }
+		guard case .success = app.call("devices.set", .object([("on", .bool(true)), ("preview", .bool(true)), ("relayAddress", .string(relay.absoluteString))])) else {
+			return Check.expect(false, "remote access turned on, with the relay on this computer")
+		}
+		let opened = app.call("devices.pairStart", within: 180)
+		guard case let .success(window) = opened, let text = window["payload"]?.stringValue, let payload = try? PairingPayload.parse(text) else {
+			return Check.expect(false, "the engine opened a pairing through pi² Remote and the relay", "\(opened); \(engine.stderrText.suffix(2000))")
+		}
+		Check.expect(payload.relay == relay.absoluteString, "the payload names the relay")
+		let registration = FileManager.default.contents(atPath: home.appendingPathComponent("remote-devices.json").path).flatMap { try? KeptDevices(data: $0) }?.registration
+		Check.expect(registration?.pairing == payload.pairing, "and the pairing pi² Remote registered there, kept with its address")
+		let keys = PhoneKeys()
+		guard let link = Relayed.join(relay, pairing: payload.pairing, secret: payload.secret, keys: keys) else { return Check.expect(false, "the phone joins the relay's window") }
+		let joined = RelayWire(link: link)
+		let phone = Phone(relay: joined)
+		guard let paired = phone.pair(payload: payload, keys: keys, team: team) else { return Check.expect(false, "the phone's pairing handshake over the relay") }
+		let digits = PairingSecrets.digits(secret: payload.secret, binding: paired.binding)
+		var confirmed: Result<JSONValue, Refused> = .failure(Refused("not tried"))
+		let confirmStart = Date()
+		repeat {
+			confirmed = app.call("devices.pairConfirm", .object([("digits", .string(digits))]))
+			if case let .failure(why) = confirmed, why.description.contains("No phone is waiting") { usleep(200_000) } else { break }
+		} while Date().timeIntervalSince(confirmStart) < 60
+		guard case let .success(confirmation) = confirmed, let deviceText = confirmation["device"]?.stringValue, let device = DeviceID(deviceText) else {
+			return Check.expect(false, "the digits the phone shows pair it on the Mac", "\(confirmed)")
+		}
+		guard let line = phone.line(), case let .paired(answer)? = try? ControlLine.parse(line) else { return Check.expect(false, "the phone is told it is paired over the relay") }
+		Check.expect(answer.device == device, "the phone is told over the relay that it is paired, with its device id")
+		joined.close()
+		guard let wire = Relayed.connect(relay, pairing: payload.pairing, device: device, keys: keys) else {
+			return Check.expect(false, "the phone connects to the relay as a listed device")
+		}
+		let connected = Phone(relay: wire)
+		guard let challenge = connected.connect(pairing: payload.pairing, device: device, keys: keys, macChannel: payload.channelKey, identity: payload.identityKey),
+		      let attached = connected.attach(pairing: payload.pairing, device: device, keys: keys, challenge: challenge)
+		else { return Check.expect(false, "the phone attaches over the relay") }
+		Check.expect(!attached.resume, "the phone attached over the relay in a new session (\(attached.session))")
+		var greeting: [JSONValue] = []
+		while let line = connected.line(within: 60), let value = try? JSON.parse(line) {
+			greeting.append(value)
+			if value["event"]?.stringValue == "device" { break }
+		}
+		Check.expect(greeting.last?["event"]?.stringValue == "device" && greeting.last?["relay"]?.boolValue == true, "it is greeted over the relay, then sent its device event", "\(greeting.count) lines")
+		connected.sendLine(Data(#"{"id":"q1","method":"engine.info","params":{}}"#.utf8))
+		var info: JSONValue?
+		while let line = connected.line(within: 60) {
+			if let value = try? JSON.parse(line), value["id"]?.stringValue == "q1" {
+				info = value
+				break
+			}
+		}
+		Check.expect(info?["result"]?["pid"]?.integerValue == Int64(engine.pid), "and asks the engine over the relay", info.map(JSON.text) ?? "none")
+		if case let .success(state) = app.call("devices.watch") {
+			var sessions: [JSONValue] = []
+			if case let .array(items)? = state["sessions"] { sessions = items }
+			Check.expect(sessions.contains { $0["device"]?.stringValue == device.text && $0["path"]?.stringValue == "relay" }, "the Devices page shows the session on the relay path", JSON.text(state["sessions"] ?? .null))
+			Check.expect(state["helper"]?["relay"]?["state"]?.stringValue == "ready", "and the relay path ready", JSON.text(state["helper"] ?? .null))
+		}
+
+		// The mailbox: a request the phone leaves while it holds no channel, which the engine checks and answers.
+		guard let client = wire.client else { return }
+		let id = ItemID.random()
+		let request = try! RequestItem.make(method: "abort", params: .object([("id", .integer(987_654))]), pairing: payload.pairing, device: device, id: id, deviceKey: keys.device, presenceKey: keys.presence)
+		let item = try! SealedItem.seal(request.plaintext, to: ItemAddress(pairing: payload.pairing, reader: .mac, id: id), readerKey: payload.recordKey, writerKey: keys.record)
+		let put = blocking { try await client.put(item, id: id, to: .mac) }
+		Check.expect((try? put.get()) == .stored, "the phone leaves a request in the Mac's mailbox")
+		let pairing = payload.pairing, identity = payload.identityKey, macRecord = payload.recordKey, reader = keys.record
+		var receipt: MacItem?
+		for _ in 0 ..< 40 where receipt == nil {
+			usleep(500_000)
+			let taken = blocking { () async throws -> MacItem? in
+				let found = Locked<MacItem?>(nil)
+				_ = try await client.take { taken in
+					var done = Set<ItemID>()
+					for item in taken.items {
+						if let opened = try? SealedItem.openMacItem(item.item, at: ItemAddress(pairing: pairing, reader: .device(device), id: item.id), readerKey: reader, writerRecordKey: macRecord, identityKey: identity) {
+							found.set(opened)
+							done.insert(item.id)
+						}
+					}
+					return done
+				}
+				return found.get()
+			}
+			receipt = (try? taken.get()) ?? nil
+		}
+		Check.expect(receipt?.kind == "receipt" && receipt?.body["nonce"]?.stringValue == id.text && receipt?.body["outcome"]?.stringValue == "failed",
+		             "the engine checked it again, handled it (an abort of no conversation fails) and left the phone a receipt, signed by the Mac and sealed for it", receipt.map { JSON.text($0.body) } ?? "none")
+
+		guard case .success = app.call("devices.revoke", .object([("device", .string(device.text))])) else { return Check.expect(false, "the device is revoked on the Mac") }
+		var told = false
+		while let event = connected.event(within: 30) {
+			if case let .line(line) = event, case let .revoked(revocation)? = try? ControlLine.parse(line) {
+				told = (try? revocation.verify(identityKey: payload.identityKey, pairing: payload.pairing, device: device)) != nil
+			}
+			if event == .bye { break }
+		}
+		Check.expect(told, "a device revoked on the Mac is told so over the relay, and its channel ends")
+		let removed = wire.ended(within: 15)
+		Check.expect(removed?.contains("removed") == true, "and the relay removes its slot", removed ?? "still open")
+		guard case .success = app.call("devices.set", .object([("on", .bool(false))])) else { return Check.expect(false, "remote access turned off") }
 	}
 }

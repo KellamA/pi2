@@ -3,8 +3,10 @@ import Dispatch
 import Foundation
 import RemoteKit
 
-/// One TCP connection on the home path (docs/iphone.md 5.4): a Noise handshake, then a channel, each message preceded
-/// by its length in two bytes (remotekit.md, "Framing").
+/// One phone's connection, on either path (docs/iphone.md 5.1): a TCP connection on the home or direct path (5.4), each
+/// Noise message preceded by its length in two bytes, or a device's slot at the relay (5.3), each Noise message one
+/// WebSocket message (remotekit.md, "Framing"). Which it is is its link's (`PhoneLink`) and its route's: everything
+/// below is the same code for both, so that no check exists on one path only.
 ///
 /// - The first message must be exactly a first message's length before anything else is done: 48 bytes for a
 ///   connection (KK), 96 for a pairing (IKpsk2), and the latter only while a pairing window is open. Anything else, or
@@ -56,16 +58,15 @@ final class PhoneConnection: @unchecked Sendable {
 	}
 
 	private unowned let remote: Remote
-	private let io: SocketIO
-	let peer: IPAddress
+	private let link: any PhoneLink
+	/// Where it came from: a TCP peer, or a slot the relay named.
+	let route: PhoneRoute
+	/// The limits it is counted under before it authenticates: the home listener's, or the relay path's own.
+	let admission: Admission
 	/// The source it is counted under while it waits to authenticate, as it was when it was admitted.
 	let admissionKey: IPAddress
-	/// The interface it came by, when that matters (a peer in the shared address space, D2).
-	let arrivedOn: String?
 	let acceptedAt = ContinuousClock.now
 	private var phase = Phase.first
-	private var framing = LengthFraming()
-	private var firstBytes = Data()
 	private var admitted = true
 	private var deadline: DispatchWorkItem?
 	/// For counting a wrong pairing try: the second handshake message went, and no transport message opened yet.
@@ -81,13 +82,40 @@ final class PhoneConnection: @unchecked Sendable {
 	private var receivedBytesSinceAck = 0
 	private var ackScheduled = false
 
-	init(remote: Remote, descriptor: Int32, peer: IPAddress, admissionKey: IPAddress, arrivedOn: String? = nil) {
+	init(remote: Remote, link: any PhoneLink, route: PhoneRoute, admission: Admission, admissionKey: IPAddress) {
 		self.remote = remote
-		self.peer = peer
+		self.link = link
+		self.route = route
+		self.admission = admission
 		self.admissionKey = admissionKey
-		self.arrivedOn = arrivedOn
-		io = SocketIO(descriptor: descriptor, queue: remote.queue)
 	}
+
+	/// The TCP peer, on the home or direct path; nil at the relay.
+	var peer: IPAddress? {
+		if case let .tcp(peer, _) = route { return peer }
+		return nil
+	}
+
+	/// The interface it came by, when that matters (a peer in the shared address space, D2).
+	var arrivedOn: String? {
+		if case let .tcp(_, arrivedOn) = route { return arrivedOn }
+		return nil
+	}
+
+	/// The slot the relay named for it, on the relay path.
+	var relaySlot: DeviceID? {
+		if case let .relay(slot) = route { return slot }
+		return nil
+	}
+
+	/// The relay's link, on the relay path: the slot it answers under moves to the engine's id once the device is added.
+	var relayLink: RelayLink? { link as? RelayLink }
+
+	/// The path the engine is told: `home` or `direct` by the peer's address (`IPAddress.path`), or `relay`.
+	var path: String { peer?.path ?? "relay" }
+
+	/// Who sent its first message, for the log.
+	private var from: String { peer.map { "\($0)" } ?? "the relay" }
 
 	/// How long a claim the engine holds may wait for `paired` or `pairRefused`: the window's five minutes and one more,
 	/// and once the window has closed (`closeJoin`, which the engine sends just before `paired`), 30 seconds.
@@ -97,9 +125,11 @@ final class PhoneConnection: @unchecked Sendable {
 	static let attachWithin: TimeInterval = 60
 
 	func start() {
-		io.onBytes = { [unowned self] in self.take($0) }
-		io.onClose = { [unowned self] in self.closed() }
-		io.start()
+		link.onMessage = { [unowned self] in self.take($0) }
+		link.acceptsFirst = { [unowned self] in self.acceptsFirst(length: $0) }
+		link.onBroken = { [unowned self] in self.end() }
+		link.onClose = { [unowned self] in self.closed() }
+		link.start()
 		let deadline = DispatchWorkItem { [weak self] in self?.tooSlow() }
 		self.deadline = deadline
 		remote.queue.asyncAfter(deadline: .now() + remote.attachWithin, execute: deadline)
@@ -133,8 +163,8 @@ final class PhoneConnection: @unchecked Sendable {
 		return false
 	}
 
-	func pauseReading() { io.pauseReading() }
-	func resumeReading() { io.resumeReading() }
+	func pauseReading() { link.pauseReading() }
+	func resumeReading() { link.resumeReading() }
 
 	/// Attached, so its lines feed the engine: the only kind back-pressure pauses (#675's security read B, M2c). One
 	/// not yet attached (a handshake, a claim, an attach) is always read, so that a phone held back by another's large
@@ -148,7 +178,7 @@ final class PhoneConnection: @unchecked Sendable {
 	private(set) var attachedAt = ContinuousClock.now
 
 	/// What waits to be written to the phone.
-	var queued: Int { io.pending }
+	var queued: Int { link.pending }
 
 	/// A pairing channel whose claimer has sent no claim yet: the one kind `closeJoin` ends. A claim passed to the engine
 	/// is the engine's to answer (`paired` or `pairRefused`, or its refusal of `remote.pairClaim`); the engine closes the
@@ -170,59 +200,58 @@ final class PhoneConnection: @unchecked Sendable {
 
 	// ---- Reading
 
-	private func take(_ bytes: Data) {
-		if case .first = phase {
-			firstBytes.append(bytes)
-			firstMessage()
-			return
-		}
+	/// A whole Noise message from the link, whichever path it came by.
+	private func take(_ message: Data) {
+		if case .first = phase { return firstMessage(message) }
 		do {
-			for message in try framing.push(bytes) {
-				try opened(message)
-				if case .ended = phase { return }
-			}
+			try opened(message)
 		} catch {
 			end()
 		}
 	}
 
-	/// The first message: its length decided before any of it is read, then exactly that many bytes.
-	private func firstMessage() {
-		guard firstBytes.count >= 2 else { return }
-		let length = Int(firstBytes[firstBytes.startIndex]) << 8 | Int(firstBytes[firstBytes.startIndex + 1])
-		let pairing = length == 96
-		guard length == ChannelHandshake.connectionFirstMessageLength || (pairing && remote.openWindow != nil && remote.pairing != nil) else { return end() }
-		guard firstBytes.count >= 2 + length else { return }
-		// The initiator waits for the answer before it sends anything more.
-		guard firstBytes.count == 2 + length else { return end() }
-		guard remote.admission.firstMessage(from: peer, now: remote.now) else {
-			Seldom.shared.say("first messages", "a first message from \(peer) over the listener's limits; closed")
+	/// Whether a first message of this length is taken, decided before any of it is read (on TCP, before its bytes are
+	/// held): a connection's (48 bytes), or a pairing's (96) while a window is open.
+	private func acceptsFirst(length: Int) -> Bool {
+		length == ChannelHandshake.connectionFirstMessageLength || (length == 96 && remote.openWindow != nil && remote.pairing != nil)
+	}
+
+	/// The first message, of a length `acceptsFirst` took: counted against the limits of its path before any key
+	/// agreement.
+	private func firstMessage(_ message: Data) {
+		guard acceptsFirst(length: message.count) else { return end() }
+		guard admission.firstMessage(from: source, now: remote.now) else {
+			Seldom.shared.say("\(path) first messages", "a first message from \(from) over its path's limits; closed")
 			return end()
 		}
-		let message = Data(firstBytes[(firstBytes.startIndex + 2)...])
-		firstBytes = Data()
-		pairing ? startPairing(message) : startConnection(message)
+		message.count == 96 ? startPairing(message) : startConnection(message)
 	}
+
+	/// What the limits count it under: the peer's address, or the relay's slot (`Admission.relaySource`).
+	private var source: IPAddress { peer ?? admissionKey }
 
 	private func startConnection(_ message: Data) {
 		guard let pairing = remote.pairing else { return end() }
 		// A first message seen before from a device is a replay: it would only use up that device's handshakes (D1).
-		guard !remote.admission.replayed(message, now: remote.now) else {
-			Seldom.shared.say("replay", "a connection's first message from \(peer) was one seen before (a replay); closed")
+		guard !admission.replayed(message, now: remote.now) else {
+			Seldom.shared.say("\(path) replay", "a connection's first message from \(from) was one seen before (a replay); closed")
 			return end()
 		}
 		let found: (DeviceID, ChannelHandshake)
 		do {
-			found = try ChannelHandshake.respond(toFirstMessage: message, pairing: pairing, channelKey: remote.keys.channel, devices: remote.channelKeys)
+			// At the relay, only the device whose slot the bytes came under: its handshake's prologue names it, so the relay
+			// cannot hand one device's channel to another's slot (remotekit.md, ".data(from:) goes to that device's channel").
+			let candidates = relaySlot.map { slot in remote.channelKeys.filter { $0.0 == slot } } ?? remote.channelKeys
+			found = try ChannelHandshake.respond(toFirstMessage: message, pairing: pairing, channelKey: remote.keys.channel, devices: candidates)
 		} catch {
-			remote.admission.unknownFirstMessage(now: remote.now)
-			Seldom.shared.say("no device", "a connection's first message from \(peer) was made for no paired device; closed")
+			admission.unknownFirstMessage(now: remote.now)
+			Seldom.shared.say("\(path) no device", "a connection's first message from \(from) was made for no paired device; closed")
 			return end()
 		}
-		remote.admission.remember(message, now: remote.now)
+		admission.remember(message, now: remote.now)
 		let (device, handshake) = found
-		guard remote.admission.handshake(for: device.text, now: remote.now) else {
-			log("more than \(Admission.handshakesPerDevicePerMinute) handshakes this minute for device \(device); closed")
+		guard admission.handshake(for: device.text, now: remote.now) else {
+			Seldom.shared.say("\(path) handshakes", "more than \(Admission.handshakesPerDevicePerMinute) handshakes this minute for device \(device); closed")
 			return end()
 		}
 		self.device = device
@@ -341,7 +370,7 @@ final class PhoneConnection: @unchecked Sendable {
 		}
 		let params = JSONValue.object([
 			("claim", inner), ("binding", .string(Base64URL.encode(channel.handshakeHash))), ("challenge", .string(Base64URL.encode(challenge))),
-			("path", .string("home")),
+			("path", .string(relaySlot == nil ? "home" : "relay")),
 		])
 		remote.engine.request("remote.pairClaim", params) { [weak self] result in
 			guard let self, case .claiming = self.phase else { return }
@@ -415,7 +444,7 @@ final class PhoneConnection: @unchecked Sendable {
 		let attach = JSONValue.object([
 			("signed", .string(claim.statement.text)), ("signature", .string(claim.statement.signatureText)), ("presence", .string(Base64URL.encode(claim.presence))),
 		])
-		let params = JSONValue.object([("attach", attach), ("binding", .string(Base64URL.encode(channel.handshakeHash))), ("path", .string(peer.path))])
+		let params = JSONValue.object([("attach", attach), ("binding", .string(Base64URL.encode(channel.handshakeHash))), ("path", .string(path))])
 		remote.engine.request("remote.attach", params) { [weak self] result in
 			guard let self, case .attaching = self.phase else { return }
 			guard case let .success(value) = result, let text = value["session"]?.stringValue, let session = SessionID(text), let resumed = value["resume"]?.boolValue else {
@@ -437,7 +466,7 @@ final class PhoneConnection: @unchecked Sendable {
 		guard case let .attaching(channel) = phase else { return }
 		phase = .attached(channel, session)
 		attachedAt = .now
-		if remote.phonesPaused { io.pauseReading() }
+		if remote.phonesPaused { link.pauseReading() }
 		sendLine(ControlLine.attached(Attached(session: session.id, resume: resumed)).line)
 		sendHomeKey()
 	}
@@ -455,7 +484,7 @@ final class PhoneConnection: @unchecked Sendable {
 		deadline = nil
 		if admitted {
 			admitted = false
-			remote.admission.release(key: admissionKey)
+			admission.release(key: admissionKey)
 		}
 	}
 
@@ -508,9 +537,9 @@ final class PhoneConnection: @unchecked Sendable {
 	static let macLines = ["pair", "paired", "pairRefused", "attach", "attached", "revoked", "refused", "homeKey", "mac", "sessionEnd"]
 
 	private func sendAck() {
-		guard case let .attached(channel, _) = phase, let ack = try? channel.sealAck(received), let framed = try? LengthFraming.encode(ack) else { return }
+		guard case let .attached(channel, _) = phase, let ack = try? channel.sealAck(received) else { return }
 		receivedBytesSinceAck = 0
-		io.send(framed)
+		link.send(ack)
 	}
 
 	/// The session moved to another channel, or ended: this one is closed, at once or after `grace` seconds.
@@ -527,8 +556,7 @@ final class PhoneConnection: @unchecked Sendable {
 	// ---- Writing
 
 	private func send(_ handshakeMessage: Data) {
-		guard let framed = try? LengthFraming.encode(handshakeMessage) else { return end() }
-		io.send(framed)
+		link.send(handshakeMessage)
 	}
 
 	/// What a phone may leave unread before pi² Remote gives up on it (#675's security read B, M1): judged by what waits
@@ -541,13 +569,13 @@ final class PhoneConnection: @unchecked Sendable {
 
 	/// A line on the channel, in as many frames as it takes.
 	func sendLine(_ line: Data) {
-		guard let channel, !io.isClosed else { return }
-		if io.pending > Self.neverAfter || (io.pending > Self.slowAfter && io.stalledFor >= Self.stalledAfter) {
-			log("a phone left more than \(io.pending / 1024 / 1024) MB unread; its channel is closed")
+		guard let channel, !link.isClosed else { return }
+		if link.pending > Self.neverAfter || (link.pending > Self.slowAfter && link.stalledFor >= Self.stalledAfter) {
+			log("a phone left more than \(link.pending / 1024 / 1024) MB unread; its channel is closed")
 			return end()
 		}
 		do {
-			for message in try channel.seal(line: line) { io.send(try LengthFraming.encode(message)) }
+			for message in try channel.seal(line: line) { link.send(message) }
 		} catch {
 			return end()
 		}
@@ -590,18 +618,15 @@ final class PhoneConnection: @unchecked Sendable {
 	private func sendLast(_ messages: [Data]?) {
 		if case .ended = phase { return }
 		guard let messages else { return end() }
-		for message in messages {
-			guard let framed = try? LengthFraming.encode(message) else { break }
-			io.send(framed)
-		}
-		io.finish()
+		for message in messages { link.send(message) }
+		link.finish()
 	}
 
 	/// Ends the channel with `bye` and closes the connection.
 	func end() {
 		if case .ended = phase { return }
-		if let channel, let bye = try? channel.sealBye(), let framed = try? LengthFraming.encode(bye) { io.send(framed) }
-		io.finish()
+		if let channel, let bye = try? channel.sealBye() { link.send(bye) }
+		link.finish()
 	}
 
 	private func closed() {
@@ -610,7 +635,7 @@ final class PhoneConnection: @unchecked Sendable {
 		deadline?.cancel()
 		if admitted {
 			admitted = false
-			remote.admission.release(key: admissionKey)
+			admission.release(key: admissionKey)
 		}
 		if awaitingClaimerProof { wrongTry("the claimer closed the connection before its first message") }
 		refusedClaim("silent")
