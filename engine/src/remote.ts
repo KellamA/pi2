@@ -493,7 +493,8 @@ function relayState(value: unknown): Record<string, unknown> | null {
  * A request a phone left in the relay's mailbox, which pi² Remote took, opened and verified with the device's keys on
  * its own list: checked again here (`checkRequestItem`: the device key's signature first, then the presence key's, the
  * pairing, its row's mailbox column, its age and its nonce, stored once) and handled as from the device, on the path
- * `mailbox`, in a connection of its own that lasts the one request. Answered `{ taken: true }` once it was handled or
+ * `mailbox`, in a connection of its own that lasts the one request, by `deviceRequest`, as a live session's request is
+ * (logged, on disk first and the person notified when it widens). Answered `{ taken: true }` once it was handled or
  * refused for good, and only then does pi² Remote tell the relay `took` (#806); an error is what could pass later
  * (remote access off, the device suspended, the nonce not stored), and the relay hands the item over again until it
  * expires. The phone is left a receipt either way (5.3), but for an item taken before, which had one.
@@ -522,25 +523,23 @@ async function mailboxIn(current: Helper, params: Params): Promise<{ taken: true
 		return { taken: true, outcome: "refused" };
 	}
 	const { method, params: given } = checked;
-	if (!Object.hasOwn(handlers, method)) {
-		receipt(device, id, method, "refused", `Unknown method: ${method}`);
-		return { taken: true, outcome: "refused" };
-	}
 	const client: Client = { socket: { destroyed: false, write: () => true, destroy: () => {} }, subscriptions: new Map(), shown: new Set(), device: { id: device, session: "mailbox" } };
-	let outcome: "done" | "failed" = "done";
+	let outcome: "done" | "failed" | "refused";
 	let why: string | undefined;
 	try {
-		await handlers[method]!(given, client);
+		// What a live session's request does, the same function: its table on the path, the log (on disk first when it
+		// widens), and the person notified of a widening request (4.4).
+		outcome = await deviceRequest(pairedDevice(device)!, "mailbox", client, method, given, (body) => {
+			why = typeof body.error === "string" ? body.error : undefined;
+		});
 	} catch (error) {
+		// A fault of the engine's, as a live session's line has it (deviceLineFailed): logged, and the item refused in fixed
+		// words. Its nonce is stored, so it is taken: handed over again it would only be refused as taken before.
+		log("remote: a device's request failed in the engine:", error instanceof Error ? (error.stack ?? error.message) : error);
 		outcome = "failed";
-		why = refusal(error).error;
+		why = DEVICE_LINE_FAILED;
 	} finally {
 		drop(client);
-	}
-	if (deviceLogged(method, given)) {
-		await logDevice({ device, path: "mailbox", method, summary: summarize(method, given), presence: true, outcome, ...(why === undefined ? {} : { why }) }).catch((error) =>
-			log("devices: the log could not be written:", error instanceof Error ? error.message : error),
-		);
 	}
 	receipt(device, id, method, outcome, why);
 	return { taken: true, outcome };
@@ -759,26 +758,39 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
 		reply({ error: "Request parameters must be an object" });
 		return;
 	}
-	const gate = { path: session.path, approvalSwitch, approvalHidden };
+	await deviceRequest(device, session.path, session.client, method, params as Params, reply);
+}
+
+/**
+ * A device's request once the device is known, on either path: a live session's line (`deviceLine`) or an item from the
+ * mailbox that `checkRequestItem` passed (`mailboxIn`). Checked against the device's table on its path, handled as from
+ * the app, logged under the log's own rule for a device's names (#786), on disk before it is answered when it widens
+ * (4.4), and the person notified of a widening request, done or tried (4.2, 4.4, 4.5). Both paths call this, so that no
+ * duty is kept on one alone (#921's security read). `reply` is given the result or the refusal; the outcome is
+ * returned. What throws here outside the handler's own `try` (a fault of the engine's) is the caller's to catch, with
+ * `DEVICE_LINE_FAILED`'s words.
+ */
+async function deviceRequest(device: Device, path: DevicePath, client: Client, method: string, params: Params, reply: (body: Record<string, unknown>) => void): Promise<"done" | "failed" | "refused"> {
+	const gate = { path, approvalSwitch, approvalHidden };
 	const answer = deviceMay(method, params as Params, gate);
 	// The log's own names (a pairing, an offer of a Face ID key) are the engine's to write: a device's are "unknown" (#786).
 	const summary = summarize(requestLogged(method), params as Params);
 	if (DEVICE_FAULT !== undefined && method === DEVICE_FAULT) throw new Error("PI2_DEVICE_FAULT: the device's line");
 	const record = (outcome: "done" | "refused" | "failed", why?: string) =>
-		void logDevice({ device: device.id, path: session.path, method: requestLogged(method), summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }).catch((error) =>
+		void logDevice({ device: device.id, path, method: requestLogged(method), summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }).catch((error) =>
 			log("devices: the log could not be written:", error instanceof Error ? error.message : error),
 		);
 	if (answer === "no" || !Object.hasOwn(handlers, method)) {
 		const why = answer !== "no" ? `Unknown method: ${method}` : allowsHiddenApproval(method, params as Params, gate) ? HIDDEN_FROM_THE_PHONE : ONLY_ON_THE_MAC;
 		reply({ error: why });
 		record("refused", why);
-		return;
+		return "refused";
 	}
 	const logged = deviceLogged(method, params as Params);
 	// A request that widens is on disk before it is answered (4.4): the log keeps the rest in memory a moment.
 	const widens = answer === "face";
 	const writeLog = (outcome: "done" | "failed", why?: string) =>
-		logDevice({ device: device.id, path: session.path, method, summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }, widens).catch((error) =>
+		logDevice({ device: device.id, path, method, summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }, widens).catch((error) =>
 			log("devices: the log could not be written:", error instanceof Error ? error.message : error),
 		);
 	// Tell me when it answers (7): waited for from before the run the message starts, which may end before it is answered.
@@ -786,15 +798,17 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
 	const tellMe = method === "submit" && (params as Params).tellWhenAnswered === true && typeof conversation === "number";
 	if (tellMe) pushes?.answerWanted(device.id, conversation);
 	try {
-		const result = await handlers[method]!(params as Params, session.client);
+		const result = await handlers[method]!(params as Params, client);
 		if (logged) await writeLog("done");
 		reply({ result });
 		if (widens) notify("widening", device.id, `${device.name}: ${summary}`);
+		return "done";
 	} catch (error) {
 		const refused = refusal(error);
 		if (tellMe) pushes?.answerNotWanted(device.id, conversation);
 		if (logged) await writeLog("failed", refused.error);
 		reply(refused);
 		if (widens) notify("widening", device.id, `${device.name} tried: ${summary}`);
+		return "failed";
 	}
 }

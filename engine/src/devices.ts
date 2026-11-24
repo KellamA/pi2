@@ -595,8 +595,9 @@ export function hidesSomething(value: unknown): boolean {
 type Params = Record<string, unknown>;
 
 /**
- * `PI2_DEVICE_FAULT`, a test switch: the method whose log line, and whose handling from a device's line, throw before
- * the request's own `try` (remote.ts), so that engine/test/devices.ts can show that neither ends the engine.
+ * `PI2_DEVICE_FAULT`, a test switch: the method whose log line, and whose handling from a device's line or a mailbox
+ * item, throw before the request's own `try` (remote.ts), so that engine/test/devices.ts can show that neither ends the
+ * engine.
  */
 export const DEVICE_FAULT = testSwitch("PI2_DEVICE_FAULT");
 
@@ -1582,10 +1583,11 @@ export class ItemNotYet extends Error {}
  * Checks a request a device sealed into the mailbox, once opened by pi² Remote, before it is handled
  * (remote.mailboxIn, #678, calls this): remote access on; the device paired and not suspended; first its form and the
  * device key's signature over the exact `signed` text, before anything is written or counted, since the relay, which
- * the contract does not trust, can hand pi² Remote any item "from" a device; then, logged and counted, the presence
- * key's signature, that the request is the one signed, for this pairing, its row of the device's table allowing the
- * mailbox, `at` at most a day old (an hour for one that widens) and not ahead of the Mac's clock by more than five
- * minutes, and its nonce never taken before, stored before this answers, after a restart too.
+ * the contract does not trust, can hand pi² Remote any item "from" a device; then, logged and not counted, `at` at most
+ * a day old and not ahead of the Mac's clock by more than five minutes, and its nonce not taken before (read); then,
+ * logged and counted, the presence key's signature; then, logged, that the request is the one signed, for this
+ * pairing, its row of the device's table allowing the mailbox, `at` at most an hour old for one that widens, and its
+ * nonce never taken before, stored before this answers, after a restart too.
  */
 export async function checkRequestItem(device: string, item: unknown, approvals: Omit<DeviceSession, "path">, now = Date.now()): Promise<{ method: string; params: Params; widens: boolean }> {
 	if (!remoteOn()) throw new Error("Reach from an iPhone is off on this Mac.");
@@ -1612,6 +1614,21 @@ export async function checkRequestItem(device: string, item: unknown, approvals:
 		}
 		throw new Error(why);
 	};
+	// A relay can hand over again any item it ever held, long after the device's Face ID key changed: an item past the
+	// longest any item waits, or one taken before, is refused before the presence signature, whose failures count
+	// towards suspension, so that replaying a device's own old items cannot suspend it (#921's security read).
+	const nonce = signed.nonce;
+	if (fromBase64url(nonce, 16) === null) return refuse("The item's nonce is not one.");
+	const at = signed.at;
+	if (typeof at !== "number" || !Number.isSafeInteger(at) || at > now + ITEM_AHEAD) return refuse("The item's time is ahead of the Mac's.");
+	if (now - at > DAY) return refuse(ITEM_TOO_OLD);
+	let seen: boolean;
+	try {
+		seen = Object.hasOwn((await harness.snapshot(DeviceNonces, context))?.taken ?? {}, `${device}:${nonce as string}`);
+	} catch (error) {
+		throw new ItemNotYet(`The item's nonce could not be read: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	if (seen) return refuse(ITEM_TAKEN_BEFORE);
 	const presenceKey = record.presenceKey === null ? null : p256Key(record.presenceKey);
 	if (presenceKey === null || !signedBy(item.signed as string, item.presence, presenceKey)) {
 		await refused(record, "mailbox", requestLogged(String(request.method)), "The item's presence signature is not the presence key's.", request.params as Params);
@@ -1623,10 +1640,6 @@ export async function checkRequestItem(device: string, item: unknown, approvals:
 	const params = request.params as Params;
 	const answer = deviceMay(method, params, { path: "mailbox", ...approvals });
 	if (answer === "no") return refuse(ONLY_ON_THE_MAC);
-	const nonce = signed.nonce;
-	if (fromBase64url(nonce, 16) === null) return refuse("The item's nonce is not one.");
-	const at = signed.at;
-	if (typeof at !== "number" || !Number.isSafeInteger(at) || at > now + ITEM_AHEAD) return refuse("The item's time is ahead of the Mac's.");
 	if (now - at > (answer === "face" ? 3_600_000 : DAY)) return refuse(answer === "face" ? ITEM_TOO_OLD_FACE : ITEM_TOO_OLD);
 	let replayed = false;
 	try {

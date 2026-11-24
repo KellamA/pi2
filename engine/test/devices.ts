@@ -31,6 +31,7 @@ import { ANSWER_NOT_SENT, DEVICE_LINE_FAILED, forDevice, MAX_HELPER_LINE, SESSIO
 import { NOT_LINKED, NOT_OFFERED } from "../src/folders.ts";
 import { offerFolders } from "../src/answers.ts";
 import { symlinkSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "100000";
@@ -448,6 +449,29 @@ class Phone {
 	assert.equal((await take(phone.item(pairing, "abort", { id: 4 }))).method, "abort", "one signed by the accepted key");
 	step("a waiting Face ID key signs no sealed item, and the accepted one still does");
 
+	// A relay that kept a device's genuine items replays them after the person accepted a new Face ID key: each is refused
+	// as too old or taken before, ahead of the presence signature, and none counts towards suspension (#921's security
+	// read). Three refused presence signatures above count already: two more would suspend the device.
+	const threeDaysAgo = Date.now() - 3 * 86_400_000;
+	const keptByRelay = Array.from({ length: 5 }, (_, i) => phone.item(pairing, "submit", { id: 4, text: `kept ${i}` }, { at: threeDaysAgo }));
+	const takenOnce = phone.item(pairing, "abort", { id: 4 });
+	assert.equal((await take(takenOnce)).method, "abort");
+	const renewed = p256();
+	await harness.commit(async (tx) => {
+		const doc = await tx.doc(Devices);
+		for (const one of doc.devices) {
+			if (one.id !== phone.id) continue;
+			one.presenceKey = spki(renewed.publicKey);
+			one.pendingPresenceKey = null;
+		}
+	}, context);
+	await harness.close(context);
+	harness = await open();
+	for (const item of keptByRelay) await assert.rejects(take(item), new RegExp(ITEM_TOO_OLD), "a genuine item three days old, under the old key");
+	for (let i = 0; i < 5; i++) await assert.rejects(take(takenOnce), /taken before/, "one genuine item handed over again, under the old key");
+	assert.equal(suspended(), false, "five old items and one item five times, replayed after a new Face ID key, do not suspend the device");
+	step("a relay replaying a device's old or taken items after a new Face ID key cannot get it suspended: age and nonce come before the presence signature");
+
 	// ---- The devices' log (4.4): bounded in what an entry holds, by device, and with repeated refusals made one
 	const other = `dev_${b64url(randomBytes(16))}`;
 	await logDevice({ device: other, path: "relay", method: "submit", summary: "Sent a message", presence: true, outcome: "done" });
@@ -812,10 +836,26 @@ const env = {
 	PI2_REMOTE_STAND_IN: standIn,
 	PI2_APP_ATTEST_STAND_IN: "1",
 	PI2_APP_ATTEST_TEAM: "ABCDE12345",
-	// Its log line and its handling from a device's line throw (#895): the engine must answer and carry on.
-	PI2_DEVICE_FAULT: "conversation.pin",
+	// Its log line and its handling from a device's line or a mailbox item throw (#895): the engine must answer and carry
+	// on. One a mailbox item may carry, so that both paths meet it.
+	PI2_DEVICE_FAULT: "inbox.answer",
 };
 const main = join(import.meta.dirname, "..", "src", "main.ts");
+
+/** Whether the engine's store holds on disk now, read beside the running engine, a devices' log entry that `matches`. */
+function onDisk(matches: (entry: any) => boolean): boolean {
+	const db = new DatabaseSync(join(home, "session.sqlite"), { readOnly: true });
+	try {
+		const rows = db
+			.prepare("SELECT r.content AS text FROM document_revisions r JOIN documents d ON d.id = r.document_id WHERE d.kind = ?")
+			.all(JSON.stringify("pi2.deviceLog")) as { text: string }[];
+		const found = (value: unknown): boolean =>
+			Array.isArray(value) ? value.some(found) : typeof value === "object" && value !== null ? matches(value) || Object.values(value).some(found) : false;
+		return rows.some((row) => found(JSON.parse(row.text)));
+	} finally {
+		db.close();
+	}
+}
 
 // ---- A handler placed in no list stops the engine before it listens
 
@@ -1130,7 +1170,7 @@ try {
 	for (const project of [null, "x", []]) assert.ok((await ask("pushes.set", { project })).error, `pushes.set with a project of ${JSON.stringify(project)} is refused`);
 	assert.ok((await ask("conversation.rename", { id: plain, title: { toString: 1, valueOf: 1 } })).error, "a title that is no text is refused");
 	const faultsBefore = engineLog.length;
-	assert.equal((await ask("conversation.pin", { id: plain, pinned: true })).error, DEVICE_LINE_FAILED, "a line that fails in the engine is refused, in words of its own");
+	assert.equal((await ask("inbox.answer", { id: "no-such", text: "x" })).error, DEVICE_LINE_FAILED, "a line that fails in the engine is refused, in words of its own");
 	await until("the fault in the engine's log", () => engineLog.slice(faultsBefore).includes("remote: a device's request failed in the engine: Error: PI2_DEVICE_FAULT"));
 	assert.ok((await ask("engine.info")).result, "the engine still answers in the same session");
 	assert.equal(engine.exitCode, null, "and still runs");
@@ -1201,13 +1241,34 @@ try {
 		assert.match((await remote.call("remote.mailboxIn", { device: phone.id, item: aborted })).error, /takes a device, an item's id and the item/);
 		assert.match((await remote.call("remote.mailboxIn", { device: phone.id, id: b64url(randomBytes(16)), item: aborted, extra: 1 })).error, /takes a device, an item's id and the item/);
 		await assert.rejects(app.call("remote.mailboxIn", { device: phone.id, id: b64url(randomBytes(16)), item: aborted }), (error: Error) => error.message === ONLY_FROM_THE_HELPER, "remote.mailboxIn on the engine's socket");
+		// A widening request by mailbox is handled as a live one is, by the same function (#921's security read): on disk in
+		// the devices' log before it is taken, and the person notified.
+		// In a conversation of its own: always allows bash there from then on.
+		const { id: mailed } = await app.call("conversation.create", { agentId: "forge" });
+		await app.call("conversation.open", { id: mailed });
+		await app.call("conversation.configure", { id: mailed, access: "ask", cwd: work });
+		void app.call("submit", { id: mailed, text: "/bash echo left in the mailbox" });
+		const byMail = await app.until("the approval to leave in the mailbox", () => app.events.inbox?.items?.find((item: any) => item.conversationId === mailed && item.kind === "approval"));
+		const widenedBefore = app.devicesEvents.length;
+		const widening = await leave(phone.item(remote.pairing, "inbox.decide", { id: byMail.id, decision: "always" }));
+		assert.deepEqual(widening.reply.result, { taken: true, outcome: "done" }, "always on an approval, by mailbox, is taken and done");
+		assert.ok(onDisk((entry) => entry.path === "mailbox" && entry.method === "inbox.decide" && entry.outcome === "done"), "its log entry is on disk when the engine answers taken");
+		assert.match((await app.notice("widening", widenedBefore)).text, /^Alex's iPhone: Answered an approval: always/, "the Mac is told of a widening request left in the mailbox");
+		// A fault of the engine's by mailbox (#895's catch): the fixed refusal in the receipt, taken, and the engine runs on.
+		const faultsBefore = engineLog.length;
+		const faulted = await leave(phone.item(remote.pairing, "inbox.answer", { id: "no-such", text: "x" }));
+		assert.deepEqual(faulted.reply.result, { taken: true, outcome: "failed" }, "an item whose handling fails in the engine is taken, and failed");
+		assert.equal((await remote.event("mailboxOut", faulted.before)).item.body.why, DEVICE_LINE_FAILED, "its receipt says so in fixed words");
+		await until("the mailbox's fault in the engine's log", () => engineLog.slice(faultsBefore).includes("remote: a device's request failed in the engine: Error: PI2_DEVICE_FAULT"));
+		assert.ok((await ask("engine.info")).result, "the engine still answers");
+		assert.equal(engine.exitCode, null, "and still runs");
 		const stated = await remote.call("remote.state", { relay: { available: false, state: "down", why: "the connection to the relay was lost", retryAt: Date.now() + 1_000 } });
 		assert.deepEqual(stated.result, {});
 		await app.until("the relay's state on the Devices page", () => app.devicesEvents.at(-1)?.helper?.relay?.state === "down");
 		assert.match((await remote.call("remote.state", { relay: { available: "no" } })).error, /relay's state is not one/);
 		assert.match((await remote.call("remote.state", { relay: { available: false, state: "gone" } })).error, /relay's state is not one/);
 	}
-	step("the mailbox: a request a phone left is checked again, handled on the path mailbox and taken, with a receipt left for the phone; the same item again is refused and taken with no receipt; remote.state carries the relay path's state to the Devices page");
+	step("the mailbox: a request a phone left is checked again, handled on the path mailbox and taken, with a receipt left for the phone; the same item again is refused and taken with no receipt; remote.state carries the relay path's state to the Devices page; a widening request by mailbox is on disk before it is taken and the person is told; a fault by mailbox gets the fixed refusal");
 
 	// ---- A new project's folder, and a file shown, from the phone (#698; engine/test/folders.ts has every refusal)
 	{
