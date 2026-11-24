@@ -45,6 +45,8 @@ import type { Env } from "./settings.ts";
 export type Post = (url: string, init: RequestInit) => Promise<Response>;
 
 export type PushKind = "alert" | "background";
+/** Every kind the push limits count: an alert, a background push, or a Live Activity push (below). */
+export type CountedKind = PushKind | "activity";
 export type Environment = "development" | "production";
 /** A device's push token, as the phone gave it in `token`, with the environment its build registered in. */
 export type PushToken = { apns: string; environment: Environment };
@@ -221,6 +223,8 @@ export class Apns {
 	};
 	/** Device tokens Apple said were pushed to too often, until when; in memory only. */
 	private readonly busyTokens = new Map<string, number>();
+	/** For each environment, until when no Live Activity push is sent, Apple having refused their topic. */
+	private readonly activityHolds: Record<Environment, number> = { development: 0, production: 0 };
 
 	constructor(
 		credentials: Credentials,
@@ -271,6 +275,51 @@ export class Apns {
 		const reason = response.status === 200 ? null : await readReason(response);
 		if (response.status === 200) await response.body?.cancel();
 		return this.answer(response.status, reason, token, now);
+	}
+
+	/**
+	 * Posts one Live Activity push to Apple (below, "Live Activities"), to the activity's own token, and says what became
+	 * of it, as `send` does. Nothing is tried again.
+	 */
+	async sendActivity(token: PushToken, sending: ActivitySending, now: number): Promise<Outcome> {
+		const body = activityPayload(sending, now);
+		if (utf8(body).length > MAX_PAYLOAD) return "unavailable";
+		const providerToken = await this.token.get(now);
+		if (providerToken === null) return "unavailable";
+		const headers: Record<string, string> = {
+			authorization: `bearer ${providerToken}`,
+			"apns-topic": `${this.topic}${ACTIVITY_TOPIC_SUFFIX}`,
+			"apns-push-type": "liveactivity",
+			"apns-priority": ACTIVITY_PRIORITY,
+			"apns-expiration": String(Math.floor(now / 1000) + EXPIRES_AFTER),
+		};
+		let response: Response;
+		try {
+			response = await this.post(`${HOSTS[token.environment]}/3/device/${token.apns}`, {
+				method: "POST",
+				headers,
+				body,
+				redirect: "manual",
+				signal: AbortSignal.timeout(this.timeout),
+			});
+		} catch {
+			this.backOff(token.environment, now);
+			return "push-later";
+		}
+		const reason = response.status === 200 ? null : await readReason(response);
+		if (response.status === 200) await response.body?.cancel();
+		// Apple refusing the Live Activity topic (a key not allowed it, say) holds back Live Activity pushes alone, for an
+		// hour: the alerts' topic may still be allowed, and must not be held for it.
+		if ((response.status === 403 && reason !== "ExpiredProviderToken" && reason !== "InvalidProviderToken") || reason === "TopicDisallowed") {
+			this.activityHolds[token.environment] = now + KEY_REFUSED_FOR;
+			return "unavailable";
+		}
+		return this.answer(response.status, reason, token, now);
+	}
+
+	/** Why a Live Activity push to this token is not sent now, if it is held back: as `held`, or its topic refused. */
+	heldActivity(token: PushToken, now: number): "push-later" | "unavailable" | null {
+		return this.held(token, now) ?? (this.activityHolds[token.environment] > now ? "unavailable" : null);
 	}
 
 	private answer(status: number, reason: string | null, token: PushToken, now: number): Outcome {
@@ -361,11 +410,11 @@ export function apnsFor(env: Env, topic: string): Apns | null {
 }
 
 /**
- * 6.6's push limits, for each device an hour: 120 alerts and 60 background pushes. (Its 60 Live Activity updates are
- * P30's, with the Live Activity part of this file.)
+ * 6.6's push limits, for each device an hour: 120 alerts, 60 background pushes and 60 Live Activity pushes (their
+ * kind is `activity`, below).
  */
-export type PushLimits = Record<PushKind, number>;
-export const PUSH_LIMITS: PushLimits = { alert: 120, background: 60 };
+export type PushLimits = Record<CountedKind, number>;
+export const PUSH_LIMITS: PushLimits = { alert: 120, background: 60, activity: 60 };
 /**
  * And for the whole pairing, five devices' worth (3.5), counted apart, so that removing a device and adding another
  * does not start its count afresh.
@@ -373,8 +422,11 @@ export const PUSH_LIMITS: PushLimits = { alert: 120, background: 60 };
 const PAIRING_TIMES = 5;
 const PAIRING = "pairing";
 
-/** The pushes counted this hour, by device and for the pairing; what the pairing's object stores as `pushes`. */
-export type PushHour = { hour: number; counts: Record<string, Record<PushKind, number>> };
+/**
+ * The pushes counted this hour, by device and for the pairing; what the pairing's object stores as `pushes`. A count
+ * stored before Live Activity pushes were counted has no `activity`, which reads as none.
+ */
+export type PushHour = { hour: number; counts: Record<string, Partial<Record<CountedKind, number>>> };
 
 /**
  * The pushes counted this hour, by device and for the pairing, kept in the pairing's storage as `pushes` until the hour
@@ -391,20 +443,20 @@ export class PushCounts {
 	}
 
 	/** Whether one more push of `kind` to `device` fits this hour, for the device and for the pairing. */
-	allows(device: string, kind: PushKind, now: number, limits: PushLimits): boolean {
+	allows(device: string, kind: CountedKind, now: number, limits: PushLimits): boolean {
 		this.roll(now);
 		const counts = this.state.counts;
 		return (counts[device]?.[kind] ?? 0) < limits[kind] && (counts[PAIRING]?.[kind] ?? 0) < limits[kind] * PAIRING_TIMES;
 	}
 
 	/** Counts one push sent; says whether it is the hour's first, for which the alarm is set at the hour's end. */
-	add(device: string, kind: PushKind, now: number): boolean {
+	add(device: string, kind: CountedKind, now: number): boolean {
 		this.roll(now);
 		const counts = this.state.counts;
 		const first = Object.keys(counts).length === 0;
 		for (const id of [device, PAIRING]) {
 			counts[id] ??= { alert: 0, background: 0 };
-			counts[id][kind] += 1;
+			counts[id][kind] = (counts[id][kind] ?? 0) + 1;
 		}
 		this.dirty = true;
 		return first;
@@ -437,4 +489,105 @@ export class PushCounts {
 		this.dirty = false;
 		return this.state;
 	}
+}
+
+// Live Activities (docs/iphone.md 7, #700). A followed project's Live Activity is started on the phone, which sets its
+// static part (the project's name) there; while the app is closed, the relay updates and ends it with Live Activity
+// pushes. Their content is read by the system itself, so it cannot be sealed: it is numbers only, `{ working, needs,
+// finished, at }`, which the relay can read, and the person turns each activity on knowing it (question 7). So nothing
+// but those four numbers, held to their shape, and the relay's own time ever goes into one: the payload is written here
+// from them alone, whatever else the Mac might send.
+//
+// Apple's documentation, as relied on here (read 2026-11-23):
+// - "Starting and updating Live Activities with ActivityKit push notifications": the request goes to the activity's own
+//   push token, with `apns-push-type: liveactivity` and the topic `<bundle id>.push-type.liveactivity`; `apns-priority`
+//   5 or 10, of which 10 is limited by a budget the system sets; the payload's `aps` holds `timestamp` (seconds, which
+//   orders the updates: the system drops one older than the one shown), `event` (`update` or `end`), `content-state`
+//   (decoded into the activity's content state; its keys must match it) and, for an end, `dismissal-date` (seconds),
+//   when the ended activity leaves the Lock Screen. The same answers as other pushes; 410 once the activity is over.
+// - "Displaying live data with Live Activities": an activity's data is at most 4 KB, and the system ends one after
+//   eight hours, leaving it on the Lock Screen up to four more.
+
+/** The topic suffix of every Live Activity push. */
+export const ACTIVITY_TOPIC_SUFFIX = ".push-type.liveactivity";
+/**
+ * Priority 5, delivered as the system finds best: the numbers are for a glance, the alert push says at once what needs
+ * the person, and priority 10's budget would be spent on counts.
+ */
+const ACTIVITY_PRIORITY = "5";
+/** An ended activity stays on the Lock Screen with its last numbers this long, then goes (as the phone's own end). */
+export const ACTIVITY_SHOWN_AFTER_END = 15 * 60;
+/** The largest count a Live Activity push takes: more than any project has, and short. */
+export const MAX_COUNT = 99_999;
+/** The latest `at` taken: milliseconds since 1970, up to the year 2286. */
+export const MAX_AT = 9_999_999_999_999;
+
+/** A Live Activity's numbers (7): how many are working, need the person and finished, and when the Mac counted them. */
+export type ActivityState = { working: number; needs: number; finished: number; at: number };
+export type ActivityEvent = "update" | "end";
+/** What the Mac asked to send to a Live Activity. */
+export type ActivitySending = { event: ActivityEvent; state: ActivityState };
+
+/** Whether a count is one: a whole number from 0 to MAX_COUNT. */
+export function isCount(value: unknown): value is number {
+	return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= MAX_COUNT;
+}
+
+/** Whether `at` is a time: whole milliseconds since 1970, after it and no later than MAX_AT. */
+export function isTime(value: unknown): value is number {
+	return Number.isSafeInteger(value) && (value as number) > 0 && (value as number) <= MAX_AT;
+}
+
+/**
+ * The payload of a Live Activity push, exactly: `timestamp` is the relay's clock, so that the system orders the pushes
+ * as the relay sent them (one pairing's are sent one at a time); the content state is the four numbers, written here
+ * from numbers alone; an end leaves the activity on the Lock Screen for ACTIVITY_SHOWN_AFTER_END. No alert, sound,
+ * relevance or anything else: whatever is here, Apple and the system read.
+ */
+export function activityPayload(sending: ActivitySending, now: number): string {
+	const timestamp = Math.floor(now / 1000);
+	const { working, needs, finished, at } = sending.state;
+	if (![working, needs, finished].every(isCount) || !isTime(at)) throw new TypeError("not a Live Activity's numbers");
+	const aps: Record<string, unknown> = { timestamp, event: sending.event, "content-state": { working, needs, finished, at } };
+	if (sending.event === "end") aps["dismissal-date"] = timestamp + ACTIVITY_SHOWN_AFTER_END;
+	return JSON.stringify({ aps });
+}
+
+/** A phone's Live Activity push tokens, by the activity's id: what each device's record keeps (pairing.ts). */
+export type ActivityToken = PushToken & { until: number };
+/** The Live Activity tokens a device may have at once: iOS shows few at a time; a new one past this drops the oldest. */
+export const MAX_ACTIVITIES = 5;
+/**
+ * How long a Live Activity's token is kept after the phone gave it: iOS ends an activity within eight hours and takes
+ * it off the Lock Screen within four more, after which its token is good for nothing.
+ */
+export const ACTIVITY_TOKEN_FOR = 12 * HOUR;
+
+/**
+ * A device's Live Activity tokens with this one put in (or given again), those whose time is over left out, and the
+ * oldest left out past MAX_ACTIVITIES; and whether anything changed, so that the record is written only then.
+ */
+export function withActivityToken(
+	tokens: Record<string, ActivityToken> | undefined,
+	activity: string,
+	token: PushToken,
+	now: number,
+): { tokens: Record<string, ActivityToken>; changed: boolean } {
+	const kept = liveActivityTokens(tokens, now);
+	let changed = Object.keys(kept).length !== Object.keys(tokens ?? {}).length;
+	const old = kept[activity];
+	if (old === undefined || old.apns !== token.apns || old.environment !== token.environment) {
+		kept[activity] = { apns: token.apns, environment: token.environment, until: now + ACTIVITY_TOKEN_FOR };
+		changed = true;
+	}
+	const ids = Object.keys(kept).sort((a, b) => kept[a].until - kept[b].until);
+	while (ids.length > MAX_ACTIVITIES) delete kept[ids.shift()!];
+	return { tokens: kept, changed };
+}
+
+/** A device's Live Activity tokens whose time is not over. */
+export function liveActivityTokens(tokens: Record<string, ActivityToken> | undefined, now: number): Record<string, ActivityToken> {
+	const kept: Record<string, ActivityToken> = {};
+	for (const [id, token] of Object.entries(tokens ?? {})) if (token.until > now) kept[id] = token;
+	return kept;
 }
