@@ -12,8 +12,9 @@ import Foundation
 // id) of kind `push` for an alert or `pushGone` for a background push, whose body is
 // `{"body":<the engine's body, as it wrote it>,"pad":"000…"}`: the padding inside the signature, so that nothing
 // outside it can be changed unseen, and the engine's own body untouched beside it. The whole is exactly 696, 1,464 or
-// 3,000 bytes, the smallest that holds it, so that a push's size says no more than its class. One that does not fit
-// the largest is refused, never cut.
+// 3,000 bytes, the smallest that holds it, and for an alert never less than 1,464, so that a push's size says no more
+// than its class and an alert's does not tell a one-line card from a longer one. One that does not fit the largest is
+// refused, never cut.
 //
 // The collapse id the relay passes to Apple is an HMAC of the item's own id (`need:n12`), keyed per pairing and per
 // device, so that neither the relay nor Apple learns the id, nor ties two devices' pushes about one item together.
@@ -28,6 +29,15 @@ public enum PushSealing {
 			switch self {
 			case .alert: "push"
 			case .background: "pushGone"
+			}
+		}
+
+		/// The smallest size a push of this kind is padded to: an alert never less than the middle size, so that its size
+		/// does not tell a one-line card from a longer one; a background push the smallest.
+		public var smallest: Int {
+			switch self {
+			case .alert: PushSealing.sizes[1]
+			case .background: PushSealing.sizes[0]
 			}
 		}
 
@@ -50,7 +60,8 @@ public enum PushSealing {
 	public static let tooLarge = RemoteKitError("sealed push", "too large for the largest push")
 
 	/// Seals the engine's `body` for `device`: a Mac item of `kind`, signed by `identity`, sealed to the device's record
-	/// key with the Mac's, padded to the smallest of `sizes` that holds it. Throws `tooLarge` if none does.
+	/// key with the Mac's, padded to the smallest of `sizes` that holds it and is at least `kind.smallest`. Throws
+	/// `tooLarge` if none does.
 	public static func seal<Key: HPKEDiffieHellmanPrivateKey>(
 		_ body: JSONValue, kind: Kind, pairing: PairingID, device: DeviceID, deviceRecordKey: P256.KeyAgreement.PublicKey, recordKey: Key,
 		identity: some StatementSigner, id: ItemID = .random(), at date: Date = Date()
@@ -62,7 +73,7 @@ public enum PushSealing {
 		}
 		// The signature is always 64 bytes, and the padding is written as itself, so the text grows by exactly the padding.
 		let bare = try item(pad: 0).plaintext.count
-		guard let size = sizes.first(where: { bare + overhead <= $0 }) else { throw tooLarge }
+		guard let size = sizes.first(where: { bare + overhead <= $0 && $0 >= kind.smallest }) else { throw tooLarge }
 		let plaintext = try item(pad: size - overhead - bare).plaintext
 		guard plaintext.count == size - overhead else { throw RemoteKitError("sealed push", "could not be padded") }
 		let sealed = try SealedItem.seal(plaintext, to: ItemAddress(pairing: pairing, reader: .device(device), id: id), readerKey: deviceRecordKey, writerKey: recordKey)

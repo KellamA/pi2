@@ -37,10 +37,14 @@ enum PushItem: Equatable, Sendable {
     /// How old a push may be when it is opened: the relay keeps an alert an hour (`apns-expiration`) and the mailbox a
     /// day, so an older one can only be one handed back.
     static let oldest: TimeInterval = 24 * 60 * 60
+    /// How far ahead of the phone's clock a push may be dated: a Mac whose clock runs fast would otherwise date a push
+    /// that stays under `oldest` after `PushSeen` has let its id go, and a relay could hand it back then.
+    static let newest: TimeInterval = 60 * 60
 
     static func read(_ opened: OpenedPush, now: Date) throws -> PushItem {
         let at = Date(timeIntervalSince1970: TimeInterval(opened.at) / 1000)
         guard now.timeIntervalSince(at) <= oldest else { throw PushRefusal.tooOld }
+        guard at.timeIntervalSince(now) <= newest else { throw PushRefusal.tooNew }
         guard let body = try? JSONSerialization.jsonObject(with: opened.body) as? [String: Any], (body["v"] as? NSNumber)?.intValue == 1,
               let type = body["type"] as? String
         else { throw PushRefusal.notANotice }

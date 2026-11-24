@@ -62,7 +62,7 @@ enum Recorded {
 
     static let cutCall = String(repeating: "x", count: 166) + "…"
 
-    /// An approval shown whole: "Forge needs approval", "Demo project", "bash: npm test". 696 bytes.
+    /// An approval shown whole: "Forge needs approval", "Demo project", "bash: npm test". 1,464 bytes, the least an alert has.
     static let approval = seal(alert("pi2.approval", title: "Forge needs approval", body: "bash: npm test", need: "need-approval-1"), idByte: 0x0a)
     /// An approval whose call was cut at 180 characters (`whole: false`).
     static let approvalCut = seal(alert("pi2.approval", title: "Forge needs approval", body: "bash: rm -rf " + cutCall, need: "need-approval-2", whole: false), idByte: 0x0b)
@@ -264,6 +264,15 @@ struct PushTests {
             Recorded.payload(Recorded.approval), opener: CheckOpener(), keys: { Recorded.keys },
             now: Recorded.at.addingTimeInterval(PushItem.oldest + 60)), .tooOld)
 
+        // Dated more than an hour ahead of the phone's clock (a Mac whose clock runs fast); an hour less a minute is shown.
+        placeholder(PushDelivery.deliver(
+            Recorded.payload(Recorded.approval), opener: CheckOpener(), keys: { Recorded.keys },
+            now: Recorded.at.addingTimeInterval(-PushItem.newest - 60)), .tooNew)
+        let ahead = PushDelivery.deliver(
+            Recorded.payload(Recorded.approval), opener: CheckOpener(), keys: { Recorded.keys },
+            now: Recorded.at.addingTimeInterval(-PushItem.newest + 60))
+        if case .shown = ahead.outcome {} else { Issue.record("a push an hour less a minute ahead is shown: \(ahead.outcome)") }
+
         // A background push's content in an alert is not one to show.
         placeholder(deliver(Recorded.gone), .notANotice)
     }
@@ -323,8 +332,9 @@ struct PushTests {
             == .gone(needs: ["need-approval-1"]))
         let two = Recorded.seal(#"{"v":1,"type":"gone","needs":["n1","n2"],"at":1795392000000}"#, kind: .background, idByte: 0x50)
         #expect(try PushDelivery.item(Recorded.payload(two), opener: RemoteKitPushOpener(), keys: { Recorded.keys }, now: now) == .gone(needs: ["n1", "n2"]))
-        // Each size: the smallest of 696, 1,464 and 3,000 that holds the body.
-        for (characters, size) in [(10, 696), (300, 1_464), (600, 3_000)] {
+        // Each size: the smallest of 1,464 and 3,000 that holds the body, an alert never 696.
+        #expect(PushBase64URL.decode(Recorded.gone)?.count == 696)
+        for (characters, size) in [(10, 1_464), (300, 1_464), (600, 3_000)] {
             let sealed = Recorded.seal(Recorded.alert("pi2.limit", title: "Forge", body: String(repeating: "é", count: characters), type: "limit"), idByte: 0x51)
             #expect(PushBase64URL.decode(sealed)?.count == size)
             #expect(deliver(sealed, opener: RemoteKitPushOpener()).content.body.count == min(characters, PushItem.bodyLimit))

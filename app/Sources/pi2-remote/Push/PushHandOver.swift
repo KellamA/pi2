@@ -11,9 +11,11 @@ import RemoteKit
 //   not is answered `malformed` (if its id can be read) and goes no further.
 // - **Only to a device on pi² Remote's own list**, as it stands when the push arrives: the engine's `revoke` comes on the
 //   same connection, in order, and drops the device first, so a push that arrives after it finds no device and is
-//   dropped. One already handed to the relay and not yet sent is dropped too (`forget`).
+//   dropped. One handed over and still waiting behind others is dropped too (`forget`); the one already being asked of
+//   the relay, at most one, which may be waiting in the relay client's queue of requests, may still go after it.
 // - **Sealed** (`alert`, `background`) with RemoteKit's `PushSealing`: the engine's body as it wrote it, signed by the
-//   identity key, sealed to the device's record key with the Mac's, padded to 696, 1,464 or 3,000 bytes. A body that
+//   identity key, sealed to the device's record key with the Mac's, padded to 696, 1,464 or 3,000 bytes (an alert to
+//   1,464 at least). A body that
 //   does not fit the largest is refused back to the engine (`too-large`), never cut. Nothing of the body, its title or
 //   its `collapse` is ever logged.
 // - **The collapse id** (alerts alone) is HMAC-SHA256 of the engine's `collapse`, keyed per pairing and per device
@@ -42,25 +44,52 @@ package protocol PushRelay: Sendable {
 }
 
 /// RemoteKit's relay client as the seam: its answer as it is, and `push-later` when the push could not be asked (not
-/// connected, the socket dropped, the client stopped or busy), since the engine asks again.
+/// connected, the socket dropped, the client stopped or busy), since the engine asks again. A client that can never
+/// send a push, one of the phone's (`wrongEnd`) or one stopped, is a mis-wiring the engine cannot see: it is said in the
+/// log once each time the client comes to it, not once a push.
 package struct RelayClientPushes: PushRelay {
 	let client: RelayClient
+	private let said = SaidOnce()
 
 	package init(client: RelayClient) { self.client = client }
 
 	package func send(_ push: RelayPush) async -> PushOutcome {
 		do {
-			switch try await client.push(push) {
+			let answer = try await client.push(push)
+			said.clear()
+			switch answer {
 			case .sent: return .sent
 			case let .refused(why): return .refused(why.word)
 			}
 		} catch RelayClientError.invalid {
 			// The client refused its form before sending it: the relay would have closed the socket.
 			return .refused(PushHandOver.malformed)
+		} catch RelayClientError.wrongEnd {
+			said.once("wrong-end", "pushes are handed to a relay client that is not the Mac's: none can be sent, and each is answered push-later")
+			return .refused(PushHandOver.later)
+		} catch RelayClientError.stopped {
+			said.once("stopped", "pushes are handed to a relay client that has stopped: none can be sent, and each is answered push-later")
+			return .refused(PushHandOver.later)
 		} catch {
 			return .refused(PushHandOver.later)
 		}
 	}
+}
+
+/// Says a state once when it begins, and again only after another answer ended it.
+private final class SaidOnce: @unchecked Sendable {
+	private let lock = NSLock()
+	private var last: String?
+
+	func once(_ state: String, _ text: String) {
+		let new = lock.withLock {
+			defer { last = state }
+			return last != state
+		}
+		if new { log(text) }
+	}
+
+	func clear() { lock.withLock { last = nil } }
 }
 
 /// pi² Remote's part of a push: the engine's event read, the device checked, sealed or checked again, handed to the relay,
@@ -207,7 +236,8 @@ package final class PushHandOver: @unchecked Sendable {
 		}
 	}
 
-	/// The device was revoked: a push for it still waiting on the relay is dropped.
+	/// The device was revoked: a push for it still waiting behind others is dropped; the one already being asked of the
+	/// relay, at most one, may still go.
 	package func forget(_ device: DeviceID) {
 		lock.withLock { _ = forgotten.insert(device) }
 	}

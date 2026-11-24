@@ -7,9 +7,10 @@ import pi2_remote
 /// pi² Remote's part of a push (#689, docs/iphone.md 7.1, docs/pi2-remote.md "Pushes"), in this process, with a stand-in
 /// for the relay: the engine's event read strictly; each push sealed for its device and opened again as the phone opens
 /// it; the collapse id an HMAC keyed per pairing and per device; a Live Activity's numbers checked again; a device not on
-/// the list, or revoked while a push waited, never sent; no queue of its own; the relay's refusals passed on as they
-/// are; and nothing of a push's text in the log. The security reader's list of what the sealing must not get wrong, on
-/// issue #689, point by point.
+/// the list never sent, and of those waiting when their device is revoked, only the one already being asked of the relay;
+/// no queue of its own; the relay's refusals passed on as they are; nothing of a push's text in the log; and RemoteKit's
+/// relay client as the seam (`RelayClientPushes`), against a relay played in memory. The security reader's list of what
+/// the sealing must not get wrong, on issue #689, point by point.
 enum Pushes {
 	/// A stand-in for the relay: records what it is asked to send, in order, and answers as it is told (sent unless a
 	/// word is given), optionally holding each push until released.
@@ -115,9 +116,206 @@ enum Pushes {
 		devices(keys: keys)
 		noQueue(keys: keys)
 		refusals(keys: keys)
+		marked(keys: keys)
+		client(keys: keys, log: folder.appendingPathComponent("remote.log"))
 		let log = (try? String(contentsOf: folder.appendingPathComponent("remote.log"), encoding: .utf8)) ?? ""
 		Check.expect(!log.isEmpty && !["Forge", "npm test", "Demo project", "need:n12", "project-demo"].contains(where: log.contains),
 		             "the log names pushes by the engine's id and says nothing of their body, title, subtitle or collapse (the reader's list, 1)", log)
+		let found = Marker.all.filter { log.contains($0.text) }
+		Check.expect(log.contains("too large") && log.contains("not a push as the engine writes one") && found.isEmpty,
+		             "nor anything of a marked push of any kind, sent, refused by the relay, too large or malformed: no marker of any field in the log", found.map(\.field).joined(separator: ", "))
+	}
+
+	/// A marker of its own for every text field of every kind of push, which nothing outside the seal may hold.
+	struct Marker {
+		let field: String
+		let text: String
+
+		static let title = Marker(field: "title", text: "mkTitleQx7")
+		static let subtitle = Marker(field: "subtitle", text: "mkSubtitleQx7")
+		static let body = Marker(field: "body", text: "mkBodyQx7")
+		static let project = Marker(field: "projectId", text: "mkProjectQx7")
+		/// A whole number, as the engine writes a conversation's id: fifteen digits no time or id in the log has.
+		static let conversation = Marker(field: "conversationId", text: "918273645546372")
+		static let need = Marker(field: "need", text: "mkNeedQx7")
+		static let category = Marker(field: "category", text: "mkCategoryQx7")
+		static let collapse = Marker(field: "collapse", text: "mkCollapseQx7")
+		static let gone = Marker(field: "a background push's needs", text: "mkGoneQx7")
+		static let all = [title, subtitle, body, project, conversation, need, category, collapse, gone]
+	}
+
+	/// An alert's body of `type` with a marker in every field, and `extra` characters more in its title.
+	static func markedAlert(_ type: String, extra: Int = 0) -> String {
+		#"{"v":1,"type":"\#(type)","category":"pi2.\#(Marker.category.text)","title":"\#(Marker.title.text) \#(type)\#(String(repeating: "é", count: extra))","subtitle":"\#(Marker.subtitle.text)","body":"\#(Marker.body.text)","projectId":"\#(Marker.project.text)","need":"\#(Marker.need.text)","conversationId":\#(Marker.conversation.text),"whole":true,"at":1795392000000}"#
+	}
+
+	static func marked(keys: MacKeys) {
+		Check.section("a marker in every field of every kind of push: sealed, and nowhere else (the reader's list, 1; S4)")
+		let rig = Rig(keys: keys)
+		let collapse = "need:\(Marker.collapse.text)"
+		let gone = #"{"event":"remote","kind":"push","push":{"id":"p4","device":"\#(rig.device.id.text)","kind":"background","body":{"v":1,"type":"gone","needs":["\#(Marker.gone.text)","\#(Marker.need.text)"],"at":1795392000000}}}"#
+		// Sent, then refused by the relay with each of its words.
+		rig.relay.answer([nil, "no-token", "push-limit", "unavailable", nil, "token-dead", "a-newer-word", "Not A Word"])
+		for (index, type) in ["need", "limit", "answer"].enumerated() { rig.take(alert("p\(index + 1)", device: rig.device.id, collapse: collapse, body: markedAlert(type))) }
+		rig.take(gone)
+		for (index, type) in ["need", "limit", "answer"].enumerated() { rig.take(alert("p\(index + 5)", device: rig.device.id, collapse: collapse, body: markedAlert(type))) }
+		rig.take(gone.replacingOccurrences(of: #""id":"p4""#, with: #""id":"p8""#))
+		let sealed = rig.relay.pushes.compactMap { push -> Data? in if case let .sealed(_, _, bytes, _) = push { bytes } else { nil } }
+		let inside = sealed.compactMap { rig.open($0).map { JSON.text($0.body) } }.joined()
+		Check.expect(sealed.count == 8 && Marker.all.allSatisfy { inside.contains($0.text) || $0.field == "collapse" }, "every marker reaches the relay inside a seal, as the phone opens it", "\(sealed.count) sealed")
+		let outside = sealed.map { String(decoding: $0, as: UTF8.self) + Base64URL.encode($0) }.joined()
+		Check.expect(!Marker.all.contains { outside.contains($0.text) }, "and none is in the sealed bytes as the relay sees them")
+		// Too large for the largest push, and not as the engine writes one.
+		for (index, type) in ["need", "limit", "answer"].enumerated() { rig.take(alert("p\(index + 10)", device: rig.device.id, collapse: collapse, body: markedAlert(type, extra: 1_600))) }
+		rig.take(alert("p13", device: rig.device.id, collapse: collapse, body: markedAlert("need")).replacingOccurrences(of: #""push":{"#, with: #""push":{"extra":"\#(Marker.body.text)","#))
+		rig.take(gone.replacingOccurrences(of: #""id":"p4""#, with: #""id":"p14""#).replacingOccurrences(of: #""kind":"background","#, with: #""kind":"background","collapse":"\#(collapse)","#))
+		// For a device not on the list.
+		rig.take(alert("p15", device: DeviceID.random(), collapse: collapse, body: markedAlert("need")))
+		let told = rig.answers.map { "\($0.0) \($0.1)" }
+		Check.expect(rig.answers.map(\.0) == ["p2", "p3", "p4", "p6", "p7", "p8", "p10", "p11", "p12", "p13", "p14"]
+		             && rig.answers.map(\.1).suffix(5) == ["too-large", "too-large", "too-large", "malformed", "malformed"],
+		             "each refusal is told the engine by its id, with a word", "\(told)")
+		Check.expect(!Marker.all.contains { marker in told.contains { $0.contains(marker.text) } }, "and no refusal's text holds a marker")
+	}
+
+	/// A relay played in memory for RemoteKit's client, as far as a Mac's pushes go: a challenge for its hello, `ready`
+	/// for its proof, and for each push the next answer it is given (`ok` unless a word is).
+	final class MemoryRelay: RelayConnector, RelaySocket, @unchecked Sendable {
+		private let lock = NSLock()
+		private var incoming: [RelayFrame] = []
+		private var reader: CheckedContinuation<RelayFrame, any Error>?
+		private var closed = false
+		private var words: [String?] = []
+		private var asked: [String] = []
+
+		/// The pushes the client sent, as their text.
+		var pushes: [String] { lock.withLock { asked } }
+
+		func answer(_ words: [String?]) { lock.withLock { self.words = words } }
+
+		func connect(to url: URL, pairing: PairingID?) async throws -> any RelaySocket { self }
+
+		func send(_ frame: RelayFrame) async throws {
+			guard case let .text(text) = frame, let message = try? JSON.parse(text) else { return }
+			if message["hello"] != nil {
+				say(#"{"challenge":"\#(Base64URL.encode(Data((0 ..< 32).map { _ in UInt8.random(in: 0 ... 255) })))"}"#)
+			} else if message["proof"] != nil {
+				say(#"{"ready":{"devices":[],"left":[],"pending":false,"mail":0}}"#)
+			} else if message["ping"] != nil {
+				say(#"{"pong":{}}"#)
+			} else if message["push"] != nil {
+				let word = lock.withLock {
+					asked.append(text)
+					return words.isEmpty ? nil : words.removeFirst()
+				}
+				say(word.map { #"{"refused":{"what":"push","why":"\#($0)"}}"# } ?? #"{"ok":{"what":"push"}}"#)
+			}
+		}
+
+		func receive() async throws -> RelayFrame {
+			try await withCheckedThrowingContinuation { continuation in
+				let ready: Result<RelayFrame, any Error>? = lock.withLock {
+					if !incoming.isEmpty { return .success(incoming.removeFirst()) }
+					if closed { return .failure(RelaySocketClosed()) }
+					reader = continuation
+					return nil
+				}
+				if let ready { continuation.resume(with: ready) }
+			}
+		}
+
+		func close() {
+			let waiting = lock.withLock {
+				closed = true
+				defer { reader = nil }
+				return reader
+			}
+			waiting?.resume(throwing: RelaySocketClosed())
+		}
+
+		private func say(_ text: String) {
+			let waiting: CheckedContinuation<RelayFrame, any Error>? = lock.withLock {
+				guard let reader else {
+					incoming.append(.text(text))
+					return nil
+				}
+				self.reader = nil
+				return reader
+			}
+			waiting?.resume(returning: .text(text))
+		}
+	}
+
+	/// Runs `body` to its end from this check's synchronous code.
+	static func wait<T: Sendable>(_ body: @escaping @Sendable () async -> T) -> T {
+		let done = DispatchSemaphore(value: 0)
+		let result = Locked<T?>(nil)
+		Task {
+			result.set(await body())
+			done.signal()
+		}
+		done.wait()
+		return result.get()!
+	}
+
+	final class Locked<Value>: @unchecked Sendable {
+		private let lock = NSLock()
+		private var value: Value
+		init(_ value: Value) { self.value = value }
+		func get() -> Value { lock.withLock { value } }
+		func set(_ new: Value) { lock.withLock { value = new } }
+	}
+
+	/// `RelayClientPushes`, the seam #678's second part wires, over RemoteKit's relay client against a relay played in
+	/// memory: what the relay answers reaches the hand-over as it is, and a client that can never push is said in the log.
+	static func client(keys: MacKeys, log file: URL) {
+		Check.section("RemoteKit's relay client as the seam, against a relay played in memory (S5)")
+		let url = URL(string: "ws://127.0.0.1:1/v1")!
+		let pairing = PairingID.random()
+		let device = DeviceID.random()
+		let sealed = RelayPush.sealed(device: device, kind: .alert, sealed: Data([4]) + Data(count: 695), collapse: Data(count: 32))
+		func client(_ role: RelayClient.Role, _ relay: MemoryRelay) -> RelayClient {
+			try! RelayClient(relay: url, role: role, build: RelayBuild("200")!, signer: RelaySigner(P256.Signing.PrivateKey()), connector: relay)
+		}
+		func lines(_ text: String) -> Int {
+			((try? String(contentsOf: file, encoding: .utf8)) ?? "").components(separatedBy: "\n").filter { $0.contains(text) }.count
+		}
+
+		let relay = MemoryRelay()
+		let mac = client(.mac(pairing), relay)
+		let pushes = RelayClientPushes(client: mac)
+		Check.expect(wait { await pushes.send(sealed) } == .refused("push-later"), "a client not connected yet: push-later")
+		let ready = wait { () async -> Bool in
+			await mac.start()
+			for _ in 0 ..< 500 {
+				if await mac.isReady { return true }
+				try? await Task.sleep(for: .milliseconds(10))
+			}
+			return false
+		}
+		guard ready else { return Check.expect(false, "the Mac's client is ready with the relay played in memory") }
+		relay.answer([nil, "no-token", "a-newer-word"])
+		let activity = RelayPush.activity(device: device, activity: ItemID.random(), event: .update, numbers: ActivityNumbers(working: 1, needs: 0, finished: 0, at: 1_795_392_000_000)!)
+		let answers = wait { [await pushes.send(sealed), await pushes.send(sealed), await pushes.send(activity)] }
+		Check.expect(answers == [.sent, .refused("no-token"), .refused("a-newer-word")], "sent once the relay says ok, and the relay's word as it is", "\(answers)")
+		Check.expect(relay.pushes.first == RelayOutgoing.push(sealed).text, "the push reaches the relay as the client writes it", relay.pushes.first ?? "none")
+		let invalid = RelayPush.sealed(device: device, kind: .alert, sealed: Data([4]) + Data(count: 694), collapse: nil)
+		Check.expect(wait { await pushes.send(invalid) } == .refused("malformed") && relay.pushes.count == 3, "one the client will not send, of no push's size: malformed, and not sent")
+
+		// Stopped: push-later each time, said once.
+		let before = lines("relay client that has stopped")
+		let stopped = wait { () async -> [PushOutcome] in
+			await mac.stop()
+			return [await pushes.send(sealed), await pushes.send(sealed), await pushes.send(sealed)]
+		}
+		Check.expect(stopped == Array(repeating: .refused("push-later"), count: 3), "a stopped client: push-later", "\(stopped)")
+		Check.expect(lines("relay client that has stopped") == before + 1, "and said in the log once, not once a push")
+
+		// The phone's client, wired by mistake: push-later each time, said once.
+		let phone = RelayClientPushes(client: client(.device(pairing, device), MemoryRelay()))
+		let wrong = wait { [await phone.send(sealed), await phone.send(sealed)] }
+		Check.expect(wrong == [.refused("push-later"), .refused("push-later")], "a phone's client: push-later", "\(wrong)")
+		Check.expect(lines("relay client that is not the Mac's") == 1, "and said in the log once, not once a push")
 	}
 
 	/// The helper as a process, with this check its engine, just after it revoked `revoked` and kept `remaining`: a push
@@ -194,7 +392,7 @@ enum Pushes {
 			return Check.expect(false, "both pushes reach the relay sealed", "\(rig.relay.pushes)")
 		}
 		Check.expect(kind == .alert && goneKind == .background, "as an alert and a background push")
-		Check.expect(sealed.count == 696 && goneSealed.count == 696 && sealed.first == 0x04, "each padded to 696 bytes, a sealed item's first byte first, as the relay takes it")
+		Check.expect(sealed.count == 1_464 && goneSealed.count == 696 && sealed.first == 0x04, "the alert padded to 1,464 bytes, the least an alert has, and the background push to 696, a sealed item's first byte first, as the relay takes it")
 		Check.expect(collapse?.count == 32 && goneCollapse == nil, "an alert's collapse id is 32 bytes, and a background push has none")
 		let opened = rig.open(sealed)
 		Check.expect(opened?.kind == .alert && opened.map { JSON.text($0.body) } == approval, "opened as the phone opens it: an alert, its body byte for byte as the engine wrote it")
@@ -227,7 +425,7 @@ enum Pushes {
 			Check.expect(rig.open(bytes).map { JSON.text($0.body) } == body, "a body of \(body.utf8.count) bytes opens whole")
 			return bytes.count
 		}
-		Check.expect(sized(10) == 696 && sized(300) == 1_464 && sized(600) == 3_000, "the smallest of 696, 1,464 and 3,000 bytes that holds it")
+		Check.expect(sized(10) == 1_464 && sized(300) == 1_464 && sized(600) == 3_000, "the smallest of 1,464 and 3,000 bytes that holds an alert: a one-line card's size is a longer one's")
 		// The engine keeps a body to 2,000 bytes: the largest body it writes fits.
 		Check.expect(sized(940) == 3_000, "a body of the engine's largest, 2,000 bytes, fits the largest push")
 		let tooLarge = #"{"v":1,"type":"limit","category":"pi2.limit","title":"\#(String(repeating: "é", count: 1_600))","body":"x","whole":false,"at":1}"#
@@ -293,7 +491,7 @@ enum Pushes {
 		rig.queue.sync { rig.handOver.forget(rig.device.id) }
 		rig.relay.release(2)
 		rig.settle()
-		Check.expect(rig.relay.pushes.count <= 1 && rig.answers.isEmpty, "a push still waiting when its device is revoked is dropped, not sent", "\(rig.relay.pushes.count) sent")
+		Check.expect(rig.relay.pushes.count <= 1 && rig.answers.isEmpty, "of the pushes waiting when their device is revoked, at most one, the one already being asked of the relay, still goes; the rest are dropped", "\(rig.relay.pushes.count) sent")
 	}
 
 	static func noQueue(keys: MacKeys) {

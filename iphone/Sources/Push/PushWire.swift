@@ -58,6 +58,9 @@ enum PushRefusal: Error, Equatable, Sendable {
     case notANotice
     /// It is more than a day old: the relay or anyone else could be handing back an old one.
     case tooOld
+    /// It is dated more than an hour ahead of the phone's clock: a Mac whose clock runs fast must not make a push that
+    /// outlives the phone's memory of the pushes it opened.
+    case tooNew
     /// The same push was opened before: handed back by the relay or anyone else, it is not shown again as the Mac wrote it.
     case replayed
 
@@ -71,6 +74,7 @@ enum PushRefusal: Error, Equatable, Sendable {
         case .doesNotOpen: "does not open or verify"
         case .notANotice: "not a notification"
         case .tooOld: "more than a day old"
+        case .tooNew: "dated more than an hour ahead"
         case .replayed: "opened before"
         }
     }

@@ -26,26 +26,30 @@ enum Pushes {
 
 		Check.runs("an alert sealed and opened") {
 			let sealed = try seal(body("Forge needs approval"))
-			Check.that(sealed.count == 696 && sealed.first == 0x04, "the smallest size, a sealed item's first byte first")
+			Check.that(sealed.count == 1_464 && sealed.first == 0x04, "an alert's smallest size, the middle one, a sealed item's first byte first")
 			Check.that(Base64URL.encode(sealed.suffix(16)) == id.text, "and the item's id last")
 			let opened = try open(sealed)
 			Check.that(opened.kind == .alert && opened.id == id && opened.body == body("Forge needs approval"), "it opens to its kind, its id and the body as given")
 		}
 		Check.runs("a background push sealed and opened") {
 			let gone = try JSON.parse(#"{"v":1,"type":"gone","needs":["n1"],"at":1}"#)
-			Check.that(try open(try seal(gone, kind: .background)).kind == .background, "as a background push")
+			let sealed = try seal(gone, kind: .background)
+			let kind = try open(sealed).kind
+			Check.that(sealed.count == 696 && kind == .background, "as a background push, of the smallest size")
 		}
 		Check.runs("each size") {
-			for (characters, size) in [(10, 696), (400, 1_464), (900, 3_000)] {
+			for (characters, size) in [(10, 1_464), (400, 1_464), (900, 3_000)] {
 				Check.that(try seal(body(String(repeating: "é", count: characters))).count == size, "a title of \(characters) characters makes \(size) bytes")
 			}
+			let gone = try JSON.parse(#"{"v":1,"type":"gone","needs":["\#(String(repeating: "n", count: 400))"],"at":1}"#)
+			Check.that(try seal(gone, kind: .background).count == 1_464, "a background push too long for the smallest makes the middle size")
 		}
 		Check.refuses("a body too large for the largest push, never cut") { _ = try seal(body(String(repeating: "é", count: 1_600))) }
 		let sealed = try! seal(body("Forge needs approval"))
 		Check.refuses("another device's record key") { _ = try open(sealed, record: P256.KeyAgreement.PrivateKey()) }
 		Check.refuses("another Mac's signature") { _ = try open(sealed, signer: P256.Signing.PrivateKey().publicKey) }
 		Check.refuses("a push sealed for another device") { _ = try open(try seal(body("x"), for: DeviceID.random())) }
-		Check.refuses("another id after the item") { _ = try open(sealed.prefix(680) + Bytes.random(16)) }
+		Check.refuses("another id after the item") { _ = try open(sealed.dropLast(16) + Bytes.random(16)) }
 		Check.refuses("a byte changed") {
 			var changed = sealed
 			changed[200] ^= 1

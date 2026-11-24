@@ -3,8 +3,9 @@ import Foundation
 
 /// The pushes the phone has opened in the last 25 hours, by their item's id (docs/iphone.md section 7, #689), so that one
 /// handed back (by the relay, or by anyone who recorded it on its way) is not shown again as the Mac wrote it. A push
-/// older than a day is refused anyway (`PushItem.oldest`), so 25 hours covers every copy that could still pass, with an
-/// hour for clocks, as RemoteKit's `RelayItemMemory` does for the mailbox.
+/// older than a day is refused anyway (`PushItem.oldest`), and so is one dated more than an hour ahead of the phone's
+/// clock (`PushItem.newest`), so 25 hours covers every copy that could still pass, as RemoteKit's `RelayItemMemory`
+/// does for the mailbox.
 ///
 /// One empty file for each id, in the app group's container, made with `completeUntilFirstUserAuthentication`: the
 /// service extension runs while the phone is locked, and making a file and finding one by its name both work then, so
