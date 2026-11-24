@@ -289,8 +289,9 @@ enum Targets {
 		lines.append(.revoked(try! Revocation.make(pairing: world.pairing, device: world.device, identity: world.identity)))
 		lines.append(.sessionEnd)
 		lines += Refusal.Reason.allCases.map { .refused(Refusal($0)) }
-		// A reason from a newer Mac, which this build reads as a plain refusal.
-		return lines.map { Array($0.line) } + [Array(#"{"refused":{"reason":"later"}}"#.utf8)]
+		lines += PairRefusal.Why.allCases.map { .pairRefused(PairRefusal($0)) }
+		// A reason and a word from a newer Mac, which this build reads as a plain refusal.
+		return lines.map { Array($0.line) } + [Array(#"{"refused":{"reason":"later"}}"#.utf8), Array(#"{"pairRefused":{"why":"later"}}"#.utf8)]
 	}
 
 	static func controlLines(_ world: World) -> Target {
@@ -298,7 +299,7 @@ enum Targets {
 			name: "control-lines", seeds: controlLineSeeds(world),
 			dictionary: words([
 				"\\\"", "\\\\", "null", "true", "\"v\\\":2", "\"session\"", "\"received\":", "dev_", ",", "{}", "\\u0000", "\"refused\"", "\"reason\"",
-				"\"update\"", "\\u0061", "\"homeKey\"", "\"key\"", "=", "AA",
+				"\"update\"", "\"pairRefused\"", "\"why\"", "\"unsaved\"", "\\u0061", "\"homeKey\"", "\"key\"", "=", "AA",
 			]),
 			maxLength: 8192
 		) { input in
@@ -310,6 +311,9 @@ enum Targets {
 			if again!.line != written { Fuzz.violation("control-lines", "wrote one line two ways", input) }
 			if case let .refused(refusal) = line!, let reason = refusal.reason, written != ControlLine.refused(Refusal(reason)).line {
 				Fuzz.violation("control-lines", "read a refusal as a reason it does not say", input)
+			}
+			if case let .pairRefused(refusal) = line!, let why = refusal.why, written != ControlLine.pairRefused(PairRefusal(why)).line {
+				Fuzz.violation("control-lines", "read a pairing's refusal as a word it does not say", input)
 			}
 			// A home key, in paired or in homeKey, is exactly 32 bytes, and what was written is what it holds.
 			switch line! {

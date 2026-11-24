@@ -42,8 +42,9 @@ import { fileURLToPath } from "node:url";
  * set by `scripts/test-copy start --remote`, #681);
  * `PI2_UNPLACED_HANDLER`, a request added to the engine's table and placed in no list, which must stop it starting
  * (main.ts); `PI2_DEVICE_SESSION_MS`, the engine's own bound on a device session, shortened (remote.ts);
- * `PI2_DEVICE_FAULT`, a method whose log line and handling from a device's line throw, which must not end the engine
- * (devices.ts, remote.ts). The tunings
+ * `PI2_APPROVAL_DEPTH_THROWS`, with which an approval met deeper than a phone's forms put one throws rather than being
+ * said in the log (devices.ts, #881); `PI2_DEVICE_FAULT`, a method whose log line and handling from a device's line
+ * throw, which must not end the engine (devices.ts, remote.ts). The tunings
  * only tests change: `PI2_AWAKE_GRACE_MS`, `PI2_AWAKE_POLL_MS` (keepawake.ts),
  * `PI2_COMMAND_TIMEOUT_SECONDS` (commands.ts), `PI2_OUTPUT_WAIT_SECONDS` (background.ts), `PI2_LIMITS_MIN_INTERVAL_MS`
  * (limits.ts), the `PI2_LIMIT_*_MS` (limitwait.ts), `PI2_LOCAL_STALL_MS`, `PI2_LOCAL_RETRY_MS`, `PI2_LOCAL_RETRIES`,
@@ -51,6 +52,7 @@ import { fileURLToPath } from "node:url";
  * `PI2_WAKES_PER_HOUR` (wakes.ts).
  */
 export const TEST_SWITCHES = [
+	"PI2_APPROVAL_DEPTH_THROWS",
 	"PI2_APP_ATTEST_STAND_IN",
 	"PI2_APP_ATTEST_TEAM",
 	"PI2_AWAKE_GRACE_MS",

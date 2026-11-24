@@ -222,6 +222,37 @@ enum Sessions {
 			Check.refuses("nothing is sent on it after") { _ = try macChannel.seal(line: ControlLine.homeKey(HomeKey.random()).line) }
 			subjects += [claimerChannel, macChannel]
 			print("ok   a claim refused: bye alone, no home key")
+
+			// A refusal the Mac gives a word for (#881): pairRefused, then bye, every word sealed to the same lengths.
+			var lengths: [[Int]] = []
+			for why in PairRefusal.Why.allCases {
+				var wire = Wire()
+				let claimer = Phone()
+				let claimerHandshake = try ChannelHandshake.pairingInitiator(payload: scanned, channelKey: claimer.channel)
+				let macHandshake = try ChannelHandshake.pairingResponder(pairing: pairing, secret: secret, channelKey: mac.channel)
+				try macHandshake.readMessage(try wire.carry(try claimerHandshake.writeMessage()))
+				try claimerHandshake.readMessage(try wire.carry(try macHandshake.writeMessage()))
+				let claimerChannel = try claimerHandshake.channel()
+				let macChannel = try macHandshake.channel()
+				claimerChannel.padding = Frame.paddingBlock
+				let proof = try MacProof.make(challenge: Bytes.random(32), pairing: pairing, binding: macChannel.handshakeHash, identity: mac.identity)
+				_ = try send(.mac(proof), from: macChannel, to: claimerChannel, wire: &wire)
+				let claim = try PairClaim.make(
+					device: claimer.description, attestation: nil, keyId: nil, pairing: pairing, binding: claimerChannel.handshakeHash, deviceKey: claimer.device)
+				guard case .pair = try send(.pair(claim), from: claimerChannel, to: macChannel, wire: &wire) else { throw RemoteKitError("check", "not a claim") }
+				let messages = try macChannel.sealPairRefusal(PairRefusal(why))
+				lengths.append(messages.map(\.count))
+				Check.that(macChannel.isOver, "after pairRefused \(why.rawValue) the Mac's end is over")
+				Check.refuses("nothing is sent after pairRefused \(why.rawValue)") { _ = try macChannel.seal(line: ControlLine.homeKey(HomeKey.random()).line) }
+				var events: [ChannelEvent?] = []
+				for message in messages { events.append(try claimerChannel.open(try wire.carry(message))) }
+				Check.that(events.count == 2 && events.last == .bye, "pairRefused \(why.rawValue) comes before bye")
+				guard case let .pairRefused(read) = try line(events.first!) else { throw RemoteKitError("check", "not pairRefused") }
+				Check.that(read.why == why, "the phone reads pairRefused \(why.rawValue)")
+				subjects += [claimerChannel, macChannel]
+			}
+			Check.that(Set(lengths).count == 1 && lengths[0][0] == Frame.paddingBlock + Noise.tagLength, "every word is sealed to the same lengths, its line padded to 256 bytes")
+			print("ok   a claim refused with a word: pairRefused, then bye, no home key, all of one length")
 		} catch {
 			Check.that(false, "refused claim: \(error)")
 		}

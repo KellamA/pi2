@@ -99,7 +99,7 @@ package final class EngineLink: @unchecked Sendable {
 			onEvent(value)
 		} else if let id = value["id"]?.integerValue, let answer = waiting.removeValue(forKey: id) {
 			if let error = value["error"] {
-				answer(.failure(Refused(error.stringValue ?? "the engine refused")))
+				answer(.failure(Refused(error.stringValue ?? "the engine refused", reason: value["data"]?["reason"]?.stringValue)))
 			} else {
 				answer(.success(value["result"] ?? .null))
 			}

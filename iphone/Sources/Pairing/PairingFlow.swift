@@ -133,6 +133,8 @@ enum PairingFailure: Equatable, Sendable {
     case noAppAttest
     case macNotProved
     case macDidNotPair
+    case macCouldNotSave
+    case cancelledOnMac
     case attestation
     case keys
 
@@ -144,6 +146,8 @@ enum PairingFailure: Equatable, Sendable {
         case .noAppAttest: self = .noAppAttest
         case .macNotProved: self = .macNotProved
         case .macDidNotPair: self = .macDidNotPair
+        case .macCouldNotSave: self = .macCouldNotSave
+        case .cancelledOnMac: self = .cancelledOnMac
         case .attestation: self = .attestation
         case .keys: self = .keys
         }
@@ -158,6 +162,8 @@ enum PairingFailure: Equatable, Sendable {
         case .noAppAttest: "Pair on your Mac's network"
         case .macNotProved: "That wasn't your Mac"
         case .macDidNotPair: "Your Mac didn't pair"
+        case .macCouldNotSave: "Your Mac couldn't save the pairing"
+        case .cancelledOnMac: "Pairing was cancelled on your Mac"
         case .attestation: "App Attest didn't answer"
         case .keys: "Couldn't make this iPhone's keys"
         }
@@ -190,6 +196,10 @@ enum PairingFailure: Equatable, Sendable {
             "What answered couldn't prove it is the Mac that showed this code. Nothing was paired, and nothing was sent to it. Start again on your Mac."
         case .macDidNotPair:
             "The digits typed may not have matched, the code may have closed, or another device tried to use it. Start again on your Mac, and don't show the code on a shared or recorded screen."
+        case .macCouldNotSave:
+            "The Mac could not save the pairing. Start again."
+        case .cancelledOnMac:
+            "The pairing was cancelled on the Mac. Start again there to pair this iPhone."
         case .attestation:
             "App Attest couldn't vouch for this iPhone just now. Wait a minute, then scan the code again."
         case .keys:

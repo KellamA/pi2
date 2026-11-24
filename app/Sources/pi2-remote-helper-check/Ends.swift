@@ -80,8 +80,9 @@ final class FakeEngine {
 		lines.write(JSON.write(.object([("id", id), ("result", result)])))
 	}
 
-	func refuse(_ id: JSONValue, _ why: String) {
-		lines.write(JSON.write(.object([("id", id), ("error", .string(why))])))
+	/// An error, with `data` beside it when given, as remote.ts writes `refusal(error)`.
+	func refuse(_ id: JSONValue, _ why: String, data: JSONValue? = nil) {
+		lines.write(JSON.write(.object([("id", id), ("error", .string(why))] + (data.map { [("data", $0)] } ?? []))))
 	}
 
 	/// A line of the engine's to a session, as remote.ts writes it.

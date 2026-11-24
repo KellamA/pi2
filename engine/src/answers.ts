@@ -591,7 +591,7 @@ const MAC_ONLY: Record<string, string> = {
  * pi² Remote's own requests, taken only on the connection the engine made for the helper it started (5.5), never on
  * its listening socket and never in a device session. remote.mailboxIn (#678, P10) is added here when it is made.
  */
-const FOR_THE_HELPER: ReadonlySet<string> = new Set(["remote.hello", "remote.state", "remote.pairClaim", "remote.pairWrong", "remote.pairRefused", "remote.attachBegin", "remote.attach", "remote.sessionEnd", "remote.presenceKey", "remote.pushRefused"]);
+const FOR_THE_HELPER: ReadonlySet<string> = new Set(["remote.hello", "remote.state", "remote.pairClaim", "remote.pairWrong", "remote.pairRefused", "remote.pairUnkept", "remote.attachBegin", "remote.attach", "remote.sessionEnd", "remote.presenceKey", "remote.pushRefused"]);
 
 export function forTheHelper(method: string): boolean {
 	return FOR_THE_HELPER.has(method);
