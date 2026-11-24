@@ -156,11 +156,12 @@ expect "--env needs NAME=VALUE" start test-8 --env
 expect "--env needs NAME=VALUE" start test-8 --env PI2_DEMO_COST
 expect "--env takes one line" start test-8 --env $'PI2_DEMO_COST=5\nPI2_HOME=elsewhere'
 expect "--env takes one line" start test-8 --env $'PI2_DEMO_COST=5\r'
-for key in PI2_HOME PI2_KEYCHAIN_SERVICE PI2_SHOW PI2_HUB PI2_TEST_COPY PI2_LOGIN_SHELL PI2_DEMO_UNKNOWN PATH HOME DYLD_INSERT_LIBRARIES ''; do
+for key in PI2_HOME PI2_KEYCHAIN_SERVICE PI2_SHOW PI2_HUB PI2_TEST_COPY PI2_LOGIN_SHELL PI2_DEMO_UNKNOWN PI2_UNPLACED_HANDLER PATH HOME DYLD_INSERT_LIBRARIES ''; do
 	expect "--env does not allow" start test-8 --env "$key=value"
 done
 expect "--env repeats PI2_DEMO_COST" start test-8 --env PI2_DEMO_COST=1 --env PI2_DEMO_COST=2
-for key in PI2_DEMO_PICTURES PI2_DEMO_TEXT_MODEL PI2_DEMO_COST PI2_DEMO_TOKENS_PER_SECOND PI2_DEMO_COMPACTION_GATE PI2_GH; do
+for key in PI2_DEMO_PICTURES PI2_DEMO_TEXT_MODEL PI2_DEMO_COST PI2_DEMO_TOKENS_PER_SECOND PI2_DEMO_COMPACTION_GATE PI2_GH \
+	PI2_REMOTE_STAND_IN PI2_APP_ATTEST_STAND_IN PI2_APP_ATTEST_TEAM; do
 	expect "unknown option --bogus" start test-8 --env "$key=explicit value=with equals" --bogus
 done
 # start --fill seeds the data folder before the first start (#779): what it takes, checked before anything is made.
