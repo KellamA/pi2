@@ -90,6 +90,9 @@ struct NeedsView: View {
             VStack(alignment: .leading, spacing: 10) {
                 cards
             }
+            // The space between cards above the first and below the last too: a list's section clips its first and last
+            // row to its own corners, rounder than a card's, which cut the corners of a card flush with them (#830).
+            .padding(.vertical, 10)
         }
     }
 

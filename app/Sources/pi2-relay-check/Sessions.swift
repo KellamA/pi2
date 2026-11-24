@@ -173,19 +173,28 @@ enum Sessions {
 		let item2 = ItemID.random()
 		let rig = Rig(.mac(Formats.pairing))
 		await rig.client.start()
-		let socket = try await macReady(rig)
+		var socket = try await macReady(rig)
 		let sealed = Base64URL.encode(Formats.sealed)
-		func taking(_ answer: [String]) async throws -> RelayTaken {
-			let taken = Task { try await rig.client.take() }
+		/// A take the check's relay answers with `answer`, and the `took` it expects after, naming `took`, answered ok; or
+		/// none at all when `took` is empty.
+		func taking(_ answer: [String], took: [ItemID]) async throws -> RelayTaken {
+			let taken = Task { try await rig.client.take { $0.ids } }
 			Check.equal(try await socket.nextText("take"), #"{"take":{}}"#, "take as sent")
 			for line in answer { socket.say(line) }
+			if took.isEmpty {
+				let result = try await taken.value
+				Check.holds(try await socket.sent.take(seconds: 0.1) == nil, "nothing to acknowledge, so no took")
+				return result
+			}
+			Check.equal(try await socket.nextText("took"), RelayOutgoing.took(ids: took).text, "took, naming every item the take brought, once")
+			socket.say(#"{"ok":{"what":"took"}}"#)
 			return try await taken.value
 		}
 		let first = try await taking([
 			#"{"item":{"from":"dev_EBESExQVFhcYGRobHB0eHw","id":"\#(Formats.item.text)","item":"\#(sealed)","presence":true}}"#,
 			#"{"item":{"from":"dev_EBESExQVFhcYGRobHB0eHw","id":"\#(item2.text)","item":"\#(sealed)","presence":false}}"#,
 			#"{"taken":{"count":2}}"#,
-		])
+		], took: [Formats.item, item2])
 		Check.equal(first.items.map(\.id), [Formats.item, item2], "the items taken, oldest first")
 		Check.equal(first.items.map(\.presence), [true, false], "with their flags")
 		Check.equal(first.repeats, 0, "none a repeat")
@@ -194,17 +203,94 @@ enum Sessions {
 			#"{"item":{"from":"dev_EBESExQVFhcYGRobHB0eHw","id":"\#(item2.text)","item":"\#(sealed)","presence":false}}"#,
 			#"{"item":{"from":"dev_EBESExQVFhcYGRobHB0eHw","id":"\#(item2.text)","item":"\#(sealed)","presence":false}}"#,
 			#"{"taken":{"count":2}}"#,
-		])
+		], took: [item2])
 		Check.that(unverified.items.count == 1 && unverified.repeats == 1, "an item not yet remembered is handed over again, but once a take")
 		Check.holds(await rig.client.remember(first.items), "the reader remembers what it opened and kept")
 		Check.holds(await rig.client.itemMemory.count == 2, "the memory holds the two")
+		// The relay handing an item over again, its acknowledgement lost: dropped, and acknowledged so that it is deleted.
 		let second = try await taking([
 			#"{"item":{"from":"dev_EBESExQVFhcYGRobHB0eHw","id":"\#(item2.text)","item":"\#(sealed)","presence":false}}"#,
 			#"{"taken":{"count":1}}"#,
-		])
-		Check.that(second.items.isEmpty && second.repeats == 1, "an item remembered, handed over again, is dropped as a repeat")
-		let none = try await taking([#"{"taken":{"count":0}}"#])
+		], took: [item2])
+		Check.that(second.items.isEmpty && second.repeats == 1, "an item remembered, handed over again, is dropped as a repeat, and still acknowledged")
+		let none = try await taking([#"{"taken":{"count":0}}"#], took: [])
 		Check.that(none.items.isEmpty && none.state == nil, "an empty mailbox")
+
+		// Only what the closure says it is done with is acknowledged: an item it could not keep yet (its key not available,
+		// say) is left out and comes again; an id this take did not bring is passed over.
+		let (itemA, itemB) = (ItemID.random(), ItemID.random())
+		let partly = Task { try await rig.client.take { _ in [itemA, ItemID.random()] } }
+		_ = try await socket.nextText("take, partly kept")
+		socket.say(#"{"item":{"from":"dev_EBESExQVFhcYGRobHB0eHw","id":"\#(itemA.text)","item":"\#(sealed)","presence":false}}"#)
+		socket.say(#"{"item":{"from":"dev_EBESExQVFhcYGRobHB0eHw","id":"\#(itemB.text)","item":"\#(sealed)","presence":false}}"#)
+		socket.say(#"{"taken":{"count":2}}"#)
+		Check.equal(try await socket.nextText("took, partly"), RelayOutgoing.took(ids: [itemA]).text, "took names only what the closure is done with")
+		socket.say(#"{"ok":{"what":"took"}}"#)
+		_ = try await partly.value
+		let nothingDone = Task { try await rig.client.take { _ in [] } }
+		_ = try await socket.nextText("take, nothing done")
+		socket.say(#"{"item":{"from":"dev_EBESExQVFhcYGRobHB0eHw","id":"\#(itemB.text)","item":"\#(sealed)","presence":false}}"#)
+		socket.say(#"{"taken":{"count":1}}"#)
+		Check.equal(try await nothingDone.value.items.map(\.id), [itemB], "the item left out is handed over again, and given to the closure again")
+		Check.holds(try await socket.sent.take(seconds: 0.1) == nil, "a closure done with nothing acknowledges nothing")
+
+		// Two takes at once: the second waits until the first has sent its took, and is given nothing the first kept, even
+		// from a relay that hands it over again.
+		let gate = Queue<Bool>()
+		let first2 = Task {
+			try await rig.client.take { taken in
+				_ = try await gate.take()
+				await rig.client.remember(taken.items)
+				return taken.ids
+			}
+		}
+		_ = try await socket.nextText("the first of two takes")
+		let second2 = Task { try await rig.client.take { $0.ids } }
+		socket.say(#"{"item":{"from":"dev_EBESExQVFhcYGRobHB0eHw","id":"\#(itemB.text)","item":"\#(sealed)","presence":false}}"#)
+		socket.say(#"{"taken":{"count":1}}"#)
+		Check.holds(try await socket.sent.take(seconds: 0.2) == nil, "a second take waits while the first's closure runs")
+		gate.put(true)
+		Check.equal(try await socket.nextText("the first's took"), RelayOutgoing.took(ids: [itemB]).text, "the first take's took")
+		socket.say(#"{"ok":{"what":"took"}}"#)
+		Check.equal(try await first2.value.items.map(\.id), [itemB], "the first take is given the item")
+		Check.equal(try await socket.nextText("the second of two takes"), #"{"take":{}}"#, "then the second take is sent")
+		socket.say(#"{"item":{"from":"dev_EBESExQVFhcYGRobHB0eHw","id":"\#(itemB.text)","item":"\#(sealed)","presence":false}}"#)
+		socket.say(#"{"taken":{"count":1}}"#)
+		Check.equal(try await socket.nextText("the second's took"), RelayOutgoing.took(ids: [itemB]).text, "the repeat is acknowledged")
+		socket.say(#"{"ok":{"what":"took"}}"#)
+		let second2Taken = try await second2.value
+		Check.that(second2Taken.items.isEmpty && second2Taken.repeats == 1, "the second take is given none of what the first kept")
+
+		// A caller that could not keep what it was given: nothing is acknowledged, and its error is take's.
+		struct NotKept: Error {}
+		let item3 = ItemID.random()
+		let failing = Task { try await rig.client.take { _ -> Set<ItemID> in throw NotKept() } }
+		_ = try await socket.nextText("take, not kept")
+		socket.say(#"{"item":{"from":"dev_EBESExQVFhcYGRobHB0eHw","id":"\#(item3.text)","item":"\#(sealed)","presence":false}}"#)
+		socket.say(#"{"taken":{"count":1}}"#)
+		let threw: Bool
+		do {
+			_ = try await failing.value
+			threw = false
+		} catch is NotKept {
+			threw = true
+		}
+		Check.holds(threw, "a take whose caller could not keep it throws the caller's error")
+		Check.holds(try await socket.sent.take(seconds: 0.1) == nil, "and acknowledges nothing")
+		// Handed over again at the next take, it is the caller's once more, and acknowledged once kept.
+		let kept = Task { try await rig.client.take { Set($0.items.map(\.id)) } }
+		_ = try await socket.nextText("take again")
+		socket.say(#"{"item":{"from":"dev_EBESExQVFhcYGRobHB0eHw","id":"\#(item3.text)","item":"\#(sealed)","presence":false}}"#)
+		socket.say(#"{"taken":{"count":1}}"#)
+		Check.equal(try await socket.nextText("took"), RelayOutgoing.took(ids: [item3]).text, "the item not kept before, acknowledged once kept")
+		// The socket drops before the relay answers the took: what was kept stays kept, and take returns it.
+		socket.hangUp()
+		Check.equal(try await kept.value.items.map(\.id), [item3], "an acknowledgement lost with its socket is not take's error")
+		let (drop, at) = try await disconnected(rig)
+		Check.equal(drop, .lost, "the socket dropped")
+		try await rig.clock.waitForSleeper(until: at)
+		rig.clock.advance(at - rig.clock.now())
+		socket = try await macReady(rig)
 
 		let put = Task { try await rig.client.put(Formats.sealed, id: Formats.item, to: .device(Formats.device)) }
 		_ = try await socket.nextText("put")
@@ -220,7 +306,7 @@ enum Sessions {
 		await Check.throwsError("a put to a full mailbox", .refused(.mailboxFull)) { try await full.value }
 
 		// A count that is not what came is not a take.
-		let wrong = Task { try await rig.client.take() }
+		let wrong = Task { try await rig.client.take { $0.ids } }
 		_ = try await socket.nextText("take, answered wrongly")
 		socket.say(#"{"taken":{"count":1}}"#)
 		await Check.throwsError("a take whose count is not what came", .disconnected) { try await wrong.value }
@@ -233,12 +319,15 @@ enum Sessions {
 		let phone = Rig(.device(Formats.pairing, Formats.device), memory: memory)
 		await phone.client.start()
 		let (phoneSocket, _) = try await phoneReady(phone)
-		let taken = Task { try await phone.client.take() }
+		let taken = Task { try await phone.client.take { $0.ids } }
 		_ = try await phoneSocket.nextText("take")
 		phoneSocket.say(#"{"item":{"from":"mac","id":"\#(item2.text)","item":"\#(sealed)","presence":false}}"#)
 		phoneSocket.say(#"{"item":{"from":"mac","id":"\#(Formats.item.text)","item":"\#(sealed)","presence":false}}"#)
 		phoneSocket.say(#"{"state":{"id":"\#(item2.text)","item":"\#(sealed)"}}"#)
 		phoneSocket.say(#"{"taken":{"count":3}}"#)
+		// The repeat and the state are acknowledged with the new item; an id the state shares is named once.
+		Check.equal(try await phoneSocket.nextText("took"), RelayOutgoing.took(ids: [item2, Formats.item]).text, "a phone's took: its items, the repeat among them, and its state")
+		phoneSocket.say(#"{"ok":{"what":"took"}}"#)
 		let result = try await taken.value
 		Check.equal(result.items.map(\.id), [Formats.item], "a repeat of an item taken by the client before is dropped")
 		Check.equal(result.state, RelayStateItem(id: item2, item: Formats.sealed), "the state is handed over, whatever its id")
