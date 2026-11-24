@@ -1,7 +1,8 @@
 // A pairing's Durable Object (docs/iphone.md 5.3): one for each pairing, named by its id. It holds the pairing's
 // sockets with the WebSocket Hibernation API, so a pairing whose sockets are idle costs nothing while they stay
 // connected; passes sealed bytes between the Mac and its phones without reading past a device's id; keeps the pairing's
-// small state (the Mac's relay key, the devices' keys and push tokens, the join window), its mailbox and its limits.
+// small state (the Mac's relay key, the devices' keys and push tokens, their Live Activities' tokens, the join window),
+// its mailbox and its limits.
 //
 // How a connection goes (README.md, "The protocol"): it says `hello` (or `register`), the relay answers a challenge,
 // the end signs it (`proof`), or a phone that has no slot yet answers with `join`; only then is it "ready", and only a
@@ -9,7 +10,20 @@
 // within ten seconds is closed.
 
 import { DurableObject } from "cloudflare:workers";
-import { type Apns, apnsFor, MAX_WAITING_PUSHES, PUSH_LIMITS, PushCounts, type PushHour, type PushLimits } from "./apns.ts";
+import {
+	ActivityStamps,
+	type ActivityToken,
+	type Apns,
+	apnsFor,
+	isNear,
+	liveActivityTokens,
+	MAX_WAITING_PUSHES,
+	PUSH_LIMITS,
+	PushCounts,
+	type PushHour,
+	type PushLimits,
+	withActivityToken,
+} from "./apns.ts";
 import { verifyAttestation } from "./attest.ts";
 import { base64url, concat, fromBase64url, random, same } from "./bytes.ts";
 import { publicKeyBytes, sha256, verifySignature } from "./crypto.ts";
@@ -17,6 +31,7 @@ import { checkAttestation, joinClientDataHash, type Verifier } from "./join.ts";
 import { Counters, type Day, JOINED_LIMITS, LIMITS, type Limits, PENDING_LIMITS } from "./limits.ts";
 import { DAY, HOUR, Mailbox } from "./mailbox.ts";
 import {
+	type ActivityPush,
 	type AddDevice,
 	compareBuilds,
 	deviceIdBytes,
@@ -100,6 +115,11 @@ type Device = {
 	 */
 	macKeyId: string | null;
 	token: { apns: string; environment: "development" | "production" } | null;
+	/**
+	 * The push tokens of the Live Activities the phone started, by the activity's id (apns.ts, "Live Activities"): each
+	 * kept twelve hours at most, five at once. Absent from a record written before them.
+	 */
+	activities?: Record<string, ActivityToken>;
 };
 
 /** What each socket is, kept on it so it survives hibernation. */
@@ -153,6 +173,7 @@ const CLOSE: Record<Why, number> = {
 	"token-dead": 4002,
 	"push-limit": 4002,
 	"push-later": 4002,
+	clock: 4002,
 };
 
 export class Pairing extends DurableObject<Env> {
@@ -179,6 +200,8 @@ export class Pairing extends DurableObject<Env> {
 	/** The pushes in hand, one at a time, so that the Mac's answers come in the order it asked; and how many wait. */
 	private pushing: Promise<void> = Promise.resolve();
 	private pushesWaiting = 0;
+	/** Each Live Activity's last push timestamp, so that none repeats (apns.ts, `ActivityStamps`); in memory only. */
+	private readonly activityStamps = new ActivityStamps();
 
 	private meta: Meta | null = null;
 	private devices: Record<string, Device> = {};
@@ -592,6 +615,24 @@ export class Pairing extends DurableObject<Env> {
 					await this.save();
 				}
 				return ok(ws, "dropToken");
+			case "activityToken": {
+				// A Live Activity's token, which iOS gives soon after the phone starts it and again when it changes: written
+				// only when it changed, with the device's tokens whose time is over left out, and five at most.
+				const { tokens, changed } = withActivityToken(device.activities, message.activity, message, now);
+				if (changed) {
+					device.activities = tokens;
+					await this.save();
+				}
+				return ok(ws, "activityToken");
+			}
+			case "dropActivity":
+				if (device.activities?.[message.activity] !== undefined) {
+					const tokens = liveActivityTokens(device.activities, now);
+					delete tokens[message.activity];
+					device.activities = tokens;
+					await this.save();
+				}
+				return ok(ws, "dropActivity");
 			case "leave": {
 				const meta = this.meta!;
 				if (!(await verifySignature(device.key, message.signature, proofText("leave", meta.pairing, id, attachment.challenge!)))) {
@@ -835,7 +876,8 @@ export class Pairing extends DurableObject<Env> {
 	 * (6.6). Counted against 6.6's push limits before it is sent, with one write for each push sent and none for one
 	 * refused; a token Apple calls dead is forgotten.
 	 */
-	private async push(ws: WebSocket, message: Push): Promise<void> {
+	private async push(ws: WebSocket, message: Push | ActivityPush): Promise<void> {
+		if (message.kind === "activity") return this.activityPush(ws, message);
 		const now = Date.now();
 		const device = this.devices[message.device];
 		if (this.meta === null || device?.listed !== true) return refused(ws, "push", "unknown-device");
@@ -862,13 +904,55 @@ export class Pairing extends DurableObject<Env> {
 		return refused(ws, "push", outcome);
 	}
 
+	/**
+	 * The Mac asks for a Live Activity push (apns.ts, "Live Activities"): to one of a device's activities, by the id the
+	 * phone gave its token under, so that the relay pushes only to tokens the phone itself gave on its proved socket, and
+	 * the Mac never holds one. Its numbers only, held to their shape when it was read. In turn with the other pushes, and
+	 * counted as they are, against the Live Activity pushes' own limits; a token Apple calls dead, or whose time is over,
+	 * is forgotten.
+	 */
+	private async activityPush(ws: WebSocket, message: ActivityPush): Promise<void> {
+		const now = Date.now();
+		const device = this.devices[message.device];
+		if (this.meta === null || device?.listed !== true) return refused(ws, "push", "unknown-device");
+		// Numbers counted more than a day ago, or in the future: the Mac's clock or its queue is wrong (apns.ts, AT_BEHIND).
+		if (!isNear(message.state.at, now)) return refused(ws, "push", "clock");
+		const token = device.activities?.[message.activity];
+		if (token === undefined || token.until <= now) {
+			if (token !== undefined) {
+				device.activities = liveActivityTokens(device.activities, now);
+				await this.save();
+			}
+			return refused(ws, "push", "no-token");
+		}
+		const settings = readSettings(this.env);
+		const apns = settings === null ? null : this.apns(settings.bundleId);
+		if (apns === null) return refused(ws, "push", "unavailable");
+		const held = apns.heldActivity(token, now);
+		if (held !== null) return refused(ws, "push", held);
+		if (!this.pushCounts.allows(message.device, "activity", now, this.pushLimits)) return refused(ws, "push", "push-limit");
+		const first = this.pushCounts.add(message.device, "activity", now);
+		await this.ctx.storage.put("pushes", this.pushCounts.stored());
+		if (first) await this.schedule();
+		const stamp = this.activityStamps.next(`${message.device} ${message.activity}`, now);
+		const outcome = await apns.sendActivity(token, { event: message.event, state: message.state }, now, stamp);
+		if (outcome === "sent") return ok(ws, "push");
+		// Forgotten only if it is still the token Apple refused: the phone may have given another meanwhile.
+		const still = this.devices[message.device]?.activities;
+		if (outcome === "token-dead" && still?.[message.activity]?.apns === token.apns && still[message.activity].environment === token.environment) {
+			delete still[message.activity];
+			await this.save();
+		}
+		return refused(ws, "push", outcome);
+	}
+
 	private inTurn(step: () => Promise<void> | void): Promise<void> {
 		const turn = this.pushing.then(step);
 		this.pushing = turn.catch(() => undefined);
 		return turn;
 	}
 
-	private pushStep(ws: WebSocket, message: Push): () => Promise<void> {
+	private pushStep(ws: WebSocket, message: Push | ActivityPush): () => Promise<void> {
 		this.pushesWaiting += 1;
 		return () => this.push(ws, message).finally(() => (this.pushesWaiting -= 1));
 	}
