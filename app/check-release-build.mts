@@ -17,7 +17,7 @@
 // Whatever it starts runs on a temporary data folder, with a Keychain service of its own, without asking a login shell
 // for its PATH, and is stopped by its process id before it ends, whether the checks passed or not.
 
-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, lstatSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { homedir } from "node:os";
@@ -38,6 +38,28 @@ const inCI = process.env.CI === "true" || process.env.GITHUB_ACTIONS === "true";
  * a development affordance outside that condition, which anyone could switch on.
  */
 const DEVELOPMENT_ONLY = ["PI2_SHOW", "PI2_HUB", "PI2_MENU", "PI2_TEST_COPY", "PI2_WINDOW_BEHIND", "PI2_WINDOW_ORIGIN", "PI2_DRAW_WHEN_HIDDEN"];
+/**
+ * What only a development build has until a real phone is paired (the owner's decision of 22 November 2026, #712,
+ * #679): Settings › Devices, the device line in the menu bar item and the sidebar, and the app's asking for the
+ * `devices` event. A release build leaves all of it out at compile time, so its executable names none of the engine's
+ * `devices.*` requests that the page makes, nor the page's own types.
+ */
+const DEVICES_PAGE = ["devices.watch", "devices.pairStart", "devices.pairConfirm", "DevicesSettings", "PairingSheet", "DevicesAttachedLine"];
+
+/**
+ * pi² Remote's bundle id, whatever the app's (a copy given its own keeps the helper's), and the entitlements its release
+ * build may have: none until its Keychain access group comes with its provisioning profile (P14, #686), which adds it
+ * here and in app/remote-helper.sh. Above all none that lets a program load a library into it
+ * (`com.apple.security.cs.allow-dyld-environment-variables`, `disable-library-validation`) or attach to it
+ * (`get-task-allow`): it holds the Mac's keys (docs/pi2-remote.md).
+ */
+const HELPER_ID = "dev.pi2.app.remote";
+const HELPER_ENTITLEMENTS: string[] = [];
+/**
+ * What only a development build of pi² Remote has, compiled under PI2_DEVELOPMENT: its key files and the pairing id it
+ * makes itself. A release helper that names one was built with the development paths in it.
+ */
+const HELPER_DEVELOPMENT_ONLY = ["remote-keys.json", "remote-devices.json", "a development build made its own pairing's id"];
 
 class CheckFailed extends Error {}
 function fail(message: string): never {
@@ -212,7 +234,11 @@ function checkBundle(app: string): Build {
 	if (named.length > 0) {
 		fail(`The app's executable names ${named.join(", ")}, which only a development build may read. Keep the code that reads ${named.length === 1 ? "it" : "them"} inside #if PI2_DEVELOPMENT.`);
 	}
-	step(`${basename(app)} is ${bundleId} ${version} (build ${buildNumber}), build id ${build}`);
+	const devices = DEVICES_PAGE.filter((name) => executable.includes(name));
+	if (devices.length > 0) {
+		fail(`The app's executable names ${devices.join(", ")}: a release build has no Devices tab until a real phone is paired (#712). Keep it inside #if PI2_DEVELOPMENT.`);
+	}
+	step(`${basename(app)} is ${bundleId} ${version} (build ${buildNumber}), build id ${build}, with no Devices tab`);
 	return { app, node, main, build, bundleId };
 }
 
@@ -223,6 +249,47 @@ function checkSignature(app: string): void {
 		fail(`The app's code signature does not hold: ${String((error as { stderr?: string }).stderr ?? error).trim()}`);
 	}
 	step("its code signature holds");
+}
+
+type Signing = { team: string | null; runtime: boolean; entitlements: string[] };
+
+/** How `path` is signed: its team, whether it has the hardened runtime, and the names of its entitlements. */
+function signingOf(path: string): Signing {
+	const details = spawnSync("/usr/bin/codesign", ["-d", "--verbose=2", path], { encoding: "utf8" });
+	const text = `${details.stdout}${details.stderr}`;
+	const team = /^TeamIdentifier=(.+)$/m.exec(text)?.[1]?.trim() ?? null;
+	const runtime = /flags=0x[0-9a-f]+\([^)]*\bruntime\b[^)]*\)/.test(text);
+	const entitlements = spawnSync("/usr/bin/codesign", ["-d", "--entitlements", "-", "--xml", path], { encoding: "utf8" }).stdout ?? "";
+	return { team: team === "not set" ? null : team, runtime, entitlements: [...entitlements.matchAll(/<key>([^<]+)<\/key>/g)].map((match) => match[1]!) };
+}
+
+/**
+ * pi² Remote, the helper that holds the Mac's keys for a paired iPhone (#675, docs/pi2-remote.md): there, a release
+ * build of it, signed by the app's team with the hardened runtime when the app is, and with no entitlement it may not
+ * have. app/remote-helper.sh packages and signs it; this is the check that it did.
+ */
+function checkHelper(app: string): void {
+	const helper = join(app, "Contents", "Helpers", "pi² Remote.app");
+	const executable = join(helper, "Contents", "MacOS", "pi² Remote");
+	if (!existsSync(executable)) fail("The app has no pi² Remote in Contents/Helpers/pi² Remote.app, so its engine could not reach a paired iPhone.");
+	const id = plistValue(join(helper, "Contents", "Info.plist"), "CFBundleIdentifier");
+	if (id !== HELPER_ID) fail(`pi² Remote's bundle id is ${id ?? "missing"}, not ${HELPER_ID}.`);
+	try {
+		run("/usr/bin/codesign", ["--verify", "--strict", helper]);
+	} catch (error) {
+		fail(`pi² Remote's code signature does not hold: ${String((error as { stderr?: string }).stderr ?? error).trim()}`);
+	}
+	const outer = signingOf(app);
+	const mine = signingOf(helper);
+	if (mine.team !== outer.team) fail(`pi² Remote is signed by team ${mine.team ?? "none"}, not the app's (${outer.team ?? "none"}).`);
+	if ((outer.team !== null || outer.runtime) && !mine.runtime) fail("pi² Remote does not have the hardened runtime, which the app has: any program could load a library into it.");
+	const extra = mine.entitlements.filter((name) => !HELPER_ENTITLEMENTS.includes(name));
+	if (extra.length > 0) fail(`pi² Remote has entitlements it may not have: ${extra.join(", ")}. It holds the Mac's keys; nothing may load a library into it or attach to it.`);
+	const bytes = readFileSync(executable);
+	const development = HELPER_DEVELOPMENT_ONLY.filter((text) => bytes.includes(text));
+	if (development.length > 0) fail(`pi² Remote's executable names ${development.join(", ")}, which only a development build has: it was built with PI2_DEVELOPMENT.`);
+	if (!bytes.includes("_SecItemCopyMatching")) fail("pi² Remote's executable names no Keychain call, so it is not a release build of it.");
+	step(`pi² Remote is there, ${HELPER_ID}, signed as the app is${mine.runtime ? " with the hardened runtime" : ""}, with no entitlement, and a release build of it`);
 }
 
 // ---- Talking to the engine
@@ -629,6 +696,7 @@ try {
 	const build = checkBundle(app);
 	if (options["open-app"]) mayOpen(build);
 	checkSignature(app);
+	checkHelper(app);
 	await checkEngine(build);
 	if (options["open-app"]) await checkOpenedApp(build);
 } catch (error) {

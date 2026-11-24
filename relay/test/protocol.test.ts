@@ -293,6 +293,21 @@ describe("what is refused as malformed", () => {
 		expect(readMessage(JSON.stringify({ hello: { ...hello.hello, pairing: pairing + "A" } }))).toBeNull();
 		expect(readMessage(JSON.stringify({ take: {} }))).toEqual({ type: "take" });
 		expect(readMessage(JSON.stringify({ take: [] }))).toBeNull();
+		// `took { ids }`: one to 200 items' ids, none twice, nothing else.
+		const ids = Array.from({ length: 200 }, () => base64url(random(16)));
+		expect(readMessage(JSON.stringify({ took: { ids: ids.slice(0, 1) } }))).toEqual({ type: "took", ids: ids.slice(0, 1) });
+		expect(readMessage(JSON.stringify({ took: { ids } }))).toEqual({ type: "took", ids });
+		expect(readMessage(JSON.stringify({ took: { ids: [...ids, base64url(random(16))] } }))).toBeNull();
+		expect(readMessage(JSON.stringify({ took: { ids: [] } }))).toBeNull();
+		expect(readMessage(JSON.stringify({ took: { ids: [ids[0], ids[0]] } }))).toBeNull();
+		expect(readMessage(JSON.stringify({ took: { ids: [ids[0] + "A"] } }))).toBeNull();
+		expect(readMessage(JSON.stringify({ took: { ids: [base64url(random(15))] } }))).toBeNull();
+		expect(readMessage(JSON.stringify({ took: { ids: [`dev_${ids[0]}`] } }))).toBeNull();
+		expect(readMessage(JSON.stringify({ took: { ids: [1] } }))).toBeNull();
+		expect(readMessage(JSON.stringify({ took: { ids: ids[0] } }))).toBeNull();
+		expect(readMessage(JSON.stringify({ took: { ids: [ids[0]], through: ids[0] } }))).toBeNull();
+		expect(readMessage(JSON.stringify({ took: { through: ids[0] } }))).toBeNull();
+		expect(readMessage(JSON.stringify({ took: {} }))).toBeNull();
 		expect(readMessage("x".repeat(48 * 1024 + 1))).toBeNull();
 		// Sizes are in bytes: 17,000 characters of three bytes each are past the 48 KB, though fewer characters.
 		const wide = JSON.stringify({ hello: { ...hello.hello, ext: { note: "€".repeat(17_000) } } });
