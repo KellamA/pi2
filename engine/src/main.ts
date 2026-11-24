@@ -59,7 +59,7 @@ import { textOf } from "./transcript.ts";
 import { broadcast, type Client, clients, send } from "./clients.ts";
 import { dirtyUsage, overBudget, refreshUsage, scheduleUsageRefresh, Spend, type UsageDocShape, usageById, usageRowsChanged, usageSummary, usageTimer, usageTotals, wireUsage } from "./usage.ts";
 import { checkPersonStart, type Params, startConfirmation, text } from "./requests.ts";
-import { providerRequests, wireProviderRequests } from "./providerrequests.ts";
+import { providerRequests, refreshDiscoveredProviders, wireProviderRequests } from "./providerrequests.ts";
 import { addCommandRule, agentRequests, saveAgent, wireAgentRequests } from "./agentrequests.ts";
 import { conversationRequests, wireConversationEvents } from "./conversationevents.ts";
 import { activityEvent, agentsEvent, announceActivity, announceInbox, inboxEvent, libraryEvent, wireAppEvents } from "./appevents.ts";
@@ -1484,12 +1484,9 @@ void providers
 	})
 	.catch((error) => log("refreshing the providers' lists of models failed:", error));
 
-// Account-available ChatGPT models are independent of the library's static catalog.
-const refreshCodexModels = async () => {
-	if (await providers.refreshCodexModels()) await announceProviders();
-};
-void refreshCodexModels().catch((error) => log("announcing ChatGPT models failed:", error));
-setInterval(() => void refreshCodexModels().catch((error) => log("announcing ChatGPT models failed:", error)), 15 * 60_000).unref();
+// Explicit account-aware adapters are separate from the library's catalog refresh.
+void refreshDiscoveredProviders().catch((error) => log("announcing discovered models failed:", error));
+setInterval(() => void refreshDiscoveredProviders().catch((error) => log("announcing discovered models failed:", error)), 15 * 60_000).unref();
 
 // ---- Schedules
 

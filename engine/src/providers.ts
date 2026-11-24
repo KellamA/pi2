@@ -745,6 +745,14 @@ function codexAccountKey(access: unknown): string | undefined {
 	} catch { return undefined; }
 }
 
+function discoveryScope(id: string, token: unknown): string | undefined {
+	if (id === "openai-codex") return codexAccountKey(token);
+	return typeof token === "string" && token !== "" ? createHash("sha256").update(JSON.stringify([id, token])).digest("hex") : undefined;
+}
+
+export const DISCOVERY_PROVIDERS = ["openai-codex", "anthropic", "opencode-go"] as const;
+type DiscoveryState = { path: string; models: Model<Api>[]; cache?: { account: string; models: Model<Api>[] }; pending?: Promise<boolean>; scope?: string; next: number; generation: number };
+
 export class Providers {
 	readonly models: MutableModels;
 	#local: LocalRunner | undefined;
@@ -763,12 +771,7 @@ export class Providers {
 	/** What each provider said of its models when last asked, by id: for adding one of them. */
 	readonly #listed = new Map<string, Map<string, ListedModel>>();
 	readonly #log: (...parts: unknown[]) => void;
-	readonly #discoveredPath: string;
-	#discovered: Model<Api>[] = [];
-	#codexCache: { account: string; models: Model<Api>[] } | undefined;
-	#codexRefresh: Promise<boolean> | undefined;
-	#codexNext = 0;
-	#codexGeneration = 0;
+	readonly #discovery = new Map<string, DiscoveryState>();
 
 	/**
 	 * `deviceId` returns this installation's stable UUID; some sign-ins (ChatGPT) identify the app by it. `builtins`
@@ -791,16 +794,20 @@ export class Providers {
 				identity: { attribution: { name: "pi2", url: "https://github.com/earendil-works/pi" } },
 			}),
 		);
-		this.#discoveredPath = join(home, "codex-models.json");
-		try {
-			const cached = JSON.parse(readFileSync(this.#discoveredPath, "utf8"));
-			if (typeof cached?.account === "string" && /^[a-f0-9]{64}$/.test(cached.account)
-				&& Array.isArray(cached.models) && cached.models.every((model: Model<Api>) => model !== null && typeof model === "object"
-				&& model.provider === "openai-codex" && typeof model.id === "string" && typeof model.name === "string"
-				&& model.api === "openai-codex-responses" && typeof model.baseUrl === "string"
-				&& Array.isArray(model.input) && Number.isInteger(model.contextWindow) && model.contextWindow > 0
-				&& Number.isInteger(model.maxTokens) && model.maxTokens > 0)) this.#codexCache = cached;
-		} catch {}
+		for (const id of DISCOVERY_PROVIDERS) {
+			const state: DiscoveryState = { path: join(home, id === "openai-codex" ? "codex-models.json" : `${id}-discovered-models.json`), models: [], next: 0, generation: 0 };
+			try {
+				const cached = JSON.parse(readFileSync(state.path, "utf8"));
+				const routes = this.models.getProvider(id)?.getModels() ?? [];
+				if (typeof cached?.account === "string" && /^[a-f0-9]{64}$/.test(cached.account)
+					&& Array.isArray(cached.models) && cached.models.every((model: Model<Api>) => model !== null && typeof model === "object"
+					&& model.provider === id && typeof model.id === "string" && typeof model.name === "string"
+					&& routes.some((route) => route.api === model.api && route.baseUrl === model.baseUrl)
+					&& Array.isArray(model.input) && Number.isInteger(model.contextWindow) && model.contextWindow > 0
+					&& Number.isInteger(model.maxTokens) && model.maxTokens > 0)) state.cache = cached;
+			} catch {}
+			this.#discovery.set(id, state);
+		}
 		this.#addedPath = join(home, "added-models.json");
 		try {
 			this.#added = JSON.parse(readFileSync(this.#addedPath, "utf8"));
@@ -843,54 +850,103 @@ export class Providers {
 			});
 			this.#built.set(providerId, built);
 		}
-		if (providerId !== "openai-codex") return built;
+		const state = this.#discovery.get(providerId);
+		if (state === undefined) return built;
 		const known = new Set([...(this.#catalogs.get(providerId)?.getModels() ?? []), ...built].map((model) => model.id));
-		return [...built, ...this.#discovered.filter((model) => !known.has(model.id))];
+		return [...built, ...state.models.filter((model) => !known.has(model.id))];
 	}
 
-	/** Register disk entries only after verifying the current stored credential's account. */
-	async #syncCodexAccount(): Promise<string | undefined> {
-		const generation = this.#codexGeneration;
-		const credential = await this.#credentials.read("openai-codex").catch(() => undefined);
-		const account = credential?.type === "oauth" ? codexAccountKey(credential.access) : undefined;
-		if (generation !== this.#codexGeneration) return undefined;
-		this.#discovered = account !== undefined && account === this.#codexCache?.account ? this.#codexCache.models : [];
+	/** Opaque credentials are scoped to exact credential bytes, not assumed to carry an account identity. */
+	async #syncDiscovery(id: string): Promise<string | undefined> {
+		const state = this.#discovery.get(id)!;
+		const generation = state.generation;
+		const credential = await this.#credentials.read(id).catch(() => undefined);
+		let account: string | undefined;
+		if (id === "openai-codex" && credential?.type === "oauth") account = codexAccountKey(credential.access);
+		else {
+			const token = id === "anthropic" && credential?.type === "oauth" ? credential.access : id === "opencode-go" && credential?.type === "api_key" ? credential.key : undefined;
+			account = discoveryScope(id, token);
+		}
+		if (generation !== state.generation) return undefined;
+		if (state.scope !== account) { state.scope = account; state.next = 0; }
+		state.models = account !== undefined && account === state.cache?.account ? state.cache.models : [];
 		return account;
 	}
 
-	/** Background, account-aware discovery. Failures keep the last usable list and never prevent sign-in or startup. */
-	refreshCodexModels(now = Date.now()): Promise<boolean> {
-		if (this.#codexRefresh !== undefined) return this.#codexRefresh;
-		if (now < this.#codexNext) return Promise.resolve(false);
-		this.#codexNext = now + 15 * 60_000;
-		const generation = this.#codexGeneration;
-		this.#codexRefresh = (async () => {
+	async #syncDiscoveries(): Promise<void> {
+		await Promise.all(DISCOVERY_PROVIDERS.map((id) => this.#syncDiscovery(id)));
+	}
+
+	/** Each provider has its own throttle and in-flight request; unsupported providers are never asked. */
+	refreshDiscoveredModels(id: string, now = Date.now()): Promise<boolean> {
+		const state = this.#discovery.get(id);
+		if (state === undefined || !this.#catalogs.has(id)) return Promise.resolve(false);
+		if (state.pending !== undefined) return state.pending;
+		const generation = state.generation;
+		const before = state.models;
+		state.pending = (async () => {
 			try {
-				const account = await this.#syncCodexAccount();
-				if (account === undefined) return false;
-				const listing = await this.askProvider("openai-codex");
-				const catalog = this.#catalog("openai-codex");
+				if (await this.#syncDiscovery(id) === undefined || now < state.next) return false;
+				state.next = now + 15 * 60_000;
+				// Resolve a possible token rotation before binding this request to its credential.
+				const signal = AbortSignal.timeout(20_000);
+				const auth = await this.models.getAuth(id, { signal });
+				const account = await this.#syncDiscovery(id);
+				if (auth === undefined || account === undefined || account !== discoveryScope(id, auth.auth.apiKey) || generation !== state.generation) return false;
+				state.next = now + 15 * 60_000;
+				const catalog = this.#catalog(id);
+				const lister = listerFor(id, catalog.name, catalog.getModels(), id === "opencode-go" ? "api_key" : "oauth", auth.auth.baseUrl);
+				if ("cannot" in lister) return false;
+				const headers = Object.fromEntries(Object.entries(auth.auth.headers ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+				const listed = await lister.list({ apiKey: auth.auth.apiKey, headers }, signal);
+				if (account !== await this.#syncDiscovery(id) || generation !== state.generation) return false;
+				this.#listed.set(id, new Map(listed.map((model) => [model.id, model])));
 				const discovered: Model<Api>[] = [];
-				for (const item of listing.models) {
-					if (item.known || item.addedByHand) continue;
-					const draft = this.draftModel("openai-codex", item.id);
+				for (const item of listed) {
+					if (catalog.getModels().some((model) => model.id === item.id) || this.isAddedByHand(id, item.id)) continue;
+					if (item.api !== undefined && !catalog.getModels().some((model) => model.api === item.api)) continue;
+					const draft = this.draftModel(id, item.id, { api: item.api });
 					const template = catalog.getModels().find((model) => model.id === draft.basedOn)!;
-					discovered.push(buildAdded(template, draft, "openai-codex"));
+					discovered.push(buildAdded(template, draft, id));
 				}
-				if (account !== await this.#syncCodexAccount() || generation !== this.#codexGeneration) return false;
-				// Save before publishing: a failed write leaves the previous working list intact.
 				const cache = { account, models: discovered };
-				writeFileSync(this.#discoveredPath, JSON.stringify(cache));
-				this.#codexCache = cache;
-				this.#discovered = discovered;
-				this.#codexNext = now + 6 * 60 * 60_000;
+				writeFileSync(state.path, JSON.stringify(cache));
+				state.cache = cache;
+				state.models = discovered;
+				state.next = now + 6 * 60 * 60_000;
 				return true;
 			} catch {
-				this.#log("ChatGPT model refresh failed; keeping the previous models and retrying later");
+				this.#log(`${id} model refresh failed; keeping only matching cached models and retrying later`);
 				return false;
+			} finally {
+				// Auth refresh can rotate a token even when discovery fails. Never retain the previous scope.
+				await this.#syncDiscovery(id);
 			}
-		})().finally(() => { this.#codexRefresh = undefined; });
-		return this.#codexRefresh;
+		})().then((changed) => changed || before.map((model) => model.id).join("\n") !== state.models.map((model) => model.id).join("\n")).finally(() => { state.pending = undefined; });
+		return state.pending;
+	}
+
+	/** Retained for callers that explicitly refresh only ChatGPT. Scheduling uses the shared operation. */
+	refreshCodexModels(now = Date.now()): Promise<boolean> {
+		return this.refreshDiscoveredModels("openai-codex", now);
+	}
+
+	#invalidateDiscovery(id: string): void {
+		const state = this.#discovery.get(id);
+		if (state === undefined) return;
+		state.generation++;
+		state.next = 0;
+		state.models = [];
+		state.cache = undefined;
+		try { writeFileSync(state.path, "[]"); } catch {
+			this.#log(`could not clear cached ${id} models after credential change`);
+		}
+	}
+
+	/** Inherited capabilities are useful, inherited prices are not: additions have no verified pricing. */
+	hasUnknownPrice(providerId: string, id: string): boolean {
+		return this.isAddedByHand(providerId, id) || (this.#discovery.get(providerId)?.models.some((model) => model.id === id) === true
+			&& !this.#catalogs.get(providerId)?.getModels().some((model) => model.id === id));
 	}
 
 	/** Whether `id` is a model added by hand to `providerId` that its catalog does not list, so is in use as added. */
@@ -970,8 +1026,9 @@ export class Providers {
 				editing: true,
 			};
 		} else {
-			const speaking = choice.api === undefined ? models : models.filter((model) => model.api === choice.api);
-			if (speaking.length === 0) throw new Error(`None of ${catalog.name}'s models speak ${choice.api}`);
+			const api = choice.api ?? this.#listed.get(providerId)?.get(id)?.api;
+			const speaking = api === undefined ? models : models.filter((model) => model.api === api);
+			if (speaking.length === 0) throw new Error(`None of ${catalog.name}'s models speak ${api}`);
 			const nearest = nearestModel(id, speaking)!;
 			template = nearest.model;
 			match = nearest.sameFamily ? "family" : "nearest";
@@ -1185,7 +1242,7 @@ export class Providers {
 	}
 
 	async listProviders(): Promise<ProviderInfo[]> {
-		await this.#syncCodexAccount();
+		await this.#syncDiscoveries();
 		const providers = this.models.getProviders();
 		return Promise.all(
 			providers.map(async (provider): Promise<ProviderInfo> => {
@@ -1221,7 +1278,7 @@ export class Providers {
 
 	/** Chat models of every provider that is configured. */
 	async listModels(): Promise<ModelInfo[]> {
-		await this.#syncCodexAccount();
+		await this.#syncDiscoveries();
 		const names = new Map(this.models.getProviders().map((p) => [p.id, p.name]));
 		const available = await this.models.getAvailable();
 		return available.map((model) => this.#info(model, names));
@@ -1231,19 +1288,12 @@ export class Providers {
 		if (this.models.getProvider(providerId) === undefined) throw new Error(`Unknown provider: ${providerId}`);
 		if (key.trim() === "") throw new Error("The key is empty");
 		await this.#credentials.modify(providerId, async () => ({ type: "api_key", key: key.trim() }));
+		this.#invalidateDiscovery(providerId);
 	}
 
 	async logout(providerId: string): Promise<void> {
 		await this.models.logout(providerId);
-		if (providerId === "openai-codex") {
-			this.#codexGeneration++;
-			this.#codexNext = 0;
-			this.#discovered = [];
-			this.#codexCache = undefined;
-			try { writeFileSync(this.#discoveredPath, "[]"); } catch {
-				this.#log("could not clear the cached ChatGPT models after sign-out");
-			}
-		}
+		this.#invalidateDiscovery(providerId);
 	}
 
 	/** Subscription or OAuth sign-in. pi-ai drives the flow and stores the credential. */
@@ -1251,15 +1301,7 @@ export class Providers {
 		const provider = this.models.getProvider(providerId);
 		if (provider?.auth.oauth === undefined) throw new Error(`${providerId} has no sign-in flow`);
 		await this.models.login(providerId, "oauth", interaction, { getDeviceId: this.#deviceId, agentName: "pi2" });
-		if (providerId === "openai-codex") {
-			this.#codexGeneration++;
-			this.#codexNext = 0;
-			this.#discovered = [];
-			this.#codexCache = undefined;
-			try { writeFileSync(this.#discoveredPath, "[]"); } catch {
-				this.#log("could not clear the cached ChatGPT models after sign-in");
-			}
-		}
+		this.#invalidateDiscovery(providerId);
 	}
 
 	// ---- The user's own endpoints

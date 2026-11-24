@@ -4,7 +4,7 @@
 
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import { type Client, send } from "./clients.ts";
-import { newestOnly, type Providers } from "./providers.ts";
+import { DISCOVERY_PROVIDERS, newestOnly, type Providers } from "./providers.ts";
 import { type Params, text } from "./requests.ts";
 import { scheduleUsageRefresh } from "./usage.ts";
 
@@ -17,6 +17,22 @@ let log: (...parts: unknown[]) => void;
 
 export function wireProviderRequests(parts: { providers: Providers; settings: typeof settings; saveSettings: typeof saveSettings; announceProviders: typeof announceProviders; log: typeof log }): void {
 	({ providers, settings, saveSettings, announceProviders, log } = parts);
+}
+
+/** Also used at startup and by the timer: one slow provider never holds up another's announcement. */
+export async function refreshDiscoveredProviders(): Promise<void> {
+	await Promise.all(DISCOVERY_PROVIDERS.map(async (id) => {
+		if (await providers.refreshDiscoveredModels(id)) await announceProviders();
+	}));
+}
+
+function refreshAfterCredentialChange(id: string): void {
+	if (!(DISCOVERY_PROVIDERS as readonly string[]).includes(id)) return;
+	void providers.refreshDiscoveredModels(id).then(async () => {
+		// If an older request was in flight, its invalidated result must finish before the new one starts.
+		await providers.refreshDiscoveredModels(id);
+		await announceProviders();
+	}).catch((error) => log("announcing discovered models failed:", error));
 }
 
 const pendingPrompts = new Map<string, (answer: string) => void>();
@@ -64,6 +80,7 @@ export const providerRequests: Record<string, (params: Params, client: Client) =
 	"providers.setKey": async (params) => {
 		await providers.setKey(text(params, "id"), text(params, "key"));
 		await announceProviders();
+		refreshAfterCredentialChange(text(params, "id"));
 		return {};
 	},
 	"providers.logout": async (params) => {
@@ -93,13 +110,7 @@ export const providerRequests: Record<string, (params: Params, client: Client) =
 					}),
 			});
 			await announceProviders();
-			if (params.id === "openai-codex") {
-				void providers.refreshCodexModels().then(async () => {
-					// A refresh already running during sign-in belongs to the previous credential.
-					await providers.refreshCodexModels();
-					await announceProviders();
-				}).catch((error) => log("announcing ChatGPT models failed:", error));
-			}
+			refreshAfterCredentialChange(text(params, "id"));
 			return {};
 		} finally {
 			logins.delete(loginId);

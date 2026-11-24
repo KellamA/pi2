@@ -52,10 +52,10 @@ const demoPrice = Number(testSwitch("PI2_DEMO_COST") ?? 0);
  */
 let subscriptions = new Set<string>();
 const onSubscription = (key: string) => subscriptions.has(key.split("/")[0]!);
-/** A model added by hand has no known price: pi-ai counts it at none, and Usage says so rather than showing nothing. */
+/** Added/discovered models have no verified price: Usage says so rather than mistaking the zero estimate for free. */
 const unpriced = (key: string) => {
 	const slash = key.indexOf("/");
-	return !onSubscription(key) && providers.isAddedByHand(key.slice(0, slash), key.slice(slash + 1));
+	return !onSubscription(key) && providers.hasUnknownPrice(key.slice(0, slash), key.slice(slash + 1));
 };
 const costOf = (key: string, usage: UsageJson) => {
 	if (onSubscription(key)) return 0;
