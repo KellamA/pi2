@@ -82,9 +82,10 @@ struct AppStartTests {
         let link = PhoneLink(session: session, keyring: keyring, store: store, routes: PairingTests.routes(), phone: { .test })
         #expect(!link.paired && link.record == nil)
         let flow = link.pairingFlow()
-        flow.scanned(try mac.payload(relay: PairingTests.noRelay, addresses: [address]).text)
-        #expect(await Wait.until { if case .digits = flow.step { true } else { false } })
-        guard case let .digits(digits, _, _) = flow.step else { throw TestFailure("no digits") }
+        // Pairing is this setup's, not the subject: a try a stalled runner broke is made again (#910).
+        guard case let .digits(digits, _, _) = try await PairingTests.digitsForSetup(flow, mac: mac, address: address) else {
+            throw TestFailure("no digits: \(flow.step)")
+        }
         mac.typed.push(digits)
         #expect(await Wait.until { flow.step == .paired(mac: mac.name) })
         let record = try #require(flow.record)
@@ -108,7 +109,11 @@ struct AppStartTests {
         #expect(RootView.screen(for: phone.session.connection) == .projects)
         #expect(await Wait.until { phone.link.steps.contains(.outboxSent) })
         let steps = Array(phone.link.steps.dropFirst(before))
-        #expect(steps == [.storeOpened, .connectionStarted, .live, .outboxSent], "\(steps)")
+        // In order: the store, the connection, then the channel and the Outbox on it, once. An attempt the phone gave up
+        // (an answer later than 3.4's ten seconds, on a runner that stalls) shows between them as the store's last state,
+        // then the channel again (#910).
+        #expect(steps.prefix(2) == [.storeOpened, .connectionStarted] && steps.suffix(2) == [.live, .outboxSent], "\(steps)")
+        #expect(steps.dropFirst(2).dropLast(2).allSatisfy { $0 == .live || $0 == .cached }, "\(steps)")
         #expect(await Wait.until { phone.session.engine.projects.count == 2 }, "the projects list on the live connection")
         #expect(phone.session.connection == .connected(.direct, relayReachable: false), "the connection's state, mirrored")
         #expect(phone.session.macName == phone.mac.name)
