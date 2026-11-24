@@ -66,13 +66,7 @@ enum Race {
 
     static func first<Won: Sendable>(_ attempts: [@Sendable () async throws -> Won], closing: @escaping @Sendable (Won) -> Void) async throws -> Won {
         guard !attempts.isEmpty else { throw LinkError.nowhere }
-        struct State {
-            var settled = false
-            var failures: [any Error] = []
-            var continuation: CheckedContinuation<Won, any Error>?
-            var tasks: [Task<Void, Never>] = []
-        }
-        let state = Mutex(State())
+        let state = Mutex(State<Won>())
         let total = attempts.count
 
         @Sendable func won(_ reached: Won) {
@@ -120,6 +114,13 @@ enum Race {
             for task in tasks { task.cancel() }
             continuation?.resume(throwing: CancellationError())
         }
+    }
+
+    private struct State<Won: Sendable> {
+        var settled = false
+        var failures: [any Error] = []
+        var continuation: CheckedContinuation<Won, any Error>?
+        var tasks: [Task<Void, Never>] = []
     }
 
     static func telling(_ failures: [any Error]) -> any Error {
