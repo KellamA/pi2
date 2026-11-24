@@ -25,7 +25,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { allowsHiddenApproval, checkDeviceLists, deviceLogged, HIDDEN_FROM_THE_PHONE, deviceMay, devicePlacement, type DeviceSession, ONLY_FROM_THE_HELPER, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID, PERSON_REQUESTS } from "../src/answers.ts";
 import { APPROVAL_DEPTH, checkRequestItem, type Device, deviceRequests, DeviceLog, Devices, devicesState, flushDeviceLog, fromBase64url, hidesSomething, logDevice, macNameNow, pairClaim, PART_HIDDEN, remoteHooks, shownName, TOO_DEEP, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
 import type { Client } from "../src/clients.ts";
-import { ANSWER_NOT_SENT, forDevice, MAX_HELPER_LINE, SESSION_OVER } from "../src/remote.ts";
+import { ANSWER_NOT_SENT, forDevice, MAX_HELPER_LINE, MAX_PHONE_LINE, SESSION_OVER } from "../src/remote.ts";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "100000";
@@ -284,6 +284,28 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	assert.deepEqual(providers.providers[0].ask, { can: true, url: null });
 	assert.equal(forDevice('{"id":3,"result":{"key":"sk-ant-api03-abcdefghijklmnopqrstuvwxyz"}}'), `{"id":3,"result":{"key":"${KEY_HIDDEN}"}}`);
 	step("what a device is sent: only the events named for it, endpoints by name only, and no key-shaped string wherever it stands; a line that cannot be masked is dropped");
+}
+
+// ---- A phone's longest line, here and in pi² Remote (#904)
+{
+	// `NAME = <sum of products of whole numbers and names already read>` in pi² Remote's own source, so that one side raised
+	// without the other fails here as well as in pi2-remote-helper-check.
+	const values: Record<string, number> = {};
+	const constant = (file: string, name: string) => {
+		const source = readFileSync(new URL(`../../app/Sources/pi2-remote/${file}`, import.meta.url), "utf8");
+		const expression = new RegExp(`static let ${name} = ([^\\n]+)`).exec(source)?.[1];
+		assert.ok(expression !== undefined, `${name} is found in ${file}`);
+		return expression.split("+").reduce((sum, term) => sum + term.split("*").reduce((product, factor) => {
+			const value = /^\d+$/.test(factor.trim()) ? Number(factor.trim()) : values[factor.trim()];
+			assert.ok(value !== undefined && value > 0, `${factor.trim()} in ${name} is a number`);
+			return product * value;
+		}, 1), 0);
+	};
+	values["Remote.phoneLineLimit"] = constant("Remote.swift", "phoneLineLimit");
+	assert.equal(values["Remote.phoneLineLimit"], MAX_PHONE_LINE, "pi² Remote takes from a phone the longest line the engine takes");
+	assert.equal(constant("EngineLink.swift", "maxLineToEngine"), MAX_HELPER_LINE, "and writes to the engine no longer line than it takes");
+	assert.equal(MAX_PHONE_LINE, 72 * 1024 * 1024);
+	step("a phone's longest line is 72 MiB in pi² Remote and in the engine, and the engine takes it with 64 KiB of wrapping");
 }
 
 // ---- A phone of this test's own
@@ -906,6 +928,25 @@ try {
 	assert.ok(app.events.providers.providers.some((one: any) => one.endpoint?.baseUrl?.includes(secrets.endpoint)), "the app is sent the endpoint whole");
 	step("with a provider's key, an agent's variable and an endpoint's token set, none reaches a device; a key-shaped string typed is masked");
 
+	// ---- What a message on the Mac may carry, from a phone (#904): ten pictures of 5 MiB, near the 72 MiB a line may be
+	const picture = Buffer.alloc(5 * 1024 * 1024, 0x5a);
+	picture.set([0xff, 0xd8, 0xff, 0xe0]);
+	const attachments = Array.from({ length: 10 }, (_, n) => ({ kind: "image", name: `Photo ${n + 1}.jpg`, mimeType: "image/jpeg", data: picture.toString("base64") }));
+	const { id: pictured } = (await ask("conversation.create", { model: { provider: "demo", modelId: "demo-1" } })).result;
+	await ask("conversation.open", { id: pictured });
+	const tenLine = JSON.stringify({ session, message: { id: "ten", method: "submit", params: { id: pictured, text: "Ten pictures", attachments } } });
+	assert.ok(tenLine.length > 66 * 1024 * 1024 && tenLine.length <= MAX_HELPER_LINE, `the line is ${tenLine.length} characters`);
+	const linesBefore = remote.sessionLines.get(session)!.length;
+	const tenSent = Date.now();
+	remote.socket.write(`${tenLine}\n`);
+	const tenAnswer = await until("the answer to ten pictures", () => remote.sessionLines.get(session)?.find((message) => message.id === "ten"), { over: () => (remote.closed ? "pi² Remote's connection closed" : undefined) });
+	const tenTook = Date.now() - tenSent;
+	assert.ok(tenAnswer.result !== undefined, `the engine takes it: ${JSON.stringify(tenAnswer).slice(0, 300)}`);
+	await until("the pictures in the device's transcript", () => remote.sessionLines.get(session)!.slice(linesBefore).some((line) => line.event === "conversation" && JSON.stringify(line).includes("Photo 10.jpg")));
+	const longestBack = Math.max(...remote.sessionLines.get(session)!.slice(linesBefore).map((line) => JSON.stringify(line).length));
+	assert.ok(longestBack < 1024 * 1024, `what the device is sent back names the pictures, without them: its longest line is ${longestBack} characters`);
+	step(`a phone's message of ten pictures of 5 MiB (${(tenLine.length / 1024 / 1024).toFixed(1)} MiB) is taken from pi² Remote in ${tenTook} ms, and what goes back to the device names them without carrying them`);
+
 	// ---- Resume, refusals, suspension (3.4, 3.6, 5.8)
 	const resumed = await attach({ session });
 	assert.deepEqual(resumed.reply.result, { session, resume: true }, "a resume, with a new signature over a new channel");
@@ -1040,7 +1081,14 @@ try {
 		assert.equal(fourth4.closed, false);
 		assert.equal((await fourth4.inSession(result.session, "engine.info")).error, OPEN_WITH_FACE_ID);
 		step("the engine ends a session itself at its bound after the last attach, whatever pi² Remote does");
-		// A line longer than any a phone may send: pi² Remote is stopped, as a crash is, and started again.
+		// A line exactly as long as the engine takes from pi² Remote is taken (#904)...
+		const edgeHead = JSON.stringify({ session: result.session, message: { id: "edge", method: "engine.info", params: { pad: "" } } });
+		const edgeLine = `${edgeHead.slice(0, -4)}${"e".repeat(MAX_HELPER_LINE - edgeHead.length)}${edgeHead.slice(-4)}`;
+		assert.equal(edgeLine.length, MAX_HELPER_LINE);
+		fourth4.socket.write(`${edgeLine}\n`);
+		assert.equal((await until("the answer at the edge", () => fourth4.sessionLines.get(result.session)?.find((message) => message.id === "edge"), { over: () => (fourth4.closed ? "pi² Remote's connection closed" : undefined) })).error, OPEN_WITH_FACE_ID);
+		assert.equal(fourth4.closed, false, "and pi² Remote is not stopped for it");
+		// ...and one longer than any a phone may send stops pi² Remote, as a crash does, and it is started again.
 		const beforeLong = macApp.devicesEvents.length;
 		fourth4.socket.write("x".repeat(MAX_HELPER_LINE + 1));
 		await until("pi² Remote stopped for its line", () => fourth4.closed);

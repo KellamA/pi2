@@ -19,7 +19,7 @@ package final class EngineLink: @unchecked Sendable {
 	/// The longest line the engine takes from pi² Remote (#776's 29, `MAX_HELPER_LINE` in remote.ts): a phone's longest
 	/// line (`Remote.phoneLineLimit`) in its session's wrapping, with room. A longer line would stop pi² Remote as a crash
 	/// does; none is written.
-	package static let maxLineToEngine = 16 * 1024 * 1024 + 64 * 1024
+	package static let maxLineToEngine = 72 * 1024 * 1024 + 64 * 1024
 
 	private let io: SocketIO
 	private var partial = Data()

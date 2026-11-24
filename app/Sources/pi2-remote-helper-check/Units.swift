@@ -20,6 +20,7 @@ enum Units {
 		sessionLines()
 		parentCode(helper: helper)
 		nothingFromOutside(sources: sources)
+		lineLimitsAsTheEngines(sources: sources)
 		nothingOfMacOSInADevelopmentBuild(helper: helper)
 	}
 
@@ -142,7 +143,7 @@ enum Units {
 		Check.expect(tag == "3871f8b1b7ba63ee", "the tag of 2026-11-18 is remotekit.md's test value", tag)
 		Check.expect(HomeTag.recognises(tag, key: key, pairing: pairing, now: day), "and a phone holding the key recognises it")
 		Check.expect(HomeTXT.record(tag: tag) == Data([3]) + Data("v=2".utf8) + Data([18]) + Data("t=\(tag)".utf8), "the TXT record is v=2 and t=<tag>")
-		Check.expect(EngineLink.maxLineToEngine == 16 * 1024 * 1024 + 64 * 1024 && Remote.phoneLineLimit + 256 <= EngineLink.maxLineToEngine, "a phone's longest line, wrapped in its session, fits the engine's cap on pi² Remote's lines (#776's 29)")
+		Check.expect(EngineLink.maxLineToEngine == 72 * 1024 * 1024 + 64 * 1024 && Remote.phoneLineLimit + 256 <= EngineLink.maxLineToEngine, "a phone's longest line, wrapped in its session, fits the engine's cap on pi² Remote's lines (#776's 29)")
 	}
 
 	static func dataFolder() {
@@ -331,6 +332,37 @@ enum Units {
 			}
 		}
 		Check.expect(true, "no file of pi² Remote names CommandLine, its environment, getenv or user defaults")
+	}
+
+	/// A phone's longest line as pi² Remote takes it, and the longest line the engine takes from pi² Remote, are the
+	/// engine's own (#904): `MAX_PHONE_LINE` and `MAX_HELPER_LINE` in engine/src/remote.ts, read from its source, so that
+	/// one side raised without the other fails here. Equal, not merely fitting: an engine that takes less stops pi² Remote
+	/// for a line it was right to pass on, and one that takes more takes lines no phone may send.
+	static func lineLimitsAsTheEngines(sources: URL) {
+		Check.section("a phone's longest line, here and in the engine (#904)")
+		let file = sources.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("engine/src/remote.ts")
+		let text = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+		/// `export const NAME = <sum of products of whole numbers and names already read>;`
+		var values: [String: Int] = [:]
+		func constant(_ name: String) -> Int? {
+			guard let range = text.range(of: "export const \(name) = "), let end = text[range.upperBound...].firstIndex(of: ";") else { return nil }
+			var sum = 0
+			for term in text[range.upperBound ..< end].split(separator: "+") {
+				var product = 1
+				for factor in term.split(separator: "*").map({ $0.trimmingCharacters(in: .whitespaces) }) {
+					guard let value = Int(factor) ?? values[factor] else { return nil }
+					product *= value
+				}
+				sum += product
+			}
+			values[name] = sum
+			return sum
+		}
+		let phone = constant("MAX_PHONE_LINE"), helper = constant("MAX_HELPER_LINE")
+		Check.expect(phone != nil && helper != nil, "remote.ts's MAX_PHONE_LINE and MAX_HELPER_LINE are read from \(file.path)")
+		Check.expect(phone == Remote.phoneLineLimit, "a phone's longest line is the engine's MAX_PHONE_LINE", "\(Remote.phoneLineLimit) here, \(phone.map(String.init) ?? "none") in remote.ts")
+		Check.expect(helper == EngineLink.maxLineToEngine, "the longest line written to the engine is its MAX_HELPER_LINE", "\(EngineLink.maxLineToEngine) here, \(helper.map(String.init) ?? "none") in remote.ts")
+		Check.expect(Remote.phoneLineLimit == 72 * 1024 * 1024, "and it is 72 MiB: ten pictures of 5 MiB in base64, and their message")
 	}
 
 	/// A development build's executable names none of the calls that could ask macOS for anything (CONTRIBUTING.md,

@@ -44,11 +44,12 @@ package final class Remote: @unchecked Sendable {
 	package var resumeWindow: TimeInterval = 60
 	/// How long a new connection has to attach, or a pairing claimer to send its first transport message (3.4).
 	package var attachWithin: TimeInterval = 10
-	/// The longest line taken from an attached phone (#675's security read B, M2): 16 MB, room for a message with two
-	/// pictures at the engine's limit of 5 MB each, written in base64, and its text. The engine's own request from a
-	/// phone needs no more; the engine caps what it takes from pi² Remote at the same (#776). A phone that sends more
-	/// pictures sends them in more than one message.
-	package static let phoneLineLimit = 16 * 1024 * 1024
+	/// The longest line taken from an attached phone (#675's security read B, M2; #904): 72 MiB, room for a message with
+	/// what the Mac's may carry, ten pictures at the engine's limit of 5 MiB each, written in base64 (about 67 MiB), and
+	/// its text. Set on a channel only once the engine has taken its attach, made under the session's Face ID; until then,
+	/// and on a pairing channel always, RemoteKit's 64 KiB holds. The engine caps what it takes from pi² Remote at this and
+	/// 64 KiB (`EngineLink.maxLineToEngine`, `MAX_PHONE_LINE` in remote.ts), which pi2-remote-helper-check holds equal.
+	package static let phoneLineLimit = 72 * 1024 * 1024
 
 	/// The most lines a session keeps that its phone has not acknowledged, in bytes (5.8).
 	package var sessionBufferLimit = 4 * 1024 * 1024

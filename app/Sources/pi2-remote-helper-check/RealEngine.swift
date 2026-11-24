@@ -188,6 +188,20 @@ enum RealEngine {
 		Check.expect(info?["result"]?["pid"]?.integerValue == Int64(engine.pid) && info?["result"]?["main"] == nil, "the phone asks the engine, and is answered as a device", info.map(JSON.text) ?? "none")
 		let refused = ask(connected, "p2", "variables.set", #"{"name":"X","value":"y"}"#)
 		Check.expect(refused?["error"] != nil, "a request kept to the Mac is refused by the engine", refused.map(JSON.text) ?? "none")
+		// What a message on the Mac may carry (#904): ten pictures of 5 MiB, through pi² Remote, taken by the engine.
+		if case let .success(made) = app.call("conversation.create", .object([("model", .object([("provider", .string("demo")), ("modelId", .string("demo-1"))]))])),
+		   let conversation = made["id"]?.integerValue {
+			let pictures = Flows.tenPictures(conversation: Int(conversation), id: "p10")
+			let sentAt = Date()
+			connected.sendLine(pictures)
+			var answered: JSONValue?
+			while answered == nil, let line = connected.line(within: 120) {
+				if let value = try? JSON.parse(line), value["id"]?.stringValue == "p10" { answered = value }
+			}
+			Check.expect(answered?["result"] != nil, "a phone's message of ten pictures of 5 MiB (\(pictures.count / 1024 / 1024) MiB) is taken by the engine", (answered.map(JSON.text) ?? "no answer") + String(format: ", in %.1f s", Date().timeIntervalSince(sentAt)))
+		} else {
+			Check.expect(false, "the Mac made a conversation for the phone's pictures")
+		}
 
 		connected.sendAck(connected.received)
 		usleep(500_000)

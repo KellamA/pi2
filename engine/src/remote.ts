@@ -170,8 +170,12 @@ function helperProgram(): { command: string; args: string[] } | null {
 }
 
 let stopTimer: ReturnType<typeof setTimeout> | undefined;
-/** The longest line pi² Remote takes from a phone (#675): two pictures of 5 MB in base64, with the message's text. */
-export const MAX_PHONE_LINE = 16 * 1024 * 1024;
+/**
+ * The longest line pi² Remote takes from a phone (#675, #904): ten pictures of 5 MiB in base64, as a message on the Mac
+ * may carry, with the message's text. `Remote.phoneLineLimit` in pi² Remote, which pi2-remote-helper-check and the
+ * devices test hold equal to this.
+ */
+export const MAX_PHONE_LINE = 72 * 1024 * 1024;
 /**
  * The longest line taken from pi² Remote, in characters: a phone's line, at most MAX_PHONE_LINE bytes, so as many
  * characters or fewer, in its session's wrapping (`{"session":…,"message":…}`), with room to spare. pi² Remote's own
