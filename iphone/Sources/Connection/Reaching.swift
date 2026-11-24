@@ -54,30 +54,36 @@ enum HomeReach {
     }
 }
 
-/// Tries several paths at once and keeps the first that gives a link (5.1: "the phone tries both when it connects and
-/// keeps whichever comes first"). A link that comes after is closed; when every attempt fails, the most telling failure
-/// is thrown: the relay's word before a timeout, a timeout before "nowhere".
+/// Tries several paths at once and keeps the first to come (5.1: "the phone tries both when it connects and keeps
+/// whichever comes first"): a link, while pairing; once paired, a channel whose Mac proved itself, since the relay's
+/// link comes at once whether or not the Mac answers through it (#898). The others are cancelled, and what one gives
+/// after is closed; when every attempt fails, the most telling failure is thrown: the relay's word before a timeout, a
+/// timeout before "nowhere".
 enum Race {
     static func first(_ attempts: [@Sendable () async throws -> Reached]) async throws -> Reached {
+        try await first(attempts, closing: { $0.link.close() })
+    }
+
+    static func first<Won: Sendable>(_ attempts: [@Sendable () async throws -> Won], closing: @escaping @Sendable (Won) -> Void) async throws -> Won {
         guard !attempts.isEmpty else { throw LinkError.nowhere }
         struct State {
             var settled = false
             var failures: [any Error] = []
-            var continuation: CheckedContinuation<Reached, any Error>?
+            var continuation: CheckedContinuation<Won, any Error>?
             var tasks: [Task<Void, Never>] = []
         }
         let state = Mutex(State())
         let total = attempts.count
 
-        @Sendable func won(_ reached: Reached) {
-            let (continuation, losers): (CheckedContinuation<Reached, any Error>?, [Task<Void, Never>]) = state.withLock { state in
+        @Sendable func won(_ reached: Won) {
+            let (continuation, losers): (CheckedContinuation<Won, any Error>?, [Task<Void, Never>]) = state.withLock { state in
                 guard !state.settled else { return (nil, []) }
                 state.settled = true
                 defer { state.continuation = nil }
                 return (state.continuation, state.tasks)
             }
             guard let continuation else {
-                reached.link.close()
+                closing(reached)
                 return
             }
             continuation.resume(returning: reached)
@@ -85,7 +91,7 @@ enum Race {
         }
 
         @Sendable func lost(_ error: any Error) {
-            let (continuation, failures): (CheckedContinuation<Reached, any Error>?, [any Error]) = state.withLock { state in
+            let (continuation, failures): (CheckedContinuation<Won, any Error>?, [any Error]) = state.withLock { state in
                 state.failures.append(error)
                 guard !state.settled, state.failures.count == total else { return (nil, []) }
                 state.settled = true
