@@ -4,7 +4,8 @@
 // The engine starts pi² Remote with its control connection as file descriptor 3: one end of a Unix socket pair, which
 // libuv makes for a `pipe` in `spawn`'s stdio, as `pi2-peer` is given a connection. It starts one at a time, while the
 // preview and remote access are on and a device is paired or a pairing is open, again if it dies (waiting twice as
-// long after each failure, up to a minute), and stops it when they go off or the engine stops. It gives it nothing
+// long after each failure, up to a minute, and a second again only after a run that lasted, `restartWait`), and stops
+// it when they go off or the engine stops. It gives it nothing
 // through arguments or the environment: the relay, the switches and the paired devices' keys come over the connection.
 // The engine takes `remote.*` requests, and device sessions, only on that connection; on its listening socket a
 // `remote.*` request is refused whoever sends it (main.ts), whatever PeerKit says of the process.
@@ -21,8 +22,9 @@
 //   answer to a claim), `revoke`, and `sessionClosed`. #689 (P20) adds `push` here.
 //
 // pi² Remote's requests: `remote.hello` (the Mac's public keys, the pairing, the Mac's addresses), `remote.state` (the
-// same when they change), `remote.pairClaim`, `remote.pairWrong` and `remote.pairRefused` (pairing, 3.3), `remote.attachBegin` and
-// `remote.attach` (3.4: an attach or a resume, signed by the device key and the presence key), and
+// same when they change), `remote.pairClaim`, `remote.pairWrong` and `remote.pairRefused` (pairing, 3.3), `remote.pairUnkept`
+// (a pairing pi² Remote could not keep, taken back, #887), `remote.attachBegin` and `remote.attach` (3.4: an attach or
+// a resume, signed by the device key and the presence key; a refusal may carry a reason for the phone, #818), and
 // `remote.sessionEnd` (the phone's session ended, 4.5). `remote.mailboxIn` (#678, P10) is added here, and checks each
 // item with `checkRequestItem` in devices.ts.
 //
@@ -57,7 +59,9 @@ import {
 	pairClaim,
 	pairedDevice,
 	pairRefusedByHelper,
+	pairUnkept,
 	pairWrong,
+	UNKEPT_WITHIN,
 	helperGone,
 	activeDevices,
 	remoteHooks,
@@ -92,7 +96,18 @@ let drop: RemoteParts["drop"];
 let approvalSwitch: RemoteParts["approvalSwitch"];
 let approvalHidden: RemoteParts["approvalHidden"];
 
-type Helper = { child: ChildProcess; wire: Socket; hello: { addresses: string[] } | null; stopping: boolean };
+type Helper = {
+	child: ChildProcess;
+	wire: Socket;
+	hello: { addresses: string[] } | null;
+	stopping: boolean;
+	/** When it said hello: a run counts as one that lasted from then on (`restartWait`). */
+	helloAt?: number;
+	/** Stopped for a line over MAX_HELPER_LINE. */
+	overCap?: boolean;
+	/** The device of the last `paired` this helper was sent, and when: the one it may take back (`remote.pairUnkept`). */
+	paired?: { device: string; at: number };
+};
 let helper: Helper | null = null;
 let stopping = false;
 let restartDelay = 1_000;
@@ -232,6 +247,7 @@ function startHelper(): void {
 				// A line longer than any a phone may send stops pi² Remote, as a crash does: it faces the network.
 				if (held > MAX_HELPER_LINE && !current.stopping) {
 					log(`remote: pi² Remote sent a line longer than ${MAX_HELPER_LINE} characters, and was stopped`);
+					current.overCap = true;
 					unfinished.length = 0;
 					wire.destroy();
 					current.child.kill("SIGKILL");
@@ -278,13 +294,30 @@ function gone(current: Helper): void {
 		return;
 	}
 	stops.push(Date.now());
-	const delay = restartDelay;
-	restartDelay = Math.min(restartDelay * 2, 60_000);
+	const { wait, next } = restartWait(restartDelay, current);
+	restartDelay = next;
+	log(`remote: pi² Remote will be started again in ${wait / 1000} s`);
 	restartTimer = setTimeout(() => {
 		restartTimer = undefined;
 		reconsider();
-	}, delay);
+	}, wait);
 	restartTimer.unref();
+}
+
+/** A run of pi² Remote that lasted: this long from its hello, and not stopped for a line over the cap. */
+export const RUN_THAT_LASTED = 60_000;
+
+/**
+ * How long to wait before starting pi² Remote again after it stopped by itself (`wait`), given the wait due (`delay`),
+ * and the wait due after that (`next`): twice as long after each stop, up to a minute, and back to a second only after
+ * a run that lasted (#881). A stop for a line over MAX_HELPER_LINE never counts as one, whatever its length, and nor does
+ * a hello: a pi² Remote that kept passing on such a line would otherwise be started again every few seconds, ending
+ * every phone's session each time.
+ */
+export function restartWait(delay: number, run: { helloAt?: number; overCap?: boolean }, now = Date.now()): { wait: number; next: number } {
+	const lasted = run.overCap !== true && run.helloAt !== undefined && now - run.helloAt >= RUN_THAT_LASTED;
+	const wait = lasted ? 1_000 : delay;
+	return { wait, next: Math.min(wait * 2, 60_000) };
 }
 
 /** Waits for a pi² Remote that said hello, starting one. */
@@ -311,8 +344,9 @@ function write(current: Helper | null, message: string): void {
 	if (current !== null && !current.wire.destroyed) current.wire.write(message);
 }
 
-/** A `remote` event, to pi² Remote alone. */
+/** A `remote` event, to pi² Remote alone. A `paired` is the one pairing that helper may take back (`remote.pairUnkept`). */
 function toHelper(event: Record<string, unknown>): void {
+	if (event.kind === "paired" && helper !== null) helper.paired = { device: (event.device as { id: string }).id, at: Date.now() };
 	write(helper, `${JSON.stringify({ event: "remote", ...event })}\n`);
 }
 
@@ -368,7 +402,8 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 		const macKeys = { identity: keys.identity as string, channel: keys.channel as string, record: keys.record as string, relay: keys.relay as string, secureEnclave: keys.secureEnclave };
 		await helperReported({ macKeys, pairing: pairing as string | null });
 		current.hello = { addresses };
-		restartDelay = 1_000;
+		// Not the restart's wait: that goes back to a second only after a run that lasted (`restartWait`).
+		current.helloAt ??= Date.now();
 		for (const waiter of [...waiters]) {
 			waiters.delete(waiter);
 			waiter.resolve(current.hello);
@@ -399,6 +434,17 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 	},
 	"remote.pairRefused": async (_current, params) => {
 		pairRefusedByHelper(params.why);
+		return {};
+	},
+	// Only the device of the last `paired` this very helper was sent, within a minute, once (#887); devices.ts checks
+	// the record again (`pairUnkept`).
+	"remote.pairUnkept": async (current, params) => {
+		const paired = current.paired;
+		if (Object.keys(params).some((key) => key !== "device") || typeof params.device !== "string" || paired === undefined || paired.device !== params.device || Date.now() - paired.at >= UNKEPT_WITHIN) {
+			throw new Error("pi² Remote may take back only the device it was last sent paired for, within a minute.");
+		}
+		current.paired = undefined;
+		await pairUnkept(params.device);
 		return {};
 	},
 	"remote.attachBegin": async (_current, params) => {

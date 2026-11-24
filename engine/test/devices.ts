@@ -23,9 +23,9 @@ import { createModels } from "@earendil-works/pi-ai";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { allowsHiddenApproval, checkDeviceLists, deviceLogged, HIDDEN_FROM_THE_PHONE, deviceMay, devicePlacement, type DeviceSession, ONLY_FROM_THE_HELPER, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID, PERSON_REQUESTS } from "../src/answers.ts";
-import { APPROVAL_DEPTH, checkRequestItem, type Device, deviceRequests, DeviceLog, Devices, devicesState, flushDeviceLog, fromBase64url, hidesSomething, logDevice, macNameNow, pairClaim, PART_HIDDEN, remoteHooks, shownName, TOO_DEEP, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
+import { APPROVAL_DEPTH, checkRequestItem, type Device, deviceRequests, DeviceLog, Devices, devicesState, flushDeviceLog, fromBase64url, helperWanted, hidesSomething, logDevice, macNameNow, maskValue, NOT_KEPT, pairClaim, PART_HIDDEN, remoteHooks, shownName, TOO_DEEP, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
 import type { Client } from "../src/clients.ts";
-import { ANSWER_NOT_SENT, forDevice, MAX_HELPER_LINE, SESSION_OVER } from "../src/remote.ts";
+import { ANSWER_NOT_SENT, forDevice, MAX_HELPER_LINE, restartWait, RUN_THAT_LASTED, SESSION_OVER } from "../src/remote.ts";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "100000";
@@ -242,6 +242,9 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	assert.equal(shownName("\u200B\u202E\u2066\uFEFF \u0007", "Mac"), "Mac");
 	const emoji = shownName("\u{1F469}\u200D\u{1F4BB}".repeat(40), "Mac");
 	assert.ok(Buffer.byteLength(emoji) <= 128 && Buffer.from(emoji).toString() === emoji && !emoji.includes("\u200D"), emoji);
+	// Half a character, which a Swift string cannot hold (#881); a whole one of two halves stays.
+	assert.equal(shownName("Kim\uD800's \uDC00iPhone \u{1F4F1}", "iPhone"), "Kim's iPhone \u{1F4F1}");
+	assert.equal(shownName("\uDFFF\uD83D", "iPhone"), "iPhone");
 	const proto = forDevice('{"id":1,"result":{"__proto__":{"polluted":1}}}')!;
 	assert.ok(proto.includes('"__proto__":{"polluted":1}') && ({} as { polluted?: number }).polluted === undefined, "a key __proto__ stays a key");
 	// A long run after a key's prefix: masked whole, at once, and nothing thrown (a greedy pattern overflowed V8's stack).
@@ -268,6 +271,30 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	] }));
 	assert.deepEqual(inbox.items.map((item: any) => item[PART_HIDDEN] === true), [false, true, true], "an approval shown in part is marked, and only it");
 	assert.ok(hidesSomething({ id: "b", kind: "approval", arguments: { command: keys[0] } }) && !hidesSomething({ id: "a", kind: "approval", arguments: { command: "ls" } }));
+	// An approval deeper than APPROVAL_DEPTH in a line for a device, in no other approval: a development engine says so,
+	// and under test throws, which drops the line (#881). One inside an approval's call is judged with it, as the gate does.
+	const sunk = (levels: number, inner: unknown = { id: "z", kind: "approval", arguments: { command: "ls" } }) => {
+		let value: unknown = inner;
+		for (let i = 0; i < levels; i++) value = { down: value };
+		return value;
+	};
+	process.env.PI2_APPROVAL_DEPTH_THROWS = "1";
+	assert.doesNotThrow(() => maskValue(sunk(APPROVAL_DEPTH)), "at the depth itself");
+	assert.throws(() => maskValue(sunk(APPROVAL_DEPTH + 1)), /an approval was met 9 levels down in a line for a device, deeper than APPROVAL_DEPTH \(8\)/);
+	assert.equal(forDevice(JSON.stringify({ event: "inbox", x: sunk(APPROVAL_DEPTH) })), null, "a line with one there is dropped");
+	assert.doesNotThrow(() => maskValue({ event: "inbox", items: [{ id: "a", kind: "approval", arguments: sunk(40) }] }), "one inside an approval's call");
+	delete process.env.PI2_APPROVAL_DEPTH_THROWS;
+	assert.doesNotThrow(() => maskValue(sunk(APPROVAL_DEPTH + 1)), "without the switch, only said in the log");
+	step("an approval met deeper than APPROVAL_DEPTH in a line for a device, outside another approval, throws under test and drops the line");
+
+	// pi² Remote's restart: the wait grows, and comes back to a second only after a run that lasted (#881).
+	const now = Date.now();
+	assert.deepEqual(restartWait(1_000, {}, now), { wait: 1_000, next: 2_000 }, "a pi² Remote that never said hello");
+	assert.deepEqual(restartWait(2_000, { helloAt: now - 5_000 }, now), { wait: 2_000, next: 4_000 }, "a hello alone does not bring the wait back");
+	assert.deepEqual(restartWait(16_000, { helloAt: now - RUN_THAT_LASTED }, now), { wait: 1_000, next: 2_000 }, "a run that lasted does");
+	assert.deepEqual(restartWait(16_000, { helloAt: now - 10 * RUN_THAT_LASTED, overCap: true }, now), { wait: 16_000, next: 32_000 }, "a stop for a line over the cap never does");
+	assert.deepEqual(restartWait(60_000, { helloAt: now }, now), { wait: 60_000, next: 60_000 }, "a minute at most");
+	step("pi² Remote's restart waits twice as long each time, up to a minute, and a second again only after a run of a minute not stopped for its line");
 	assert.equal(forDevice("not JSON"), null);
 	// An answer that cannot be made fit is answered with an error, never with nothing.
 	assert.equal(forDevice('{"id":7,"result":{"cut short'), `{"id":7,"error":${JSON.stringify(ANSWER_NOT_SENT)}}`);
@@ -449,7 +476,27 @@ class Phone {
 	assert.ok(!(await stored()).some((entry) => entry.summary === "at the stop"));
 	await flushDeviceLog();
 	assert.ok((await stored()).some((entry) => entry.summary === "at the stop"), "what waits is written at a clean stop (main.ts calls flushDeviceLog)");
+
+	// A suspension and its entry are stored in one write (#881): after no write is the device suspended with no entry.
+	const after: { suspended: boolean; entry: boolean }[] = [];
+	const counting = harness.commit.bind(harness);
+	(harness as unknown as { commit: typeof commit }).commit = (async (...given: Parameters<typeof commit>) => {
+		const result = await counting(...given);
+		const device = (await harness.snapshot(Devices, context))!.devices.find((one) => one.id === phone.id)!;
+		after.push({ suspended: device.suspendedAt !== null, entry: (await stored()).some((one) => one.device === phone.id && one.method === "suspend") });
+		return result;
+	}) as typeof commit;
+	for (let i = 0; i < 5 && !suspended(); i++) {
+		await assert.rejects(take(phone.item(pairing, "submit", { id: 4, text: "x" }, { presence: p256().privateKey })), /presence signature|suspended/);
+	}
+	assert.ok(suspended(), "five refused presence signatures suspend the device");
+	assert.ok(after.some((one) => one.suspended && one.entry), JSON.stringify(after));
+	assert.ok(!after.some((one) => one.suspended && !one.entry), `never suspended without its entry: ${JSON.stringify(after)}`);
+	const suspendEntry = (await stored()).find((one) => one.device === phone.id && one.method === "suspend")!;
+	assert.equal(suspendEntry.at, devicesState().devices.find((one) => one.id === phone.id)!.suspendedAt, "the entry has the suspension's time");
+	(harness as unknown as { commit: typeof commit }).commit = commit;
 	await harness.close(context);
+	step("a suspension is stored in the same write as its entry in the log, never before it");
 	step(`the devices' log: a method it does not know is "unknown", every field cut short, refusals made one entry with a count, one device's flood of ${flood} pushes out neither another's entries nor its own pairing, and entries wait in memory but for urgent ones and a stop`);
 }
 
@@ -483,8 +530,42 @@ class Phone {
 	(harness as unknown as { commit: typeof commit }).commit = commit;
 	assert.deepEqual(told.filter((event) => event.kind === "pairRefused" || event.kind === "paired"), [{ kind: "pairRefused", claim, why: "The Mac could not save the pairing. Start again." }], "the phone is refused, and told nothing else");
 	assert.equal(devicesState().devices.length, 0, "and nothing was paired");
+
+	// A first pairing whose save is slow (#776's point 21, #881): the window closes before the device is stored, and with
+	// no device paired yet pi² Remote would be unwanted, and stopped two seconds later with `paired` still to send. It
+	// stays wanted until the save is done.
+	const wanted: boolean[] = [];
+	remoteHooks.changed = () => wanted.push(helperWanted());
+	const again = (await deviceRequests["devices.pairStart"]!({}, client)) as { payload: string };
+	const secret2 = Buffer.from(new URL(again.payload).searchParams.get("s")!, "base64url");
+	const binding2 = randomBytes(32);
+	const challenge2 = randomBytes(32);
+	const slow = await pairClaim({ claim: new Phone("Slow iPhone").claim(pairing, binding2, challenge2), binding: b64url(binding2), challenge: b64url(challenge2), path: "home" });
+	const digits2 = String(createHmac("sha256", secret2).update(Buffer.concat([Buffer.from("pi2-digits"), Buffer.from([0]), binding2])).digest().readUInt32BE(0) % 1_000_000).padStart(6, "0");
+	let saved!: () => void;
+	const held = new Promise<void>((resolve) => (saved = resolve));
+	let holding = false;
+	(harness as unknown as { commit: typeof commit }).commit = (async (...given: Parameters<typeof commit>) => {
+		if (!holding) {
+			holding = true;
+			await held;
+		}
+		return commit(...given);
+	}) as typeof commit;
+	wanted.length = 0;
+	const confirming = deviceRequests["devices.pairConfirm"]!({ digits: digits2 }, client) as Promise<{ device: string }>;
+	await until("the device's save under way", () => holding);
+	assert.equal(devicesState().devices.length, 0, "nothing is stored yet");
+	assert.equal(helperWanted(), true, "with no device stored and the window closed, pi² Remote is still wanted");
+	assert.ok(wanted.length > 0 && wanted.every(Boolean), `and was at every change meanwhile: ${JSON.stringify(wanted)}`);
+	saved();
+	const { device: slowDevice } = await confirming;
+	(harness as unknown as { commit: typeof commit }).commit = commit;
+	assert.ok(wanted.every(Boolean), `wanted throughout: ${JSON.stringify(wanted)}`);
+	assert.equal(told.find((event) => event.kind === "paired")?.claim, slow.claim, "and `paired` went to it");
+	assert.deepEqual(devicesState().devices.map((one) => one.id), [slowDevice]);
 	await harness.close(context);
-	step("a pairing whose device cannot be saved is refused to the phone, not left without an answer");
+	step("a pairing whose device cannot be saved is refused to the phone, not left without an answer; a first pairing whose save is slow keeps pi² Remote wanted until `paired` is sent");
 }
 
 // ---- A real engine, and this test as its pi² Remote
@@ -602,6 +683,8 @@ const env = {
 	PI2_REMOTE_STAND_IN: standIn,
 	PI2_APP_ATTEST_STAND_IN: "1",
 	PI2_APP_ATTEST_TEAM: "ABCDE12345",
+	// Every line a device is sent here is checked for an approval deeper than the gate judges (#881).
+	PI2_APPROVAL_DEPTH_THROWS: "1",
 };
 const main = join(import.meta.dirname, "..", "src", "main.ts");
 
@@ -643,7 +726,7 @@ try {
 	await assert.rejects(app.call("devices.pairStart"), /Turn on Reach from an iPhone first/);
 	await app.call("devices.set", { on: true });
 	await assert.rejects(app.call("devices.pairStart"), /Turn on Reach from an iPhone first/, "remote access on, the preview off");
-	for (const method of ["remote.attach", "remote.attachBegin", "remote.pairClaim", "remote.pairRefused", "remote.hello", "remote.sessionEnd"]) {
+	for (const method of ["remote.attach", "remote.attachBegin", "remote.pairClaim", "remote.pairRefused", "remote.pairUnkept", "remote.hello", "remote.sessionEnd"]) {
 		await assert.rejects(app.call(method, {}), (error: Error) => error.message === ONLY_FROM_THE_HELPER, `${method} on the socket, from a process PeerKit takes for the app`);
 	}
 	assert.ok(!childrenOf(engine.pid!).some((command) => command.includes(standIn)), "no pi² Remote, and no socket pair, was made");
@@ -750,17 +833,47 @@ try {
 	const reopened = app.call("devices.pairStart");
 	await remote.event("openJoin", remote.events.length);
 	await reopened;
-	assert.match((await remote.call("remote.pairRefused", { why: "anything" })).error, /why is one of not-pair, not-bound, silent/);
+	assert.match((await remote.call("remote.pairRefused", { why: "anything" })).error, /why is one of not-pair, not-bound, silent, not-kept/);
 	assert.deepEqual((await remote.call("remote.pairRefused", { why: "silent" })).result, {});
 	await app.until("the window closed for a claimer pi² Remote refused", () => app.devicesEvents.at(-1)?.pairingWindow === null && app.devicesEvents.at(-1)?.closed?.why === "A phone's claim was refused: it went quiet.");
 	assert.match((await remote.call("remote.pairRefused", { why: "not-pair" })).error, /No pairing is open/);
+	// One pi² Remote could not keep on its side (#887): not the claimer's doing, and said so.
+	const unkeptOpen = app.call("devices.pairStart");
+	await remote.event("openJoin", remote.events.length);
+	await unkeptOpen;
+	assert.deepEqual((await remote.call("remote.pairRefused", { why: "not-kept" })).result, {});
+	await app.until("the window closed for a pairing pi² Remote could not keep", () => app.devicesEvents.at(-1)?.closed?.why === "pi² Remote could not keep the pairing on this Mac. Start again.");
 	const third = await claimIn(new Phone("Kim's iPhone"));
 	assert.ok(third.reply.result.claim);
 	for (let i = 0; i < 3; i++) await assert.rejects(app.call("devices.pairConfirm", { digits: wrong }));
 	await app.until("the window closed after three wrong entries", () => app.devicesEvents.at(-1)?.closed?.why === "Three wrong entries. Start again.");
 	await assert.rejects(app.call("devices.pairConfirm", { digits: digitsOf(third.channel) }), /No phone is waiting/);
-	assert.deepEqual(app.devicesEvents.at(-1).devices.filter((one: any) => one.revokedAt === null).map((one: any) => one.id), [phone.id], "nothing else was paired");
-	step(`one claim per window: a second closes it and refuses both; so do ${refusals.length} claims that fail a check, a claimer pi² Remote refused itself, and three wrong digits`);
+	// A pairing the engine made and pi² Remote could not keep, taken back (#887): only the device of the last `paired`
+	// this pi² Remote was sent, once; never another.
+	const lost = new Phone("Lee\u202E's\uD800 iPhone");
+	const lostClaim = await claimIn(lost, {}, (line) => (line.device.model = "iPhone\u200F 17\uDC00"));
+	const claimEvent = await app.until("Lee's claim shown", () => app.devicesEvents.findLast((event) => event.notice?.kind === "claim" && event.pairingWindow?.claim?.name.startsWith("Lee")));
+	const claimShown = claimEvent.pairingWindow.claim;
+	assert.deepEqual([claimShown.name, claimShown.model, claimShown.system], ["Lee's iPhone", "iPhone 17", "iOS 27.1"], "a claim's name and model are shown as a phone shows names (#881)");
+	assert.match(claimEvent.notice.text, /^Lee's iPhone wants to pair/);
+	const pairedLost = remote.events.length;
+	({ device: lost.id } = await app.call("devices.pairConfirm", { digits: lostClaim.digits }));
+	assert.equal((await remote.event("paired", pairedLost)).device.id, lost.id);
+	for (const [what, params] of [
+		["an older device", { device: phone.id }],
+		["no device", {}],
+		["another field", { device: lost.id, also: phone.id }],
+		["a device's id that is not one", { device: 7 }],
+	] as const) {
+		assert.match((await remote.call("remote.pairUnkept", params)).error ?? "", /may take back only the device it was last sent paired for/, what);
+	}
+	assert.deepEqual((await remote.call("remote.pairUnkept", { device: lost.id })).result, {});
+	await app.until("the pairing taken back", () => app.devicesEvents.at(-1)?.closed?.why === NOT_KEPT && !app.devicesEvents.at(-1).devices.some((one: any) => one.id === lost.id));
+	assert.match((await remote.call("remote.pairUnkept", { device: lost.id })).error ?? "", /may take back only/, "once");
+	const takenBack = (await app.call("devices.log", { device: lost.id })).entries;
+	assert.deepEqual(takenBack.map((entry: any) => [entry.method, entry.outcome, entry.summary]), [["pair", "failed", "Pairing taken back"], ["pair", "done", "Paired"]], "the log says so");
+	assert.deepEqual(app.devicesEvents.at(-1).devices.filter((one: any) => one.revokedAt === null).map((one: any) => one.id), [phone.id], "nothing else was paired, and the first device stays");
+	step(`one claim per window: a second closes it and refuses both; so do ${refusals.length} claims that fail a check, a claimer pi² Remote refused itself, a pairing it could not keep, and three wrong digits; a claim's name and model shown stripped; a pairing pi² Remote could not keep taken back, once, and no other device`);
 
 	// ---- Attaching, and the device's table in a session (3.4, 4.1)
 	const attach = async (options: { session?: string | null; binding?: Buffer; at?: number; challenge?: string; device?: KeyObject; presence?: KeyObject | null } = {}) => {
@@ -911,13 +1024,31 @@ try {
 	assert.deepEqual(resumed.reply.result, { session, resume: true }, "a resume, with a new signature over a new channel");
 	const used = await attach({ session, challenge: resumed.challenge });
 	assert.match(used.reply.error, /not one this Mac issued, or was used/);
+	assert.equal(used.reply.data, undefined, "a refusal with no reason for the phone carries none (#818)");
 	// Signed by a stranger's key: refused, and never counted against the device, however many.
-	for (let i = 0; i < 6; i++) assert.match((await attach({ device: p256().privateKey })).reply.error, /not signed by the device key/);
+	for (let i = 0; i < 6; i++) {
+		const stranger = (await attach({ device: p256().privateKey })).reply;
+		assert.match(stranger.error, /not signed by the device key/);
+		assert.equal(stranger.data, undefined);
+	}
 	await app.call("engine.info");
 	assert.equal(app.devicesEvents.at(-1).devices.find((one: any) => one.id === phone.id).suspendedAt, null, "six attaches a stranger signed do not suspend the device");
-	assert.match((await attach({ presence: p256().privateKey })).reply.error, /presence signature is not the presence key's/);
-	assert.match((await attach({ presence: null })).reply.error, /presence signature/, "a presence signature missing");
-	assert.match((await attach({ at: Date.now() - 3 * 60_000 })).reply.error, /more than two minutes/);
+	// Each refusal the phone can act on carries its reason beside the words, which pi² Remote never reads (#818).
+	const wrongPresence = (await attach({ presence: p256().privateKey })).reply;
+	assert.match(wrongPresence.error, /presence signature is not the presence key's/);
+	assert.deepEqual(wrongPresence.data, { reason: "presence" });
+	const noPresence = (await attach({ presence: null })).reply;
+	assert.match(noPresence.error, /presence signature/, "a presence signature missing");
+	assert.deepEqual(noPresence.data, { reason: "presence" });
+	const stale = (await attach({ at: Date.now() - 3 * 60_000 })).reply;
+	assert.match(stale.error, /more than two minutes/);
+	assert.deepEqual(stale.data, { reason: "clock" });
+	const old = Object.assign(Object.create(Phone.prototype) as Phone, phone, { build: "0" });
+	const oldChallenge = (await remote.call("remote.attachBegin")).result.challenge;
+	const oldChannel = randomBytes(32);
+	const tooOld = await remote.call("remote.attach", { attach: old.attach({ pairing: remote.pairing, challenge: oldChallenge, binding: oldChannel }), binding: b64url(oldChannel), path: "relay" });
+	assert.match(tooOld.error, /too old for this Mac/);
+	assert.deepEqual(tooOld.data, { reason: "update" });
 	const closedBefore = remote.events.length;
 	const wrongChannel = randomBytes(32);
 	const challengeNow = (await remote.call("remote.attachBegin")).result.challenge;
@@ -925,14 +1056,19 @@ try {
 	assert.match(otherChannel.error, /signed for another channel/);
 	assert.match((await app.notice("suspended")).text, /Alex's iPhone was suspended after 5 refused/);
 	assert.equal((await remote.event("sessionClosed", closedBefore)).session, session, "its session closed at once");
-	assert.match((await attach()).reply.error, /suspended/, "a good attach is refused while it is suspended");
+	const whileSuspended = (await attach()).reply;
+	assert.match(whileSuspended.error, /suspended/, "a good attach is refused while it is suspended");
+	assert.deepEqual(whileSuspended.data, { reason: "suspended" });
+	const strangerSuspended = (await attach({ device: p256().privateKey })).reply;
+	assert.match(strangerSuspended.error, /suspended/);
+	assert.equal(strangerSuspended.data, undefined, "one the device key did not sign is told no reason");
 	assert.equal((await remote.inSession(session, "engine.info")).error, OPEN_WITH_FACE_ID);
 	await app.call("devices.resume", { device: phone.id });
 	const again = await attach({ session });
 	assert.equal(again.reply.result.resume, false, "a session that ended cannot be resumed");
 	const session2 = again.reply.result.session as string;
 	assert.notEqual(session2, session);
-	step("a resume is a new attach; a stranger's signature is refused and never counted; a used challenge, a wrong or missing presence signature, a stale time and another channel are refused, and five suspend the device until the Mac resumes it");
+	step("a resume is a new attach; a stranger's signature is refused and never counted; a used challenge, a wrong or missing presence signature, a stale time and another channel are refused, and five suspend the device until the Mac resumes it; an old build, a presence signature, the clock and a suspension carry their reason for the phone, and nothing else does");
 
 	// ---- The end of a session (4.5) and the log (4.4)
 	await until("the second session's greeting", () => remote.sessionLines.get(session2)?.some((line) => line.event === "device"));
@@ -986,7 +1122,9 @@ try {
 	assert.ok(record.revokedAt !== null && record.deviceKey === "" && record.presenceKey === null, "its keys are forgotten in the same commit");
 	const afterRevoke = await restarted.call("remote.attachBegin");
 	const channel2 = randomBytes(32);
-	assert.match((await restarted.call("remote.attach", { attach: phone.attach({ pairing: remote.pairing, challenge: afterRevoke.result.challenge, binding: channel2 }), binding: b64url(channel2), path: "relay" })).error, /revoked/);
+	const revokedReply = await restarted.call("remote.attach", { attach: phone.attach({ pairing: remote.pairing, challenge: afterRevoke.result.challenge, binding: channel2 }), binding: b64url(channel2), path: "relay" });
+	assert.match(revokedReply.error, /revoked/);
+	assert.equal(revokedReply.data, undefined, "a revoked device is told no reason");
 	step("pi² Remote stopping closes its sessions and is started again; a revoked device is told, closed, and refused from then on");
 
 	// ---- A revoked device's key cannot pair again (3.3 step 5); pairing needs a running pi² Remote (3.3 step 8)
@@ -1020,13 +1158,19 @@ try {
 	for (const [what, value] of Object.entries({ s: secret.toString("base64url"), "the s in hex": secret.toString("hex"), typed, ...secrets })) {
 		assert.ok(!engineLog.includes(value), `engine.log holds no ${what}`);
 	}
+	assert.ok(!engineLog.includes("deeper than APPROVAL_DEPTH"), "no line a device was sent held an approval deeper than the gate judges (#881)");
 	step("remote access off stops pi² Remote; the devices event goes only to the app's connection that asked");
 
 	// ---- The engine's own bound on a session (4.5, 5.2): a day after its last attach, here shortened
 	app.close();
 	await stop(engine);
-	const limited = spawn(process.execPath, [main], { env: { ...env, PI2_DEVICE_SESSION_MS: "2000" }, stdio: ["ignore", "ignore", "inherit"] });
+	const limited = spawn(process.execPath, [main], { env: { ...env, PI2_DEVICE_SESSION_MS: "2000" }, stdio: ["ignore", "ignore", "pipe"] });
 	engines.push(limited);
+	let limitedLog = "";
+	limited.stderr!.setEncoding("utf8").on("data", (text: string) => {
+		limitedLog += text;
+		process.stderr.write(text);
+	});
 	const macApp = await App.connect(limited, home);
 	try {
 		await macApp.call("devices.watch");
@@ -1046,7 +1190,14 @@ try {
 		await until("pi² Remote stopped for its line", () => fourth4.closed);
 		assert.equal((await nextRemote(5)).standIn!.ppid, limited.pid, "and started again");
 		await macApp.until("the stop counted as unexpected", () => macApp.devicesEvents.slice(beforeLong).some((event) => event.helper.stoppedInLastHour >= 1));
-		step("a line from pi² Remote longer than any a phone may send stops it, counted as an unexpected stop, and it is started again");
+		// Again, from the pi² Remote that said hello since: the wait grows, a hello does not bring it back (#881).
+		const fifth = await nextRemote(5);
+		await until("the fifth pi² Remote's hello answered", () => macApp.devicesEvents.at(-1)?.helper.running === true || undefined);
+		fifth.socket.write("x".repeat(MAX_HELPER_LINE + 1));
+		await until("pi² Remote stopped again for its line", () => fifth.closed);
+		await nextRemote(6);
+		assert.deepEqual([...limitedLog.matchAll(/pi² Remote will be started again in (\d+) s/g)].map((found) => found[1]), ["1", "2"], "a second, then two");
+		step("a line from pi² Remote longer than any a phone may send stops it, counted as an unexpected stop, and it is started again, a second later and then two");
 	} finally {
 		macApp.close();
 		await stop(limited);
