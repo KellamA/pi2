@@ -715,8 +715,8 @@ public final class EngineSession<Draft: MessageDraft> {
                 update(\.conversationNeeds, shown)
             case "projectRules":
                 update(\.projectRules, try decoder.decode(ProjectRulesEvent.self, from: line).projects)
-            case "auth", "computer", "browser":
-                // The host's alone: sign-in, and the Mac's host roles.
+            case "auth", "computer", "browser", "devices":
+                // The host's alone: sign-in, the Mac's host roles, and the paired devices (docs/iphone.md 3.3).
                 try host?.handle(envelope.event ?? "", line, decoder: decoder)
             case "limits", "memory", "coauthor", "priority", "local", "chat", "compactionSettings", "work", "github", "reports", "awake", "agentDefault":
                 // Events that belong to a feature in a file of its own; it reads its latest one from `extras`.
