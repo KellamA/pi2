@@ -39,6 +39,16 @@ struct ConnectionTests {
         if case .connected = connection.connection { true } else { false }
     }
 
+    /// Whether the presence key signed each attach the Mac was sent, once, in order, and nothing else: one signature for
+    /// one attempt, and one more for each attempt the phone gave up and made again on a new channel (an answer later than
+    /// 3.4's ten seconds, on a runner that stalls). Waits only for an attach on its way to the Mac.
+    static func eachAttachSignedOnce(_ paired: PairedPhone) async throws -> Bool {
+        let presence = try #require(paired.keys.software).softwarePresence
+        return await Wait.until {
+            presence.signed.withLock { $0 } == paired.mac.state.withLock { $0.attaches.map { Data($0.statement.text.utf8) } }
+        }
+    }
+
     @Test func attachesAndCarriesTheEngine() async throws {
         let paired = try await Self.paired()
         defer { paired.mac.stop() }
@@ -59,13 +69,31 @@ struct ConnectionTests {
         let attach = try #require(paired.mac.state.withLock { $0.attaches.first })
         #expect(attach.session == nil && attach.received == nil)
         let kept = try #require(paired.keys.software)
-        #expect(kept.softwarePresence.signatures.withLock { $0 } == 1, "the presence key signed the attach")
+        let presence = try P256.Signing.ECDSASignature(rawRepresentation: attach.presence)
+        #expect(kept.softwarePresence.publicKey.isValidSignature(presence, for: Data(attach.statement.text.utf8)), "the presence key signed the attach")
+        #expect(try await Self.eachAttachSignedOnce(paired), "once, and nothing else")
 
         // A request goes over the channel and its answer comes back, as from the engine.
         let orchestrator = try #require(app.engine.projects.first { $0.name == "Demo project" }?.conversation)
         app.engine.openConversation(orchestrator)
         #expect(await Wait.until { app.engine.open[orchestrator]?.items.isEmpty == false })
         #expect(paired.mac.state.withLock { $0.requests.contains("conversation.open") })
+    }
+
+    @Test func anAttachMadeAgainIsSignedAgain() async throws {
+        // The Mac reads the first attach and closes the channel unanswered, as the phone sees an answer later than its ten
+        // seconds: it attaches afresh on a new channel, and the presence key signs that attach too, once.
+        let paired = try await Self.paired(TestMac.Rules(unanswered: 1))
+        defer { paired.mac.stop() }
+        let connection = try Self.connection(paired)
+        connection.start()
+        defer { connection.stop() }
+        #expect(await Wait.until { connection.connection == .connected(.direct, relayReachable: false) })
+        let attaches = paired.mac.state.withLock { $0.attaches }
+        #expect(attaches.count == 2 && attaches.allSatisfy { $0.session == nil }, "no session was attached, so both are fresh")
+        #expect(attaches.first?.binding != attaches.last?.binding, "the second on a new channel")
+        #expect(try await Self.eachAttachSignedOnce(paired))
+        #expect(paired.mac.state.withLock { $0.attachedCount } == 1)
     }
 
     @Test func resumesTheSessionOnANewChannel() async throws {
@@ -278,10 +306,16 @@ struct ConnectionTests {
         #expect(paired.mac.state.withLock { $0.attaches.isEmpty }, "no attach without the presence signature")
     }
 
-    @Test func theSessionsEndIsSaid() async throws {
+    /// With a slow link, each of the phone's sends waits first, as its writer does on a loaded runner: `stop` returns,
+    /// the session's loop ends, and the Mac's lines still coming fail to open on the channel ended with `bye`, all before
+    /// `sessionEnd` has gone. None of it may close the link under it (#888).
+    @Test(arguments: [false, true])
+    func theSessionsEndIsSaid(slowLink: Bool) async throws {
         let paired = try await Self.paired()
         defer { paired.mac.stop() }
-        let connection = try Self.connection(paired)
+        var routes = PairingTests.routes()
+        if slowLink { routes.dialer = SlowDialer() }
+        let connection = try Self.connection(paired, routes: routes)
         connection.start()
         #expect(await Wait.until { Self.isConnected(connection) })
         connection.stop()
@@ -354,6 +388,29 @@ struct ConnectionTests {
         #expect(Set(words).count == words.count)
         #expect(words.allSatisfy { $0.hasSuffix(".") })
     }
+}
+
+/// TCP links whose sends each wait first: a phone whose writer gets its turn late.
+struct SlowDialer: Dialer {
+    func dial(_ endpoint: NWEndpoint, within limit: Duration) async throws -> any MessageLink {
+        SlowLink(try await TCPDialer().dial(endpoint, within: limit))
+    }
+}
+
+final class SlowLink: MessageLink {
+    let link: any MessageLink
+    var inbox: Inbox<Data> { link.inbox }
+
+    init(_ link: any MessageLink) {
+        self.link = link
+    }
+
+    func send(_ message: Data) async throws {
+        try? await Task.sleep(for: .milliseconds(300))
+        try await link.send(message)
+    }
+
+    func close() { link.close() }
 }
 
 /// Bonjour as the test plays it: one service, with the TXT record pi² Remote would give it, found only if its tag is
