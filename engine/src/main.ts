@@ -531,7 +531,11 @@ await wireDevices({
 	context,
 	log,
 	release: build !== null,
-	names: { conversation: (id) => library.conversations[String(id)]?.title, project: (id) => allProjects()[id]?.name },
+	names: { conversation: (id) => library.conversations[String(id)]?.title, project: (id) => {
+		// Its own key only: a name on Object's prototype (`constructor`) is no project.
+		const projects = allProjects();
+		return Object.hasOwn(projects, id) ? projects[id]?.name : undefined;
+	} },
 });
 
 /** A random ID for this installation, made the first time a sign-in asks for one and the same ever after. */

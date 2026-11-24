@@ -80,11 +80,12 @@ const SWITCHES: Record<string, string> = {
 	PI2_AWAKE_POWER: "ac",
 	PI2_LOCAL_CATALOG: join(work, "catalog.json"),
 	// Paired devices: nothing pairs here, so pi² Remote's stand-in is never started nor App Attest's asked; an empty
-	// PI2_UNPLACED_HANDLER adds no request, so the engine starts.
+	// PI2_UNPLACED_HANDLER adds no request, so the engine starts, and an empty PI2_DEVICE_FAULT faults no request.
 	PI2_REMOTE_STAND_IN: join(work, "no-remote.mjs"),
 	PI2_APP_ATTEST_STAND_IN: "1",
 	PI2_APP_ATTEST_TEAM: "ABCDE12345",
 	PI2_UNPLACED_HANDLER: "",
+	PI2_DEVICE_FAULT: "",
 	PI2_DEVICE_SESSION_MS: "86400000",
 	// The tunings, at their usual values.
 	PI2_AWAKE_GRACE_MS: "60000",
