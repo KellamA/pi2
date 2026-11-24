@@ -18,14 +18,16 @@
 // - the `remote` event, `{"event":"remote","kind",…}`, to pi² Remote alone: `start` (the relay, the switches, the
 //   pairing, the paired devices' keys and the lowest build to attach, sent first), `settings`, `register`,
 //   `openJoin` (the pairing's secret and the relay's token hash) and `closeJoin`, `paired` and `pairRefused` (the
-//   answer to a claim), `revoke`, and `sessionClosed`; and `push` (#689, P20), what pushes.ts chose to push to a
-//   device, which pi² Remote seals (but a Live Activity's numbers) and asks the relay to send.
+//   answer to a claim), `revoke`, `presenceKey` (a device's new Face ID key, accepted on the Mac, #786), and
+//   `sessionClosed`; and `push` (#689, P20), what pushes.ts chose to push to a device, which pi² Remote seals (but a
+//   Live Activity's numbers) and asks the relay to send.
 //
 // pi² Remote's requests: `remote.hello` (the Mac's public keys, the pairing, the Mac's addresses), `remote.state` (the
 // same when they change), `remote.pairClaim`, `remote.pairWrong` and `remote.pairRefused` (pairing, 3.3), `remote.attachBegin` and
 // `remote.attach` (3.4: an attach or a resume, signed by the device key and the presence key), and
-// `remote.sessionEnd` (the phone's session ended, 4.5), and `remote.pushRefused` (the relay refused a push, pushes.ts).
-// `remote.mailboxIn` (#678, P10) is added here, and checks each
+// `remote.sessionEnd` (the phone's session ended, 4.5), `remote.presenceKey` (a phone's offer of a new Face ID key, signed
+// as an attach is, 3.2, #786), and `remote.pushRefused` (the relay refused a push, pushes.ts). `remote.mailboxIn` (#678,
+// P10) is added here, and checks each
 // item with `checkRequestItem` in devices.ts.
 //
 // A device session is a `Client` of its own (clients.ts) with `device` set, so it has its own subscriptions and
@@ -42,6 +44,7 @@ import { allowsHiddenApproval, type DevicePath, deviceLogged, deviceMay, forTheH
 import { type Client, clients, send, type Wire } from "./clients.ts";
 import {
 	attachChallenge,
+	attachHolds,
 	attachTaken,
 	checkAttach,
 	type Device,
@@ -55,6 +58,7 @@ import {
 	maskValue,
 	shownName,
 	notify,
+	offerPresenceKey,
 	p256Key,
 	pairClaim,
 	pairedDevice,
@@ -63,6 +67,7 @@ import {
 	helperGone,
 	activeDevices,
 	remoteHooks,
+	requestLogged,
 	sessionsChanged,
 	summarize,
 	DEVICE_FAULT,
@@ -411,6 +416,8 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 	},
 	"remote.attach": async (current, params) => {
 		const attached = await checkAttach(params);
+		// Again, with nothing awaited before the session opens: a key accepted, or a revocation, while the attach was saved (#786).
+		attachHolds(attached);
 		const resuming = attached.session === null ? undefined : sessions.get(attached.session);
 		const resumed = resuming !== undefined && resuming.device === attached.device.id;
 		let session: Session;
@@ -436,6 +443,7 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 		closeSession(params.session, "The session ended on the phone.");
 		return {};
 	},
+	"remote.presenceKey": async (_current, params) => offerPresenceKey(params),
 	// "remote.mailboxIn": #678 (P10), with checkRequestItem (devices.ts).
 	/** `{ id, why }`: the relay refused the push `id` (docs/iphone.md 7); pushes.ts holds back what the refusal says. */
 	"remote.pushRefused": async (_current, params) => {
@@ -654,10 +662,11 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
 	}
 	const gate = { path: session.path, approvalSwitch, approvalHidden };
 	const answer = deviceMay(method, params as Params, gate);
-	const summary = summarize(method, params as Params);
+	// The log's own names (a pairing, an offer of a Face ID key) are the engine's to write: a device's are "unknown" (#786).
+	const summary = summarize(requestLogged(method), params as Params);
 	if (DEVICE_FAULT !== undefined && method === DEVICE_FAULT) throw new Error("PI2_DEVICE_FAULT: the device's line");
 	const record = (outcome: "done" | "refused" | "failed", why?: string) =>
-		void logDevice({ device: device.id, path: session.path, method, summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }).catch((error) =>
+		void logDevice({ device: device.id, path: session.path, method: requestLogged(method), summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }).catch((error) =>
 			log("devices: the log could not be written:", error instanceof Error ? error.message : error),
 		);
 	if (answer === "no" || !Object.hasOwn(handlers, method)) {

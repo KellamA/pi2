@@ -149,25 +149,12 @@ private func engineDate(_ ms: Double) -> Date { Date(timeIntervalSince1970: ms /
 @Observable
 final class DevicesStore {
     private(set) var state: DevicesEvent?
-    /// The devices whose waiting Face ID key was already notified, by id; nil until the first event, so that a launch
-    /// does not notify keys that were waiting before it.
-    @ObservationIgnored private var pendingSeen: Set<String>?
 
     var preview: Bool { state?.remote.preview == true }
     var remoteOn: Bool { preview && state?.remote.on == true }
 
     /// Every device the engine lists, revoked ones included (their log is kept 90 days).
-    var devices: [PairedDevice] {
-        var all = state?.devices ?? []
-        #if PI2_DEVELOPMENT
-        // A stand-in for what no engine sends yet: a new Face ID key waiting on the first paired device. Only the
-        // engine's own request can set one, and no phone sends one before RemoteKit has its line (#673).
-        if DevicesStandIn.faceID, let first = all.firstIndex(where: { !$0.revoked }), all[first].pendingPresenceKey == nil {
-            all[first].pendingPresenceKey = "stand-in"
-        }
-        #endif
-        return all
-    }
+    var devices: [PairedDevice] { state?.devices ?? [] }
     var active: [PairedDevice] { devices.filter { !$0.revoked } }
 
     func device(_ id: String) -> PairedDevice? { devices.first { $0.id == id } }
@@ -213,35 +200,14 @@ final class DevicesStore {
         if state != kept { state = kept }
         if let notice = event.notice { Notifier.shared.device(notice, name: notice.device.flatMap { device($0)?.name }) }
         if let notice = event.notice { engine.note("devices: notice \(notice.kind)") }
-        // A new Face ID key waiting is not one of the engine's notices; the Mac notifies it all the same (3.2, 4.4).
-        let pending = Set(devices.filter { !$0.revoked && $0.pendingPresenceKey != nil }.map(\.id))
-        if let seen = pendingSeen {
-            for id in pending.subtracting(seen) {
-                guard let device = device(id) else { continue }
-                Notifier.shared.faceIDChanged(device)
-                engine.note("devices: notice face-id")
-            }
-        }
-        pendingSeen = pending
     }
 }
-
-#if PI2_DEVELOPMENT
-/// What a development build stands in for, for a picture of a state no engine can reach yet, from the copy's own
-/// preference, set before launch:
-///
-///     defaults write dev.pi2.app.test-7 devices-stand-in -string 'face-id'
-///
-/// `face-id` shows a new Face ID key waiting on the first paired device. `stop` removes it with the copy's preferences.
-enum DevicesStandIn {
-    static var faceID: Bool { UserDefaults.standard.string(forKey: "devices-stand-in") == "face-id" }
-}
-#endif
 
 // MARK: - Notifications (4.4)
 
 extension Notifier {
-    /// What the engine notifies of: a claim, a pairing, a widening request from a device, a suspension. Posted when the
+    /// What the engine notifies of: a claim, a pairing, a new Face ID key waiting to be accepted (3.2, #786), a widening
+    /// request from a device, a suspension. Posted when the
     /// person turned on notifications in General, the switch that asked macOS for them, whether or not pi² is in front:
     /// someone working the agents from elsewhere should not go unseen at the desk. A test copy never has that switch
     /// on, so it asks macOS for nothing and posts nothing.
@@ -249,20 +215,12 @@ extension Notifier {
         let title = switch notice.kind {
         case "claim": "An iPhone wants to pair with this Mac"
         case "paired": "\(name ?? "A device") was paired"
+        case "presenceKey": "Face ID was set up again on \(name ?? "a device")"
         case "widening": "\(name ?? "A device") widened what agents may do"
         case "suspended": "\(name ?? "A device") was suspended"
         default: "A paired device"
         }
         post(id: "device-\(notice.kind)-\(notice.device ?? "")-\(Int(notice.at))", title: title, body: notice.text)
-    }
-
-    /// A new Face ID key waits to be accepted (3.2).
-    func faceIDChanged(_ device: PairedDevice) {
-        post(
-            id: "device-face-id-\(device.id)-\(device.pendingPresenceKey ?? "")",
-            title: "Face ID was set up again on \(device.name)",
-            body: "Accept the new key in Settings › Devices only if you did it yourself."
-        )
     }
 
     private func post(id: String, title: String, body: String) {
@@ -732,7 +690,10 @@ private struct DeviceRow: View {
                 .font(.callout.weight(.semibold))
             Text("Until you accept it, the iPhone cannot open pi² with Face ID. Whoever knows its passcode can enrol a face, so accepting a key you did not make gives them Face ID’s answers.")
                 .font(.caption).foregroundStyle(Theme.tx2)
-            Button("Accept the New Face ID") { act("devices.acceptPresenceKey") }
+            HStack {
+                Button("Accept the New Face ID") { act("devices.acceptPresenceKey") }
+                Button("Refuse It") { act("devices.refusePresenceKey") }
+            }
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
