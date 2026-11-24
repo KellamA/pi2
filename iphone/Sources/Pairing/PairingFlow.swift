@@ -97,7 +97,7 @@ final class PairingFlow {
                 let record = try await exchange.run(
                     showDigits: { digits in
                         let reached = await path.path ?? .relay
-                        await MainActor.run { self.showDigits(digits, mac: name, path: reached) }
+                        await MainActor.run { self.showDigits(digits, mac: name, path: reached, payload: payload) }
                     },
                     reaching: { reached in await path.set(reached) })
                 self.record = record
@@ -110,10 +110,11 @@ final class PairingFlow {
         }
     }
 
-    private func showDigits(_ digits: String, mac: String, path: AppSession.Path) {
-        if case .reaching = step { step = .digits(digits, mac: mac, path: path) }
+    private func showDigits(_ digits: String, mac: String, path: AppSession.Path, payload: PairingPayload) {
+        guard case .reaching = step else { return }
+        step = .digits(digits, mac: mac, path: path)
         #if DEBUG
-        PairingDebugLaunch.shown(digits: digits)
+        PairingDebugLaunch.shown(digits: digits, for: payload)
         #endif
     }
 }
