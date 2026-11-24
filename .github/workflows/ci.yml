@@ -8,15 +8,21 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels its run still going. On main, each push has a run of its own, which a later push
+# does not cancel as a whole: the iPhone app's job runs only for a merge that touches the phone, so the next merge's run
+# would not build it again (#871). The macOS jobs that run on every push to main cancel their own runs still going on
+# main, as before, by a concurrency group each.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 jobs:
   # Decides whether a pull request needs the macOS jobs, which wait for GitHub's scarcer macOS runners (#245). One that
   # changes only files no macOS job reads (the docs, the changelog, the version) skips them, and a skipped job reports
   # its check as passed, so their required checks do not hold it up. Anything else, any doubt, and every push to main
-  # runs them: they run unless this job says "false", so if it fails they run too.
+  # runs them: they run unless this job says "false", so if it fails they run too. The iPhone app's job is decided the
+  # other way round, on a push to main too: it runs only for a change to what the phone is built from, and if this job
+  # fails (#871). scripts/ci-changes decides both.
   changes:
     name: Which jobs the change needs
     runs-on: ubuntu-latest
@@ -25,58 +31,29 @@ jobs:
       macos: ${{ steps.files.outputs.macos }}
       # Whether the relay changed, which the protocol test (a macOS job) reads besides what macos covers.
       relay: ${{ steps.files.outputs.relay }}
+      # Whether the iPhone app's job runs.
+      iphone: ${{ steps.files.outputs.iphone }}
     steps:
       - uses: actions/checkout@v7
-        if: github.event_name == 'pull_request'
         with:
-          fetch-depth: 2 # the merge commit CI tests, and main's commit it was made on
+          # A pull request: the merge commit CI tests, and main's commit it was made on. A push: the pushed commit and
+          # its first parent, which for a merge is main before it.
+          fetch-depth: 2
           persist-credentials: false
       - id: files
         env:
           EVENT: ${{ github.event_name }}
-        run: |
-          set -euo pipefail
-          if [[ $EVENT != pull_request ]]; then
-            echo "A $EVENT: running every job."
-            echo macos=true >> "$GITHUB_OUTPUT"
-            echo relay=true >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # What the commit being tested changes from main as it is now, both names of a moved file.
-          changed=$(git diff --no-renames --name-only HEAD^1 HEAD)
-          macos=false
-          relay=false
-          [[ -n $changed ]] || { echo "No file changed: running every job."; macos=true; relay=true; }
-          while IFS= read -r file; do
-            case $file in
-              "") ;;
-              # Read by no macOS job. A file one of them starts reading comes off this list.
-              docs/* | README.md | CONTRIBUTING.md | CHANGELOG.md | SECURITY.md | CLAUDE.md) ;;
-              # Changelog entries: Transcript page (tests) checks them on Linux.
-              changelog.d/*) ;;
-              # Checked by the Linux job Scripts (tests), or by nothing else in CI (rerun-if-no-runner).
-              scripts/issue | scripts/issue-hook | scripts/test-issue | scripts/test-issue-hook) ;;
-              scripts/test-auto-merge | scripts/auto-merge | scripts/rerun-if-no-runner | scripts/test-docs-lists) ;;
-              # Checked by Scripts (tests) with stand-ins; the iPhone workflow (iphone.yml) runs the script itself.
-              scripts/iphone-sim | scripts/test-iphone-sim) ;;
-              # The relay: checked by the Linux job Relay (tests), and by the protocol test, which runs on macOS for it.
-              relay/*) relay=true ;;
-              # Copied into the app's Info.plist by app/build.sh, which drops white space: checked here for what
-              # could break that.
-              app/VERSION)
-                version=$(tr -d '[:space:]' < app/VERSION)
-                [[ $version =~ ^[0-9A-Za-z.+-]+$ ]] || { echo "::error::app/VERSION is not a version: $version"; exit 1; } ;;
-              *) echo "Needs the macOS jobs: $file"; macos=true ;;
-            esac
-          done <<<"$changed"
-          [[ $macos == true ]] || echo "Only files no macOS job reads: skipping the engine's tests and the app's build."
-          echo "macos=$macos" >> "$GITHUB_OUTPUT"
-          echo "relay=$relay" >> "$GITHUB_OUTPUT"
+          BEFORE: ${{ github.event.before }}
+        # The decision is in the script, which scripts/test-ci-changes holds to its cases (Scripts (tests)).
+        run: scripts/ci-changes "$EVENT" "$BEFORE"
 
   engine:
     name: Engine (type-check and tests)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' }}
+    concurrency:
+      group: ci-engine-${{ github.ref }}
+      cancel-in-progress: true
     runs-on: macos-26
     timeout-minutes: 20
     defaults:
@@ -135,6 +112,8 @@ jobs:
     # GitHub issue: the hook's test has a stand-in gh. So does the test of scripts/auto-merge, and it touches no pull
     # request (#553). scripts/test-docs-lists checks that the docs' lists of the engine's files keep up with them (#640).
     # scripts/test-iphone-sim checks scripts/iphone-sim with stand-ins for xcrun and xcodebuild: no simulator (#681).
+    # scripts/test-ci-changes checks what the first job decides, in throwaway repositories, and that every path the
+    # phone's project and links reach outside iphone/ is one its job runs for (#871).
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -148,6 +127,7 @@ jobs:
       # scripts/check-protected-targets against package descriptions made in the test, one for each tampering (#674).
       - run: scripts/test-check-protected-targets
       - run: scripts/test-iphone-sim
+      - run: scripts/test-ci-changes
 
   relay:
     name: Relay (tests)
@@ -186,6 +166,9 @@ jobs:
     # Deploys nothing.
     needs: changes
     if: ${{ !cancelled() && (needs.changes.outputs.macos != 'false' || needs.changes.outputs.relay == 'true') }}
+    concurrency:
+      group: ci-relay-protocol-${{ github.ref }}
+      cancel-in-progress: true
     runs-on: macos-26
     # Ten more than before pi² Remote's relay end ran here (#678), which builds the helper and waits out two minutes.
     timeout-minutes: 30
@@ -230,6 +213,9 @@ jobs:
     name: App (build)
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' }}
+    concurrency:
+      group: ci-app-${{ github.ref }}
+      cancel-in-progress: true
     runs-on: macos-26
     # Five more than before pi² Remote's check (#675), which runs an engine and waits out a session's resume window.
     timeout-minutes: 25
@@ -321,3 +307,36 @@ jobs:
       - name: Build RemoteKit for iOS
         working-directory: app
         run: swift build --target RemoteKit --triple arm64-apple-ios18.0 --sdk "$(xcrun --sdk iphoneos --show-sdk-path)" --scratch-path .build/ios
+
+  iphone:
+    name: iPhone app (tests and Release build)
+    # The iPhone app (iphone/, docs/iphone.md section 10, #681): its unit tests in a simulator, then a Release build.
+    # Signs nothing and needs no secret. Runs when the change needs it, and when Which jobs the change needs fails;
+    # skipped otherwise, and a skipped job reports its check as passed, so that this check can be a required one
+    # without holding up a pull request that does not touch the phone (#871).
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.iphone != 'false' }}
+    # The xcode-27 image (macOS 27) carries Xcode 27.0 to 27.2 and their iOS 27 simulators; macos-26 has only Xcode 26
+    # and iOS 26. The project was made with Xcode 27.2 (LastUpgradeVersion 2720), and its deployment target is iOS 18.
+    runs-on: xcode-27
+    timeout-minutes: 30
+    env:
+      # Named, not the image's default (27.1 when this was written), so that the image moving on changes nothing here.
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Xcode and its iOS simulators
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes ios
+      # A simulator of the job's own, made by the same script agents use (docs/development.md, Building the iPhone app):
+      # unsigned builds, its derived data in iphone/build.
+      - name: Make a simulator
+        run: scripts/iphone-sim create ci --type "iPhone 18 Pro" --runtime com.apple.CoreSimulator.SimRuntime.iOS-27-2
+      - name: Unit tests
+        run: scripts/iphone-sim test ci
+      # What has none of the #if DEBUG code, as TestFlight's builds will be (unsigned here).
+      - name: Release build
+        run: scripts/iphone-sim build ci --release

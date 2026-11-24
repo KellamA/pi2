@@ -1,0 +1,280 @@
+#!/bin/bash
+# Checks scripts/ci-changes, which decides which of CI's jobs a change needs (#245, #871), in two parts:
+#
+# - Its decisions: each case makes a throwaway repository with a main branch and a change merged into it as CI's merge
+#   commit is (or a push to main), runs a copy of the script there, and compares the iphone, macos and relay it writes,
+#   or that it writes none. Among them: names git would quote, names in another letter case, SwiftPM's version-specific
+#   manifests, moves and deletions, links, and a commit with no parent.
+# - What the phone's build reaches outside iphone/, in this checkout: every link under iphone/, every ../ path in the
+#   Xcode project, and, for its local package, the manifest, the resolved versions and the folders of the targets the
+#   project links and their dependencies must all be in the phone's list, so that a change to them runs its job.
+#
+# Needs bash and git; touches nothing outside a temporary folder, and runs on Linux as on a Mac.
+#
+#   scripts/test-ci-changes
+
+set -uo pipefail
+
+root="$(cd -P -- "$(dirname -- "$0")/.." && pwd -P)"
+script="$root/scripts/ci-changes"
+
+T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT
+failures=0
+fail() { echo "FAIL: $*" >&2; failures=$((failures + 1)); }
+
+export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.invalid GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid
+export GIT_CONFIG_NOSYSTEM=1 HOME="$T/home"
+mkdir -p "$HOME"
+
+# Writes a file, making its folders.
+put() { mkdir -p "$(dirname -- "$1")" && printf 'x\n' >"$1"; }
+
+# decide <name> <event> <expected> <base> <change> [parent|other|empty]
+# <base> and <change> are shell code run in the repository: the first on main before the change branches off, the
+# second on the change's branch. <expected> is "iphone macos relay" as the script writes them, or "none" when it must
+# write nothing (and fail). For a push, `before` is the merge's first parent, another commit, or empty.
+decide() {
+	local name=$1 event=$2 expected=$3 base=$4 change=$5 before_is=${6:-parent}
+	local repo out got before status
+	repo=$(mktemp -d "$T/repo.XXXX")
+	out="$repo.out"
+	: >"$out"
+	(
+		set -e
+		cd "$repo"
+		git init -q -b main .
+		git config core.quotePath true
+		mkdir -p scripts && cp "$script" scripts/ci-changes
+		put base
+		eval "$base"
+		git add -A && git commit -qm base
+		git checkout -qb change
+		eval "$change"
+		git add -A && git commit -q --allow-empty -m change
+		git checkout -q main
+		put moved && git add moved && git commit -qm "main moved"
+		git merge -q --no-ff change -m merge
+	) >/dev/null 2>&1 || { fail "$name: could not make the repository"; return; }
+	case $before_is in
+	parent) before=$(git -C "$repo" rev-parse HEAD^1) ;;
+	other) before=0000000000000000000000000000000000000000 ;;
+	empty) before= ;;
+	esac
+	(cd "$repo" && GITHUB_OUTPUT=$out scripts/ci-changes "$event" "$before") >"$repo.log" 2>&1
+	status=$?
+	if [[ -s $out ]]; then
+		got="$(sed -n 's/^iphone=//p' "$out") $(sed -n 's/^macos=//p' "$out") $(sed -n 's/^relay=//p' "$out")"
+	else
+		got=none
+	fi
+	if [[ $got != "$expected" ]]; then
+		fail "$name ($event): wrote '$got', wanted '$expected'"
+		sed 's/^/    /' "$repo.log" >&2
+	elif [[ $got == none && $status == 0 ]]; then
+		fail "$name ($event): wrote nothing but exited 0"
+	elif [[ $got != none && $status != 0 ]]; then
+		fail "$name ($event): exited $status"
+	fi
+	# Nothing in a name is run.
+	[[ ! -e $repo/ran ]] || fail "$name: something in a name ran"
+	# Nothing a name holds may begin a line of the log, where the runner would read it as a workflow command.
+	if grep -q '^::' "$repo.log" && [[ $name != "app/VERSION not a version" ]]; then
+		fail "$name: a line of the log begins with ::"
+	fi
+}
+
+PR=pull_request
+# What runs and what is skipped, by kind of file.
+decide "docs only" $PR "false false false" "" "put docs/a.md"
+decide "docs and changelog" $PR "false false false" "" "put docs/a.md; put changelog.d/871.md"
+decide "the transcript page" $PR "true true false" "" "put app/Web/transcript/transcript.js"
+decide "the transcript page's tests" $PR "false true false" "" "put app/Web/test/transcript.test.mjs"
+decide "a phone file" $PR "true true false" "" "put iphone/Sources/App.swift"
+decide "a phone test and docs" $PR "true true false" "" "put iphone/Tests/ConversationTests.swift; put docs/a.md"
+decide "a shared target" $PR "true true false" "" "put app/Sources/TranscriptKit/TranscriptLoading.swift"
+decide "each shared target" $PR "true true false" "" "put app/Sources/PiModels/a.swift; put app/Sources/EngineKit/b.swift; put app/Sources/RemoteKit/c.swift"
+decide "a target named like one" $PR "false true false" "" "put app/Sources/TranscriptKitty/x.swift"
+decide "the recorded session" $PR "true true false" "" "put app/Sources/pi2-client-check/Fixture/session.jsonl"
+decide "the client check" $PR "false true false" "" "put app/Sources/pi2-client-check/main.swift"
+decide "Package.swift" $PR "true true false" "" "put app/Package.swift"
+decide "Package.resolved" $PR "true true false" "" "put app/Package.resolved"
+decide "Package@swift-6.swift" $PR "true true false" "" "put app/Package@swift-6.swift"
+decide "Package@swift-6.1.swift" $PR "true true false" "" "put app/Package@swift-6.1.swift"
+decide "scripts/iphone-sim" $PR "true false false" "" "put scripts/iphone-sim"
+decide "scripts/test-iphone-sim" $PR "false false false" "" "put scripts/test-iphone-sim"
+decide "this script" $PR "true true false" "" "printf '# changed\n' >>scripts/ci-changes"
+decide "this script's test" $PR "false true false" "" "put scripts/test-ci-changes"
+decide "ci.yml" $PR "true true false" "" "put .github/workflows/ci.yml"
+decide "release.yml" $PR "false true false" "" "put .github/workflows/release.yml"
+decide "the engine" $PR "false true false" "" "put engine/src/engine.ts"
+decide "the relay" $PR "false false true" "" "put relay/src/index.ts"
+decide ".gitattributes" $PR "true true false" "" "put .gitattributes"
+decide "app/.gitattributes" $PR "true true false" "" "put app/.gitattributes"
+decide "a .gitattributes in docs" $PR "true false false" "" "put docs/.gitattributes"
+decide "app/VERSION a version" $PR "false false false" "" "mkdir -p app; printf '1.2.3\n' >app/VERSION"
+decide "app/VERSION not a version" $PR "none" "" "mkdir -p app; printf '1.2 3;x\n' >app/VERSION"
+decide "an empty merge" $PR "true true true" "" ":"
+
+# Names git quotes without -z: each must be read as it is.
+decide 'a quote in a phone name' $PR "true true false" "" "put 'iphone/Sources/a\"b.swift'"
+decide 'a backslash in a phone name' $PR "true true false" "" "put 'iphone/Sources/a\\b.swift'"
+decide 'a tab in a phone name' $PR "true true false" "" "put \$'iphone/Sources/a\\tb.swift'"
+decide 'a line break in a phone name' $PR "true true false" "" "put \$'iphone/Sources/a\\nb.swift'"
+decide 'a letter outside ASCII in a phone name' $PR "true true false" "" "put \$'iphone/Sources/Caf\\xc3\\xa9.swift'"
+decide 'a letter outside ASCII in a shared target' $PR "true true false" "" "put \$'app/Sources/RemoteKit/\\xc3\\xa9.swift'"
+decide 'a name with $(…), a backtick and *' $PR "true true false" "" "put 'iphone/Sources/\$(touch ran)\`touch ran\`*.swift'"
+decide 'a workflow command as a name' $PR "true true false" "" "put \$'iphone/Sources/x\\n::error::y'"
+# The macOS jobs ran for such names before, when git quoted them, and still do: no name the list did not match before
+# matches it now.
+decide 'a letter outside ASCII in docs' $PR "false true false" "" "put \$'docs/Caf\\xc3\\xa9.md'"
+decide 'a quote in docs' $PR "false true false" "" "put 'docs/a\"b.md'"
+decide 'a line break in docs' $PR "false true false" "" "put \$'docs/a\\nb.md'"
+decide 'a quote in the relay' $PR "false true false" "" "put 'relay/a\"b.ts'"
+
+# Letter case: the runner's file system ignores it, so these are built into the phone's folders.
+decide "IPHONE/" $PR "true true false" "" "put IPHONE/Sources/B.swift"
+decide "App/Sources/RemoteKit" $PR "true true false" "" "put App/Sources/RemoteKit/N.swift"
+decide "app/sources/PiModels" $PR "true true false" "" "put app/sources/PiModels/N.swift"
+decide "APP/package@SWIFT-6.swift" $PR "true true false" "" "put APP/package@SWIFT-6.swift"
+decide "app/web/TRANSCRIPT" $PR "true true false" "" "put app/web/TRANSCRIPT/t.js"
+decide "SCRIPTS/IPHONE-SIM" $PR "true true false" "" "put SCRIPTS/IPHONE-SIM"
+# The macOS list is matched as written: another case is not on it, and runs them.
+decide "Docs/" $PR "false true false" "" "put Docs/a.md"
+
+# Moves, deletions and links.
+decide "a move out of iphone/" $PR "true true false" "put iphone/Sources/A.swift" "mkdir -p docs; git mv iphone/Sources/A.swift docs/A.swift"
+decide "a move into iphone/" $PR "true true false" "put docs/A.swift" "mkdir -p iphone/Sources; git mv docs/A.swift iphone/Sources/A.swift"
+decide "a phone file deleted" $PR "true true false" "put iphone/Sources/A.swift; put iphone/Sources/B.swift" "git rm -q iphone/Sources/A.swift"
+decide "a shared target's file deleted" $PR "true true false" "put app/Sources/EngineKit/E.swift; put app/Sources/EngineKit/F.swift" "git rm -q app/Sources/EngineKit/E.swift"
+LINK='put app/Web/transcript/t.js; mkdir -p iphone/Sources/Conversation; ln -s ../../../app/Web/transcript iphone/Sources/Conversation/transcript'
+decide "the page's link pointed elsewhere" $PR "true true false" "$LINK; put docs/t.js" "rm iphone/Sources/Conversation/transcript; ln -s ../../../docs iphone/Sources/Conversation/transcript"
+decide "the page's link made a folder" $PR "true true false" "$LINK" "rm iphone/Sources/Conversation/transcript; put iphone/Sources/Conversation/transcript/t.js"
+decide "app/Web made a link" $PR "true true false" "$LINK; put docs/t.js" "git rm -rq app/Web; ln -s ../docs app/Web"
+
+# Pushes to main.
+decide "a merge of docs" push "false true true" "" "put docs/a.md"
+decide "a merge of a phone file" push "true true true" "" "put iphone/Sources/App.swift"
+decide "a push whose parent is not before" push "true true true" "" "put docs/a.md" other
+decide "a push with no before" push "true true true" "" "put docs/a.md" empty
+
+# No base: a commit with no parent, as a checkout of depth 1 has. The script fails and writes nothing, so every job runs.
+repo=$(mktemp -d "$T/nobase.XXXX")
+(
+	set -e
+	cd "$repo"
+	git init -q -b main .
+	mkdir -p scripts && cp "$script" scripts/ci-changes
+	put docs/a.md
+	git add -A && git commit -qm only
+) >/dev/null 2>&1 || fail "no base: could not make the repository"
+: >"$repo.out"
+if (cd "$repo" && GITHUB_OUTPUT=$repo.out scripts/ci-changes pull_request "") >/dev/null 2>&1; then
+	fail "no base: exited 0"
+fi
+[[ ! -s $repo.out ]] || fail "no base: wrote $(tr '\n' ' ' <"$repo.out")"
+
+# What it refuses.
+"$script" >/dev/null 2>&1 && fail "no argument: exited 0"
+"$script" phone-reads >/dev/null 2>&1 && fail "phone-reads with no path: exited 0"
+(cd "$T" && env -u GITHUB_OUTPUT "$script" pull_request >/dev/null 2>&1) && fail "no GITHUB_OUTPUT: exited 0"
+
+# What the phone's build reaches outside iphone/, in this checkout.
+# A path made whole from the repository's top folder, or nothing if it leaves it.
+whole() {
+	local path=$1 part out=()
+	local IFS=/
+	for part in $path; do
+		case $part in
+		"" | .) ;;
+		..) ((${#out[@]})) || return 1; unset 'out[${#out[@]}-1]' ;;
+		*) out+=("$part") ;;
+		esac
+	done
+	printf '%s\n' "${out[*]}"
+}
+reaches() { # <what> <path>: a file, or a folder whose files, must be in the phone's list
+	local what=$1 path=$2
+	"$script" phone-reads "$path" || "$script" phone-reads "$path/a-file" ||
+		fail "$what reaches $path, which is not in the phone's list in scripts/ci-changes"
+}
+cd "$root" || exit 1
+links=0
+while IFS= read -r -d '' entry; do
+	mode=${entry%% *}
+	[[ $mode == 120000 ]] || continue
+	link=${entry#*$'\t'}
+	object=${entry#* }
+	object=${object%% *}
+	target=$(git cat-file -p "$object")
+	if path=$(whole "$(dirname -- "$link")/$target"); then
+		reaches "the link $link" "$path"
+	else
+		fail "the link $link points outside the repository: $target"
+	fi
+	links=$((links + 1))
+done < <(git ls-files -s -z -- iphone)
+((links > 0)) || fail "found no link under iphone/ (the conversation screen's link to the transcript page)"
+
+project=iphone/pi2.xcodeproj/project.pbxproj
+[[ -f $project ]] || fail "no $project"
+paths=0
+while IFS= read -r value; do
+	value=${value#*= }
+	value=${value%;}
+	value=${value#\"}
+	value=${value%\"}
+	path=$(whole "iphone/$value") || { fail "$project names $value, outside the repository"; continue; }
+	reaches "$project's path $value" "$path"
+	paths=$((paths + 1))
+done < <(grep -oE '[^A-Za-z]path = "?\.\./[^";]*"?;' "$project")
+((paths > 0)) || fail "found no ../ path in $project (the client check's recorded session)"
+
+packages=0
+while IFS= read -r value; do
+	value=${value#*= }
+	value=${value%;}
+	value=${value#\"}
+	value=${value%\"}
+	package=$(whole "iphone/$value") || { fail "$project's package $value is outside the repository"; continue; }
+	packages=$((packages + 1))
+	manifest="$package/Package.swift"
+	[[ -f $manifest ]] || { fail "no $manifest"; continue; }
+	reaches "the local package" "$manifest"
+	reaches "the local package" "$package/Package.resolved"
+	# The products the project links from it, their targets, and every target those depend on, by name, read from the
+	# manifest's one-line declarations. A declaration this cannot read fails, rather than being passed over.
+	todo=()
+	while IFS= read -r product; do
+		line=$(grep -E "\.library\(name: \"$product\"" "$manifest") || { fail "$manifest has no library $product, which $project links"; continue; }
+		inside=${line#*targets: [}
+		inside=${inside%%]*}
+		for target in $(grep -oE '"[^"]+"' <<<"$inside" | tr -d '"'); do todo+=("$target"); done
+	done < <(grep -oE 'productName = [A-Za-z0-9_]+;' "$project" | sed 's/productName = //; s/;//' | sort -u |
+		while IFS= read -r name; do grep -qE "\.library\(name: \"$name\"" "$manifest" && echo "$name"; done)
+	seen=" "
+	while ((${#todo[@]})); do
+		target=${todo[0]}
+		todo=("${todo[@]:1}")
+		[[ $seen == *" $target "* ]] && continue
+		seen+="$target "
+		line=$(grep -E "\.target\(name: \"$target\"" "$manifest") || { fail "cannot read the target $target in $manifest"; continue; }
+		[[ $line =~ path:\ \"([^\"]+)\" ]] || { fail "the target $target in $manifest names no path"; continue; }
+		reaches "the target $target, which the phone links" "$package/${BASH_REMATCH[1]}"
+		if [[ $line == *"dependencies: ["* ]]; then
+			inside=${line#*dependencies: [}
+			inside=${inside%%]*}
+			# Names in quotes are targets of this package; .product(…) is another package's, which Package.resolved pins.
+			inside=$(sed -E 's/\.product\([^)]*\)//g' <<<"$inside")
+			for dependency in $(grep -oE '"[^"]+"' <<<"$inside" | tr -d '"'); do todo+=("$dependency"); done
+		fi
+	done
+	[[ $seen != " " ]] || fail "found no product of $package that $project links"
+done < <(grep -oE 'relativePath = "?[^";]*"?;' "$project")
+((packages > 0)) || fail "found no local package in $project"
+
+if ((failures)); then
+	echo "test-ci-changes: $failures failed" >&2
+	exit 1
+fi
+echo "test-ci-changes: all passed"

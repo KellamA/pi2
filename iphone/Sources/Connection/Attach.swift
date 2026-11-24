@@ -41,36 +41,54 @@ enum Attach {
     /// How long the Mac has for its proof and its answer: the ten seconds of 3.4, from the handshake.
     static let answerWithin: Duration = .seconds(10)
 
-    /// Makes the channel over `link` and attaches. `now` is this phone's clock, which `at` is signed with: the Mac
-    /// takes it within two minutes of its own (3.4), and says `clock` otherwise.
-    static func run(
-        over link: any MessageLink, path: AppSession.Path, mac: PairedMac, keys: PairedKeys, resume: Resume?, build: String,
-        now: @Sendable () -> Date = { Date() }
-    ) async throws -> Outcome {
+    /// A channel whose Mac proved itself, with nothing signed on it yet: what the paths race for (5.1, #898).
+    struct Proved: Sendable {
+        let channel: OpenChannel
+        let proof: MacProof
+    }
+
+    /// Makes the channel over `link` and checks the Mac's proof against the identity key kept from pairing: what each
+    /// path does at once, before the race between them is settled. Nothing is signed here, so a channel that loses the
+    /// race costs no signature of the device key or the presence key. A link that closes, a handshake or a proof that
+    /// does not come within ten seconds, or a proof that does not check, ends it, and the link is closed.
+    static func prove(over link: any MessageLink, path: AppSession.Path, mac: PairedMac, keys: PairedKeys) async throws -> Proved {
         let handshake = try ChannelHandshake.connection(
             initiator: true, pairing: mac.pairing, device: mac.device, channelKey: keys.channel, remoteChannelKey: mac.channelKey)
         let channel = try await OpenChannel.open(handshake, over: link, path: path, within: answerWithin)
         do {
-            let outcome = try await attach(on: channel, mac: mac, keys: keys, resume: resume, build: build, now: now)
-            if case .attached = outcome {} else { channel.drop() }
-            return outcome
+            guard let first = try await channel.nextLine(within: answerWithin) else { throw LinkError.closed }
+            guard case let .mac(proof)? = try? ControlLine.parse(first, from: .mac) else { throw Failure.macNotProved }
+            do {
+                try proof.verify(identityKey: mac.identityKey, pairing: mac.pairing, binding: channel.channel.handshakeHash)
+            } catch {
+                throw Failure.macNotProved
+            }
+            return Proved(channel: channel, proof: proof)
         } catch {
             channel.drop()
             throw error
         }
     }
 
-    private static func attach(
-        on channel: OpenChannel, mac: PairedMac, keys: PairedKeys, resume: Resume?, build: String, now: @Sendable () -> Date
+    /// Attaches on the channel that came first: `attach` signed by the device key and by the presence key, once, and the
+    /// Mac's answer. `now` is this phone's clock, which `at` is signed with: the Mac takes it within two minutes of its
+    /// own (3.4), and says `clock` otherwise.
+    static func attach(
+        _ proved: Proved, mac: PairedMac, keys: PairedKeys, resume: Resume?, build: String, now: @Sendable () -> Date = { Date() }
     ) async throws -> Outcome {
-        guard let first = try await channel.nextLine(within: answerWithin) else { return .closed }
-        guard case let .mac(proof)? = try? ControlLine.parse(first, from: .mac) else { throw Failure.macNotProved }
         do {
-            try proof.verify(identityKey: mac.identityKey, pairing: mac.pairing, binding: channel.channel.handshakeHash)
+            let outcome = try await attach(on: proved.channel, proof: proved.proof, mac: mac, keys: keys, resume: resume, build: build, now: now)
+            if case .attached = outcome {} else { proved.channel.drop() }
+            return outcome
         } catch {
-            throw Failure.macNotProved
+            proved.channel.drop()
+            throw error
         }
+    }
 
+    private static func attach(
+        on channel: OpenChannel, proof: MacProof, mac: PairedMac, keys: PairedKeys, resume: Resume?, build: String, now: @Sendable () -> Date
+    ) async throws -> Outcome {
         let claim: AttachClaim
         do {
             claim = try await PresenceSignatures.attach(
