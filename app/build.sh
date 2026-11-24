@@ -113,11 +113,18 @@ fi
 swift build -c "$CONFIG" "${SWIFT_FLAGS[@]}" --product pi2
 # What the engine asks whether a connection is the app's, which alone may answer for the person (#504).
 swift build -c "$CONFIG" "${SWIFT_FLAGS[@]}" --product pi2-peer
+# pi² Remote (#675, docs/pi2-remote.md): the helper the engine starts for a paired phone. A development build's runs in
+# loopback mode only and has no Keychain, Secure Enclave or Bonjour call in it; a release build's has them.
+swift build -c "$CONFIG" "${SWIFT_FLAGS[@]}" --product pi2-remote-helper
 BIN="$(swift build -c "$CONFIG" "${SWIFT_FLAGS[@]}" --show-bin-path)"
 rm -rf "${REPLACED[@]}"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp "$BIN/pi2" "$APP/Contents/MacOS/pi2"
 cp "$BIN/pi2-peer" "$APP/Contents/MacOS/pi2-peer"
+# pi² Remote, an app bundle of its own in Contents/Helpers, where the engine starts it from. Its packaging and signing
+# are remote-helper.sh's, an owner's path (.github/CODEOWNERS): how the helper that holds the Mac's keys is signed
+# decides what may run inside it.
+./remote-helper.sh place "$APP" "$BIN/pi2-remote-helper" "$BUNDLE_ID.remote" "$VERSION" "$BUILD_NUMBER"
 # Sparkle, for updates. ditto keeps the framework's symbolic links.
 ditto "$BIN/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 
@@ -210,6 +217,7 @@ ENT
   sign() { codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$@"; }
   [[ -f "$APP/Contents/Resources/node" ]] && sign --entitlements build/node.entitlements "$APP/Contents/Resources/node"
   sign "$APP/Contents/MacOS/pi2-peer"
+  ./remote-helper.sh sign "$APP" "$SIGN_IDENTITY"
   # Sparkle from the inside out, as its documentation sets out, so all of it carries the same team as the app.
   sign "$SPARKLE/XPCServices/Installer.xpc"
   sign --preserve-metadata=entitlements "$SPARKLE/XPCServices/Downloader.xpc"
@@ -229,6 +237,7 @@ else
   # signature it came with.
   [[ -f "$APP/Contents/Resources/node" ]] && codesign --force --sign - "$APP/Contents/Resources/node" 2>/dev/null
   codesign --force --sign - "$APP/Contents/MacOS/pi2-peer"
+  ./remote-helper.sh sign "$APP"
   codesign --force --sign - "$APP" 2>/dev/null || true
 fi
 echo "Built $PWD/$APP ($MODE, $VERSION build $BUILD_NUMBER)"
