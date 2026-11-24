@@ -61,7 +61,7 @@ app/      SwiftUI app: the window (projects and chat mode), the menu bar, Quick 
           Sources/RemoteKit     the channel between a phone and pi² Remote (Noise, framing, pair and attach) and sealed items; Relay/, the relay's client; builds for iOS too
           Sources/pi2-remote-check checks RemoteKit against the published Noise and HPKE vectors and between two ends of its own; not part of the app
           Sources/pi2-remote-fuzz runs every RemoteKit parser that reads the network against mutated input; not part of the app
-          Sources/pi2-relay-check checks the relay's client in memory, and with --relay runs the protocol test against the relay on this computer; not part of the app
+          Sources/pi2-relay-check checks the relay's client in memory, with --relay runs the protocol test against the relay on this computer, and with --sealed the marker session of the sealed-bytes check; not part of the app
           Sources/LoginItemKit  the login item that starts the engine at login: when it must be installed again
           Sources/pi2-login-item-check checks LoginItemKit's decisions, with no plist or launchd call; not part of the app
           Web/transcript        the conversation page the app shows in a web view; Web/test, its tests
