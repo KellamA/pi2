@@ -8,7 +8,12 @@
 #
 #   (cd relay && npm ci) && (cd app && swift build --product pi2-relay-check) && scripts/relay-protocol-test
 #
-#   scripts/relay-protocol-test [--check PATH]   PATH: the pi2-relay-check to run (app/.build/debug/pi2-relay-check)
+#   scripts/relay-protocol-test [--sealed] [--check PATH]   PATH: the pi2-relay-check to run (app/.build/debug/pi2-relay-check)
+#
+# With --sealed, the check that the relay sees only sealed bytes (docs/iphone.md 10, #683) instead: the same relay with
+# the recorder at its edge (relay/test/sealed/wrangler.jsonc), a marker session (`pi2-relay-check --sealed`), the check
+# of what the relay saw, kept and left in its files (relay/test/sealed/check.mjs), which must find nothing; then a
+# marker planted in clear (`--plant`), which the check must find everywhere it went.
 #
 # Exits with the check's status: 0 when it passed, 1 when something failed, 2 when it could not start.
 
@@ -16,8 +21,10 @@ set -uo pipefail
 
 root="$(cd -P -- "$(dirname -- "$0")/.." && pwd -P)"
 check="$root/app/.build/debug/pi2-relay-check"
+sealed=""
 while [[ $# -gt 0 ]]; do
 	case $1 in
+		--sealed) sealed=1; shift ;;
 		--check) [[ $# -ge 2 ]] || { echo "relay-protocol-test: --check needs a path" >&2; exit 2; }; check=$2; shift 2 ;;
 		*) echo "relay-protocol-test: unknown argument $1" >&2; exit 2 ;;
 	esac
@@ -50,13 +57,18 @@ port=$(free_port) && inspector=$(free_port) || { echo "relay-protocol-test: no f
 
 # The settings are a test deployment's, none of them pi²'s: MIN_BUILD_MAC 100 and MIN_BUILD_DEVICE 1 are what
 # pi2-relay-check expects; the stand-in verifier takes no App Attest category, so `none`.
+config=test/protocol/wrangler.jsonc
+level=warn
+# The sealed check reads what the relay writes to the console from this output: at `log`, Wrangler passes on the
+# Worker's console.log, info and debug as well as warn and error (the check's canaries show it on every run).
+[[ -z $sealed ]] || { config=test/sealed/wrangler.jsonc; level=log; }
 # TMPDIR is this run's folder, so that isolated.mjs's throwaway home goes in it and is removed with it: its own clean-up
 # does not run when the process group is stopped.
 mkdir -p "$work/tmp"
 set -m
 TMPDIR="$work/tmp" node "$root/relay/scripts/isolated.mjs" wrangler dev \
-	--config test/protocol/wrangler.jsonc --local --ip 127.0.0.1 --port "$port" --inspector-port "$inspector" \
-	--persist-to "$work/state" --show-interactive-dev-session=false --log-level warn \
+	--config "$config" --local --ip 127.0.0.1 --port "$port" --inspector-port "$inspector" \
+	--persist-to "$work/state" --show-interactive-dev-session=false --log-level "$level" \
 	--var APP_ATTEST_TEAM_ID:ABCDE12345 --var APP_ATTEST_BUNDLE_ID:dev.pi2.test \
 	--var APP_ATTEST_ENVIRONMENTS:development --var APP_ATTEST_CATEGORIES:none \
 	--var MIN_BUILD_MAC:100 --var MIN_BUILD_DEVICE:1 \
@@ -65,11 +77,12 @@ TMPDIR="$work/tmp" node "$root/relay/scripts/isolated.mjs" wrangler dev \
 relay_pid=$!
 set +m
 
-# Ready once /v1 answers a request that is not a WebSocket with 426, as the relay does.
+# Ready once /v1 answers a request that is not a WebSocket with 426, as the relay does. With no User-Agent, so that the
+# sealed check, which holds every request the relay is given to the allow-list of its headers, takes this one too.
 ready=""
 for _ in $(seq 1 600); do
 	if ! kill -0 "$relay_pid" 2>/dev/null; then break; fi
-	status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$port/v1" || true)
+	status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 -H 'User-Agent:' "http://127.0.0.1:$port/v1" || true)
 	if [[ $status == 426 ]]; then ready=1; break; fi
 	sleep 0.2
 done
@@ -79,8 +92,20 @@ if [[ -z $ready ]]; then
 	exit 2
 fi
 
-"$check" --relay "ws://127.0.0.1:$port/v1"
-status=$?
+if [[ -z $sealed ]]; then
+	"$check" --relay "ws://127.0.0.1:$port/v1"
+	status=$?
+else
+	# The marker session, then the check of what the relay saw and kept, which must find nothing; then a marker planted in
+	# clear, which the check must find. The relay's state is the folder Wrangler persists to.
+	markers="$root/relay/test/sealed/markers.json"
+	sealed_check() { node "$root/relay/test/sealed/check.mjs" --relay "http://127.0.0.1:$port" --state "$work/state" --markers "$markers" --session "$work/session.json" --output "$work/relay.log" "$@"; }
+	"$check" --sealed "ws://127.0.0.1:$port/v1" --markers "$markers" --out "$work/session.json" \
+		&& sealed_check \
+		&& "$check" --plant "ws://127.0.0.1:$port/v1" --out "$work/planted.json" \
+		&& sealed_check --planted "$work/planted.json"
+	status=$?
+fi
 if [[ $status -ne 0 ]]; then
 	echo "relay-protocol-test: the relay's output:" >&2
 	cat "$work/relay.log" >&2
