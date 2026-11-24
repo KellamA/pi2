@@ -12,23 +12,25 @@ import PiModels
 /// an intent uses is the one `Pi2App.init` made, the same one the screens use, registered here:
 ///
 /// ```swift
-/// IntentSessions.register(session)   // in Pi2App.init, after Launch.start(session)
+/// IntentSessions.register(session, isOpen: { link.isOpenForIntents })   // in Pi2App.init, after Launch.start(link)
 /// ```
 ///
-/// That line is `App/`'s (#680) to add, and the session's Face ID with it (`isOpen`, below). Until it is there, an
-/// intent finds nothing registered and makes a session as `Pi2App.init` does (`AppSession()` and `Launch.start`), so
-/// that it reaches the same Mac, recording or demo the app would. While the app's window is also open that is a second
-/// connection beside the screens' one, which the registration ends.
+/// with the session's Face ID (`isOpen`, below): `PhoneLink` opens the store and the connection when Face ID opens a
+/// session, as for the screens, and runs `CachedTransport` while the Mac is out of reach. Only a process that registered
+/// nothing (none does since #901) makes a session of its own as `Pi2App.init` does (`AppSession()` and
+/// `Launch.start`), so that it reaches the same recording or demo the app would.
 @MainActor
 enum IntentSessions {
     /// The registered session and what it says of Face ID.
     struct Registration {
         let session: AppSession
-        /// Whether a session Face ID opened is open now (docs/iphone.md 4.5): nil while the app has no such session to
-        /// ask about. `AppSession` has none yet (#680), and no screen of the app asks Face ID before it sends, so neither
-        /// does an intent; once it has one, `register` is given it, and an intent run while it is closed opens pi² for
-        /// Face ID before it sends anything.
+        /// Whether a session Face ID opened is open now, or nothing is paired (docs/iphone.md 4.5;
+        /// `PhoneLink.isOpenForIntents`): an intent run while it is closed opens pi² for Face ID before it sends or reads
+        /// anything. Nil asks nothing, as for a test's session.
         let isOpen: (@MainActor () -> Bool)?
+        /// Whether a session Face ID just opened is still being put on its transport (`PhoneLink.isSettlingForIntents`):
+        /// meanwhile the client of the locked session, closed, is not taken for a Mac out of reach.
+        var settling: (@MainActor () -> Bool)? = nil
     }
 
     private(set) static var registration: Registration?
@@ -43,8 +45,8 @@ enum IntentSessions {
     }
 
     /// Registers the app's session for every intent, with whether Face ID's session is open, once `AppSession` keeps one.
-    static func register(_ session: AppSession, isOpen: (@MainActor () -> Bool)? = nil) {
-        registration = Registration(session: session, isOpen: isOpen)
+    static func register(_ session: AppSession, isOpen: (@MainActor () -> Bool)? = nil, settling: (@MainActor () -> Bool)? = nil) {
+        registration = Registration(session: session, isOpen: isOpen, settling: settling)
         keepPhrasesInStep(with: session)
     }
 
@@ -58,7 +60,7 @@ enum IntentSessions {
         if let registration { return registration }
         let session = AppSession()
         Launch.start(session)
-        session.note("An intent made its own session: Pi2App.init registers none yet (IntentSessions.register, #701).")
+        session.note("An intent made its own session: nothing registered one (IntentSessions.register, in Pi2App.init).")
         register(session)
         return registration!
     }
@@ -83,6 +85,7 @@ enum IntentSessions {
     /// Waits until the session's client answers, or says why it does not.
     static func reach(_ session: AppSession) async -> Reach {
         let end = ContinuousClock.now + connectWait
+        let settling = registration?.session === session ? registration?.settling : nil
         while true {
             if session.connection == .notPaired { return .notPaired }
             if session.engine.status == .connected {
@@ -94,7 +97,7 @@ enum IntentSessions {
                 if case .outOfReach = session.connection { return .connected(outOfReach: true) }
                 return .connected(outOfReach: false)
             }
-            if case .outOfReach = session.connection, session.engine.transport == nil { return .unreachable }
+            if case .outOfReach = session.connection, session.engine.transport == nil, settling?() != true { return .unreachable }
             if ContinuousClock.now >= end { return .unreachable }
             try? await Task.sleep(for: .milliseconds(50))
         }
