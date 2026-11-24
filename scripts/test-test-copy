@@ -73,7 +73,7 @@ expect "is too long" reopen test-7-with-a-suffix-much-too-long-for-a-socket
 expect "--show needs what to open on" reopen test-7 --show
 expect "--show takes one line" reopen test-7 --show $'one\ntwo'
 expect "unknown option --bogus" reopen test-7 --bogus
-for command in show size sidebar choose answer fill answer-of can-click; do
+for command in show size sidebar choose answer fill answer-of can-click pair attach; do
 	expect "a suffix is required" "$command"
 	expect "is not a suffix" "$command" ../pi2
 	expect "'dev' is the suffix every development build has" "$command" dev
@@ -99,6 +99,19 @@ expect "use: scripts/test-copy answer" answer test-7 8 always
 expect "use: scripts/test-copy fill" fill test-7 600 extra
 expect "use: scripts/test-copy choose" choose test-7
 expect "use: scripts/test-copy can-click" can-click test-7 extra
+# A phone in the simulator (#681): pair and attach's options, checked before anything is asked of a copy.
+for command in pair attach; do
+	expect "unknown option --bogus" "$command" test-7 --bogus
+	expect "--sim needs the name of a simulator" "$command" test-7 --sim
+	expect "--show needs the phone's route" "$command" test-7 --show
+	expect "--show takes one line" "$command" test-7 --show $'home\nsettings'
+	expect "--env needs NAME=VALUE for the phone's app" "$command" test-7 --env
+	expect "--env needs NAME=VALUE for the phone's app" "$command" test-7 --env PI2_HUB_ACT
+	expect "--env needs NAME=VALUE for the phone's app" "$command" test-7 --env 'lower=case'
+	for key in PI2_PAIR PI2_TRANSPORT PI2_SHOW; do
+		expect "--env does not take $key: this script sets it" "$command" test-7 --env "$key=x"
+	done
+done
 expect "a suffix is required" last-copy
 expect "is not a suffix" last-copy ../pi2
 expect "use: scripts/test-copy last-copy" last-copy test-7 extra
@@ -181,6 +194,8 @@ expect "--menu needs the label" start test-8 --menu
 expect "--menu needs the label" start test-8 --menu ""
 expect "--menu takes one line" start test-8 --menu $'Atlas\nForge'
 expect "unknown option --bogus" start test-8 --menu "Fix the login bug" --bogus
+expect "unknown option --bogus" start test-8 --remote --bogus
+expect "unknown option --bogus" start test-8 --fill project --remote --show 'project:Demo project' --bogus
 rmdir "$root/app/build/test-copies/test-7" "$root/app/build/test-copies"
 # The stand-in build names no Node, which --fill needs to start the copy's engine before the app; refused before the
 # suffix is claimed.
@@ -208,6 +223,9 @@ PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" last-
 expect "no copy named test-7 was started from this checkout" stop test-7
 expect "no copy named test-7 was started from this checkout" status test-7
 expect "no copy named test-7 was started from this checkout" can-click test-7
+expect "no copy named test-7 was started from this checkout" pair test-7
+PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" pair test-7 --sim pi2-7 --show home --env PI2_HUB_ACT=send:Hello
+expect "no copy named test-7 was started from this checkout" attach test-7
 expect "no copy named test-7 was started from this checkout" call test-7 engine.info
 # An inherited data-folder override cannot make an unowned copy callable.
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" call test-7 engine.info
@@ -254,6 +272,64 @@ elif [[ -n $unfenced ]]; then
 	failures=$((failures + 1))
 else
 	echo "ok: every demo switch start --env allows is a test switch the engine fences"
+fi
+
+# start --remote gives the copy's engine the one switch with which it takes a pairing claim with no attestation, from
+# the simulator (#681): a test switch the engine fences, read in devices.ts together with testCopySuffix, the check
+# of PI2_TEST_COPY against the copy's own folders that main.ts makes for its fixtures.
+devices_src="$(dirname -- "$script")/../engine/src/devices.ts"
+if ! grep -qxF 'REMOTE_ENV=PI2_PAIR_UNATTESTED=1' "$script" ||
+	! grep -qF '	"PI2_PAIR_UNATTESTED",' "$(dirname -- "$script")/../engine/src/testswitches.ts" ||
+	! grep -qF 'testCopySuffix() !== undefined && testSwitch("PI2_PAIR_UNATTESTED") === "1"' "$devices_src" ||
+	! grep -qF 'const testSuffix = testCopySuffix();' "$(dirname -- "$script")/../engine/src/main.ts"; then
+	echo "FAIL: test-copy start --remote, TEST_SWITCHES and devices.ts no longer agree on PI2_PAIR_UNATTESTED"
+	failures=$((failures + 1))
+else
+	echo "ok: start --remote passes the switch devices.ts reads, which the engine fences"
+fi
+
+# pair gives the phone no code unless the copy's pi² Remote has sockets on 127.0.0.1 alone, and closes the pairing it
+# opened first (#681): its two functions, as test-copy has them, on a stand-in lsof, engine and helper pid.
+loopback_functions=$(sed -n '/^loopback_helper_problem() {$/,/^}$/p; /^require_loopback_helper() {$/,/^}$/p' "$script")
+lsof_header='COMMAND    PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME'
+# loopback <what the stand-in lsof prints, or "fail">: what require_loopback_helper says; the stand-in engine's
+# requests go to $T/loopback-calls.
+loopback() {
+	rm -f "$T/loopback-calls"
+	(
+		LSOF_OUT=$1 DATA=$T/data
+		die() { echo "test-copy: $*"; exit 1; }
+		tidy() { printf '%s' "$1"; }
+		helper_pids() { echo 4242; }
+		engine_call() { echo "$1" >>"$T/loopback-calls"; }
+		lsof() { [[ $LSOF_OUT != fail ]] || return 1; printf '%s\n' "$LSOF_OUT"; }
+		eval "$loopback_functions"
+		require_loopback_helper
+		echo "went on"
+	) 2>&1
+}
+for case in "[::1]:50000 (LISTEN)|an IPv6 loopback" "*:50000 (LISTEN)|all addresses" "0.0.0.0:50000 (LISTEN)|0.0.0.0" \
+	"127.0.0.1:50000->10.0.0.2:443 (ESTABLISHED)|a connection off this Mac" "fail|lsof failing" "|lsof saying nothing"; do
+	name=${case%%|*} what=${case#*|}
+	if [[ $name == fail ]]; then given=fail
+	elif [[ -z $name ]]; then given=$lsof_header
+	else given="$lsof_header"$'\n'"pi2      4242 me     5u  IPv4 0x1      0t0  TCP 127.0.0.1:50001 (LISTEN)"$'\n'"pi2      4242 me     6u  IPv6 0x2      0t0  TCP $name"
+	fi
+	out=$(loopback "$given")
+	if [[ $out == *"the pairing was closed, and nothing was given to the phone"* && $out != *"went on"* &&
+		$(cat "$T/loopback-calls" 2>/dev/null) == devices.pairCancel ]]; then
+		echo "ok: pair closes its pairing and stops on $what"
+	else
+		echo "FAIL: pair on $what: $out; the engine was sent: $(cat "$T/loopback-calls" 2>/dev/null)"
+		failures=$((failures + 1))
+	fi
+done
+out=$(loopback "$lsof_header"$'\n'"pi2      4242 me     5u  IPv4 0x1      0t0  TCP 127.0.0.1:50001 (LISTEN)"$'\n'"pi2      4242 me     6u  IPv4 0x2      0t0  TCP 127.0.0.1:50001->127.0.0.1:50002 (ESTABLISHED)")
+if [[ $out == "went on" && ! -e $T/loopback-calls ]]; then
+	echo "ok: pair goes on when every socket of pi² Remote is on 127.0.0.1, and closes nothing"
+else
+	echo "FAIL: pair on sockets all on 127.0.0.1: $out"
+	failures=$((failures + 1))
 fi
 
 # start --menu prints the file the app writes for PI2_MENU, by a name each keeps for itself.
@@ -504,6 +580,20 @@ HOME="$T/home" expect "has no recorded app running" choose test-7 cancel
 HOME="$T/home" expect "has no recorded app running" can-click test-7
 printf '%s\n' "engine_pid=$$" "engine_start=$(LC_ALL=en_US.UTF-8 ps -o lstart= -p $$)" \
 	"engine_exe=$(LC_ALL=en_US.UTF-8 ps -o comm= -p $$)" >>"$root/app/build/test-copies/test-7/state"
+# pair and attach need a copy started with --remote, attach a phone paired, and both a simulator iphone-sim made.
+HOME="$T/home" expect "was not started with --remote" pair test-7
+HOME="$T/home" expect "was not started with --remote" attach test-7
+printf '%s\n' remote=1 >>"$root/app/build/test-copies/test-7/state"
+HOME="$T/home" expect "no phone was paired with test-7" attach test-7
+HOME="$T/home" expect "no simulator to pair: make one with scripts/iphone-sim create pi2-7" pair test-7
+HOME="$T/home" expect "no simulator to pair: make one with scripts/iphone-sim create pi2-other" pair test-7 --sim pi2-other
+out=$(HOME="$T/home" "$copy" status test-7 2>&1)
+if [[ $out == *"remote access     on (start --remote)"* ]]; then
+	echo "ok: test-copy status says a copy was started with --remote"
+else
+	echo "FAIL: test-copy status of a copy started with --remote said: $out"
+	failures=$((failures + 1))
+fi
 /usr/libexec/PlistBuddy -c 'Set :PI2EngineMain /elsewhere/main.ts' "$dev/Contents/Info.plist"
 HOME="$T/home" expect "not this checkout's" reopen test-7
 /usr/libexec/PlistBuddy -c "Set :PI2EngineMain $root/engine/src/main.ts" "$dev/Contents/Info.plist"
