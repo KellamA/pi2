@@ -24,6 +24,36 @@ function tick(): void {
 	vi.setSystemTime(Date.now() + 20);
 }
 
+/** What an end's day holds of bytes, as the pairing's counters have it now. */
+async function dayBytes(pairing: string, end: string): Promise<number> {
+	return runInDurableObject(pairingObject(pairing), (instance: Pairing) => {
+		return (instance as unknown as { counters: { days: Record<string, { bytes: number }> } }).counters.days[end]?.bytes ?? 0;
+	});
+}
+
+/** Takes, as an honest reader does, and acknowledges everything the take brought; gives how many there were. */
+async function takeAndAcknowledge(client: Client): Promise<number> {
+	client.send({ take: {} });
+	const ids: string[] = [];
+	for (;;) {
+		const answer = await client.json();
+		if ("mail" in answer) continue;
+		expect(answer).not.toHaveProperty("busy");
+		if ("taken" in answer) break;
+		ids.push(answer.item?.id ?? answer.state.id);
+	}
+	if (ids.length > 0) {
+		client.send({ took: { ids } });
+		for (;;) {
+			const answer = await client.json();
+			if ("mail" in answer) continue;
+			expect(answer).toEqual({ ok: { what: "took" } });
+			break;
+		}
+	}
+	return ids.length;
+}
+
 /** Sends a take, and gives what it handed over, up to and with its `taken`. */
 async function take(client: Client): Promise<any[]> {
 	client.send({ take: {} });
@@ -162,7 +192,7 @@ describe("the mailbox", () => {
 		expect(await take(device.client)).toEqual([{ taken: { count: 0 } }]);
 	});
 
-	it("counts what a take hands over against its reader's day, so that a reader that never acknowledges is held off", async () => {
+	it("charges a reader for what a take hands over again, never the first time, so that one that never acknowledges is held off", async () => {
 		const mac = await register();
 		const phone = await addPhone(mac);
 		const device = await phoneHello(mac.pairing, phone);
@@ -173,10 +203,12 @@ describe("the mailbox", () => {
 			expect(await device.client.json()).toEqual({ ok: { what: "put" } });
 			expect(await mac.client.json()).toEqual({ mail: {} });
 		}
-		// A day of 1 MB: each take hands over some 220 KB, so the fifth fills it, and the next message is held off.
+		// A day of 1 MB: the first take is the writer's, free to the Mac; each after it hands the same 220 KB over again,
+		// charged to the Mac, so the sixth fills its day and the next message is held off.
 		await runInDurableObject(pairingObject(mac.pairing), (instance: Pairing) => {
 			instance.limits = { ...LIMITS, bytesPerDay: 1024 * 1024 };
 		});
+		const before = await dayBytes(mac.pairing, "mac");
 		let takes = 0;
 		for (;;) {
 			vi.setSystemTime(Date.now() + 1000);
@@ -186,10 +218,86 @@ describe("the mailbox", () => {
 				break;
 			}
 			expect(answers.at(-1)).toEqual({ taken: { count: 10 } });
+			if (takes === 0) expect(await dayBytes(mac.pairing, "mac")).toBe(before + JSON.stringify({ take: {} }).length);
 			takes += 1;
 		}
-		expect(takes).toBe(5);
+		expect(takes).toBe(6);
 		expect(await mac.client.next()).toMatchObject({ reason: "busy" });
+	});
+
+	it("never spends the Mac's day on what phones write to it, when it takes and acknowledges", async () => {
+		const mac = await register();
+		const phones = [await addPhone(mac), await addPhone(mac)];
+		const devices = [];
+		for (const phone of phones) {
+			devices.push(await phoneHello(mac.pairing, phone));
+			expect(await mac.client.json()).toEqual({ online: { device: phone.device } });
+		}
+		// A day of 2 MB for every end: two phones write 1.3 MB each to the Mac, which, charged for it, would be past its day
+		// at the ninth round.
+		await runInDurableObject(pairingObject(mac.pairing), (instance: Pairing) => {
+			instance.limits = { ...LIMITS, bytesPerDay: 2 * 1024 * 1024 };
+		});
+		for (let round = 0; round < 15; round++) {
+			vi.setSystemTime(Date.now() + 1000);
+			for (const device of devices) {
+				for (let index = 0; index < 4; index++) {
+					tick();
+					device.client.send({ put: { to: "mac", id: itemId(), item: base64url(sealedItem(16 * 1024)) } });
+					expect(await device.client.json()).toEqual({ ok: { what: "put" } });
+				}
+			}
+			tick();
+			expect(await takeAndAcknowledge(mac.client)).toBe(8);
+		}
+		expect(await dayBytes(mac.pairing, "mac")).toBeLessThan(16 * 1024);
+		for (const phone of phones) expect(await dayBytes(mac.pairing, phone.device)).toBeGreaterThan(1024 * 1024);
+	});
+
+	it("never spends a phone's day on what the Mac writes to it, when it takes and acknowledges", async () => {
+		const mac = await register();
+		const phone = await addPhone(mac);
+		const device = await phoneHello(mac.pairing, phone);
+		expect(await mac.client.json()).toEqual({ online: { device: phone.device } });
+		for (let round = 0; round < 10; round++) {
+			vi.setSystemTime(Date.now() + 1000);
+			for (let index = 0; index < 4; index++) {
+				tick();
+				mac.client.send({ put: { to: phone.device, id: itemId(), item: base64url(sealedItem(16 * 1024)) } });
+				expect(await mac.client.json()).toEqual({ ok: { what: "put" } });
+			}
+			mac.client.send({ state: { device: phone.device, id: itemId(), item: base64url(sealedItem(16 * 1024)) } });
+			expect(await mac.client.json()).toEqual({ ok: { what: "state" } });
+			tick();
+			expect(await takeAndAcknowledge(device.client)).toBe(5);
+		}
+		expect(await dayBytes(mac.pairing, phone.device)).toBeLessThan(16 * 1024);
+		expect(await dayBytes(mac.pairing, "mac")).toBeGreaterThan(800 * 1024);
+	});
+
+	it("charges a state handed over again, and not a new one in its place", async () => {
+		const mac = await register();
+		const phone = await addPhone(mac);
+		const device = await phoneHello(mac.pairing, phone);
+		expect(await mac.client.json()).toEqual({ online: { device: phone.device } });
+		mac.client.send({ state: { device: phone.device, id: itemId(), item: base64url(sealedItem(16 * 1024)) } });
+		expect(await mac.client.json()).toEqual({ ok: { what: "state" } });
+		expect(await device.client.json()).toEqual({ mail: {} });
+		const start = await dayBytes(mac.pairing, phone.device);
+		const take1 = JSON.stringify({ take: {} }).length;
+		tick();
+		const first = await take(device.client);
+		expect(await dayBytes(mac.pairing, phone.device)).toBe(start + take1);
+		tick();
+		expect(await take(device.client)).toEqual(first);
+		expect(await dayBytes(mac.pairing, phone.device)).toBe(start + 2 * take1 + JSON.stringify(first[0]).length);
+		// A new state in its place has not been handed over: free again.
+		mac.client.send({ state: { device: phone.device, id: itemId(), item: base64url(sealedItem(16 * 1024)) } });
+		expect(await mac.client.json()).toEqual({ ok: { what: "state" } });
+		expect(await device.client.json()).toEqual({ mail: {} });
+		tick();
+		await take(device.client);
+		expect(await dayBytes(mac.pairing, phone.device)).toBe(start + 3 * take1 + JSON.stringify(first[0]).length);
 	});
 
 	it("keeps the Mac's items and latest state for a phone, and tells a connected reader that mail came", async () => {

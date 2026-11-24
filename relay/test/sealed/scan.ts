@@ -547,8 +547,9 @@ const STORED: Record<Stored["object"], { kv: Record<string, Kind>; tables: Recor
 			days: (value) => typeof value === "object" && value !== null && Object.entries(value).every(([end, day]) => (end === "mac" || device(end)) && shape(DAY)(day)),
 		},
 		tables: {
-			items: { reader, writer: reader, id: itemId, item: storedSealed, presence: (value) => value === 0 || value === 1, expires: time },
-			states: { device, id: itemId, item: storedSealed, expires: time },
+			// `handed`: whether a take handed it over before, so that only what is handed over again is charged (#806).
+			items: { reader, writer: reader, id: itemId, item: storedSealed, presence: (value) => value === 0 || value === 1, expires: time, handed: (value) => value === 0 || value === 1 },
+			states: { device, id: itemId, item: storedSealed, expires: time, handed: (value) => value === 0 || value === 1 },
 		},
 	},
 	attestKey: { kv: { tie: shape({ pairing, device, until: time }) }, tables: {} },

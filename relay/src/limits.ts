@@ -86,15 +86,19 @@ export class Counters {
 	}
 
 	/**
-	 * Adds `size` bytes to `sender`'s day, with no message and no verdict: what a take handed over to it (pairing.ts,
-	 * `take`). Its next message is held off if its day is past.
+	 * Adds `size` bytes to `sender`'s day, with no message and no verdict: what a take handed over to it again
+	 * (pairing.ts, `take`). Its next message is held off if its day is past.
+	 *
+	 * Weighed for saving as messages of that size would be, one for each 64 KB begun, so that what is not yet saved is
+	 * at most some 7 MB of the day, as for messages (100 of 70 KB at most): a take of 2 MB counts 34, not 1, and an
+	 * object that leaves memory cannot forget dozens of full takes.
 	 */
 	addToDay(sender: string, size: number, now: number): void {
 		const today = dayOf(now);
 		let day = this.days[sender];
 		if (day === undefined || day.day !== today) day = this.days[sender] = { day: today, messages: 0, bytes: 0 };
 		day.bytes += size;
-		this.unsaved += 1;
+		this.unsaved += Math.max(1, Math.ceil(size / (64 * 1024)));
 	}
 
 	/** Forgets an end that is gone: a removed device, a slot let go. */

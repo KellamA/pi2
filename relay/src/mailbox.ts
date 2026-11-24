@@ -17,7 +17,9 @@ export const MAILBOX = {
 	deviceItems: 100,
 };
 
-export type Item = { writer: string; id: string; item: Uint8Array<ArrayBuffer>; presence: boolean };
+/** An item as a take hands it over; `handed` if a take handed it over before (and its reader has not acknowledged it). */
+export type Item = { writer: string; id: string; item: Uint8Array<ArrayBuffer>; presence: boolean; handed: boolean };
+export type StateItem = { id: string; item: Uint8Array<ArrayBuffer>; handed: boolean };
 export type Refusal = "exists" | "mailbox-full";
 
 export class Mailbox {
@@ -27,9 +29,11 @@ export class Mailbox {
 	create(): void {
 		this.sql.exec(
 			"CREATE TABLE IF NOT EXISTS items (reader TEXT NOT NULL, writer TEXT NOT NULL, id TEXT NOT NULL, item BLOB NOT NULL, " +
-				"presence INTEGER NOT NULL, expires INTEGER NOT NULL, PRIMARY KEY (reader, id))",
+				"presence INTEGER NOT NULL, expires INTEGER NOT NULL, handed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (reader, id))",
 		);
-		this.sql.exec("CREATE TABLE IF NOT EXISTS states (device TEXT PRIMARY KEY, id TEXT NOT NULL, item BLOB NOT NULL, expires INTEGER NOT NULL)");
+		this.sql.exec(
+			"CREATE TABLE IF NOT EXISTS states (device TEXT PRIMARY KEY, id TEXT NOT NULL, item BLOB NOT NULL, expires INTEGER NOT NULL, handed INTEGER NOT NULL DEFAULT 0)",
+		);
 	}
 
 	/** Keeps an item for `reader` ("mac" or a device's id) until `expires`, if there is room. */
@@ -50,25 +54,37 @@ export class Mailbox {
 		return null;
 	}
 
-	/** Keeps the Mac's latest state for a device, in place of the one before. */
+	/** Keeps the Mac's latest state for a device, in place of the one before: a new state, never handed over. */
 	setState(device: string, id: string, item: Uint8Array<ArrayBuffer>, expires: number): void {
-		this.sql.exec("INSERT OR REPLACE INTO states (device, id, item, expires) VALUES (?, ?, ?, ?)", device, id, item.buffer, expires);
+		this.sql.exec("INSERT OR REPLACE INTO states (device, id, item, expires, handed) VALUES (?, ?, ?, ?, 0)", device, id, item.buffer, expires);
 	}
 
 	/**
 	 * What waits for `reader`, oldest first, and its state for a device. Nothing is deleted: what the reader has kept, it
 	 * names in `took`, and the rest is handed over again at the next take, until it expires.
+	 *
+	 * Each says whether a take handed it over before (`handed`), and what this take hands over for the first time is
+	 * marked so, so that only what a reader is handed again is charged to it (pairing.ts, `take`). The mark is one
+	 * statement for the items and one for the state, run only when there is something new, and each writes only the new
+	 * rows: at most one row for each item put, which the put wrote already, and none for a take that brings nothing new.
 	 */
-	take(reader: string, now: number): { items: Item[]; state: { id: string; item: Uint8Array<ArrayBuffer> } | null } {
+	take(reader: string, now: number): { items: Item[]; state: StateItem | null } {
 		this.expire(now);
 		const items = this.sql
-			.exec<{ writer: string; id: string; item: ArrayBuffer; presence: number }>("SELECT writer, id, item, presence FROM items WHERE reader = ? ORDER BY rowid", reader)
+			.exec<{ writer: string; id: string; item: ArrayBuffer; presence: number; handed: number }>(
+				"SELECT writer, id, item, presence, handed FROM items WHERE reader = ? ORDER BY rowid",
+				reader,
+			)
 			.toArray()
-			.map((row) => ({ writer: row.writer, id: row.id, item: new Uint8Array(row.item), presence: row.presence === 1 }));
-		let state = null;
+			.map((row) => ({ writer: row.writer, id: row.id, item: new Uint8Array(row.item), presence: row.presence === 1, handed: row.handed === 1 }));
+		if (items.some((item) => !item.handed)) this.sql.exec("UPDATE items SET handed = 1 WHERE reader = ? AND handed = 0", reader);
+		let state: StateItem | null = null;
 		if (reader !== "mac") {
-			const row = this.sql.exec<{ id: string; item: ArrayBuffer }>("SELECT id, item FROM states WHERE device = ?", reader).toArray()[0];
-			if (row !== undefined) state = { id: row.id, item: new Uint8Array(row.item) };
+			const row = this.sql.exec<{ id: string; item: ArrayBuffer; handed: number }>("SELECT id, item, handed FROM states WHERE device = ?", reader).toArray()[0];
+			if (row !== undefined) {
+				state = { id: row.id, item: new Uint8Array(row.item), handed: row.handed === 1 };
+				if (!state.handed) this.sql.exec("UPDATE states SET handed = 1 WHERE device = ?", reader);
+			}
 		}
 		return { items, state };
 	}
