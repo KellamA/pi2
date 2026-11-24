@@ -123,6 +123,18 @@ package enum AtPoint {
         return WindowChoice.innermost(containing: point, in: listed.map(\.frame)).map { listed[$0].element }
     }
 
+    /// Whether a parked copy's hit is something in the window read, `window`, so that `target` acts on it as it is:
+    /// an element of the copy's own process (`ofCopy`) inside that window, by its enclosing window (`enclosing`, nil
+    /// where it has none). Where a hit test finds none of the app's windows at the point, as off the screen, it can
+    /// answer with the application element, which has no window. That once counted as in, so the listed control at
+    /// the point was never reached, and the click went as a real one, which the copy ignored (#879). So an element
+    /// with no window counts as outside, and so does the window itself, which names nothing in it: either way the
+    /// listed control there is taken. With no window read, nothing counts as in it.
+    package static func inWindow<E: Equatable>(_ hit: E, ofCopy: Bool, enclosing: E?, window: E?) -> Bool {
+        guard ofCopy, let window else { return false }
+        return hit != window && enclosing == window
+    }
+
     /// Whether `chosen`, what the approval card named, is still what is at the point after the wait: `target` gives
     /// it again now (`now`), and where it was a listed control, not the hit test's own find, the control is still
     /// there and still holds the point (`frameNow`, read again; nil once it is gone).
