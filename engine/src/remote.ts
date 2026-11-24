@@ -65,6 +65,7 @@ import {
 	remoteHooks,
 	sessionsChanged,
 	summarize,
+	DEVICE_FAULT,
 } from "./devices.ts";
 import type { SwitchName } from "./projects.ts";
 import { pushes } from "./pushes.ts";
@@ -331,7 +332,7 @@ function heard(current: Helper, line: string): void {
 		return;
 	}
 	if (typeof message !== "object" || message === null || Array.isArray(message)) return;
-	if (typeof message.session === "string") void deviceLine(message.session, message.message);
+	if (typeof message.session === "string") void deviceLine(message.session, message.message).catch(deviceLineFailed(message.session, message.message));
 	else void helperRequest(current, message);
 }
 
@@ -586,6 +587,34 @@ export function forDevice(line: string): string | null {
 /** What a device is answered when the answer itself could not be made fit to send it. */
 export const ANSWER_NOT_SENT = "The answer could not be sent to the phone. Look on the Mac.";
 
+/** What a device is answered when its line failed in the engine, outside the request's own handling. */
+export const DEVICE_LINE_FAILED = "The Mac could not take this request. Look on the Mac.";
+
+/**
+ * For a device's line that failed outside its request's own `try` (a fault of the engine's, never left to end it:
+ * main.ts stops on an unhandled rejection): logged, and the line refused, as a request that failed is, with words of
+ * its own rather than the fault's. The session stays open: the fault is the engine's, in this one request, and the
+ * device is still the one that attached, so closing its session would only ask the person for Face ID again, for the
+ * same request to fail again.
+ */
+function deviceLineFailed(id: string, message: unknown): (error: unknown) => void {
+	return (error) => {
+		log("remote: a device's request failed in the engine:", error instanceof Error ? (error.stack ?? error.message) : error);
+		try {
+			const given = typeof message === "object" && message !== null && !Array.isArray(message) ? (message as { id?: unknown }).id : undefined;
+			const body = { id: given ?? null, error: DEVICE_LINE_FAILED };
+			const session = sessions.get(id);
+			if (session !== undefined) send(session.client, body);
+			else {
+				const out = forDevice(JSON.stringify(body));
+				if (out !== null) write(helper, `{"session":${JSON.stringify(id)},"message":${out}}\n`);
+			}
+		} catch (again) {
+			log("remote: and its refusal could not be sent:", again instanceof Error ? again.message : again);
+		}
+	};
+}
+
 /** Endpoints by name only: their addresses often carry a token typed outside the secret fields (5.7). */
 function endpointsByName(message: Record<string, unknown>): void {
 	const providers = Array.isArray(message.providers) ? (message.providers as { endpoint?: { id?: unknown; name?: unknown } | null; ask?: { can?: boolean; url?: unknown } | null }[]) : [];
@@ -626,6 +655,7 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
 	const gate = { path: session.path, approvalSwitch, approvalHidden };
 	const answer = deviceMay(method, params as Params, gate);
 	const summary = summarize(method, params as Params);
+	if (DEVICE_FAULT !== undefined && method === DEVICE_FAULT) throw new Error("PI2_DEVICE_FAULT: the device's line");
 	const record = (outcome: "done" | "refused" | "failed", why?: string) =>
 		void logDevice({ device: device.id, path: session.path, method, summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }).catch((error) =>
 			log("devices: the log could not be written:", error instanceof Error ? error.message : error),

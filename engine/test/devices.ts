@@ -23,9 +23,9 @@ import { createModels } from "@earendil-works/pi-ai";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { allowsHiddenApproval, checkDeviceLists, deviceLogged, HIDDEN_FROM_THE_PHONE, deviceMay, devicePlacement, type DeviceSession, ONLY_FROM_THE_HELPER, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID, PERSON_REQUESTS } from "../src/answers.ts";
-import { APPROVAL_DEPTH, checkRequestItem, type Device, deviceRequests, DeviceLog, Devices, devicesState, flushDeviceLog, fromBase64url, hidesSomething, logDevice, macNameNow, pairClaim, PART_HIDDEN, remoteHooks, shownName, TOO_DEEP, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
+import { APPROVAL_DEPTH, checkRequestItem, type Device, deviceRequests, DeviceLog, Devices, devicesState, flushDeviceLog, fromBase64url, hidesSomething, logDevice, macNameNow, pairClaim, PART_HIDDEN, remoteHooks, revokedWatchers, shownName, summarize, TOO_DEEP, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
 import type { Client } from "../src/clients.ts";
-import { ANSWER_NOT_SENT, forDevice, MAX_HELPER_LINE, SESSION_OVER } from "../src/remote.ts";
+import { ANSWER_NOT_SENT, DEVICE_LINE_FAILED, forDevice, MAX_HELPER_LINE, SESSION_OVER } from "../src/remote.ts";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "100000";
@@ -487,6 +487,67 @@ class Phone {
 	step("a pairing whose device cannot be saved is refused to the phone, not left without an answer");
 }
 
+// ---- A log line never throws, whatever a device sends (#895): it runs before the request's own `try`
+
+{
+	assert.equal(summarize("pushes.set", { project: null }), "Notifications: unquieted a project", "a project of null");
+	assert.equal(summarize("pushes.set", { project: "x", needs: true }), "Notifications: needs on, unquieted a project", "a project that is a string");
+	const cannotBeWords = { toString: 1, valueOf: 1 };
+	assert.throws(() => String(cannotBeWords), TypeError, "String of what a device can send can throw");
+	assert.equal(summarize("conversation.rename", { title: cannotBeWords }), "Renamed a conversation to “?”");
+	assert.equal(summarize("github.merge", { number: cannotBeWords }), "Merged #?");
+	assert.equal(summarize("work.act", { action: cannotBeWords, id: cannotBeWords }), "? work #?");
+	// And a line that throws all the same is the method's name alone.
+	const throwing = Object.defineProperty({}, "needs", {
+		enumerable: true,
+		get() {
+			throw new Error("A getter's fault.");
+		},
+	});
+	assert.equal(summarize("pushes.set", throwing), "pushes.set");
+	step("a log line is made of whatever a device sends (null, an object for a string) and never throws: at worst it is the method's name");
+}
+
+// ---- A revocation reaches pi² Remote and the device's sessions whatever its watchers do (#895)
+
+{
+	const harness = await Harness.open(await openNodeSqliteStorage(join(mkdtempSync(join(work, "revoke-")), "session.sqlite")), { registry: createRegistry(), models: createModels() }, context);
+	const phone = new Phone();
+	phone.id = `dev_${b64url(randomBytes(16))}`;
+	await harness.commit(async (tx) => {
+		const doc = await tx.doc(Devices);
+		doc.pairing = b64url(randomBytes(16));
+		doc.remote = { ...doc.remote, preview: true, on: true };
+		doc.devices.push({ id: phone.id, ...phone.description(), pendingPresenceKey: null, attestKeyId: phone.keyId, suspendedAt: null, pairedAt: Date.now(), lastSeenAt: null, lastPath: null, revokedAt: null });
+	}, context);
+	const logged: string[] = [];
+	await wireDevices({ harness, context, log: (...parts) => logged.push(parts.join(" ")), release: false, names: { conversation: () => undefined, project: () => undefined } });
+	const told: any[] = [];
+	const closed: string[] = [];
+	Object.assign(remoteHooks, { toHelper: (event: unknown) => told.push(event), closeSessions: (device: string) => closed.push(device), recordChanged: () => {}, changed: () => {} });
+	const after: string[] = [];
+	const failing = () => {
+		throw new Error("A watcher's fault.");
+	};
+	const later = (device: string) => void after.push(device);
+	revokedWatchers.add(failing);
+	revokedWatchers.add(later);
+	const client = { socket: { write: () => true, destroyed: false, destroy: () => {} }, subscriptions: new Map(), shown: new Set() } as unknown as Client;
+	try {
+		assert.deepEqual(await deviceRequests["devices.revoke"]!({ device: phone.id }, client), {});
+	} finally {
+		revokedWatchers.delete(failing);
+		revokedWatchers.delete(later);
+	}
+	assert.deepEqual(told.filter((event) => event.kind === "revoke"), [{ kind: "revoke", device: phone.id }], "pi² Remote is told");
+	assert.deepEqual(closed, [phone.id], "the device's sessions are closed");
+	assert.deepEqual(after, [phone.id], "the next watcher is told too");
+	assert.ok(logged.some((line) => line.includes("A watcher's fault.")), `the fault is logged: ${logged.join(" | ")}`);
+	assert.notEqual(devicesState().devices.find((one) => one.id === phone.id)!.revokedAt, null, "and the device is revoked");
+	await harness.close(context);
+	step("a watcher of revocations that throws is logged, and the next watcher, pi² Remote and the device's sessions are still told");
+}
+
 // ---- A real engine, and this test as its pi² Remote
 
 const home = mkdtempSync(join(work, "home-"));
@@ -602,6 +663,8 @@ const env = {
 	PI2_REMOTE_STAND_IN: standIn,
 	PI2_APP_ATTEST_STAND_IN: "1",
 	PI2_APP_ATTEST_TEAM: "ABCDE12345",
+	// Its log line and its handling from a device's line throw (#895): the engine must answer and carry on.
+	PI2_DEVICE_FAULT: "conversation.pin",
 };
 const main = join(import.meta.dirname, "..", "src", "main.ts");
 
@@ -902,6 +965,15 @@ try {
 	assert.deepEqual((await ask("pushes.follow", { projectId: made.id, activity, on: true })).result.follows, [{ projectId: made.id, activity }]);
 	assert.match((await ask("pushes.set", { project: { id: "constructor", quiet: true } })).error, /Unknown project/, "a name on Object's prototype is no project");
 	assert.deepEqual((await ask("pushes.set", {})).result.quiet, [made.id], "with nothing, it reads");
+	// What once threw in the log line, before the request's own `try`, and so ended the engine (#895): refused, and the
+	// engine answers the next request.
+	for (const project of [null, "x", []]) assert.ok((await ask("pushes.set", { project })).error, `pushes.set with a project of ${JSON.stringify(project)} is refused`);
+	assert.ok((await ask("conversation.rename", { id: plain, title: { toString: 1, valueOf: 1 } })).error, "a title that is no text is refused");
+	const faultsBefore = engineLog.length;
+	assert.equal((await ask("conversation.pin", { id: plain, pinned: true })).error, DEVICE_LINE_FAILED, "a line that fails in the engine is refused, in words of its own");
+	await until("the fault in the engine's log", () => engineLog.slice(faultsBefore).includes("remote: a device's request failed in the engine: Error: PI2_DEVICE_FAULT"));
+	assert.ok((await ask("engine.info")).result, "the engine still answers in the same session");
+	assert.equal(engine.exitCode, null, "and still runs");
 	assert.deepEqual((await ask("pushes.set", { limits: true, project: { id: made.id, quiet: false } })).result.quiet, []);
 	assert.deepEqual((await ask("pushes.follow", { projectId: made.id, activity, on: false })).result.follows, []);
 	for (const deadline = Date.now() + PATIENT_MS; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
@@ -912,6 +984,7 @@ try {
 			/^pushes\.set done Notifications: limits off, quieted “.+”$/,
 			/^pushes\.follow done Followed \(.+\) in a Live Activity$/,
 			/^pushes\.set failed Notifications: quieted a project$/,
+			...[null, "x", []].map(() => /^pushes\.set failed Notifications: unquieted a project$/),
 			/^pushes\.set done Notifications: limits on, unquieted “.+”$/,
 			/^pushes\.follow done Stopped following \(.+\) in a Live Activity$/,
 		];

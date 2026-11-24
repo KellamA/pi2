@@ -163,7 +163,8 @@ const NOT_READY_RETRY_MS = 30_000;
  * RemoteKit's `ShownText` refuses in a name (every control character, U+200B to U+200F, U+202A to U+202E, U+2066 to
  * U+2069, U+FEFF), widened to every format character (`Cf`: U+00AD, U+061C, U+2060 to U+2064, the tag characters
  * U+E0001 and U+E0020 to U+E007F, and the rest), the line and paragraph separators, and every default-ignorable code
- * point (Hangul fillers, variation selectors). A line break stays; a tab is a space. Either way the text was changed.
+ * point (Hangul fillers, variation selectors). A line break stays; a tab is a space; a line or paragraph separator is a
+ * line break, so that two lines never read as one word. Each of these but a line break kept changes the text.
  */
 const NOT_SHOWN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
 
@@ -176,7 +177,7 @@ const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[
  * whether anything was taken out or turned into something else (`changed`), masked here (`masked`), or cut.
  */
 export function shown(text: string, max: number): { text: string; cut: boolean; changed: boolean; masked: boolean } {
-	const cleaned = text.replace(LONE_SURROGATE, "").replace(NOT_SHOWN, (found) => (found === "\n" ? found : found === "\t" ? " " : ""));
+	const cleaned = text.replace(LONE_SURROGATE, "").replace(NOT_SHOWN, (found) => (found === "\n" ? found : found === "\t" ? " " : found === "\u2028" || found === "\u2029" ? "\n" : ""));
 	const changed = cleaned !== text;
 	const unmasked = maskKeys(cleaned);
 	const masked = unmasked !== cleaned;
@@ -200,10 +201,52 @@ function callLine(argumentsValue: unknown): { line: string; whole: boolean } {
 	return { line: JSON.stringify(argumentsValue) ?? "", whole: true };
 }
 
-/** The tools whose approval card the Mac puts in words, or shows more of than the call's line (InboxCard): an app, a site, a schedule's timing and prompt, a sub-chat's task. */
+/**
+ * The tools whose approval card the Mac puts in words, or shows more of than the call's line (InboxCard): an app, a site, a schedule's timing and prompt, a sub-chat's task.
+ * The app's `InboxCard.inWords` (app/Sources/pi2/InboxViews.swift) names the same tools: change the two together.
+ */
 const SHOWN_IN_WORDS: ReadonlySet<string> = new Set(["computer", "browser", "schedule_task", "delegate"]);
-/** An approval's fields the Mac's card shows a line for, which an alert does not: left running, the site, when, the switch that asked. */
-const MORE_ON_THE_CARD = ["background", "site", "when", "projectSwitch"] as const;
+
+type Approval = Extract<NeedItem, { kind: "approval" }>;
+/**
+ * Every member of an approval in Needs you, by what the alert makes of it: an allow-list, as `TO_A_DEVICE` is for the
+ * events a device is sent (remote.ts). An approval with a member not named here is never whole, and a member added to
+ * the type fails the type-check here until it is placed.
+ * - "said": in the alert's body. The tool; its call's one line, whole only when that is all the call holds (`callLine`);
+ *   a question, which makes the alert not whole when it stands in place of the call.
+ * - "frame": who asks and where, which the alert's title (the agent's name, the kind's words) and subtitle (the project)
+ *   say, or which says nothing of what is asked: the ids, the conversation's titles (the card's source line, the
+ *   conversation a tap opens), whether the agent is held, and when it asked.
+ * - "answers": what the person may answer, not what is asked: the answers it takes, and the rule "Always Allow" would
+ *   make of a command (InboxCard's buttons).
+ * - "more": a line of its own on the Mac's card that the alert does not show (left running, the site, when, the switch
+ *   that asked): whole only without it.
+ */
+const APPROVAL_MEMBERS: Record<keyof Approval, "said" | "frame" | "answers" | "more"> = {
+	kind: "frame",
+	id: "frame",
+	projectId: "frame",
+	conversationId: "frame",
+	rootConversationId: "frame",
+	title: "frame",
+	rootTitle: "frame",
+	agentId: "frame",
+	agentName: "frame",
+	blocking: "frame",
+	createdAt: "frame",
+	tool: "said",
+	arguments: "said",
+	question: "said",
+	answers: "answers",
+	rule: "answers",
+	background: "more",
+	site: "more",
+	when: "more",
+	projectSwitch: "more",
+};
+/** Whether each member of `fields` is placed in APPROVAL_MEMBERS, and none of those with a line of their own on the card is there. */
+const approvalAllKnown = (fields: Record<string, unknown>) =>
+	Object.keys(fields).every((member) => Object.hasOwn(APPROVAL_MEMBERS, member) && (APPROVAL_MEMBERS[member as keyof Approval] !== "more" || fields[member] === undefined));
 const BINDS: Record<string, string> = { orchestrator: "the orchestrator", everyone: "every agent" };
 
 const TITLES: Record<NeedItem["kind"], [suffix: string, category: Category]> = {
@@ -225,9 +268,9 @@ const TITLES: Record<NeedItem["kind"], [suffix: string, category: Category]> = {
  * `whole` means the alert says the same facts of what is asked as the Mac's own card for it (app/Sources/pi2:
  * `InboxCard`, `NeedCard`, `RuleProposalCard`), and nothing of them was changed, taken out, masked or cut: an
  * approval's tool and its whole call, when the card shows no more than that (no question in its place, no tool the card
- * puts in words, no line for running in the background, a site, a schedule's timing or the switch that asked, and no
- * argument beyond the one the line shows); a question; a rule's text and whom it binds, when no reason is given; a
- * reach request's summary, when no reason is given. A decision (its choices) and a limit card (its reason) are never
+ * puts in words, no line for running in the background, a site, a schedule's timing or the switch that asked, no
+ * argument beyond the one the line shows, and no member APPROVAL_MEMBERS does not place); a question; a rule's text
+ * and whom it binds, when no reason is given; a reach request's summary, when no reason is given. A decision (its choices) and a limit card (its reason) are never
  * whole. The card's frame (who asks, in which project) is the alert's title and subtitle.
  */
 export function needAlert(item: NeedItem, gate: boolean, project: string | undefined, at: number): AlertBody {
@@ -244,7 +287,7 @@ export function needAlert(item: NeedItem, gate: boolean, project: string | undef
 			const question = copy.question;
 			line = `${text(copy.tool) || "a tool"}: ${typeof question === "string" ? question : call.line}`;
 			const fields = item as unknown as Record<string, unknown>;
-			whole = typeof question !== "string" && call.whole && !SHOWN_IN_WORDS.has(item.tool) && MORE_ON_THE_CARD.every((field) => fields[field] === undefined);
+			whole = typeof question !== "string" && call.whole && !SHOWN_IN_WORDS.has(item.tool) && approvalAllKnown(fields);
 			break;
 		}
 		case "question":
@@ -259,7 +302,7 @@ export function needAlert(item: NeedItem, gate: boolean, project: string | undef
 			whole = copy.why == null && line === text((copy.change as Record<string, unknown> | undefined)?.summary);
 			break;
 		case "rule":
-			line = `Proposes a rule for ${BINDS[text(copy.binds)] ?? "every agent"}: ${text(copy.text)}`;
+			line = `Proposes a rule for ${Object.hasOwn(BINDS, text(copy.binds)) ? BINDS[text(copy.binds)] : "every agent"}: ${text(copy.text)}`;
 			whole = copy.why == null && Object.hasOwn(BINDS, text(copy.binds));
 			break;
 		case "limit": {
@@ -455,6 +498,8 @@ export class Pushes {
 	/** A device revoked: its settings, its Live Activities and all that waited for it go, at once. */
 	forget(device: string): void {
 		for (const map of [this.#owed, this.#told, this.#gone, this.#answers] as Map<string, unknown>[]) map.delete(device);
+		// Its pushes awaiting the relay's answer too: a late refusal would put settings back in memory for it.
+		for (const [id, asked] of this.#asked) if (asked.device === device) this.#asked.delete(id);
 		for (const map of [this.#activities, this.#sent, this.#holds] as Map<string, unknown>[]) for (const key of [...map.keys()]) if (key.startsWith(`${device}:`)) map.delete(key);
 		if (this.#settings.delete(device)) this.#parts.saved(Object.fromEntries(this.#settings));
 	}

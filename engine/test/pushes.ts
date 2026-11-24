@@ -333,6 +333,9 @@ const alerts = (pushes: Push[]) => pushes.filter((push): push is Extract<Push, {
 		["a question in place of the call", { question: "May I?" }],
 		["an argument beyond the line", { arguments: { command: "ls", cwd: "/" } }],
 	];
+	// A member nothing places (APPROVAL_MEMBERS in pushes.ts, an allow-list) makes no alert whole: the card may show it.
+	// One added to the approval's type fails the type-check there until it is placed.
+	omitted.push(["a member nothing knows of", { futureField: "deletes the repo afterwards" }], ["one on Object's prototype", { constructor: "x" }]);
 	for (const [what, fields] of omitted) {
 		const body = alert(fields);
 		assert.equal(body.whole, false, what);
@@ -353,6 +356,11 @@ const alerts = (pushes: Push[]) => pushes.filter((push): push is Extract<Push, {
 	// A tab, turned into a space, is a change.
 	const tab = alert({ arguments: { command: "printf 'a\tb' > f" } });
 	assert.deepEqual([tab.body, tab.whole], ["bash: printf 'a b' > f", false]);
+	// So is a line or paragraph separator, turned into a line break: two lines never read as one word.
+	for (const separator of ["\u2028", "\u2029"]) {
+		const lines = alert({ arguments: { command: `echo a${separator}rm` } });
+		assert.deepEqual([lines.body, lines.whole], ["bash: echo a\nrm", false]);
+	}
 	// Every kind of character a notification shows as nothing, or as something else: taken out, and never whole.
 	const invisible: [string, string][] = [
 		["U+0007, a control", "\u0007"],
@@ -390,7 +398,7 @@ const alerts = (pushes: Push[]) => pushes.filter((push): push is Extract<Push, {
 	// Masked after what is not shown is taken out, before the cut: a key split by a zero-width space is hidden whole.
 	const split = alert({ arguments: { command: `${"x".repeat(150)} ${key.slice(0, 20)}\u200B${key.slice(20)}` } });
 	assert.ok(!split.body.includes("sk-ant") && split.body.includes("[key") && split.partHidden === true && split.whole === false, split.body);
-	step("whole: the tool in the body, and true only for the same facts as the Mac's card (no background, site, timing, switch, question, tool put in words or argument beyond the line; a rule with whom it binds), with no tab, invisible character or key changed");
+	step("whole: the tool in the body, and true only for the same facts as the Mac's card (no background, site, timing, switch, question, tool put in words, argument beyond the line or member nothing places; a rule with whom it binds), with no tab, separator, invisible character or key changed");
 }
 
 // ---- Sizes
@@ -514,6 +522,18 @@ const alerts = (pushes: Push[]) => pushes.filter((push): push is Extract<Push, {
 	assert.deepEqual(Object.keys(state.saved), ["dev_b"], "dropped from what is stored");
 	assert.deepEqual(pushes.set("dev_a", {}), { needs: true, limits: true, answers: true, quiet: [], follows: [] }, "and from memory");
 	step("a revoked device's settings and Live Activities are dropped at once");
+}
+
+{
+	// And its pushes awaiting the relay's answer: a late refusal for one is of an id the engine no longer knows.
+	const { pushes, sentOf } = world({ devices: ["dev_a", "dev_b"] });
+	pushes.needs([]);
+	pushes.needs([need()]);
+	const [mine, theirs] = [sentOf("alert", "dev_a")[0]!, sentOf("alert", "dev_b")[0]!];
+	pushes.forget("dev_a");
+	assert.equal(pushes.refused(mine.id, "token-dead"), false, "the revoked device's push is forgotten");
+	assert.equal(pushes.refused(theirs.id, "push-later"), true, "another device's is not");
+	step("a revoked device's pushes awaiting the relay's answer are forgotten with it");
 }
 
 {
