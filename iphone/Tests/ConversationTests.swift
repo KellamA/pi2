@@ -21,6 +21,10 @@ struct ConversationTests {
         return true
     }
 
+    /// The limit on a wait for WebKit (`thePageLoadsNothingFromTheNetwork`): there only so that a hang fails, many times
+    /// the slowest start seen on CI, and well inside the CI job's thirty minutes.
+    private static let patience: Double = 300
+
     private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
         try JSONDecoder().decode(type, from: Data(json.utf8))
     }
@@ -299,7 +303,13 @@ struct ConversationTests {
             window.isHidden = true
         }
         bridge.show(content)
-        #expect(try await eventually { shown })
+        // The first web view in the test's process waits for WebKit to start its processes, and the page, though a
+        // file, is loaded through the networking one: on a new simulator on CI that one took 40 and 45 seconds to start
+        // (#871), on other runs a second or two. So each wait is for the thing itself, and its limit only a hang guard,
+        // in two parts so that a failure says which never came; and the test stops there, rather than asking a page
+        // that has not loaded what it holds.
+        try #require(try await eventually(Self.patience) { view.isReady }, "the page never said it was ready")
+        try #require(try await eventually(Self.patience) { shown }, "the page was ready but never showed the conversation")
 
         func run(_ script: String) async throws -> Any? {
             try await view.callAsyncJavaScript(script, contentWorld: .page)
