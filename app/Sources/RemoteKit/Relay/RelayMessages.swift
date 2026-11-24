@@ -122,6 +122,8 @@ public struct RelayWhy: Hashable, Sendable, CustomStringConvertible {
 /// The Mac's requests and the ends' mailbox requests, as the relay names them in `ok { what }` and `refused { what }`.
 public enum RelayRequestKind: String, Sendable, CaseIterable {
 	case openJoin, closeJoin, addDevice, removeDevice, deletePairing, state, put, take, took, token
+	/// The Mac's push (#689), and a phone's Live Activity token and its taking back.
+	case push, activityToken, dropActivity
 }
 
 /// A device as the Mac's `ready` lists it.
@@ -423,8 +425,8 @@ extension RelayIncoming {
 		// A phone sends only its own requests; the Mac sends no `token`.
 		let mine: Bool
 		switch kind {
-		case .openJoin, .closeJoin, .addDevice, .removeDevice, .deletePairing, .state: mine = end == .mac
-		case .token: mine = end == .device
+		case .openJoin, .closeJoin, .addDevice, .removeDevice, .deletePairing, .state, .push: mine = end == .mac
+		case .token, .activityToken, .dropActivity: mine = end == .device
 		case .put, .take, .took: mine = true
 		}
 		guard mine else { throw RemoteKitError(fields.part, "what is not a request this end sends") }
@@ -452,6 +454,11 @@ public enum RelayOutgoing: Sendable {
 	case token(apns: String, environment: RelayPushEnvironment)
 	case leave(signature: Data)
 	case ping
+	/// The Mac's push to one device: sealed, or a Live Activity's four numbers (#689).
+	case push(RelayPush)
+	/// A phone's Live Activity push token, for the activity it started under that id; and its taking one back.
+	case activityToken(activity: ItemID, apns: String, environment: RelayPushEnvironment)
+	case dropActivity(ItemID)
 
 	public var text: String {
 		JSON.text(.object([(name, .object(body))]))
@@ -475,6 +482,9 @@ public enum RelayOutgoing: Sendable {
 		case .token: "token"
 		case .leave: "leave"
 		case .ping: "ping"
+		case .push: "push"
+		case .activityToken: "activityToken"
+		case .dropActivity: "dropActivity"
 		}
 	}
 
@@ -513,6 +523,19 @@ public enum RelayOutgoing: Sendable {
 			return [("ids", .array(ids.map { .string($0.text) }))]
 		case let .token(apns, environment):
 			return [("apns", .string(apns)), ("environment", .string(environment.rawValue))]
+		case let .push(.sealed(device, kind, sealed, collapse)):
+			var body: [(String, JSONValue)] = [("device", .string(device.text)), ("kind", .string(kind.rawValue)), ("sealed", .string(Base64URL.encode(sealed)))]
+			if let collapse { body.append(("collapse", .string(Base64URL.encode(collapse)))) }
+			return body
+		case let .push(.activity(device, activity, event, numbers)):
+			return [
+				("device", .string(device.text)), ("kind", .string("activity")), ("activity", .string(activity.text)), ("event", .string(event.rawValue)),
+				("state", numbers.json),
+			]
+		case let .activityToken(activity, apns, environment):
+			return [("activity", .string(activity.text)), ("apns", .string(apns)), ("environment", .string(environment.rawValue))]
+		case let .dropActivity(activity):
+			return [("activity", .string(activity.text))]
 		}
 	}
 
@@ -536,10 +559,20 @@ public enum RelayOutgoing: Sendable {
 		case let .took(ids):
 			guard (1...RelayLimits.maxTook).contains(ids.count) else { throw RemoteKitError(part, "not 1 to \(RelayLimits.maxTook) ids") }
 			guard Set(ids.map(\.text)).count == ids.count else { throw RemoteKitError(part, "an id twice") }
-		case let .token(apns, _):
+		case let .token(apns, _), let .activityToken(_, apns, _):
 			let bytes = Array(apns.utf8)
 			let hex = bytes.allSatisfy { ($0 >= UInt8(ascii: "0") && $0 <= UInt8(ascii: "9")) || ($0 >= UInt8(ascii: "a") && $0 <= UInt8(ascii: "f")) }
 			guard hex, bytes.count % 2 == 0, (64...200).contains(bytes.count) else { throw RemoteKitError(part, "not a push token") }
+		case let .push(.sealed(_, kind, sealed, collapse)):
+			// Exactly what the relay takes (relay/src/protocol.ts, `push`): one of the three sizes, a sealed item's first
+			// byte, and a collapse id of 32 bytes on an alert alone. Anything else would close the socket `malformed`.
+			guard PushSealing.sizes.contains(sealed.count), sealed.first == 0x04 else { throw RemoteKitError(part, "not a sealed push") }
+			guard collapse == nil || (kind == .alert && collapse?.count == 32) else { throw RemoteKitError(part, "a collapse id that is not an alert's 32 bytes") }
+		case let .push(.activity(_, _, _, numbers)):
+			// Held to their shape again (`ActivityNumbers` is made only so), since one out of range closes the socket.
+			guard ActivityNumbers(working: numbers.working, needs: numbers.needs, finished: numbers.finished, at: numbers.at) != nil else {
+				throw RemoteKitError(part, "a Live Activity's numbers out of range")
+			}
 		default:
 			break
 		}

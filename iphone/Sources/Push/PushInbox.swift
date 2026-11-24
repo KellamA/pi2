@@ -30,6 +30,8 @@ struct PushInbox: Sendable {
         let at: Int64
         let kind: String?
         let title: String
+        /// The project's name (#689's shape); none in a notice kept before it.
+        let subtitle: String?
         let body: String
         let whole: Bool
         let need: String?
@@ -41,6 +43,7 @@ struct PushInbox: Sendable {
             at = notice.at
             kind = notice.kind?.rawValue
             title = notice.title
+            subtitle = notice.subtitle
             body = notice.body
             whole = notice.whole
             need = notice.need

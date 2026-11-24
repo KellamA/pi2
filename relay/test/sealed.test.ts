@@ -29,6 +29,7 @@ import {
 	forms,
 	type Marker,
 	messageFault,
+	pushFaults,
 	type Recording,
 	requestFault,
 	type Session,
@@ -577,6 +578,115 @@ describe("the allow-list of what the relay may see", () => {
 		}
 	});
 
+	it("takes the Mac's pushes and a phone's Live Activity tokens, a Live Activity's numbers held to exactly their four (#689)", () => {
+		const sealed = base64url(concat(new Uint8Array([4]), random(695)));
+		const activity = base64url(random(16));
+		const numbers = { working: 3, needs: 1, finished: 2, at: Date.now() - 1_000 };
+		const taken: [object, "end" | "relay"][] = [
+			[{ push: { device, kind: "alert", sealed, collapse: base64url(random(32)) } }, "end"],
+			[{ push: { device, kind: "alert", sealed } }, "end"],
+			[{ push: { device, kind: "background", sealed: base64url(concat(new Uint8Array([4]), random(2999))) } }, "end"],
+			[{ push: { device, kind: "activity", activity, event: "update", state: numbers } }, "end"],
+			[{ push: { device, kind: "activity", activity, event: "end", state: { working: 0, needs: 0, finished: 99_999, at: Date.now() - 23 * 3_600_000 } } }, "end"],
+			[{ activityToken: { activity, apns: "ab".repeat(40), environment: "development" } }, "end"],
+			[{ dropActivity: { activity } }, "end"],
+			[{ ok: { what: "push" } }, "relay"],
+			[{ ok: { what: "activityToken" } }, "relay"],
+			[{ ok: { what: "dropActivity" } }, "relay"],
+			...["no-token", "token-dead", "push-limit", "push-later", "unavailable", "unknown-device", "clock"].map((why): [object, "relay"] => [{ refused: { what: "push", why } }, "relay"]),
+		];
+		for (const [message, from] of taken) expect(messageFault(JSON.stringify(message), from), JSON.stringify(message)).toBeNull();
+		const refused: [object, "end" | "relay"][] = [
+			[{ push: { device, kind: "background", sealed, collapse: base64url(random(32)) } }, "end"],
+			[{ push: { device, kind: "alert", sealed: base64url(concat(new Uint8Array([4]), random(696))) } }, "end"],
+			[{ push: { device, kind: "alert", sealed: base64url(concat(new Uint8Array([5]), random(695))) } }, "end"],
+			[{ push: { device, kind: "alert", sealed: base64url(utf8("Forge needs approval: bash npm test ".repeat(20).slice(0, 696))) } }, "end"],
+			[{ push: { device, kind: "alert", sealed, collapse: "need:n12" } }, "end"],
+			[{ push: { device, kind: "alert", sealed, title: "Forge needs approval" } }, "end"],
+			[{ push: { device, kind: "activity", activity, event: "update", state: { ...numbers, project: "Marker Project" } } }, "end"],
+			[{ push: { device, kind: "activity", activity, event: "update", state: { working: 3, needs: 1, finished: 2 } } }, "end"],
+			[{ push: { device, kind: "activity", activity, event: "update", state: { ...numbers, working: 100_000 } } }, "end"],
+			[{ push: { device, kind: "activity", activity, event: "update", state: { ...numbers, needs: -1 } } }, "end"],
+			[{ push: { device, kind: "activity", activity, event: "update", state: { ...numbers, finished: 1.5 } } }, "end"],
+			[{ push: { device, kind: "activity", activity, event: "update", state: { ...numbers, at: Date.now() - 25 * 3_600_000 } } }, "end"],
+			[{ push: { device, kind: "activity", activity, event: "update", state: { ...numbers, at: Date.now() + 10 * 60_000 } } }, "end"],
+			[{ push: { device, kind: "activity", activity, event: "start", state: numbers } }, "end"],
+			[{ push: { device, kind: "activity", activity: "Marker Project", event: "update", state: numbers } }, "end"],
+			[{ push: { device, kind: "activity", activity, event: "update", state: numbers, alert: "Forge" } }, "end"],
+			[{ activityToken: { activity, apns: "Marker phone", environment: "development" } }, "end"],
+			[{ dropActivity: { activity, project: "Marker Project" } }, "end"],
+			[{ refused: { what: "put", why: "no-token" } }, "relay"],
+			[{ refused: { what: "push", why: "Apple says BadDeviceToken" } }, "relay"],
+			[{ ok: { what: "pushes" } }, "relay"],
+		];
+		for (const [message, from] of refused) expect(messageFault(JSON.stringify(message), from), JSON.stringify(message)).not.toBeNull();
+	});
+
+	it("holds every request to Apple to what the Mac asked for, to a token the phone gave (#689)", async () => {
+		const sealedBytes = concat(new Uint8Array([4]), random(695));
+		const sealed = base64url(sealedBytes);
+		const collapse = base64url(random(32));
+		const activity = base64url(random(16));
+		const apns = "ab".repeat(32);
+		const activityApns = "cd".repeat(40);
+		const state = { working: 3, needs: 1, finished: 2, at: Date.now() - 1_000 };
+		const text = (socket: number, from: "end" | "relay", value: object): Event => ({ socket, kind: "text", from, text: JSON.stringify(value) });
+		const events: Event[] = [
+			text(1, "end", { hello: { v: 1, role: "mac", pairing, build: "120" } }),
+			text(2, "end", { hello: { v: 1, role: "device", pairing, device, build: "3.1" } }),
+			text(2, "end", { token: { apns, environment: "development" } }),
+			text(2, "end", { activityToken: { activity, apns: activityApns, environment: "development" } }),
+			text(1, "end", { push: { device, kind: "alert", sealed, collapse } }),
+			text(1, "relay", { ok: { what: "push" } }),
+			text(1, "end", { push: { device, kind: "activity", activity, event: "end", state } }),
+			text(1, "relay", { ok: { what: "push" } }),
+			text(1, "end", { push: { device, kind: "background", sealed } }),
+			text(1, "relay", { refused: { what: "push", why: "push-limit" } }),
+		];
+		const roles = new Map<number, "mac" | "device">([[1, "mac"], [2, "device"]]);
+		const headers = (kind: string, topic = "dev.pi2.test"): [string, string][] => [
+			["authorization", "bearer eyJh.eyJp.c2ln"], ["apns-topic", topic], ["apns-push-type", kind], ["apns-priority", kind === "alert" ? "10" : "5"],
+			["apns-expiration", "1795395600"],
+		];
+		const alert = {
+			url: `https://api.sandbox.push.apple.com/3/device/${apns}`,
+			headers: [...headers("alert"), ["apns-collapse-id", collapse]] as [string, string][],
+			body: utf8(JSON.stringify({ aps: { alert: { title: "pi²", body: "Something needs you" }, "mutable-content": 1 }, sealed })),
+		};
+		const live = {
+			url: `https://api.sandbox.push.apple.com/3/device/${activityApns}`,
+			headers: headers("liveactivity", "dev.pi2.test.push-type.liveactivity"),
+			body: utf8(JSON.stringify({ aps: { timestamp: 1795392000, event: "end", "content-state": state, "dismissal-date": 1795392900 } })),
+		};
+		const items = new Set([await hashOf(sealedBytes)]);
+		const faults = async (pushes: Recording["pushes"], itemSet = items) => (await pushFaults({ events, stored: [], pushes }, itemSet, roles)).map((finding) => `${finding.rule}: ${finding.detail}`);
+		expect(await faults([alert, live])).toEqual([]);
+		// A push refused is sent nowhere; one sent that Apple's stand-in never took, or one the Mac never asked for, is found.
+		expect((await faults([alert])).some((fault) => fault.startsWith("unseen"))).toBe(true);
+		expect((await faults([alert, live, live])).some((fault) => fault.startsWith("unseen"))).toBe(true);
+		// To a token the phone did not give, or a Live Activity's to the phone's push token.
+		expect(await faults([{ ...alert, url: `https://api.sandbox.push.apple.com/3/device/${"ef".repeat(32)}` }, live])).toContain(
+			"push: a token the session's phone did not give for this kind on its own socket, in this environment",
+		);
+		expect((await faults([alert, { ...live, url: alert.url }])).length).toBeGreaterThan(0);
+		expect((await faults([{ ...alert, url: `https://api.push.apple.com/3/device/${apns}` }, live])).length).toBeGreaterThan(0);
+		// A header more, or one that is not its kind's: an apns-id, the project in the topic, a collapse id on a Live Activity.
+		expect((await faults([{ ...alert, headers: [...alert.headers, ["apns-id", "Marker"]] }, live])).length).toBeGreaterThan(0);
+		expect((await faults([{ ...alert, headers: [...headers("alert", "dev.pi2.test Marker Project"), ["apns-collapse-id", collapse]] }, live])).length).toBeGreaterThan(0);
+		expect((await faults([alert, { ...live, headers: [...live.headers, ["apns-collapse-id", collapse]] }])).length).toBeGreaterThan(0);
+		// A collapse id that is not the Mac's: the item's own id, say.
+		expect(await faults([{ ...alert, headers: [...headers("alert"), ["apns-collapse-id", base64url(random(32))]] }, live])).toContain("push: a collapse id that is not the one the Mac sent");
+		// Anything in the body beside what the Mac sent: words outside the seal, a fifth number, other numbers.
+		const body = (value: object) => utf8(JSON.stringify(value));
+		expect((await faults([{ ...alert, body: body({ aps: { alert: { title: "Forge needs approval", body: "bash: npm test" }, "mutable-content": 1 }, sealed }) }, live])).length).toBeGreaterThan(0);
+		expect((await faults([{ ...alert, body: body({ aps: { alert: { title: "pi²", body: "Something needs you" }, "mutable-content": 1, category: "pi2.approval" }, sealed }) }, live])).length).toBeGreaterThan(0);
+		expect((await faults([alert, { ...live, body: body({ aps: { timestamp: 1795392000, event: "end", "content-state": { ...state, project: "Marker" }, "dismissal-date": 1795392900 } }) }])).length).toBeGreaterThan(0);
+		expect((await faults([alert, { ...live, body: body({ aps: { timestamp: 1795392000, event: "end", "content-state": { ...state, working: 4 }, "dismissal-date": 1795392900 } }) }])).length).toBeGreaterThan(0);
+		expect((await faults([alert, { ...live, body: body({ aps: { timestamp: 1795392000, event: "end", "content-state": state } }) }])).length).toBeGreaterThan(0);
+		// Sealed bytes that are not the session's own.
+		expect(await faults([alert, live], new Set())).toContain("not-sealed: sealed bytes that are not one of the session's sealed items");
+	});
+
 	it("refuses a key, a field or a table the relay's objects do not keep today", () => {
 		const meta = { pairing, relayKey: base64url(concat(new Uint8Array([0x30]), random(90))), pendingUntil: null, lastSeen: Date.now(), blocked: {}, window: null, left: [] };
 		const stored = (kv: Record<string, unknown>, tables: Stored["tables"] = {}): Stored => ({ object: "pairing", name: pairing, id: "00".repeat(32), kv, tables, sockets: [] });
@@ -585,5 +695,16 @@ describe("the allow-list of what the relay may see", () => {
 		expect(storedFaults([stored({ meta, log: ["a message"] })])).not.toEqual([]);
 		expect(storedFaults([stored({ meta }, { log: [{ text: "a message" }] })])).not.toEqual([]);
 		expect(storedFaults([stored({ meta }, { items: [{ reader: "mac", writer: device, id: base64url(random(16)), item: utf8("in clear".repeat(20)), presence: 0, expires: Date.now() }] })])).not.toEqual([]);
+		// Pushes (#689): the hour's counts, and a device's Live Activity tokens, five at most, held to their shapes.
+		const slot = { key: meta.relayKey, listed: true, attestKeyIds: [], macKeyId: null, token: { apns: "ab".repeat(32), environment: "development" } };
+		const activities = (count: number) =>
+			Object.fromEntries(Array.from({ length: count }, () => [base64url(random(16)), { apns: "cd".repeat(40), environment: "production", until: Date.now() }]));
+		const pushes = { hour: 492_000, counts: { pairing: { alert: 2, background: 1, activity: 3 }, [device]: { alert: 2, background: 1 } } };
+		expect(storedFaults([stored({ meta, devices: { [device]: { ...slot, activities: activities(5) } }, pushes })])).toEqual([]);
+		expect(storedFaults([stored({ meta, devices: { [device]: { ...slot, activities: activities(6) } } })])).not.toEqual([]);
+		expect(storedFaults([stored({ meta, devices: { [device]: { ...slot, activities: { "Marker Project": { apns: "cd".repeat(40), environment: "production", until: 1 } } } } })])).not.toEqual([]);
+		expect(storedFaults([stored({ meta, pushes: { ...pushes, last: "Forge needs approval" } })])).not.toEqual([]);
+		expect(storedFaults([stored({ meta, pushes: { hour: 1, counts: { "Marker Project": { alert: 1 } } } })])).not.toEqual([]);
+		expect(storedFaults([stored({ meta, pushes: { hour: 1, counts: { pairing: { alert: 1, title: 1 } } } })])).not.toEqual([]);
 	});
 });

@@ -27,10 +27,9 @@ export type Stored = {
 };
 
 /**
- * A push the relay asked Apple's service to send, as the local stand-in for APNs would hand it to the recorder
- * (`Recorder.push`), to be checked as everything else is. The relay sends pushes since #829, but nothing hands them over
- * yet: the marker session sends no `push` (RemoteKit's relay client has none), the recording relay does not put the
- * stand-in (test/apns.ts) in, and `push`, `dropToken` and the stored `pushes` counts are not on the allow-list (#689).
+ * A push the relay asked Apple's service to send, as the local stand-in for APNs (test/apns.ts) took it, which the
+ * recording relay hands over with the recording (worker.ts), to be checked as everything else is (#689): its address,
+ * every header (`authorization` among them) and its body exactly.
  */
 export type Push = { url: string; headers: [string, string][]; body: Uint8Array };
 
@@ -352,13 +351,43 @@ const WHY = [
 	"unknown-device", "device-key", "not-joined", "mailbox-full", "busy", "removed", "left", "deleted", "replaced", "window-ended",
 ];
 const why: Kind = (value) => typeof value === "string" && WHY.includes(value);
-const REQUESTS = ["openJoin", "closeJoin", "addDevice", "removeDevice", "deletePairing", "state", "put", "take", "token", "leave"];
+/** Why the relay refused a push (relay/README.md, "Pushes", "Live Activities"): its own words, never the Mac's or Apple's text. */
+const PUSH_WHY = ["no-token", "token-dead", "push-limit", "push-later", "unavailable", "unknown-device", "clock"];
+const pushWhy: Kind = (value) => typeof value === "string" && PUSH_WHY.includes(value);
+const REQUESTS = ["openJoin", "closeJoin", "addDevice", "removeDevice", "deletePairing", "state", "put", "take", "token", "leave", "push", "activityToken", "dropActivity"];
 const what: Kind = (value) => typeof value === "string" && REQUESTS.includes(value);
 /** What an `ok` names: a request, or `took` (#806), which is answered `ok` and never refused with a `what` (one malformed closes the socket). */
 const okWhat: Kind = (value) => what(value) || value === "took";
 /** `took`'s ids (#806): 1 to 200 items' ids (`MAX_TOOK` in src/protocol.ts), none twice, as the relay reads them. */
 const tookIds: Kind = (value) =>
 	Array.isArray(value) && value.length >= 1 && value.length <= 200 && value.every(itemId) && new Set(value).size === value.length;
+
+// Pushes (#689; relay/README.md, "Pushes", "Live Activities").
+/** The sizes a sealed push has (`SEALED_SIZES` in src/apns.ts): a sealed item's first byte, padded to one of three. */
+export const SEALED_PUSH_SIZES = [696, 1464, 3000];
+const sealedPush: Kind = (value) => {
+	const bytes = typeof value === "string" ? fromBase64url(value) : null;
+	return bytes !== null && SEALED_PUSH_SIZES.includes(bytes.length) && bytes[0] === 0x04;
+};
+/** A Live Activity's count, as the relay takes it. */
+const activityCount: Kind = (value) => Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= 99_999;
+/**
+ * When a Live Activity's numbers were counted: a time in milliseconds the relay takes, a day behind its clock at most and
+ * five minutes ahead (src/apns.ts, `isNear`), with the check's clock for the relay's and a minute for the check's run.
+ */
+const countedAt: Kind = (value) => time(value) && (value as number) >= Date.now() - 24 * 3_600_000 - 60_000 && (value as number) <= Date.now() + 5 * 60_000;
+/**
+ * The four numbers, exactly: the one push the relay reads, by design (docs/iphone.md 7). Nothing beside them, and none
+ * of them anything but a count or the time they were counted.
+ */
+const activityState: Kind = (value) => fieldsFault(value, { working: activityCount, needs: activityCount, finished: activityCount, at: countedAt }) === null;
+const activityEvent: Kind = (value) => value === "update" || value === "end";
+/** The Mac's `push`: sealed, or a Live Activity's numbers; a background push never with a collapse id. */
+const PUSH_FORMS: Fields[] = [
+	{ device, kind: (value) => value === "alert", sealed: sealedPush, "collapse?": bytes32 },
+	{ device, kind: (value) => value === "background", sealed: sealedPush },
+	{ device, kind: (value) => value === "activity", activity: itemId, event: activityEvent, state: activityState },
+];
 
 /** A message's fields: each with its kind, `?` after a name for one that may be left out. */
 type Fields = Record<string, Kind>;
@@ -385,6 +414,9 @@ export const FROM_AN_END: Record<string, Fields[]> = {
 	token: [{ apns, environment }],
 	leave: [{ signature }],
 	ping: [{}],
+	push: PUSH_FORMS,
+	activityToken: [{ activity: itemId, apns, environment }],
+	dropActivity: [{ activity: itemId }],
 };
 
 /** Every text message the relay may send an end, by name, and each form its body may have. */
@@ -396,7 +428,7 @@ export const FROM_THE_RELAY: Record<string, Fields[]> = {
 	],
 	joined: [{ device }, { device, deviceKey: key, keyId: attestKeyId }],
 	ok: [{ what: okWhat }],
-	refused: [{ why }, { what, why }],
+	refused: [{ why }, { what, why }, { what: (value) => value === "push", why: pushWhy }],
 	item: [{ from: reader, id: itemId, item: sealed, presence: bool }],
 	state: [{ id: itemId, item: sealed }],
 	taken: [{ count }],
@@ -535,7 +567,19 @@ const DEVICE: Fields = {
 	attestKeyIds: list(attestKeyId),
 	macKeyId: (value) => value === null || attestKeyId(value),
 	token: (value) => value === null || shape({ apns, environment })(value),
+	/** The tokens of the Live Activities the phone started, by the activity's id, five at most, each for twelve hours (#700). */
+	"activities?": (value) =>
+		typeof value === "object" && value !== null && Object.keys(value).length <= 5 &&
+		Object.entries(value).every(([id, token]) => itemId(id) && shape({ apns, environment, until: time })(token)),
 };
+/** The pushes counted this hour (src/apns.ts, `PushHour`): for the pairing and for each device, a count of each kind. */
+const PUSH_COUNTS: Fields = { "alert?": count, "background?": count, "activity?": count };
+const pushHour: Kind = (value) =>
+	shape({
+		hour: count,
+		counts: (counts) =>
+			typeof counts === "object" && counts !== null && Object.entries(counts).every(([end, kinds]) => (end === "pairing" || device(end)) && shape(PUSH_COUNTS)(kinds)),
+	})(value);
 const DAY: Fields = { day: (value) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value), messages: count, bytes: count };
 
 /** Each object's keys and tables, and what each may hold. */
@@ -545,6 +589,7 @@ const STORED: Record<Stored["object"], { kv: Record<string, Kind>; tables: Recor
 			meta: shape(META),
 			devices: (value) => typeof value === "object" && value !== null && Object.entries(value).every(([id, slot]) => device(id) && shape(DEVICE)(slot)),
 			days: (value) => typeof value === "object" && value !== null && Object.entries(value).every(([end, day]) => (end === "mac" || device(end)) && shape(DAY)(day)),
+			pushes: pushHour,
 		},
 		tables: {
 			// `handed`: whether a take handed it over before, so that only what is handed over again is charged (#806).
@@ -683,6 +728,7 @@ export async function check(recording: Recording, files: File[] | null, session:
 		}
 	}
 	findings.push(...storedFaults(recording.stored));
+	findings.push(...(await pushFaults(recording, items, roles)));
 
 	// The recorder saw the whole session, and the relay's storage and files were read.
 	const unseen = session.noise.filter((hash) => passed.noise.get(hash)?.size !== 2).length;
@@ -727,6 +773,113 @@ export async function check(recording: Recording, files: File[] | null, session:
 	return findings;
 }
 
+// MARK: Pushes to Apple
+
+/** Apple's two hosts (src/apns.ts, `HOSTS`). */
+const APPLE: Record<string, string> = { "https://api.sandbox.push.apple.com": "development", "https://api.push.apple.com": "production" };
+const LIVE_ACTIVITY_TOPIC = ".push-type.liveactivity";
+/** The provider token: an ES256 JWT, three base64url parts, which carries the key's id, the team and a time. */
+const bearer: Kind = (value) => typeof value === "string" && /^bearer [A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value);
+/** An app's bundle id, as `apns-topic` names it. */
+const bundleId = (value: string) => /^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(value);
+/** The headers of each kind of request to Apple, and what each may hold (relay/README.md, "Pushes", "Live Activities"). */
+const APPLE_HEADERS: Record<"alert" | "background" | "activity", Fields> = {
+	alert: {
+		authorization: bearer,
+		"apns-topic": (value) => typeof value === "string" && bundleId(value) && !value.endsWith(LIVE_ACTIVITY_TOPIC),
+		"apns-push-type": (value) => value === "alert",
+		"apns-priority": (value) => value === "10",
+		"apns-expiration": (value) => typeof value === "string" && /^[1-9][0-9]{9}$/.test(value),
+		"apns-collapse-id?": bytes32,
+	},
+	background: {
+		authorization: bearer,
+		"apns-topic": (value) => typeof value === "string" && bundleId(value) && !value.endsWith(LIVE_ACTIVITY_TOPIC),
+		"apns-push-type": (value) => value === "background",
+		"apns-priority": (value) => value === "5",
+		"apns-expiration": (value) => typeof value === "string" && /^[1-9][0-9]{9}$/.test(value),
+	},
+	activity: {
+		authorization: bearer,
+		"apns-topic": (value) => typeof value === "string" && value.endsWith(LIVE_ACTIVITY_TOPIC) && bundleId(value.slice(0, -LIVE_ACTIVITY_TOPIC.length)),
+		"apns-push-type": (value) => value === "liveactivity",
+		"apns-priority": (value) => value === "5",
+		"apns-expiration": (value) => typeof value === "string" && /^[1-9][0-9]{9}$/.test(value),
+	},
+};
+
+/**
+ * Every request the relay made of Apple's service, held to what the Mac asked for (#689): each push the relay answered
+ * `ok` is one request, in order, and nothing else is; its address is a token the session's own phone gave on its own
+ * socket (`token` for an alert or a background push, `activityToken` for a Live Activity), never one the Mac sent; its
+ * headers exactly its kind's; an alert's or a background push's body exactly the fixed payload round the very sealed
+ * bytes the Mac sent, which must be one of the session's sealed items, an alert's collapse id exactly the Mac's; and a
+ * Live Activity's body exactly `activityPayload`'s form round the same four numbers the Mac sent, and nothing else.
+ */
+export async function pushFaults(recording: Recording, items: Set<string>, roles: Map<number, "mac" | "device">): Promise<Finding[]> {
+	const findings: Finding[] = [];
+	const waiting = new Map<number, Record<string, unknown>[]>();
+	const sent: Record<string, unknown>[] = [];
+	const tokens = { push: new Set<string>(), activity: new Set<string>() };
+	for (const event of recording.events) {
+		if (event.kind !== "text") continue;
+		const value = safeParse(event.text) as Record<string, Record<string, unknown>> | null;
+		if (value === null || typeof value !== "object") continue;
+		const role = roles.get(event.socket);
+		if (event.from === "end" && role === "device" && value.token !== undefined) tokens.push.add(`${value.token.environment} ${value.token.apns}`);
+		if (event.from === "end" && role === "device" && value.activityToken !== undefined) tokens.activity.add(`${value.activityToken.environment} ${value.activityToken.apns}`);
+		if (role !== "mac") continue;
+		if (event.from === "end" && value.push !== undefined) waiting.set(event.socket, [...(waiting.get(event.socket) ?? []), value.push]);
+		const answered = event.from === "relay" ? (value.ok ?? value.refused) : undefined;
+		if (answered?.what === "push") {
+			const asked = waiting.get(event.socket)?.shift();
+			if (asked === undefined) findings.push({ rule: "push", where: `socket ${event.socket}`, detail: "an answer to a push the Mac did not ask for" });
+			else if (value.ok !== undefined) sent.push(asked);
+		}
+	}
+	if (sent.length !== recording.pushes.length) {
+		findings.push({ rule: "unseen", where: "the pushes to Apple", detail: `the relay said ${sent.length} pushes were sent, and Apple's stand-in took ${recording.pushes.length}` });
+	}
+	for (const [index, push] of recording.pushes.entries()) {
+		const where = `push ${index}`;
+		const asked = sent[index];
+		if (asked === undefined) continue;
+		const fault = (detail: string) => findings.push({ rule: "push", where, detail });
+		const kind = asked.kind as "alert" | "background" | "activity";
+		const address = /^(https:\/\/[a-z.]+)\/3\/device\/([0-9a-f]+)$/.exec(push.url);
+		const environment = address === null ? undefined : APPLE[address[1]];
+		if (address === null || environment === undefined) fault("an address that is not Apple's push service and a device token");
+		else if (!(kind === "activity" ? tokens.activity : tokens.push).has(`${environment} ${address[2]}`)) {
+			fault(`a token the session's phone did not give for this kind on its own socket, in this environment`);
+		}
+		const headers: Record<string, string> = {};
+		for (const [name, value] of push.headers) headers[name.toLowerCase()] = value;
+		const headerFault = fieldsFault(headers, APPLE_HEADERS[kind] ?? {});
+		if (headerFault !== null) fault(`its headers: ${headerFault}`);
+		const body = new TextDecoder().decode(push.body);
+		if (kind === "alert" || kind === "background") {
+			const sealed = asked.sealed as string;
+			const expected =
+				kind === "alert"
+					? JSON.stringify({ aps: { alert: { title: "pi²", body: "Something needs you" }, "mutable-content": 1 }, sealed })
+					: JSON.stringify({ aps: { "content-available": 1 }, sealed });
+			if (body !== expected) fault("a body that is not the fixed payload round the sealed bytes the Mac sent");
+			if (kind === "alert" && headers["apns-collapse-id"] !== asked.collapse) fault("a collapse id that is not the one the Mac sent");
+			const bytes = fromBase64url(sealed);
+			if (bytes === null || !items.has(await sha256(bytes))) findings.push({ rule: "not-sealed", where, detail: "sealed bytes that are not one of the session's sealed items" });
+		} else {
+			const parsed = safeParse(body) as { aps?: { timestamp?: unknown; event?: unknown } } | null;
+			const timestamp = parsed?.aps?.timestamp;
+			const aps: Record<string, unknown> = { timestamp, event: asked.event, "content-state": asked.state };
+			if (asked.event === "end" && typeof timestamp === "number") aps["dismissal-date"] = timestamp + 900;
+			if (!Number.isSafeInteger(timestamp) || (timestamp as number) <= 0 || body !== JSON.stringify({ aps })) {
+				fault("a body that is not a Live Activity's payload round the four numbers the Mac sent, and nothing else");
+			}
+		}
+	}
+	return findings;
+}
+
 /** Why a message names a key that is not the session's own for its field (`relayKey`, `deviceKey`); null if none. */
 function keysFault(text: string, keys: Session["keys"]): string | null {
 	const value = safeParse(text) as Record<string, Record<string, unknown>> | null;
@@ -738,13 +891,14 @@ function keysFault(text: string, keys: Session["keys"]): string | null {
 	return null;
 }
 
-/** The bytes of every sealed item a text message carries (`put`, `state`, `item`). */
+/** The bytes of every sealed item a text message carries (`put`, `state`, `item`, and a sealed `push`). */
 function sealedItems(text: string): Uint8Array[] {
 	const value = safeParse(text) as Record<string, Record<string, unknown>> | null;
 	if (value === null) return [];
 	const body = Object.values(value)[0];
-	if (typeof body !== "object" || body === null || typeof body.item !== "string") return [];
-	const bytes = fromBase64url(body.item);
+	if (typeof body !== "object" || body === null) return [];
+	const field = typeof body.item === "string" ? body.item : "push" in value && typeof body.sealed === "string" ? body.sealed : null;
+	const bytes = field === null ? null : fromBase64url(field);
 	return bytes === null ? [] : [bytes];
 }
 

@@ -64,6 +64,12 @@ public struct RelaySigner: Sendable {
 	}
 }
 
+/// The relay's answer to a push: sent (Apple took it), or refused with its word.
+public enum RelayPushAnswer: Equatable, Sendable {
+	case sent
+	case refused(RelayWhy)
+}
+
 /// Why a call to the relay's client did not do what it asked.
 public enum RelayClientError: Error, Equatable, Sendable {
 	/// Not connected and proved just now; the client is connecting again.
@@ -409,6 +415,19 @@ public actor RelayClient {
 		try await expectOK(.state(device: device, id: id, item: item), .state)
 	}
 
+	/// Asks the relay to push to a device (#689; relay/README.md, "Pushes", "Live Activities"): `sent` once Apple took
+	/// it, or the relay's word for why not (`no-token`, `token-dead`, `push-limit`, `push-later`, `unavailable`,
+	/// `unknown-device`, `clock`, or a word this client does not know), which is the caller's to pass on. Nothing is sent
+	/// again here: what to ask again is the engine's to decide. Throws as any request does when it could not be asked.
+	public func push(_ push: RelayPush) async throws -> RelayPushAnswer {
+		try requireMac()
+		switch try await request(.push(push), .push) {
+		case .ok: return .sent
+		case let .refused(why): return .refused(why)
+		case .taken: throw RelayClientError.unreadable
+		}
+	}
+
 	/// Sends the channel's bytes to a device; the relay puts nothing round them but takes the id off. If the device is not
 	/// connected, the relay answers `offline`, which the client reports only if it last reported the device online.
 	public func send(_ bytes: Data, to device: DeviceID) async throws {
@@ -433,6 +452,18 @@ public actor RelayClient {
 	public func setPushToken(_ apns: String, environment: RelayPushEnvironment) async throws {
 		try requireDevice()
 		try await expectOK(.token(apns: apns, environment: environment), .token)
+	}
+
+	/// Gives the relay a Live Activity's push token, for the activity this phone started under `activity` (7).
+	public func setActivityToken(_ apns: String, environment: RelayPushEnvironment, for activity: ItemID) async throws {
+		try requireDevice()
+		try await expectOK(.activityToken(activity: activity, apns: apns, environment: environment), .activityToken)
+	}
+
+	/// Takes a Live Activity's push token back: the activity ended on the phone.
+	public func dropActivity(_ activity: ItemID) async throws {
+		try requireDevice()
+		try await expectOK(.dropActivity(activity), .dropActivity)
 	}
 
 	/// Removes this phone from the pairing at the relay (3.6), signed with the device key over this connection's

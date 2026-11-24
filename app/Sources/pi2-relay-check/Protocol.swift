@@ -117,6 +117,22 @@ enum ProtocolTest {
 		_ = try await macEvents.next("online") { $0 == .online(device) ? true : nil }
 		try await phoneClient.setPushToken(String(repeating: "c0", count: 32), environment: .development)
 
+		// Pushes (#689): this relay has no push key and no stand-in for Apple's service, so a push it would send is
+		// `unavailable`; each refusal comes back as the relay's word, on a socket that stays open.
+		let push = Data([4]) + Bytes.random(695)
+		Check.equal(try await macClient.push(.sealed(device: device, kind: .alert, sealed: push, collapse: Bytes.random(32))), .refused(.unavailable), "a sealed push, with no push key: unavailable")
+		Check.equal(try await macClient.push(.sealed(device: DeviceID.random(), kind: .background, sealed: push, collapse: nil)), .refused(.unknownDevice), "to a device that is not the pairing's: unknown-device")
+		let pushNow = SystemRelayClock().now()
+		let activity = ItemID.random()
+		Check.equal(try await macClient.push(.activity(device: device, activity: activity, event: .update, numbers: ActivityNumbers(working: 1, needs: 0, finished: 0, at: pushNow)!)), .refused(RelayWhy(word: "no-token")!), "a Live Activity with no token: no-token")
+		Check.equal(try await macClient.push(.activity(device: device, activity: activity, event: .update, numbers: ActivityNumbers(working: 1, needs: 0, finished: 0, at: pushNow - 2 * 86_400_000)!)), .refused(RelayWhy(word: "clock")!), "numbers counted two days ago: clock")
+		Check.equal(try await macClient.push(.activity(device: device, activity: activity, event: .end, numbers: ActivityNumbers(working: 1, needs: 0, finished: 0, at: pushNow + 600_000)!)), .refused(RelayWhy(word: "clock")!), "or ten minutes ahead: clock")
+		try await phoneClient.setActivityToken(String(repeating: "d1", count: 40), environment: .development, for: activity)
+		Check.equal(try await macClient.push(.activity(device: device, activity: activity, event: .update, numbers: ActivityNumbers(working: 1, needs: 0, finished: 0, at: pushNow)!)), .refused(.unavailable), "with the phone's token for it, and no push key: unavailable")
+		try await phoneClient.dropActivity(activity)
+		await Check.throwsError("a push from a phone", .wrongEnd) { try await phoneClient.push(.sealed(device: device, kind: .alert, sealed: push, collapse: nil)) }
+		await Check.throwsError("a Live Activity's token from the Mac", .wrongEnd) { try await macClient.setActivityToken(String(repeating: "d1", count: 40), environment: .development, for: activity) }
+
 		// The mailbox, both ways.
 		let sealed = Data([4]) + Bytes.random(200)
 		let toMac = ItemID.random()

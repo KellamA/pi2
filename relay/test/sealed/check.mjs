@@ -115,11 +115,13 @@ if (options.planted === null) {
 	process.exit(1);
 }
 
-// The planted session: the marker went in clear as the channel's bytes (on a joined phone's socket, then to the Mac)
-// and as an item (put by the Mac, and left in the phone's mailbox), and the check had the recording relay write it to
-// the console. Each must be found where it went: the bytes as not the session's Noise, both ways, and readable; the
-// item as not a sealed item of the session's, and readable where it was put, where it is kept, and in the relay's
-// files; the console's in the local runtime's output. Nothing else may be found.
+// The planted session: the marker went in clear as the channel's bytes (on a joined phone's socket, then to the Mac),
+// as an item (put by the Mac, and left in the phone's mailbox) and as a push (sent by the Mac to the phone, #689), and
+// the check had the recording relay write it to the console. Each must be found where it went: the bytes as not the
+// session's Noise, both ways, and readable; the item as not a sealed item of the session's, and readable where it was
+// put, where it is kept, and in the relay's files; the push as not a sealed item of the session's, in the Mac's request
+// and in what the relay posted to Apple, and readable there; the console's in the local runtime's output. Nothing else
+// may be found.
 const where = [
 	["readable", /bytes from the end$/],
 	["readable", /bytes from the relay$/],
@@ -127,13 +129,17 @@ const where = [
 	["readable", /the pairing object .*: tables\.items/],
 	["readable", /^the relay's file v3\//],
 	["readable", /^the relay's file \(the local runtime's output\)$/],
+	["readable", /^push \d+: its payload$/],
 ];
 const planted = (finding) => finding.rule === "readable" && finding.detail.startsWith("the planted marker");
 const missed = where.filter(([rule, pattern]) => !findings.some((finding) => finding.rule === rule && pattern.test(finding.where)));
 const notNoise = findings.filter((finding) => finding.rule === "not-noise").map((finding) => finding.where.replace(/.* from the /, "")).sort();
-const notSealed = findings.filter((finding) => finding.rule === "not-sealed").map((finding) => finding.where.replace(/.* from the /, ""));
+const notSealed = findings
+	.filter((finding) => finding.rule === "not-sealed")
+	.map((finding) => finding.where.replace(/.* from the /, "").replace(/^push \d+$/, "push"))
+	.sort();
 if (JSON.stringify(notNoise) !== JSON.stringify(["end", "relay"])) missed.push(["not-noise", "once from the end and once from the relay"]);
-if (JSON.stringify(notSealed) !== JSON.stringify(["end"])) missed.push(["not-sealed", "once, from the end"]);
+if (JSON.stringify(notSealed) !== JSON.stringify(["end", "end", "push"])) missed.push(["not-sealed", "twice from the end (the item and the push) and once in the push to Apple"]);
 const unexplained = findings.filter((finding) => !planted(finding) && finding.rule !== "not-noise" && finding.rule !== "not-sealed");
 for (const finding of findings) process.stdout.write(`found ${finding.rule}: ${finding.where}: ${finding.detail}\n`);
 if (missed.length === 0 && unexplained.length === 0) {

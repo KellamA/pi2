@@ -159,6 +159,32 @@ enum Sessions {
 		}
 		Check.holds(try await socket.sent.take(seconds: 0.1) == nil, "and nothing went to the relay")
 
+		// Pushes (#689): as sent, answered `sent` or with the relay's word; one the relay would refuse is not sent.
+		let sealedPush = Data([4]) + Data(repeating: 0x5A, count: 695)
+		let collapse = Data(repeating: 9, count: 32)
+		let pushed = Task { try await rig.client.push(.sealed(device: Formats.device, kind: .alert, sealed: sealedPush, collapse: collapse)) }
+		Check.equal(
+			try await socket.nextText("push"),
+			#"{"push":{"device":"\#(Formats.device.text)","kind":"alert","sealed":"\#(Base64URL.encode(sealedPush))","collapse":"\#(Base64URL.encode(collapse))"}}"#,
+			"a sealed push as sent")
+		socket.say(#"{"ok":{"what":"push"}}"#)
+		Check.equal(try await pushed.value, .sent, "and sent once the relay says ok")
+		let numbers = ActivityNumbers(working: 3, needs: 1, finished: 2, at: 1_800_000_000_000)!
+		let activityPush = Task { try await rig.client.push(.activity(device: Formats.device, activity: Formats.item, event: .end, numbers: numbers)) }
+		Check.equal(
+			try await socket.nextText("activity push"),
+			#"{"push":{"device":"\#(Formats.device.text)","kind":"activity","activity":"\#(Formats.item.text)","event":"end","state":{"working":3,"needs":1,"finished":2,"at":1800000000000}}}"#,
+			"a Live Activity push: its device, activity, event and four numbers, nothing else")
+		socket.say(#"{"refused":{"what":"push","why":"clock"}}"#)
+		Check.equal(try await activityPush.value, .refused(RelayWhy(word: "clock")!), "and the relay's refusal given as its word")
+		await Check.throwsError("a push of no push's size is not sent", .invalid(RemoteKitError("relay push", "not a sealed push"))) {
+			try await rig.client.push(.sealed(device: Formats.device, kind: .alert, sealed: Formats.sealed, collapse: nil))
+		}
+		await Check.throwsError("nor a background push with a collapse id", .invalid(RemoteKitError("relay push", "a collapse id that is not an alert's 32 bytes"))) {
+			try await rig.client.push(.sealed(device: Formats.device, kind: .background, sealed: sealedPush, collapse: collapse))
+		}
+		Check.holds(try await socket.sent.take(seconds: 0.1) == nil, "and nothing went to the relay")
+
 		let deleted = Task { try await rig.client.deletePairing() }
 		_ = try await socket.nextText("deletePairing")
 		socket.say(#"{"ok":{"what":"deletePairing"}}"#)
