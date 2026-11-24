@@ -1,6 +1,8 @@
 
+import CryptoKit
 import Foundation
 import PiModels
+import SwiftUI
 import Testing
 @testable import pi2
 
@@ -357,6 +359,53 @@ struct AppCallsTests {
     @Test func theSwitchsWordsAreTheContracts() {
         #expect(ProjectLiveActivitySection.line.contains("can read these three numbers; never the project’s name"))
         #expect(ProjectActivityRefusal.notAllowed.words == "Live Activities are off for pi². Turn them on in Settings › pi² › Live Activities.")
+    }
+
+    // MARK: - The Outbox (#692)
+
+    @Test func theOutboxIsARouteAndItsLineShowsWhileSomethingWaits() throws {
+        #expect(RouteView.view(for: .outbox) is OutboxView)
+        #expect(DebugLaunch.route("outbox", projects: []) == .outbox)
+
+        let store = PhoneStore(folder: StoreFolder(try Self.folder("store")))
+        store.open(key: SymmetricKey(size: .bits256))
+        let outbox = Outbox(store: store)
+        #expect(!RootView.outboxShows(outbox.items))
+        let item = try outbox.add("submit", ["id": 9, "text": "Written on the train"])
+        #expect(RootView.outboxShows(outbox.items))
+        outbox.receipt(for: item.id, taken: false, why: "No such conversation.")
+        #expect(RootView.outboxShows(outbox.items), "not sent, saying why")
+        try outbox.remove(item.id)
+        #expect(!RootView.outboxShows(outbox.items))
+    }
+
+    /// The Outbox's line under the projects list and its screen's cards, drawn with `ImageRenderer` into
+    /// `app/build/shots/901/` when that folder exists.
+    @Test func theOutboxDraws() throws {
+        let store = PhoneStore(folder: StoreFolder(try Self.folder("store")))
+        store.open(key: SymmetricKey(size: .bits256))
+        let outbox = Outbox(store: store)
+        _ = try outbox.add("submit", ["id": 9, "text": "Can you look at the failing check before the release?"])
+        let refused = try outbox.add("abort", ["id": 17])
+        outbox.receipt(for: refused.id, taken: false, why: "That run had already finished.")
+        let shots = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appending(path: "../../app/build/shots/901")
+        for scheme in [ColorScheme.light, .dark] {
+            let view = VStack(alignment: .leading, spacing: 14) {
+                OutboxLine(outbox: outbox)
+                ForEach(outbox.items) { item in OutboxCard(item: item, problem: .constant(nil), outbox: outbox) }
+            }
+            .padding(20)
+            .frame(width: 402)
+            .background(Color(uiColor: .systemBackground))
+            .environment(\.colorScheme, scheme)
+            let renderer = ImageRenderer(content: view)
+            renderer.scale = 3
+            let image = try #require(renderer.uiImage)
+            #expect(image.size.height > 100)
+            if FileManager.default.fileExists(atPath: shots.path) {
+                try #require(image.pngData()).write(to: shots.appending(path: "outbox-\(scheme == .dark ? "dark" : "light").png"))
+            }
+        }
     }
 
     @Test func aTapWaitsAsTheRouteToOpen() async throws {

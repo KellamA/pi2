@@ -82,6 +82,29 @@ struct RootView: View {
         }
     }
 
+    /// Under the projects list, while anything the person wrote waits for the Mac or was not sent: the Outbox's line,
+    /// which opens it.
+    @ViewBuilder private var outboxLine: some View {
+        if let link, link.paired, link.store.isOpen, Self.outboxShows(link.outbox.items) {
+            Button { navigator.open(.outbox) } label: {
+                RouteView(.outbox, placement: .inline)
+            }
+            .buttonStyle(.plain)
+            .environment(link.outbox)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+        }
+    }
+
+    /// Whether the Outbox's line shows: something waits, or was not sent (`OutboxLine` counts both).
+    nonisolated static func outboxShows(_ items: [OutboxItem]) -> Bool {
+        items.contains { item in
+            if item.isPending { return true }
+            if case .notSent = item.state { return true }
+            return false
+        }
+    }
+
     @ViewBuilder private var content: some View {
         switch Self.screen(for: session.connection) {
         case .firstScreen:
@@ -100,7 +123,10 @@ struct RootView: View {
                     .navigationDestination(for: Route.self) { route in
                         RouteView(route)
                     }
+                    .safeAreaInset(edge: .bottom) { outboxLine }
             }
+            // The Outbox is the store's, which opens with the session Face ID opened: before that its screen says so.
+            .environment(link.flatMap { $0.store.isOpen ? $0.outbox : nil })
             .safeAreaInset(edge: .bottom) {
                 if let link, let problem = link.connection?.problem {
                     ConnectionProblemNotice(problem: problem, tryAgain: { link.tryAgain() })
