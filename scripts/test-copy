@@ -237,9 +237,12 @@ REMOTE=0 PHONE_SIM="" PHONE_DEVICE=""
 # claim with no App Attest attestation, which a simulator cannot make (devices.ts, docs/iphone.md 10). A development
 # engine alone honours it (testswitches.ts).
 REMOTE_ENV=PI2_PAIR_UNATTESTED=1
-# The relay the copy's engine is given: a pairing needs an address, and no relay runs. Port 9 on loopback, which only
-# root can listen on, so nothing an agent starts answers there; the phone's join fails at once, on this Mac, and the
-# phone pairs and attaches over the home path. pi² Remote has no relay client yet (#678).
+# The relay address the copy's engine is given: the engine opens no pairing without one (devices.ts, pairStart), and no
+# relay runs. An address on loopback where nothing of pi² listens. It is not a port nobody can use: only root can bind
+# 127.0.0.1:9 itself, but on macOS any process may bind *:9, which takes connections to 127.0.0.1:9. Nothing connects
+# there today: the copy's pi² Remote has no relay client yet, the simulator never joins a relay (it has no App Attest
+# attestation), and the phone pairs and attaches over the home path. Once pi² Remote has a relay client (#678), a copy
+# is given a local relay of its own, or none.
 REMOTE_RELAY=ws://127.0.0.1:9/v1
 TEST_ENV=()
 # Only explicit demo switches may cross the clean launch boundary. Never accept an open-ended PI2_* prefix:
@@ -684,7 +687,8 @@ from_json() {
 
 # start --remote: remote access on in the copy's engine, as the person would turn it on in Settings › Devices, with the
 # preview on, Find on this network on (the home path, which a development pi² Remote holds on 127.0.0.1 alone),
-# Direct from any address off, and a relay address nothing answers. pi² Remote itself starts only with a pairing.
+# Direct from any address off, and REMOTE_RELAY, on loopback, where nothing of pi² listens. pi² Remote itself starts
+# only with a pairing.
 remote_on() {
 	local out
 	out=$(engine_call devices.set "{\"on\":true,\"preview\":true,\"home\":true,\"direct\":false,\"relayAddress\":\"$REMOTE_RELAY\"}")
