@@ -757,6 +757,17 @@ describe("an IPv6 address's block", () => {
 		expect(await admitFrom(failing, true)).toEqual({ pass: false, until: NOON + HOUR, limit: "registrations", by: "block" });
 		expect(await counted(blockStub)).toBe(BLOCK_REGISTRATIONS_AN_HOUR);
 	});
+
+	it("writes the next connection's own mark after a failed write, never letting it pass on a mark that was not stored: an IPv4 address and a /64", async () => {
+		for (const address of [newQuad(), newBlock()(0)]) {
+			const watched = await watchAddress(address);
+			watched.failWrites = true;
+			await expect(admitFrom(address), address).rejects.toThrow();
+			watched.failWrites = false;
+			expect(await admitFrom(address), address).toEqual({ pass: true });
+			expect(await markOf(await addressObject(address)), address).toBeGreaterThanOrEqual(1);
+		}
+	});
 });
 
 /** Registrations from a block's /64s 1, 2, 3 and 4, five from each, `count` in all, at the present time. */
