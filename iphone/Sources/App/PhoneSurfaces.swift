@@ -6,8 +6,11 @@ import os
 import PiModels
 
 /// What pi² shows of the Mac outside its own screens, kept in step with the one session (docs/iphone-app.md, "The
-/// widgets", "The share sheet", "Pushes", "The Live Activity"; #901): the widgets' file, and where a tap on a widget
-/// opens the app.
+/// widgets", "The extensions", "Pushes", "The Live Activity"; #901): the widgets' file, and where a tap on a widget
+/// opens the app; the share sheet's list of where a share can go, and the drafts it left, sent.
+///
+/// The share sheet's drafts are picked up as the app comes to the foreground and as a session Face ID opened reaches its
+/// Mac or the store's last state, and the conversation the newest went to is opened if it was shared moments ago.
 ///
 /// It follows the session's state itself (`withObservationTracking`), not a view, so that it keeps the widgets in step
 /// while iOS has pi² running in the background with no scene, as for a Shortcut. What is written for an extension goes
@@ -17,6 +20,14 @@ import PiModels
 final class PhoneSurfaces {
     let session: AppSession
     @ObservationIgnored let widgets: WidgetsPublisher
+    /// The share extension's folder: nil without the app group (#682), as in an unsigned build.
+    @ObservationIgnored let share: ShareDrop?
+    /// How a draft from the share sheet can go now: on the channel, into the Outbox, or not at all.
+    @ObservationIgnored private let shareWay: @MainActor () -> AppShareSender.Way
+    @ObservationIgnored private let shareSender: AppShareSender
+    /// The list last written for the share sheet, dated `.distantPast`, so that a change is told from the time moving on.
+    @ObservationIgnored private var sharedList: ShareDestinations?
+    @ObservationIgnored private var lastShareWay: AppShareSender.Way = .none
     /// Whether a Mac is paired (`PhoneLink.paired`): nothing of the Mac is written for an extension before pairing.
     @ObservationIgnored private let paired: @MainActor () -> Bool
     /// When the phone last heard from its Mac (`PhoneStore.lastHeard`), for the widgets' "Updated" while out of reach.
@@ -33,19 +44,37 @@ final class PhoneSurfaces {
     init(
         session: AppSession,
         widgets: WidgetsPublisher = WidgetsPublisher(),
+        share: ShareDrop? = ShareDrop.inAppGroup(),
         paired: @escaping @MainActor () -> Bool,
-        lastHeard: @escaping @MainActor () -> Date?
+        lastHeard: @escaping @MainActor () -> Date?,
+        shareWay: @escaping @MainActor () -> AppShareSender.Way = { .none },
+        keep: @escaping @MainActor (_ method: String, _ params: [String: Any]) throws -> Void = { _, _ in throw StoreError("Open pi² with Face ID first.") }
     ) {
         self.session = session
         self.widgets = widgets
+        self.share = share
         self.paired = paired
         self.lastHeard = lastHeard
+        self.shareWay = shareWay
+        shareSender = AppShareSender(way: shareWay, call: { [weak session] method, params in
+            guard let session else { throw EngineError(message: "pi² is closing.", unanswered: true) }
+            _ = try await session.engine.call(method, params)
+        }, keep: keep)
         follow()
     }
 
-    /// The app's own: made with the link's pairing and store.
+    /// The app's own: made with the link's pairing, store and Outbox.
     convenience init(link: PhoneLink) {
-        self.init(session: link.session, paired: { [weak link] in link?.paired ?? false }, lastHeard: { [weak link] in link?.store.lastHeard })
+        self.init(
+            session: link.session,
+            paired: { [weak link] in link?.paired ?? false },
+            lastHeard: { [weak link] in link?.store.lastHeard },
+            shareWay: { [weak link] in link.map(AppShareSender.way(for:)) ?? .none },
+            keep: { [weak link] method, params in
+                guard let link else { throw StoreError("Open pi² with Face ID first.") }
+                _ = try link.outbox.add(method, params)
+            }
+        )
     }
 
     // MARK: - Following the session
@@ -54,6 +83,7 @@ final class PhoneSurfaces {
     private struct Seen {
         var connection: AppSession.Connection
         var paired: Bool
+        var shareWay: AppShareSender.Way
     }
 
     private func follow() {
@@ -68,8 +98,8 @@ final class PhoneSurfaces {
     private func read() -> Seen {
         let e = session.engine
         // Read for the tracking: each one's change is a reason to write the widgets' file again.
-        _ = (e.needs, e.activity, e.projects, e.allAgents, e.usage, e.extras["limits"], session.macName)
-        return Seen(connection: session.connection, paired: paired())
+        _ = (e.needs, e.activity, e.projects, e.allAgents, e.usage, e.extras["limits"], e.conversations, session.macName)
+        return Seen(connection: session.connection, paired: paired(), shareWay: shareWay())
     }
 
     private func changed(_ seen: Seen) {
@@ -80,6 +110,12 @@ final class PhoneSurfaces {
             widgets.clear()
         }
         if let snapshot = widgetsSnapshot(seen) { widgets.update(snapshot) }
+        writeShareList(seen)
+        if seen.shareWay != lastShareWay {
+            lastShareWay = seen.shareWay
+            // A session opened, or the Mac was reached: what the share sheet left can go now.
+            if seen.shareWay != .none { Task { await pickUpShares() } }
+        }
     }
 
     // MARK: - Widgets
@@ -102,7 +138,52 @@ final class PhoneSurfaces {
             usage: e.usage, limits: e.extras["limits"], heardAt: heardAt, macName: session.macName)
     }
 
+    // MARK: - The share sheet (#702)
+
+    /// Writes the list of where a share can go whenever the Mac's projects or conversations change, while a paired Mac is
+    /// connected (never in the demo, nor from the store's last state, which would date an old list as new).
+    private func writeShareList(_ seen: Seen) {
+        guard let share, seen.paired, case .connected = seen.connection, session.engine.hasLoadedLibrary else { return }
+        let e = session.engine
+        let list = ShareDestinations.make(projects: e.projects, conversations: e.conversations, macName: session.macName, at: .distantPast)
+        guard list != sharedList else { return }
+        do {
+            try share.writeDestinations(ShareDestinations.make(projects: e.projects, conversations: e.conversations, macName: session.macName, at: Date()))
+            sharedList = list
+        } catch {
+            log.error("The share sheet's list could not be written: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// How recently a draft must have been shared for the app to open its conversation once it is sent: the person shared
+    /// it and came to pi² to see it go.
+    static let sharedJustNow: TimeInterval = 10 * 60
+
+    /// Hands what the share sheet left to the Mac, or to the Outbox while the Mac is out of reach, oldest first, once a
+    /// session Face ID opened is open; then opens the conversation the newest went to if it was shared moments ago.
+    @discardableResult
+    func pickUpShares(through sender: AppShareSender? = nil, now: Date = Date()) async -> SharePickup.Report? {
+        guard let share, shareWay() != .none else { return nil }
+        let drafts = share.all()
+        guard !drafts.isEmpty else { return nil }
+        let report = await SharePickup.run(share, through: sender ?? shareSender, now: now)
+        let sent = Set(report.taken + report.kept)
+        if let newest = drafts.filter({ sent.contains($0.id) }).max(by: { $0.writtenAt < $1.writtenAt }),
+           now.timeIntervalSince(newest.writtenAt) <= Self.sharedJustNow {
+            pendingRoute = .conversation(newest.destination.conversation)
+        }
+        if !report.notSent.isEmpty || report.stopped != nil {
+            log.notice("Shares: \(report.taken.count) taken, \(report.kept.count) kept, \(report.notSent.count) not sent\(report.stopped.map { ", stopped: \($0)" } ?? "", privacy: .public)")
+        }
+        return report
+    }
+
     // MARK: - The app's moments
+
+    /// The app came to the foreground: what the share sheet left goes, if a session is open.
+    func movedToForeground() {
+        Task { await pickUpShares() }
+    }
 
     /// The app left the foreground: the widgets show the phone's last state.
     func movedToBackground() {
@@ -110,9 +191,11 @@ final class PhoneSurfaces {
     }
 
     /// The store was wiped, or the pairing ended (unpaired, revoked, the keys gone): nothing of the Mac stays for an
-    /// extension to show.
+    /// extension to show, and nothing shared waits to go to it.
     func forgetTheMac() {
         widgets.clear()
+        share?.wipe()
+        sharedList = nil
     }
 
     /// The store's sweep at launch and at each return to the foreground: when it wiped the Mac's last state, so does this.

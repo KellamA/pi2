@@ -1,5 +1,6 @@
 
 import Foundation
+import PiModels
 import Testing
 @testable import pi2
 
@@ -115,6 +116,94 @@ struct AppCallsTests {
         }
         #expect(PhoneSurfaces.route(for: try #require(URL(string: "https://example.com/needs"))) == nil)
         #expect(PhoneSurfaces.route(for: try #require(URL(string: "pi2-widget://elsewhere"))) == nil)
+    }
+
+    // MARK: - The share sheet (#702)
+
+    static let orchestrator = ShareDestination(conversation: 9, kind: .orchestrator, title: "Demo project", project: "Demo project")
+
+    @Test func theShareSheetsListIsWrittenWhileConnectedOnly() async throws {
+        let session = try await Self.replay()
+        let drop = ShareDrop(folder: try Self.folder("share"))
+        let surfaces = PhoneSurfaces(session: session, widgets: try Widgets().publisher, share: drop, paired: { true }, lastHeard: { nil })
+        #expect(await Wait.until { drop.destinations(at: Date()) != nil })
+        let list = try #require(drop.destinations(at: Date()))
+        #expect(list.macName == "Recorded Mac")
+        #expect(list.destinations.contains { $0.kind == .orchestrator && $0.title == "Demo project" })
+        _ = surfaces
+
+        // Not before pairing, nor in the demo, nor out of reach from the store's last state.
+        for (connection, paired) in [(AppSession.Connection.connected(.home), false), (.demo, true), (.outOfReach(lastSeen: nil), true)] {
+            let other = try await Self.replay(as: connection)
+            let none = ShareDrop(folder: try Self.folder("share"))
+            let following = PhoneSurfaces(session: other, widgets: try Widgets().publisher, share: none, paired: { paired }, lastHeard: { nil })
+            try await Task.sleep(for: .milliseconds(100))
+            #expect(none.destinations(at: Date()) == nil, "\(connection), paired: \(paired)")
+            _ = following
+        }
+    }
+
+    @Test func aSharedDraftGoesOnTheChannelAndItsConversationOpens() async throws {
+        let drop = ShareDrop(folder: try Self.folder("share"))
+        let draft = ShareDraft(writtenAt: Date(), destination: Self.orchestrator, text: "Look at this", attachments: [])
+        try drop.add(draft)
+        var sent: [(String, [String: Any])] = []
+        var way = AppShareSender.Way.none
+        let surfaces = PhoneSurfaces(
+            session: AppSession(), widgets: try Widgets().publisher, share: drop, paired: { true }, lastHeard: { nil },
+            shareWay: { way }, keep: { _, _ in Issue.record("nothing goes to the Outbox while connected") })
+        // Locked: nothing goes, nothing is lost.
+        #expect(await surfaces.pickUpShares() == nil)
+        #expect(drop.all().map(\.id) == [draft.id])
+
+        way = .channel
+        let report = await surfaces.pickUpShares(through: AppShareSender(way: { way }, call: { method, params in sent.append((method, params)) }, keep: { _, _ in }))
+        #expect(report?.taken == [draft.id])
+        #expect(sent.map(\.0) == ["submit"])
+        #expect(sent.first?.1["requestId"] as? String == draft.id, "the draft's id is the message's request id")
+        #expect(sent.first?.1["id"] as? Int == 9)
+        #expect(drop.all().isEmpty)
+        #expect(surfaces.pendingRoute == .conversation(9), "shared moments ago: its conversation opens")
+    }
+
+    @Test func outOfReachWordsWaitInTheOutboxAndAPhotoWaitsInTheFolder() async throws {
+        let drop = ShareDrop(folder: try Self.folder("share"))
+        let old = Date(timeIntervalSinceNow: -3_600)
+        let words = ShareDraft(writtenAt: old, destination: Self.orchestrator, text: "On the train", attachments: [])
+        let photo = ShareDraft(writtenAt: old.addingTimeInterval(1), destination: Self.orchestrator, text: "This", attachments: [.picture(name: "a.jpg", mimeType: "image/jpeg", data: Data([1, 2, 3]))])
+        try drop.add(words)
+        try drop.add(photo)
+        var kept: [String] = []
+        let sender = AppShareSender(way: { .outbox }, call: { _, _ in Issue.record("nothing goes on the channel out of reach") }, keep: { method, params in
+            kept.append(params["requestId"] as? String ?? method)
+        })
+        let surfaces = PhoneSurfaces(session: AppSession(), widgets: try Widgets().publisher, share: drop, paired: { true }, lastHeard: { nil }, shareWay: { .outbox })
+        let report = try #require(await surfaces.pickUpShares(through: sender))
+        #expect(report.kept == [words.id])
+        #expect(kept == [words.id])
+        #expect(report.stopped == AppShareSender.waitsForTheMac)
+        #expect(drop.all().map(\.id) == [photo.id], "the photo waits for the Mac")
+        #expect(surfaces.pendingRoute == nil, "shared an hour ago: nothing is opened")
+    }
+
+    @Test func theSendersAnswersAreTheOutboxCouriers() async throws {
+        let draft = ShareDraft(writtenAt: Date(), destination: Self.orchestrator, text: "Hi", attachments: [])
+        let refused = AppShareSender(way: { .channel }, call: { _, _ in throw EngineError(message: "No such conversation.") }, keep: { _, _ in })
+        #expect(await refused.deliver(draft) == .refused("No such conversation."))
+        let lost = AppShareSender(way: { .channel }, call: { _, _ in throw EngineError(message: "Not connected.", unanswered: true) }, keep: { _, _ in })
+        #expect(await lost.deliver(draft) == .unreachable("Not connected."))
+        let full = AppShareSender(way: { .outbox }, call: { _, _ in }, keep: { _, _ in throw StoreError("The Outbox is full.") })
+        #expect(await full.deliver(draft) == .refused("The Outbox is full."))
+        let locked = AppShareSender(way: { .none }, call: { _, _ in }, keep: { _, _ in })
+        #expect(await locked.deliver(draft) == .unreachable(AppShareSender.locked))
+    }
+
+    @Test func forgettingTheMacWipesTheShareFolder() throws {
+        let drop = ShareDrop(folder: try Self.folder("share"))
+        try drop.add(ShareDraft(writtenAt: Date(), destination: Self.orchestrator, text: "Hi", attachments: []))
+        let surfaces = PhoneSurfaces(session: AppSession(), widgets: try Widgets().publisher, share: drop, paired: { true }, lastHeard: { nil })
+        surfaces.forgetTheMac()
+        #expect(!FileManager.default.fileExists(atPath: drop.folder.path))
     }
 
     @Test func aTapWaitsAsTheRouteToOpen() async throws {

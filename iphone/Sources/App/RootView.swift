@@ -35,6 +35,7 @@ struct RootView: View {
                 switch phase {
                 case .active:
                     if let swept = link?.store.sweep() { surfaces?.swept(swept) }
+                    surfaces?.movedToForeground()
                 case .background:
                     link?.store.saveNow()
                     surfaces?.movedToBackground()
