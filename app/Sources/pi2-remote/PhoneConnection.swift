@@ -21,6 +21,22 @@ import RemoteKit
 ///   code holds the Mac's channel key and the pairing's id, which outlive the window, and so can use up its three
 ///   tries: that blocks pairing until the person opens another window, and is no way in.
 /// - Not attached, or not past its pairing claim, within ten seconds of being accepted: closed.
+/// The fixed words the engine gives beside its own for a phone (#818, #881), read byte for byte; its words are never read.
+package enum EngineWords {
+	/// The reasons the engine may give for refusing `remote.attach` (`data.reason`): `resume` is pi² Remote's own, and
+	/// anything else is no reason.
+	package static func attachRefusal(_ word: String?) -> Refusal.Reason? {
+		guard let word else { return nil }
+		return [Refusal.Reason.update, .suspended, .presence, .clock].first { $0.rawValue.utf8.elementsEqual(word.utf8) }
+	}
+
+	/// The words the engine's `pairRefused` event may carry for the phone (`reason`).
+	package static func pairRefusal(_ word: String?) -> PairRefusal.Why? {
+		guard let word else { return nil }
+		return PairRefusal.Why.allCases.first { $0.rawValue.utf8.elementsEqual(word.utf8) }
+	}
+}
+
 final class PhoneConnection: @unchecked Sendable {
 	private enum Phase {
 		case first
@@ -301,12 +317,12 @@ final class PhoneConnection: @unchecked Sendable {
 			return end()
 		}
 		// The first pairing's home key, kept before the claim goes on (#675's security read, S2): if it cannot be, the claim
-		// is refused while the window is open, and the engine pairs nothing. #776 has no word for this; `silent`, "it went
-		// quiet", is the nearest of its three (the claim never reached the engine), and closes the window as the others do.
+		// is refused while the window is open, and the engine pairs nothing. The engine is told `not-kept` (#887), which
+		// closes the window in those words, and the phone `pairRefused` `unsaved` (#881).
 		guard remote.keyForClaim() else {
 			log("a pairing claim was refused: the home key could not be kept")
-			refusedClaim("silent")
-			return end()
+			refusedClaim("not-kept")
+			return refusePairing(.unsaved)
 		}
 		// The claim as the phone wrote it, passed on whole: the engine checks it again, with its attestation.
 		phase = .claiming(channel)
@@ -353,7 +369,8 @@ final class PhoneConnection: @unchecked Sendable {
 	}
 
 	/// A claimer that proved the secret and whose claim never reaches the engine: `remote.pairRefused`, which closes the
-	/// window as a refused claim does (#776's 28). `why` is `not-pair`, `not-bound` or `silent`.
+	/// window as a refused claim does (#776's 28). `why` is `not-pair`, `not-bound` or `silent`, or `not-kept` when
+	/// pi² Remote could not keep the home key (#887).
 	private func refusedClaim(_ why: String) {
 		guard claimerProven, !claimReported else { return }
 		claimReported = true
@@ -376,9 +393,14 @@ final class PhoneConnection: @unchecked Sendable {
 			log("an attach for device \(device) names another challenge than this channel's; closed")
 			return end()
 		}
-		guard Remote.isBuild(claim.build), Remote.buildAtLeast(claim.build, remote.minimumBuild) else {
-			log("device \(device) runs a build that is not one the engine reads, or below the lowest this Mac attaches (\(remote.minimumBuild)); closed")
+		guard Remote.isBuild(claim.build) else {
+			log("device \(device) runs a build that is not one the engine reads; closed")
 			return end()
+		}
+		// Signed by the device key on pi² Remote's own list, for this channel: the phone may be told why (#820).
+		guard Remote.buildAtLeast(claim.build, remote.minimumBuild) else {
+			log("device \(device) runs a build below the lowest this Mac attaches (\(remote.minimumBuild)); refused update")
+			return refuse(.update)
 		}
 		phase = .attaching(channel)
 		deadline?.cancel()
@@ -397,7 +419,11 @@ final class PhoneConnection: @unchecked Sendable {
 		remote.engine.request("remote.attach", params) { [weak self] result in
 			guard let self, case .attaching = self.phase else { return }
 			guard case let .success(value) = result, let text = value["session"]?.stringValue, let session = SessionID(text), let resumed = value["resume"]?.boolValue else {
-				if case let .failure(refusal) = result { log("the engine refused an attach of device \(device): \(refusal)") }
+				if case let .failure(refusal) = result {
+					log("the engine refused an attach of device \(device): \(refusal)")
+					// The engine's fixed word beside its words (#818), never its words: none, or one not on the list, is bye alone.
+					if let reason = EngineWords.attachRefusal(refusal.reason) { return self.refuse(reason) }
+				}
 				return self.end()
 			}
 			self.passedFirstLines()
@@ -534,6 +560,41 @@ final class PhoneConnection: @unchecked Sendable {
 		awaitingClaimerProof = false
 		claimReported = true
 		end()
+	}
+
+	/// Ends an attach pi² Remote does not take with the `refused` line, then `bye` (remotekit.md, "The refused line"):
+	/// called only once the attach was signed by the device key on pi² Remote's own list, for this channel.
+	private func refuse(_ reason: Refusal.Reason) {
+		switch phase {
+		case let .awaitingAttach(channel, _), let .attaching(channel):
+			sendLast(try? channel.sealRefusal(Refusal(reason)))
+		default:
+			end()
+		}
+	}
+
+	/// Ends a pairing channel whose claim did not end paired with the `pairRefused` line, then `bye` (#881): only on a
+	/// channel whose claimer proved the secret and sent a claim; any other ends with `bye` alone.
+	func refusePairing(_ why: PairRefusal.Why) {
+		switch phase {
+		case let .pairing(channel, _), let .claiming(channel), let .claimed(channel, _):
+			guard claimerProven else { return end() }
+			log("a claim's phone is told pairRefused \(why.rawValue)")
+			sendLast(try? channel.sealPairRefusal(PairRefusal(why)))
+		default:
+			end()
+		}
+	}
+
+	/// A channel's last messages, a line and `bye` as RemoteKit sealed them, then the connection closes.
+	private func sendLast(_ messages: [Data]?) {
+		if case .ended = phase { return }
+		guard let messages else { return end() }
+		for message in messages {
+			guard let framed = try? LengthFraming.encode(message) else { break }
+			io.send(framed)
+		}
+		io.finish()
 	}
 
 	/// Ends the channel with `bye` and closes the connection.

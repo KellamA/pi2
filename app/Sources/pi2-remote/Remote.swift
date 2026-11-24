@@ -125,7 +125,8 @@ package final class Remote: @unchecked Sendable {
 		case "pairRefused":
 			if let claim = event["claim"]?.stringValue, let connection = claims.removeValue(forKey: claim) {
 				log("a claim was refused on the Mac; its channel is closed")
-				connection.end()
+				// The engine's word for the phone, when it gives one (#881); its words are never read.
+				if let why = EngineWords.pairRefusal(event["reason"]?.stringValue) { connection.refusePairing(why) } else { connection.end() }
 			}
 		case "revoke":
 			if let text = event["device"]?.stringValue, let device = DeviceID(text) { revoke(device) }
@@ -412,11 +413,14 @@ package final class Remote: @unchecked Sendable {
 		list.append(device)
 		let connection = event["claim"]?.stringValue.flatMap { claims.removeValue(forKey: $0) }
 		guard keep(list, homeKey: homeKey ?? HomeKey.random()), let homeKey else {
-			// Not on pi² Remote's own list, so never attached, and its phone is told nothing but `bye`. The engine has paired
-			// it already and has no request to undo that (#776): the Devices page shows a device that never attaches, which
-			// the person removes there.
-			log("paired device \(device.id) could not be kept on pi² Remote's own list; its phone is not told it is paired")
-			connection?.end()
+			// Not on pi² Remote's own list, so never attached. The engine has paired it already: it is asked to take the
+			// pairing back (`remote.pairUnkept`, #887), which it does only for this device, the last it sent `paired` for,
+			// within a minute; and the phone is told the Mac could not save it (#881).
+			log("paired device \(device.id) could not be kept on pi² Remote's own list; the engine is asked to take the pairing back")
+			engine.request("remote.pairUnkept", .object([("device", .string(device.id.text))])) { result in
+				if case let .failure(refusal) = result { log("the engine did not take back the pairing of device \(device.id): \(refusal)") }
+			}
+			connection?.refusePairing(.unsaved)
 			return
 		}
 		log("paired device \(device.id): added to pi² Remote's own list")

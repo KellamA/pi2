@@ -12,6 +12,7 @@ enum Units {
 		admission()
 		scan()
 		builds()
+		engineWords()
 		homeTag()
 		dataFolder()
 		keychainVault()
@@ -131,6 +132,22 @@ enum Units {
 		Check.expect(Remote.buildAtLeast("2", "1") && Remote.buildAtLeast("1.0", "1") && Remote.buildAtLeast("1.10", "1.9"), "builds compare part by part, as the engine's buildAtLeast does")
 		Check.expect(!Remote.buildAtLeast("0", "1") && !Remote.buildAtLeast("1.2", "1.10"), "an older build is below the minimum")
 		Check.expect(Remote.isBuild("12.3") && !Remote.isBuild("1a") && !Remote.isBuild("") && !Remote.isBuild("1.2.3.4.5"), "a build is what the engine takes as one")
+	}
+
+	static func engineWords() {
+		Check.section("the engine's fixed words for a phone, never its words (#818, #881)")
+		let attach: [(String?, Refusal.Reason?)] = [
+			("update", .update), ("suspended", .suspended), ("presence", .presence), ("clock", .clock), (nil, nil), ("resume", nil), ("Suspended", nil),
+			("suspended ", nil), ("revoked", nil), ("", nil), ("This device is suspended. Resume it on the Mac's Devices page.", nil),
+			("ѕuspended", nil),
+		]
+		for (word, expected) in attach {
+			Check.expect(EngineWords.attachRefusal(word) == expected, "remote.attach's reason \(word.map { "\"\($0)\"" } ?? "none") is \(expected?.rawValue ?? "no reason for the phone")")
+		}
+		let pairing: [(String?, PairRefusal.Why?)] = [("unsaved", .unsaved), ("cancelled", .cancelled), (nil, nil), ("Unsaved", nil), ("not-kept", nil), ("canceled", nil), ("The Mac could not save the pairing. Start again.", nil)]
+		for (word, expected) in pairing {
+			Check.expect(EngineWords.pairRefusal(word) == expected, "pairRefused's reason \(word.map { "\"\($0)\"" } ?? "none") is \(expected?.rawValue ?? "no word for the phone")")
+		}
 	}
 
 	static func homeTag() {
