@@ -1,0 +1,21 @@
+[
+	{ "place": "device name", "text": "Marker phone — 9c4e" },
+	{ "place": "device model", "text": "iPhone-marker-model-27" },
+	{ "place": "device system", "text": "iOS-marker-system-27.2" },
+	{ "place": "Mac name", "text": "Marker Mac Studio 7d1f" },
+	{ "place": "method", "text": "conversation.submit" },
+	{ "place": "method in an item", "text": "projects.watchMarker" },
+	{ "place": "message", "text": "marker message: the build is green 3f9a" },
+	{ "place": "transcript", "text": "marker transcript line « 51b2 »" },
+	{ "place": "notification", "text": "marker notification text 0d7e" },
+	{ "place": "secret", "text": "marker-secret-value-8a61c0" },
+	{ "place": "file preview", "text": "marker file preview 44e9\nsecond line" },
+	{ "place": "project", "text": "Marker Project Aster 6c2b" },
+	{ "place": "long line", "text": "marker across a frame boundary 9e03" },
+	{ "place": "request item", "text": "marker answer in a request item 1f55" },
+	{ "place": "receipt", "text": "marker receipt text 2b7d" },
+	{ "place": "state", "text": "marker state body e15a" },
+	{ "place": "home address", "text": "192.168.77.41:52731" },
+	{ "place": "private address", "text": "[fd7a:115c:a1e0::4d1]:52731" },
+	{ "place": "device event", "text": "marker device event: a phone was added 7a3e" }
+]
