@@ -288,6 +288,37 @@ else
 	echo "ok: start --remote passes the switch devices.ts reads, which the engine fences"
 fi
 
+# start --remote turns the relay switch off (#921's security read): any process on the Mac may listen on *:9, where
+# REMOTE_RELAY points, and pi² Remote has a relay client now. remote_on as test-copy has it, on a stand-in engine that
+# answers as devices.set would: it must ask for the relay off, and refuse an engine that keeps it on.
+remote_functions=$(sed -n '/^from_json() {$/,/^}$/p; /^remote_on() {$/,/^}$/p' "$script")
+remote_on_with() {
+	(
+		REMOTE_RELAY=ws://127.0.0.1:9/v1 RELAY_ON=$1
+		die() { echo "test-copy: $*"; exit 1; }
+		engine_call() {
+			printf '%s %s\n' "$1" "$2" >"$T/remote-calls"
+			printf '{"id":1,"result":{"remote":{"on":true,"relay":%s,"home":true,"direct":false,"preview":true},"relay":"%s"}}\n' "$RELAY_ON" "$REMOTE_RELAY"
+		}
+		eval "$remote_functions"
+		remote_on
+		echo "went on"
+	) 2>&1
+}
+rm -f "$T/remote-calls"
+out=$(remote_on_with false)
+sent=$(cat "$T/remote-calls" 2>/dev/null)
+if [[ -z $remote_functions || $out != "went on" ]] ||
+	! node -e 'const [m, p] = [process.argv[1], JSON.parse(process.argv[2])]; process.exit(m === "devices.set" && p.relay === false && p.on === true && p.relayAddress === "ws://127.0.0.1:9/v1" ? 0 : 1)' "${sent%% *}" "${sent#* }"; then
+	echo "FAIL: start --remote does not ask the copy's engine for the relay switch off: $out; sent: $sent"
+	failures=$((failures + 1))
+elif [[ $(remote_on_with true) != *"did not turn remote access on as asked"* ]]; then
+	echo "FAIL: start --remote goes on with an engine that keeps the relay switch on"
+	failures=$((failures + 1))
+else
+	echo "ok: start --remote turns the relay switch off, so the copy's pi² Remote dials no relay at 127.0.0.1:9"
+fi
+
 # pair gives the phone no code unless the copy's pi² Remote has sockets on 127.0.0.1 alone, and closes the pairing it
 # opened first (#681): its two functions, as test-copy has them, on a stand-in lsof, engine and helper pid.
 loopback_functions=$(sed -n '/^loopback_helper_problem() {$/,/^}$/p; /^require_loopback_helper() {$/,/^}$/p' "$script")
