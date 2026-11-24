@@ -174,9 +174,12 @@ describe("pushes", () => {
 		expect(await push(mac, phone.device)).toEqual(OK);
 
 		// It leaves: its token goes with its slot.
-		client.send({ leave: { signature: await phone.key.sign(proofText("leave", mac.pairing, phone.device, await challengeOf(mac.pairing, phone.device))) } });
+		const notice = await phone.key.sign("a stand-in for the leave notice");
+		const signature = await phone.key.sign(proofText("leave", mac.pairing, phone.device, await challengeOf(mac.pairing, phone.device)));
+		const at = Date.now();
+		client.send({ leave: { signature, at, notice } });
 		await client.refused("left");
-		expect(await mac.client.json()).toEqual({ left: { device: phone.device } });
+		expect(await mac.client.json()).toEqual({ left: { device: phone.device, at, notice } });
 		expect(await storedToken(mac.pairing, phone.device)).toBeUndefined();
 		expect(await push(mac, phone.device)).toEqual(refusal("unknown-device"));
 		expect(standIn.pushes).toHaveLength(1);

@@ -453,7 +453,60 @@ enum SealedSession {
 		print("ok   pushes: sealed alert and background push, a Live Activity's numbers, and two refused")
 
 		await phone.stop()
+
+		// Leaving (3.6, #813): three more phones join one window and are added, and each leaves with its notice for the Mac,
+		// signed over a text naming the Mac's identity key, which the relay must pass on and never see. One leaves while the
+		// Mac is connected (`left`); one while it is away, which the Mac's next `ready` lists; and one while it is away
+		// again, still kept when the relay's storage is read.
+		let leaveToken = Bytes.random(32)
+		try await mac.openJoin(tokenHash: PairingSecrets.joinTokenHash(leaveToken), expires: SystemRelayClock().now() + 300_000)
+		func addLeavingPhone() async throws -> (DeviceID, P256.Signing.PrivateKey) {
+			let key = P256.Signing.PrivateKey()
+			ledger.secrets.append(key.rawRepresentation)
+			ledger.deviceKeys.append(PublicKeys.text(key.publicKey))
+			let attestKey = AttestKeyID(bytes: Bytes.random(32))!
+			let link = try await RelayClient.join(
+				relay: url, pairing: pairing, build: phoneBuild, deviceKey: key.publicKey, token: leaveToken,
+				attest: { hash in RelayAttestation(attestation: hash + Data(base64Encoded: attestKey.text)!, keyId: attestKey) }, connector: connector)
+			let joined = try await macEvents.next("joined") { if case let .phoneJoined(notice) = $0 { notice } else { nil } }
+			ledger.devices.append(joined.slot.text)
+			let id = DeviceID.random()
+			ledger.devices.append(id.text)
+			try await mac.addDevice(id, deviceKey: key.publicKey, attestKeyId: AttestKeyID(bytes: Bytes.random(32))!)
+			await link.close()
+			_ = try await macEvents.next("offline") { $0 == .offline(id) ? true : nil }
+			return (id, key)
+		}
+		let leaving = [try await addLeavingPhone(), try await addLeavingPhone(), try await addLeavingPhone()]
+		try await mac.closeJoin()
+		func leave(_ id: DeviceID, _ key: P256.Signing.PrivateKey, macThere: Bool) async throws {
+			let client = try RelayClient(
+				relay: url, role: .device(pairing, id), build: phoneBuild, signer: RelaySigner(key), connector: connector, options: ProtocolTest.options())
+			let events = Inbox(client.events)
+			await client.start()
+			let online = try await events.next("a leaving phone's ready") { if case let .deviceReady(online, _) = $0 { online } else { nil } }
+			Check.equal(online, macThere, "the leaving phone finds the Mac \(macThere ? "there" : "away")")
+			try await client.leave(mac: identity.publicKey)
+		}
+		func believed(_ left: RelayLeft, _ phone: (DeviceID, P256.Signing.PrivateKey)) -> Bool {
+			left.device == phone.0
+				&& left.verified(pairing: pairing, identityKey: identity.publicKey, deviceKey: phone.1.publicKey, now: SystemRelayClock().now()) != nil
+				&& left.verified(pairing: pairing, identityKey: relayKey.publicKey, deviceKey: phone.1.publicKey, now: SystemRelayClock().now()) == nil
+		}
+		try await leave(leaving[0].0, leaving[0].1, macThere: true)
+		let leftNow = try await macEvents.next("left") { if case let .left(left) = $0 { left } else { nil } }
+		Check.that(believed(leftNow, leaving[0]), "a phone that left while the Mac was there: its notice verifies for this Mac alone")
 		await mac.stop()
+		try await leave(leaving[1].0, leaving[1].1, macThere: false)
+		let macAgain = try RelayClient(
+			relay: url, role: .mac(pairing), build: macBuild, signer: RelaySigner(relayKey), connector: connector, options: ProtocolTest.options())
+		let macAgainEvents = Inbox(macAgain.events)
+		await macAgain.start()
+		let ready = try await macAgainEvents.next("the Mac's ready again") { if case let .macReady(ready) = $0 { ready } else { nil } }
+		Check.that(ready.left.count == 1 && believed(ready.left[0], leaving[1]), "a phone that left while the Mac was away: kept, and its notice verifies")
+		await macAgain.stop()
+		try await leave(leaving[2].0, leaving[2].1, macThere: false)
+		print("ok   three phones left, each with its notice for the Mac")
 	}
 
 	/// A line of some 100 KB, cut into a `more` frame and a `data` frame, with the marker across the cut.

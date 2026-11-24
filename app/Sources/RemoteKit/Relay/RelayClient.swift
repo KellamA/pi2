@@ -26,13 +26,15 @@ import Foundation
 //   relay hands the items over again at the next take; the memory drops those already kept, and they are acknowledged
 //   then. Takes go one at a time, from the request to its `took`, so that two are never given the same items.
 // - Everything the relay says is its word, not a fact: a hint to show, never a reason to forget, revoke, wipe or
-//   register again (remotekit.md, "What a caller must and must not do").
+//   register again (remotekit.md, "What a caller must and must not do"). A `left` carries the phone's own notice, which
+//   its caller checks (`RelayLeft.verified`) before it takes the device for gone (#813).
 // - What it reports is bounded (`RelayOptions.eventBuffer`): a caller that does not read cannot be made to hold what a
 //   relay sends without end. Past the bound the socket is closed and opened again; repeated `mail` and presence
 //   notices are sent once.
 
 /// A key that proves an end at the relay: the Mac's relay key, or the phone's device key (iphone.md 3.2, 3.4). It signs
-/// only `RelayProof`'s labelled text over a challenge of exactly 32 bytes.
+/// only `RelayProof`'s labelled text over a challenge of exactly 32 bytes, and a phone's the leave text for its Mac
+/// (`RelayLeaveNotice`).
 public struct RelaySigner: Sendable {
 	public let publicKey: P256.Signing.PublicKey
 	private let sign: @Sendable (Data) throws -> Data
@@ -50,7 +52,21 @@ public struct RelaySigner: Sendable {
 	/// The signature for a `proof` or a `leave`, checked against the public key before it is sent, so that a key that
 	/// is not the one on record is found here and not refused as `signature` by the relay.
 	func prove(_ purpose: RelayProof.Purpose, pairing: PairingID?, device: DeviceID?, challenge: Data) throws -> Data {
-		let text = try RelayProof.text(purpose, pairing: pairing, device: device, challenge: challenge)
+		try signChecked(try RelayProof.text(purpose, pairing: pairing, device: device, challenge: challenge))
+	}
+
+	/// The notice a phone leaves for its Mac (3.6): the device key's signature over the leave text, checked as a proof is.
+	func leaveNotice(pairing: PairingID, device: DeviceID, identityKey: P256.Signing.PublicKey, at: Int64) throws -> Data {
+		let text: Data
+		do {
+			text = try RelayLeaveNotice.text(pairing: pairing, device: device, identityKey: identityKey, at: at)
+		} catch let error as RemoteKitError {
+			throw RelayClientError.invalid(error)
+		}
+		return try signChecked(text)
+	}
+
+	private func signChecked(_ text: Data) throws -> Data {
 		let signature: Data
 		do {
 			signature = try sign(text)
@@ -161,8 +177,10 @@ public enum RelayEvent: Equatable, Sendable {
 	/// The relay says a phone joined the window. Its key and App Attest key id are the relay's word: `addDevice` sends
 	/// the engine's, from the claim the engine verified, never these.
 	case phoneJoined(RelayJoinNotice)
-	/// The relay says a device left. Its word alone: nothing is revoked or forgotten on it without a proof.
-	case left(DeviceID)
+	/// The relay says a device left, and passes on what its phone signed for the Mac. Its word alone until
+	/// `RelayLeft.verified` has checked the notice against the device key the caller holds: only a verified leave is the
+	/// device having left; any other is a hint, "the relay says this device left", and nothing is revoked or forgotten on it.
+	case left(RelayLeft)
 	/// The relay says another copy of pi² Remote holding the relay key tried to connect as this Mac (3.4). A hostile
 	/// relay can say it too: shown as what the relay says.
 	case anotherMac
@@ -467,16 +485,26 @@ public actor RelayClient {
 	}
 
 	/// Removes this phone from the pairing at the relay (3.6), signed with the device key over this connection's
-	/// challenge. The relay closes the socket, and the client stops with `left`. Throws `lost` if no answer came within
+	/// challenge, and leaves its Mac the notice it believes (`RelayLeft`): the device key's signature over the leave text
+	/// for this pairing, this device, `identityKey` (the Mac's, as the phone keeps it from pairing) and the time now. The
+	/// relay closes the socket, and the client stops with `left`. Throws `lost` if no answer came within
 	/// `RelayOptions.answerWithin`. The phone's Unpair does not wait on it: its keys are deleted either way (3.6).
-	public func leave() async throws {
+	public func leave(mac identityKey: P256.Signing.PublicKey) async throws {
 		guard case let .device(pairing, device) = role else { throw RelayClientError.wrongEnd }
 		guard !finished else { throw RelayClientError.stopped }
 		guard ready, let socket, let challenge else { throw RelayClientError.notConnected }
 		let signature = try signer.prove(.leave, pairing: pairing, device: device, challenge: challenge)
+		let at = options.clock.now()
+		let notice = try signer.leaveNotice(pairing: pairing, device: device, identityKey: identityKey, at: at)
+		let message = RelayOutgoing.leave(signature: signature, at: at, notice: notice)
+		do {
+			try message.validate()
+		} catch let error as RemoteKitError {
+			throw RelayClientError.invalid(error)
+		}
 		let sentOn = generation
 		do {
-			try await socket.send(.text(RelayOutgoing.leave(signature: signature).text))
+			try await socket.send(.text(message.text))
 		} catch {
 			throw RelayClientError.disconnected
 		}
@@ -805,9 +833,9 @@ public actor RelayClient {
 		case let .phoneJoined(notice):
 			know(notice.slot)
 			post(.phoneJoined(notice))
-		case let .left(device):
-			presence[device] = nil
-			post(.left(device))
+		case let .left(left):
+			presence[left.device] = nil
+			post(.left(left))
 		case .anotherMac: post(.anotherMac)
 		case let .held(device, until): post(.held(device, until: until))
 		case let .macOnline(online):

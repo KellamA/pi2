@@ -343,6 +343,13 @@ const environment: Kind = (value) => value === "development" || value === "produ
 const reader: Kind = (value) => value === "mac" || device(value);
 const list = (each: Kind): Kind => (value) => Array.isArray(value) && value.every(each);
 const shape = (fields: Fields): Kind => (value) => fieldsFault(value, fields) === null;
+/** The time a phone says it left (3.6): at most the year 2286, as RemoteKit's client reads a time. */
+const leftAt: Kind = (value) => time(value) && (value as number) <= 9_999_999_999_999;
+/**
+ * A device that left, as the Mac is told and the relay keeps it: the time, and the device key's signature over the leave
+ * text for the Mac, which names the Mac's identity key and so tells the relay nothing it can check (#813).
+ */
+const leftDevice: Kind = (value) => shape({ device, at: leftAt, notice: signature })(value);
 
 /** The fixed words of a refusal (relay/README.md, "Refusals"): never what a client sent. */
 const WHY = [
@@ -412,7 +419,7 @@ export const FROM_AN_END: Record<string, Fields[]> = {
 	take: [{}],
 	took: [{ ids: tookIds }],
 	token: [{ apns, environment }],
-	leave: [{ signature }],
+	leave: [{ signature, at: leftAt, notice: signature }],
 	ping: [{}],
 	push: PUSH_FORMS,
 	activityToken: [{ activity: itemId, apns, environment }],
@@ -423,7 +430,7 @@ export const FROM_AN_END: Record<string, Fields[]> = {
 export const FROM_THE_RELAY: Record<string, Fields[]> = {
 	registered: [{ pairing }],
 	ready: [
-		{ devices: list(shape({ device, online: bool })), left: list(device), pending: bool, mail: count },
+		{ devices: list(shape({ device, online: bool })), left: list(leftDevice), pending: bool, mail: count },
 		{ mac: bool, mail: count },
 	],
 	joined: [{ device }, { device, deviceKey: key, keyId: attestKeyId }],
@@ -434,7 +441,7 @@ export const FROM_THE_RELAY: Record<string, Fields[]> = {
 	taken: [{ count }],
 	online: [{ device }],
 	offline: [{ device }],
-	left: [{ device }],
+	left: [{ device, at: leftAt, notice: signature }],
 	anotherMac: [{}],
 	held: [{ device, until: time }],
 	mac: [{ online: bool }],
@@ -557,7 +564,7 @@ const META: Fields = {
 	lastSeen: time,
 	blocked: (value) => typeof value === "object" && value !== null && Object.entries(value).every(([end, until]) => (end === "mac" || device(end)) && time(until)),
 	window: (value) => value === null || shape({ id: isBytes(16), tokenHash: bytes32, expires: time, tries: count, joins: count })(value),
-	left: list(device),
+	left: list(leftDevice),
 	/** When the join windows of the last minute were opened, for their limit. */
 	"opened?": list(time),
 };
