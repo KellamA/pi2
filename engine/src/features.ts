@@ -21,6 +21,7 @@ import { coauthor } from "./coauthor.ts";
 import { commands } from "./commands.ts";
 import { compaction } from "./compaction.ts";
 import { documents } from "./documents.ts";
+import { folders } from "./folders.ts";
 import { heed } from "./heed.ts";
 import { knowledge } from "./knowledge.ts";
 import { keepAwake } from "./keepawake.ts";
@@ -38,6 +39,7 @@ import { projectAgents } from "./projectagents.ts";
 import { projectLimits } from "./projectlimits.ts";
 import { changes } from "./changes.ts";
 import { needs } from "./needs.ts";
+import { devicePushes } from "./pushes.ts";
 import { orchestrator, projectPrompt } from "./orchestrator.ts";
 import { projectRules, projectRulesPrompt } from "./projectrules.ts";
 import { projects } from "./projects.ts";
@@ -275,6 +277,9 @@ export const FEATURES: Feature[] = [
 	localRun,
 	order,
 	localModels,
+	// What is pushed to paired phones (#689): it follows the `needs` and `limits` events as they are sent, wherever it
+	// stands here, since it listens from when it is made; requests of a device's own, with no greeting.
+	devicePushes,
 	// Agents of a project, and templates (#457): requests only, with no greeting of its own.
 	projectAgents,
 	projectLimits,
@@ -284,6 +289,8 @@ export const FEATURES: Feature[] = [
 	orchestrator,
 	// Carrying over (#458): requests, and the `projects` event's `carryOver`, with no greeting of its own.
 	carryOver,
+	// What a paired phone may see of the Mac's folders and files (#698): requests only, with no greeting of its own.
+	folders,
 	// The projects epic (docs/projects.md). Their greetings go to an app in this order (4.4).
 	projects,
 	projectRules,

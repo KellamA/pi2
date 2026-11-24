@@ -19,13 +19,17 @@
 // - the `remote` event, `{"event":"remote","kind",…}`, to pi² Remote alone: `start` (the relay, the switches, the
 //   pairing, the paired devices' keys and the lowest build to attach, sent first), `settings`, `register`,
 //   `openJoin` (the pairing's secret and the relay's token hash) and `closeJoin`, `paired` and `pairRefused` (the
-//   answer to a claim), `revoke`, and `sessionClosed`. #689 (P20) adds `push` here.
+//   answer to a claim), `revoke`, `presenceKey` (a device's new Face ID key, accepted on the Mac, #786), and
+//   `sessionClosed`; and `push` (#689, P20), what pushes.ts chose to push to a device, which pi² Remote seals (but a
+//   Live Activity's numbers) and asks the relay to send.
 //
 // pi² Remote's requests: `remote.hello` (the Mac's public keys, the pairing, the Mac's addresses), `remote.state` (the
 // same when they change), `remote.pairClaim`, `remote.pairWrong` and `remote.pairRefused` (pairing, 3.3), `remote.pairUnkept`
 // (a pairing pi² Remote could not keep, taken back, #887), `remote.attachBegin` and `remote.attach` (3.4: an attach or
 // a resume, signed by the device key and the presence key; a refusal may carry a reason for the phone, #818), and
-// `remote.sessionEnd` (the phone's session ended, 4.5). `remote.mailboxIn` (#678, P10) is added here, and checks each
+// `remote.sessionEnd` (the phone's session ended, 4.5), `remote.presenceKey` (a phone's offer of a new Face ID key, signed
+// as an attach is, 3.2, #786), and `remote.pushRefused` (the relay refused a push, pushes.ts). `remote.mailboxIn` (#678,
+// P10) is added here, and checks each
 // item with `checkRequestItem` in devices.ts.
 //
 // A device session is a `Client` of its own (clients.ts) with `device` set, so it has its own subscriptions and
@@ -42,6 +46,7 @@ import { allowsHiddenApproval, type DevicePath, deviceLogged, deviceMay, forTheH
 import { type Client, clients, send, type Wire } from "./clients.ts";
 import {
 	attachChallenge,
+	attachHolds,
 	attachTaken,
 	checkAttach,
 	type Device,
@@ -55,6 +60,7 @@ import {
 	maskValue,
 	shownName,
 	notify,
+	offerPresenceKey,
 	p256Key,
 	pairClaim,
 	pairedDevice,
@@ -65,10 +71,13 @@ import {
 	helperGone,
 	activeDevices,
 	remoteHooks,
+	requestLogged,
 	sessionsChanged,
 	summarize,
+	DEVICE_FAULT,
 } from "./devices.ts";
 import type { SwitchName } from "./projects.ts";
+import { pushes } from "./pushes.ts";
 import type { Params } from "./requests.ts";
 import { refusal } from "./requesterror.ts";
 import { testSwitch } from "./testswitches.ts";
@@ -362,7 +371,7 @@ function heard(current: Helper, line: string): void {
 		return;
 	}
 	if (typeof message !== "object" || message === null || Array.isArray(message)) return;
-	if (typeof message.session === "string") void deviceLine(message.session, message.message);
+	if (typeof message.session === "string") void deviceLine(message.session, message.message).catch(deviceLineFailed(message.session, message.message));
 	else void helperRequest(current, message);
 }
 
@@ -453,6 +462,8 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 	},
 	"remote.attach": async (current, params) => {
 		const attached = await checkAttach(params);
+		// Again, with nothing awaited before the session opens: a key accepted, or a revocation, while the attach was saved (#786).
+		attachHolds(attached);
 		const resuming = attached.session === null ? undefined : sessions.get(attached.session);
 		const resumed = resuming !== undefined && resuming.device === attached.device.id;
 		let session: Session;
@@ -478,7 +489,14 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 		closeSession(params.session, "The session ended on the phone.");
 		return {};
 	},
+	"remote.presenceKey": async (_current, params) => offerPresenceKey(params),
 	// "remote.mailboxIn": #678 (P10), with checkRequestItem (devices.ts).
+	/** `{ id, why }`: the relay refused the push `id` (docs/iphone.md 7); pushes.ts holds back what the refusal says. */
+	"remote.pushRefused": async (_current, params) => {
+		if (typeof params.id !== "string" || typeof params.why !== "string" || Object.keys(params).length !== 2) throw new Error("remote.pushRefused takes a push's id and why");
+		if (pushes?.refused(params.id, params.why) !== true) log("remote: pi² Remote answered for a push the engine does not know, or no longer remembers");
+		return {};
+	},
 };
 
 // ---- Device sessions (4.1)
@@ -623,6 +641,34 @@ export function forDevice(line: string): string | null {
 /** What a device is answered when the answer itself could not be made fit to send it. */
 export const ANSWER_NOT_SENT = "The answer could not be sent to the phone. Look on the Mac.";
 
+/** What a device is answered when its line failed in the engine, outside the request's own handling. */
+export const DEVICE_LINE_FAILED = "The Mac could not take this request. Look on the Mac.";
+
+/**
+ * For a device's line that failed outside its request's own `try` (a fault of the engine's, never left to end it:
+ * main.ts stops on an unhandled rejection): logged, and the line refused, as a request that failed is, with words of
+ * its own rather than the fault's. The session stays open: the fault is the engine's, in this one request, and the
+ * device is still the one that attached, so closing its session would only ask the person for Face ID again, for the
+ * same request to fail again.
+ */
+function deviceLineFailed(id: string, message: unknown): (error: unknown) => void {
+	return (error) => {
+		log("remote: a device's request failed in the engine:", error instanceof Error ? (error.stack ?? error.message) : error);
+		try {
+			const given = typeof message === "object" && message !== null && !Array.isArray(message) ? (message as { id?: unknown }).id : undefined;
+			const body = { id: given ?? null, error: DEVICE_LINE_FAILED };
+			const session = sessions.get(id);
+			if (session !== undefined) send(session.client, body);
+			else {
+				const out = forDevice(JSON.stringify(body));
+				if (out !== null) write(helper, `{"session":${JSON.stringify(id)},"message":${out}}\n`);
+			}
+		} catch (again) {
+			log("remote: and its refusal could not be sent:", again instanceof Error ? again.message : again);
+		}
+	};
+}
+
 /** Endpoints by name only: their addresses often carry a token typed outside the secret fields (5.7). */
 function endpointsByName(message: Record<string, unknown>): void {
 	const providers = Array.isArray(message.providers) ? (message.providers as { endpoint?: { id?: unknown; name?: unknown } | null; ask?: { can?: boolean; url?: unknown } | null }[]) : [];
@@ -662,9 +708,11 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
 	}
 	const gate = { path: session.path, approvalSwitch, approvalHidden };
 	const answer = deviceMay(method, params as Params, gate);
-	const summary = summarize(method, params as Params);
+	// The log's own names (a pairing, an offer of a Face ID key) are the engine's to write: a device's are "unknown" (#786).
+	const summary = summarize(requestLogged(method), params as Params);
+	if (DEVICE_FAULT !== undefined && method === DEVICE_FAULT) throw new Error("PI2_DEVICE_FAULT: the device's line");
 	const record = (outcome: "done" | "refused" | "failed", why?: string) =>
-		void logDevice({ device: device.id, path: session.path, method, summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }).catch((error) =>
+		void logDevice({ device: device.id, path: session.path, method: requestLogged(method), summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }).catch((error) =>
 			log("devices: the log could not be written:", error instanceof Error ? error.message : error),
 		);
 	if (answer === "no" || !Object.hasOwn(handlers, method)) {
@@ -680,6 +728,10 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
 		logDevice({ device: device.id, path: session.path, method, summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }, widens).catch((error) =>
 			log("devices: the log could not be written:", error instanceof Error ? error.message : error),
 		);
+	// Tell me when it answers (7): waited for from before the run the message starts, which may end before it is answered.
+	const conversation = (params as Params).id;
+	const tellMe = method === "submit" && (params as Params).tellWhenAnswered === true && typeof conversation === "number";
+	if (tellMe) pushes?.answerWanted(device.id, conversation);
 	try {
 		const result = await handlers[method]!(params as Params, session.client);
 		if (logged) await writeLog("done");
@@ -687,6 +739,7 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
 		if (widens) notify("widening", device.id, `${device.name}: ${summary}`);
 	} catch (error) {
 		const refused = refusal(error);
+		if (tellMe) pushes?.answerNotWanted(device.id, conversation);
 		if (logged) await writeLog("failed", refused.error);
 		reply(refused);
 		if (widens) notify("widening", device.id, `${device.name} tried: ${summary}`);
