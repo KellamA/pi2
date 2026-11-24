@@ -116,9 +116,9 @@ enum Sessions {
 		socket.say(#"{"challenge":"\#(Base64URL.encode(challenge))"}"#)
 		_ = try await socket.nextText("proof")
 		socket.say(#"{"pong":{}}"#)
-		socket.say(#"{"ready":{"devices":[{"device":"dev_EBESExQVFhcYGRobHB0eHw","online":false}],"left":["dev_EBESExQVFhcYGRobHB0eHw"],"pending":false,"mail":1}}"#)
+		socket.say(#"{"ready":{"devices":[{"device":"dev_EBESExQVFhcYGRobHB0eHw","online":false}],"left":[\#(Formats.leftText)],"pending":false,"mail":1}}"#)
 		let ready = try await rig.events.next("ready") { if case let .macReady(ready) = $0 { ready } else { nil } }
-		Check.equal(ready, RelayMacReady(devices: [RelayDevicePresence(device: Formats.device, online: false)], left: [Formats.device], pending: false, mail: 1), "ready, as the relay said it")
+		Check.equal(ready, RelayMacReady(devices: [RelayDevicePresence(device: Formats.device, online: false)], left: [Formats.left], pending: false, mail: 1), "ready, as the relay said it")
 		Check.holds(await rig.client.isReady, "ready once the relay says so")
 		await Check.throwsError("a phone's request from the Mac", .wrongEnd) { try await rig.client.setPushToken(String(repeating: "0a", count: 32), environment: .production) }
 		await Check.throwsError("a put to the Mac from the Mac", .wrongEnd) { try await rig.client.put(Formats.sealed, id: Formats.item, to: .mac) }
@@ -356,7 +356,7 @@ enum Sessions {
 		let notices: [(String, RelayEvent)] = [
 			(#"{"online":{"device":"dev_EBESExQVFhcYGRobHB0eHw"}}"#, .online(Formats.device)),
 			(#"{"offline":{"device":"dev_EBESExQVFhcYGRobHB0eHw"}}"#, .offline(Formats.device)),
-			(#"{"left":{"device":"dev_EBESExQVFhcYGRobHB0eHw"}}"#, .left(Formats.device)),
+			(#"{"left":\#(Formats.leftText)}"#, .left(Formats.left)),
 			(#"{"anotherMac":{}}"#, .anotherMac),
 			(#"{"held":{"device":"dev_EBESExQVFhcYGRobHB0eHw","until":1800000005000}}"#, .held(Formats.device, until: 1_800_000_005_000)),
 			(#"{"mail":{}}"#, .mail),
@@ -583,11 +583,23 @@ enum Sessions {
 		Check.equal(try await socket.nextText("token"), RelayOutgoing.token(apns: String(repeating: "ab", count: 32), environment: .development).text, "token as sent")
 		socket.say(#"{"ok":{"what":"token"}}"#)
 		try await token.value
-		let left = Task { try await rig.client.leave() }
-		let leave = try json(try await socket.nextText("leave"))
+		let macIdentity = P256.Signing.PrivateKey().publicKey
+		let left = Task { try await rig.client.leave(mac: macIdentity) }
+		let sent = try await socket.nextText("leave")
+		let leave = try json(sent)
 		let signature = Base64URL.decode(leave["leave"]?["signature"]?.stringValue ?? "", count: 64) ?? Data()
 		let text = try RelayProof.text(.leave, pairing: Formats.pairing, device: Formats.device, challenge: challenge)
 		Check.that(try deviceKey.publicKey.isValidSignature(P256.Signing.ECDSASignature(rawRepresentation: signature), for: text), "leave is signed over this connection's challenge")
+		// The notice for the Mac, at the phone's time now, which the Mac checks with its own identity key.
+		let now = rig.clock.now()
+		let notice = Base64URL.decode(leave["leave"]?["notice"]?.stringValue ?? "", count: 64) ?? Data()
+		Check.equal(sent, RelayOutgoing.leave(signature: signature, at: now, notice: notice).text, "leave as sent, with the time and the notice for the Mac")
+		let passedOn = RelayLeft(device: Formats.device, at: now, notice: notice)
+		Check.equal(
+			passedOn.verified(pairing: Formats.pairing, identityKey: macIdentity, deviceKey: deviceKey.publicKey, now: now).map(\.device), Formats.device,
+			"the notice verifies for the Mac the phone named")
+		Check.that(
+			passedOn.verified(pairing: Formats.pairing, identityKey: Formats.key.publicKey, deviceKey: deviceKey.publicKey, now: now) == nil, "and for no other Mac")
 		socket.say(#"{"refused":{"why":"left"}}"#)
 		socket.hangUp(code: 4008, reason: "left")
 		try await left.value

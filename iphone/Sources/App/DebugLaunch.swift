@@ -17,7 +17,7 @@ import PiModels
 ///   known. `face-id-check` opens the Face ID check from the first screen (`FirstScreen`). And the next screens':
 ///   `work:<project>[#<number>]`, `pull-request:<project>#<number>[:<file>]`, `board:<project>[#agents|rules|notes|branches]`,
 ///   `agent:<id>` (a template) or `agent:<project>#<id>`, `templates`, `project-settings:<project>`, `settings`,
-///   `schedules`, `usage`, `conversations[:<project>]`, `archive`, `background-commands[:<id>]`, `new-project`.
+///   `schedules`, `usage`, `conversations[:<project>]`, `archive`, `background-commands[:<id>]`, `new-project`, `outbox`.
 struct DebugLaunch {
     var transport: String?
     var connection: String?
@@ -129,6 +129,7 @@ struct DebugLaunch {
         case "usage" where argument == nil: return .usage
         case "archive" where argument == nil: return .archive
         case "new-project" where argument == nil: return .newProject
+        case "outbox" where argument == nil: return .outbox
         default:
             return nil
         }

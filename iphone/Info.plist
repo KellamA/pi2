@@ -3,11 +3,18 @@
 <plist version="1.0">
 <!-- What the project's build settings cannot give (INFOPLIST_KEY_ takes no arrays), merged by Xcode into the
      Info.plist it makes from those settings, in both configurations (docs/iphone-app.md). The service the home path
-     looks for on the network (docs/iphone.md 5.4); its usage text is INFOPLIST_KEY_NSLocalNetworkUsageDescription. -->
+     looks for on the network (docs/iphone.md 5.4); its usage text is INFOPLIST_KEY_NSLocalNetworkUsageDescription.
+     remote-notification: the Mac's background push that takes a notification away once its card is answered
+     (docs/iphone.md section 7, PushRemoval); it needs no entitlement of its own, and arrives only once #682 turns
+     Push Notifications on for the App ID. -->
 <dict>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_pi2._tcp</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
 	</array>
 </dict>
 </plist>

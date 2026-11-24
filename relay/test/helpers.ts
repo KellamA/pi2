@@ -205,6 +205,21 @@ export async function phoneHello(pairing: string, phone: Phone): Promise<{ clien
 	return { client, ready };
 }
 
+/**
+ * A listed phone's `leave` (3.6) on the connection given `challenge`: its device key's signature over the relay's text,
+ * and the time and notice for the Mac. The relay cannot check the notice, which is signed over a text naming the Mac's
+ * identity key (docs/remotekit.md): here the device key signs a stand-in, which the relay must pass on as it is.
+ */
+export async function leaveMessage(pairing: string, phone: Phone, challenge: string, at = Date.now()) {
+	return {
+		leave: {
+			signature: await phone.key.sign(proofText("leave", pairing, phone.device, challenge)),
+			at,
+			notice: await phone.key.sign(`a stand-in for the leave notice, at ${at}`),
+		},
+	};
+}
+
 export function pairingObject(pairing: string): DurableObjectStub<Pairing> {
 	return env.PAIRINGS.get(env.PAIRINGS.idFromName(pairing));
 }

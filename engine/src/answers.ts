@@ -160,6 +160,8 @@ const FOR_THE_PERSON_SETTINGS: Record<string, (params: Record<string, unknown>) 
 	"devices.revoke": () => true, // as the person
 	"devices.resume": () => true, // takes a suspended device back
 	"devices.log": () => true, // what each device did
+	"devices.acceptPresenceKey": () => true, // a phone's new Face ID key, which then opens sessions (3.2)
+	"devices.refusePresenceKey": () => true, // drops it
 };
 
 export function settingsForThePerson(method: string, params: Record<string, unknown>): boolean {
@@ -218,6 +220,8 @@ const OPEN_TO_ANY = new Set([
 	"memory.delete", // notes never widen (projects.md 7.1)
 	"needs.list",
 	"projects.list",
+	"projects.folders", // the folders offered for a new project: those already used with pi², never a listing (folders.ts)
+	"files.preview", // reads one text file a conversation links to, under its folder; agents read files themselves
 	"projects.carryOver", // a dry run alone since carrying over runs by itself at the update (#715): it changes nothing
 	"reports.wake", // waking never widens; the limits bound it
 	"wakes.cancel",
@@ -234,6 +238,8 @@ const OPEN_TO_ANY = new Set([
 	"test-copy.fill",
 	"devices.self", // a device's own record and log; refused outside a device session
 	"devices.forgetSelf", // a device unpairing itself; refused outside a device session
+	"pushes.set", // what a device is pushed: its own settings; refused outside a device session (iphone.md 7)
+	"pushes.follow", // which project a device's Live Activity follows; refused outside a device session
 ]);
 
 const REQUEST_CLASSES: readonly ReadonlySet<string>[] = [new Set(Object.keys(FOR_THE_PERSON)), new Set(Object.keys(FOR_THE_PERSON_SETTINGS)), OPEN_TO_ANY];
@@ -352,6 +358,8 @@ const FROM_A_DEVICE: Record<string, DeviceRow> = {
 	"limits.refresh": { why: "reading", reading: true },
 	"settings.getCompaction": { why: "reading", reading: true },
 	"local.status": { why: "reading", reading: true },
+	"projects.folders": { why: "reading: the folders the Mac offers for a new project, those already used with pi², never a listing of the disk (folders.ts)", reading: true },
+	"files.preview": { why: "reading a text file the conversation links to, under its folder, not ignored by git, at most 256 KB; logged, since it copies a file out (4.4, 5.7)" },
 	// Messages, starts and stops.
 	submit: {
 		why: "a message, as the person sends one at the Mac",
@@ -434,11 +442,12 @@ const FROM_A_DEVICE: Record<string, DeviceRow> = {
 	"rules.remove": { why: "removing an allowed command narrows" },
 	"schedules.delete": { why: "deleting a schedule narrows" },
 	"coauthor.set": { why: "the person's ordinary act" },
-	// With a folder only once the Mac offers it (projects.folders, #696, P29), which no request does yet.
-	// With a template it copies an agent with its reach, as agents.duplicate does, so it widens (decision 27).
+	// With a folder only one projects.folders offered, by its exact text (`folderOffered` below), and its handler checks
+	// it again against what is offered at that moment (folders.ts, `offeredFolder`). With a template it copies an agent
+	// with its reach, as agents.duplicate does, so it widens (decision 27).
 	"projects.create": {
-		why: "a new project; with a folder only one the Mac offers (P29), until then none; with a template it copies an agent, which widens",
-		may: (params) => (params.folder != null ? "no" : params.template != null ? "face" : "yes"),
+		why: "a new project; with a folder only one the Mac offered (projects.folders), by its exact text; with a template it copies an agent, which widens",
+		may: (params) => (params.folder != null && !folderOffered(params.folder) ? "no" : params.template != null ? "face" : "yes"),
 	},
 	"projects.archive": { why: "putting away narrows" },
 	"projects.startFresh": { why: "the person's ordinary act" },
@@ -455,9 +464,27 @@ const FROM_A_DEVICE: Record<string, DeviceRow> = {
 	// A device's own (4.2's last paragraph).
 	"devices.self": { why: "its own record and log" },
 	"devices.forgetSelf": { why: "it unpairs itself (3.6)" },
-	// remote.mailboxIn (#678, P10) is pi² Remote's and goes in FOR_THE_HELPER. projects.folders and files.preview (P29)
-	// go here, with their reasons, when they are made.
+	// What it is pushed (7, #689): its own settings, which widen nothing; read alone when sent with none.
+	"pushes.set": { why: "its own notifications", reading: (params) => Object.keys(params).length === 0 },
+	"pushes.follow": { why: "its own Live Activities" },
+	// remote.mailboxIn (#678, P10) is pi² Remote's and goes in FOR_THE_HELPER.
 };
+
+/**
+ * The folders `projects.folders` offered last (folders.ts tells each offering here), by their real paths as sent. A
+ * phone only ever gives `projects.create` a folder back as it was offered, so its exact text is compared, and nothing a
+ * phone names is looked up on the disk: a folder it was not offered is refused here, whatever a handler does (#698).
+ */
+let foldersOffered: ReadonlySet<string> = new Set();
+
+export function offerFolders(paths: Iterable<string>): void {
+	foldersOffered = new Set(paths);
+}
+
+/** Whether `folder` is, by its exact text, one `projects.folders` offered last. */
+export function folderOffered(folder: unknown): boolean {
+	return typeof folder === "string" && foldersOffered.has(folder);
+}
 
 /** What a phone may send that always widens reach: the Mac notifies the person of each (4.4). */
 const WITH_FACE_ID: Record<string, string> = {
@@ -553,6 +580,8 @@ const MAC_ONLY: Record<string, string> = {
 	"devices.revoke": "devices.*",
 	"devices.resume": "devices.*",
 	"devices.log": "devices.*",
+	"devices.acceptPresenceKey": "devices.*", // a phone never accepts its own new Face ID key, nor another's (3.2)
+	"devices.refusePresenceKey": "devices.*",
 	// The handlers the table does not name, listed for the owner in #673's pull request.
 	"github.show": NOT_NAMED,
 	"settings.setAgentDefault": NOT_NAMED,
@@ -562,7 +591,7 @@ const MAC_ONLY: Record<string, string> = {
  * pi² Remote's own requests, taken only on the connection the engine made for the helper it started (5.5), never on
  * its listening socket and never in a device session. remote.mailboxIn (#678, P10) is added here when it is made.
  */
-const FOR_THE_HELPER: ReadonlySet<string> = new Set(["remote.hello", "remote.state", "remote.pairClaim", "remote.pairWrong", "remote.pairRefused", "remote.attachBegin", "remote.attach", "remote.sessionEnd"]);
+const FOR_THE_HELPER: ReadonlySet<string> = new Set(["remote.hello", "remote.state", "remote.pairClaim", "remote.pairWrong", "remote.pairRefused", "remote.attachBegin", "remote.attach", "remote.sessionEnd", "remote.presenceKey", "remote.pushRefused"]);
 
 export function forTheHelper(method: string): boolean {
 	return FOR_THE_HELPER.has(method);

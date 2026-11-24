@@ -52,7 +52,7 @@ struct AppStartTests {
         StoreFolder(FileManager.default.temporaryDirectory.appending(path: "pi2-test-\(UUID().uuidString)", directoryHint: .isDirectory))
     }
 
-    private struct Phone {
+    struct Phone {
         let mac: TestMac
         let keyring: PhoneKeyring
         let store: PhoneStore
@@ -61,8 +61,9 @@ struct AppStartTests {
         let record: PairingRecord
     }
 
-    /// A phone paired with the test Mac through the link's own pairing flow, its session not opened yet.
-    private static func pairedPhone() async throws -> Phone {
+    /// A phone paired with the test Mac through the link's own pairing flow, its session not opened yet. (IntentsTests
+    /// uses it too.)
+    static func pairedPhone() async throws -> Phone {
         let mac = TestMac()
         let address = try await mac.listen()
         // Keys/'s keys in memory, with a Face ID that passes in a context of its own: the cache key reads only under one.
