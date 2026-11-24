@@ -465,10 +465,11 @@ final class RelayEnd: @unchecked Sendable {
 		remote.queue.asyncAfter(deadline: .now() + PhoneConnection.answerAfterCloseJoin, execute: later)
 	}
 
-	/// A claim was answered: the relay's window, if its closing waited, closes now.
+	/// A claim was answered: the relay's window, if its closing waited, closes now, once what the channels queued has gone,
+	/// so that a refused claim's `pairRefused` reaches its phone before the relay drops the phone's joined slot.
 	func claimAnswered() {
 		guard deferredClose != nil else { return }
-		sendClose()
+		afterSent { [unowned self] in if self.deferredClose != nil { self.sendClose() } }
 	}
 
 	private func sendClose() {

@@ -452,6 +452,8 @@ package final class Remote: @unchecked Sendable {
 				if case let .failure(refusal) = result { log("the engine did not take back the pairing of device \(device.id): \(refusal)") }
 			}
 			connection?.refusePairing(.unsaved)
+			// The claim is answered: the relay's window, and the phone's joined slot with it, go now, not 30 seconds on.
+			relayEnd.claimAnswered()
 			return
 		}
 		log("paired device \(device.id): added to pi² Remote's own list")

@@ -360,6 +360,56 @@ enum Relayed {
 		Check.expect(kept(home)?.devices.isEmpty == true, "and it is dropped from pi² Remote's own list")
 		let log = (try? String(contentsOf: home.appendingPathComponent("remote.log"), encoding: .utf8)) ?? ""
 		Check.expect(!log.contains(Base64URL.encode(secret)), "pi² Remote's log holds no pairing secret")
+		// Last: a write that fails leaves pi² Remote with no home key until the next claim makes one (Remote.keep).
+		unkept(engine, mac: mac, relay: relay, home: home, address: address)
+	}
+
+	/// A pairing over the relay that pi² Remote cannot keep (#887): the engine is asked to take it back, the phone is told
+	/// `unsaved`, and the relay's window closes at once, with the phone's joined slot, not 30 seconds on (#921's third read).
+	/// A write fails as in `Flows.homeKeyKept`: the data folder made read-only.
+	static func unkept(_ engine: FakeEngine, mac: Mac, relay: URL, home: URL, address: String) {
+		Check.section("a pairing over the relay that pi² Remote cannot keep (#887): the relay's window closes at once")
+		let secret = Bytes.random(32)
+		let expires = openJoin(engine, pairing: mac.pairing, secret: secret)
+		let keys = PhoneKeys()
+		guard let link = join(relay, pairing: mac.pairing, secret: secret, keys: keys) else { return Check.expect(false, "a second phone joins the relay's window") }
+		let joined = RelayWire(link: link)
+		defer { joined.close() }
+		let phone = Phone(relay: joined)
+		guard phone.pair(payload: payload(mac, relay: relay, secret: secret, expires: expires), keys: keys, team: team) != nil, let claim = engine.request("remote.pairClaim") else {
+			return Check.expect(false, "the second phone's claim over the relay reached the engine")
+		}
+		engine.answer(claim.id, .object([("claim", .string("claim_r2"))]))
+		engine.event("closeJoin")
+		usleep(300_000)
+		chmod(home.path, 0o500)
+		let device = DeviceID.random()
+		let began = Date()
+		engine.event("paired", [
+			("claim", .string("claim_r2")), ("device", keys.paired(id: device)),
+			("paired", .object([("device", .string(device.text)), ("pairing", .string(mac.pairing.text)), ("name", .string("Check Mac")), ("addresses", .array([.string(address)]))])),
+		])
+		let request = engine.request("remote.pairUnkept")
+		Check.expect(request?.params == .object([("device", .string(device.text))]), "the engine is asked to take the pairing back: remote.pairUnkept", request.map { JSON.text($0.params) } ?? "nothing")
+		if let request { engine.answer(request.id) }
+		if let line = phone.line(within: 10), case let .pairRefused(refusal)? = try? ControlLine.parse(line, from: .mac) {
+			Check.expect(refusal.why == .unsaved, "the phone is told pairRefused unsaved over the relay, before its slot goes (#881)")
+		} else {
+			Check.expect(false, "the phone is told the Mac could not save the pairing, over the relay")
+		}
+		let ended = joined.ended(within: 10)
+		let took = Date().timeIntervalSince(began)
+		chmod(home.path, 0o700)
+		Check.expect(ended != nil && took < 10, "the relay closes the window and drops the phone's joined slot at once, not 30 seconds on", String(format: "%@ after %.1f s", ended ?? "still open", took))
+		let again = blocking(within: 30) {
+			try await RelayClient.join(relay: relay, pairing: mac.pairing, build: phoneBuild, deviceKey: keys.device.publicKey, token: PairingSecrets.joinToken(secret: secret, pairing: mac.pairing), attest: { _ in throw TimedOut() })
+		}
+		if case .failure(RelayClientError.refused(.windowClosed)) = again {
+			Check.expect(true, "and a join with that window's token is refused: the window is closed")
+		} else {
+			Check.expect(false, "a join with that window's token is refused as the window closed", "\(again)")
+		}
+		Check.expect(kept(home).map { kept in !kept.devices.contains { $0.id == device } } == true, "and the device is not on pi² Remote's own list")
 	}
 
 	/// #675's hostile cases, over the relay: each closed by the same code as on the home path, and none reaches the engine.
