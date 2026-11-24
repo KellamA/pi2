@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- What the project's build settings cannot give (INFOPLIST_KEY_ takes no arrays), merged by Xcode into the
+     Info.plist it makes from those settings, in both configurations (docs/iphone-app.md). The service the home path
+     looks for on the network (docs/iphone.md 5.4); its usage text is INFOPLIST_KEY_NSLocalNetworkUsageDescription. -->
+<dict>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_pi2._tcp</string>
+	</array>
+</dict>
+</plist>

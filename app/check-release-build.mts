@@ -38,6 +38,13 @@ const inCI = process.env.CI === "true" || process.env.GITHUB_ACTIONS === "true";
  * a development affordance outside that condition, which anyone could switch on.
  */
 const DEVELOPMENT_ONLY = ["PI2_SHOW", "PI2_HUB", "PI2_MENU", "PI2_TEST_COPY", "PI2_WINDOW_BEHIND", "PI2_WINDOW_ORIGIN", "PI2_DRAW_WHEN_HIDDEN"];
+/**
+ * What only a development build has until a real phone is paired (the owner's decision of 22 November 2026, #712,
+ * #679): Settings › Devices, the device line in the menu bar item and the sidebar, and the app's asking for the
+ * `devices` event. A release build leaves all of it out at compile time, so its executable names none of the engine's
+ * `devices.*` requests that the page makes, nor the page's own types.
+ */
+const DEVICES_PAGE = ["devices.watch", "devices.pairStart", "devices.pairConfirm", "DevicesSettings", "PairingSheet", "DevicesAttachedLine"];
 
 /**
  * pi² Remote's bundle id, whatever the app's (a copy given its own keeps the helper's), and the entitlements its release
@@ -227,7 +234,11 @@ function checkBundle(app: string): Build {
 	if (named.length > 0) {
 		fail(`The app's executable names ${named.join(", ")}, which only a development build may read. Keep the code that reads ${named.length === 1 ? "it" : "them"} inside #if PI2_DEVELOPMENT.`);
 	}
-	step(`${basename(app)} is ${bundleId} ${version} (build ${buildNumber}), build id ${build}`);
+	const devices = DEVICES_PAGE.filter((name) => executable.includes(name));
+	if (devices.length > 0) {
+		fail(`The app's executable names ${devices.join(", ")}: a release build has no Devices tab until a real phone is paired (#712). Keep it inside #if PI2_DEVELOPMENT.`);
+	}
+	step(`${basename(app)} is ${bundleId} ${version} (build ${buildNumber}), build id ${build}, with no Devices tab`);
 	return { app, node, main, build, bundleId };
 }
 

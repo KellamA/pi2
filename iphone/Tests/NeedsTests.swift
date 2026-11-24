@@ -1,5 +1,6 @@
 import Foundation
 import PiModels
+import SwiftUI
 import Testing
 @testable import pi2
 
@@ -260,5 +261,68 @@ struct NeedsTests {
         #expect(NeedApprovalWords.always(item: try item("browser", extra: #","site":"example.com""#), agent: nil).map(\.title) == ["Always allow on example.com"])
         #expect(NeedApprovalWords.always(item: try item("computer"), agent: nil).map(\.title) == ["Always allow in Notes"])
         #expect(NeedApprovalWords.always(item: nil, agent: nil).isEmpty)
+    }
+
+    // MARK: - Inline, in a list's row
+
+    /// A list sizes the row that holds Needs you inline by offering it no limit of height, then lays it out in the height
+    /// that gave. Drawn in less than that, the cards sat in the middle of the row, a gap above the first (#830): so
+    /// Needs you inline, every project's and each project's, must be as tall offered its own height as offered no limit,
+    /// at the default size and the largest.
+    @Test func inlineNeedsAreAsTallOfferedTheirHeightAsOfferedNoLimit() async throws {
+        let transport = try #require(DemoTransport.recorded())
+        transport.world.pace = 0.02
+        let session = AppSession()
+        session.start(transport, as: .demo)
+        let end = Date(timeIntervalSinceNow: 30)
+        while session.engine.needs.count < 2 || session.engine.inbox.isEmpty {
+            #expect(Date() < end, "the demo's needs arrive")
+            if Date() > end { return }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let projects = Set(session.engine.needs.compactMap(\.projectId)).sorted()
+        #expect(!projects.isEmpty)
+        for route in [Route.needs()] + projects.map({ Route.needs(project: $0) }) {
+            for size in [DynamicTypeSize.large, .accessibility5] {
+                let probe = NeedsHeightProbe()
+                let page = UIHostingController(rootView: NeedsHeightProbe.Measure(probe: probe) {
+                    RouteView(route, placement: .inline)
+                }
+                .environment(session)
+                .environment(\.dynamicTypeSize, size))
+                _ = page.sizeThatFits(in: CGSize(width: 370, height: 20_000))
+                let unlimited = try #require(probe.unlimited, "\(route) was measured")
+                let offered = try #require(probe.offered)
+                #expect(unlimited > 300, "\(route) at \(size) holds cards")
+                #expect(abs(unlimited - offered) < 0.5, "\(route) at \(size): \(unlimited) offered no limit, \(offered) offered that")
+            }
+        }
+    }
+}
+
+/// What a list's row does to what it holds: measures it offered no limit of height, then offered the height that gave.
+@MainActor
+final class NeedsHeightProbe {
+    var unlimited: CGFloat?
+    var offered: CGFloat?
+
+    struct Measure: Layout {
+        let probe: NeedsHeightProbe
+
+        func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+            guard let row = subviews.first else { return .zero }
+            let width = proposal.width ?? 370
+            let unlimited = row.sizeThatFits(ProposedViewSize(width: width, height: nil))
+            let offered = row.sizeThatFits(ProposedViewSize(width: width, height: unlimited.height))
+            MainActor.assumeIsolated {
+                probe.unlimited = unlimited.height
+                probe.offered = offered.height
+            }
+            return unlimited
+        }
+
+        func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+            subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
+        }
     }
 }
