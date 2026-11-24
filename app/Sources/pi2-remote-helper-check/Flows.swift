@@ -68,6 +68,11 @@ enum Flows {
 	/// Pairs a phone through a window the check opens, as the engine would; returns the device's id.
 	nonisolated(unsafe) static var home = URL(fileURLWithPath: "/nonexistent")
 
+	/// Whether pi² Remote's log has a line ending `text`.
+	static func logged(_ text: String) -> Bool {
+		((try? String(contentsOf: home.appendingPathComponent("remote.log"), encoding: .utf8)) ?? "").split(separator: "\n").contains { $0.hasSuffix(" \(text)") }
+	}
+
 	static func pair(_ engine: FakeEngine, mac: Mac, keys: PhoneKeys, claim: String) -> DeviceID? {
 		let secret = Bytes.random(32)
 		let expires = Int64(Date().timeIntervalSince1970) + 300
@@ -328,6 +333,16 @@ enum Flows {
 		let grown = rss(child.pid) - before
 		Check.expect(carried?.1.count == numbers.utf8.count + #"{"session":"s_one","message":}"#.utf8.count, "a phone's 14 MB line of small numbers reaches the engine", "\(carried?.1.count ?? 0) bytes")
 		Check.expect(grown < 120 * 1024, "and is checked without building it: pi² Remote grew by \(grown / 1024) MB, not the gigabyte a tree of it takes")
+		// What a message on the Mac may carry (#904): ten pictures of the engine's 5 MiB, in base64, as the phone writes them.
+		let pictures = tenPictures(conversation: 1, id: "t1")
+		third.sendLine(pictures)
+		let tenCarried = engine.sessionLine(within: 240)
+		Check.expect(tenCarried?.1 == Data(#"{"session":"s_one","message":"#.utf8) + pictures + Data("}".utf8), "a phone's message of ten pictures of 5 MiB (\(pictures.count / 1024 / 1024) MiB) reaches the engine whole", "\(tenCarried?.1.count ?? 0) bytes")
+		let edge = Data(#"{"id":"e","method":"engine.info","params":{"pad":""#.utf8)
+		let atLimit = edge + Data(repeating: UInt8(ascii: "e"), count: Remote.phoneLineLimit - edge.count - 3) + Data(#""}}"#.utf8)
+		third.sendLine(atLimit)
+		let edgeCarried = engine.sessionLine(within: 240)
+		Check.expect(atLimit.count == Remote.phoneLineLimit && edgeCarried?.1.count == atLimit.count + #"{"session":"s_one","message":}"#.utf8.count, "a phone's line of exactly \(Remote.phoneLineLimit / 1024 / 1024) MiB reaches the engine", "\(edgeCarried?.1.count ?? 0) bytes")
 		third.sendLine(Data(#"{"sessionEnd":{}}"#.utf8))
 		let ended = engine.request("remote.sessionEnd")
 		Check.expect(ended?.params["session"]?.stringValue == "s_one", "the phone's sessionEnd ends its session in the engine")
@@ -340,6 +355,16 @@ enum Flows {
 			phone.sendLine(ControlLine.attach(claim).line)
 			Check.expect(phone.event() == .bye && phone.closesWithin(10), "an attach not signed by the device key on pi² Remote's own list is closed with bye alone, whatever its build")
 			Check.expect(engine.quiet(for: 1), "and never reaches the engine")
+		}
+		if let phone = Phone(port: mac.port), beginAttach(phone, engine, mac: mac, device: device, keys: keys) != nil {
+			// Before the engine takes its attach, a phone's lines are held to RemoteKit's 64 KiB (#904): only a session opened
+			// under Face ID raises them. A line of 32 MiB, under the attached limit, is cut off near its start, so the phone
+			// cannot write it all; read whole, it would only be closed afterwards for not being an attach.
+			phone.sendTimeout(10)
+			let whole = phone.sendLine(Data(#"{"attach":""#.utf8) + Data(repeating: UInt8(ascii: "a"), count: 32 * 1024 * 1024) + Data(#""}"#.utf8))
+			Check.expect(!whole && phone.closesWithin(10), "a line over 64 KiB from a phone not yet attached closes its channel before pi² Remote holds it")
+			Check.expect(engine.quiet(for: 1), "and never reaches the engine")
+			Check.expect(Flows.logged("a line from device \(device) passed the \(Lines.firstLinesMaxLength) bytes its channel takes; its connection closed (said at most once a minute)"), "and remote.log says so, by the device and the limit (#919)")
 		}
 		if let phone = Phone(port: mac.port), let challenge = beginAttach(phone, engine, mac: mac, device: device, keys: keys) {
 			let claim = try! AttachClaim.make(pairing: mac.pairing, device: device, session: nil, received: nil, binding: phone.channel!.handshakeHash, challenge: challenge, build: "0", deviceKey: keys.device, presenceKey: keys.presence)
@@ -455,9 +480,14 @@ enum Flows {
 
 		Check.section("a phone's line limit, its challenge and its build (#675's security read B)")
 		if let (long, _) = attach(engine, mac: mac, device: other, keys: second2, session: "s_five") {
-			long.sendLine(Data(("{\"id\":\"l\",\"method\":\"submit\",\"params\":{\"text\":\"" + String(repeating: "c", count: Remote.phoneLineLimit) + "\"}}").utf8))
-			Check.expect(long.closesWithin(30), "a line from a phone over \(Remote.phoneLineLimit / 1024 / 1024) MB closes its channel")
+			let head = Data(#"{"id":"l","method":"submit","params":{"text":""#.utf8)
+			let over = head + Data(repeating: UInt8(ascii: "c"), count: Remote.phoneLineLimit + 1 - head.count - 3) + Data(#""}}"#.utf8)
+			Check.expect(over.count == Remote.phoneLineLimit + 1, "the line is one byte over the limit")
+			long.sendLine(over)
+			Check.expect(long.closesWithin(30), "a line from a phone one byte over \(Remote.phoneLineLimit / 1024 / 1024) MiB closes its channel")
 			Check.expect(engine.sessionLine(within: 1) == nil, "and never reaches the engine")
+			Check.expect(Flows.logged("a line from device \(other) passed the \(Remote.phoneLineLimit) bytes its channel takes; its connection closed (said at most once a minute)"), "and remote.log says so, by the device and the limit, nothing of the line (#919)")
+			Check.expect(!((try? String(contentsOf: home.appendingPathComponent("remote.log"), encoding: .utf8)) ?? "").contains("ccccccc"), "nothing of the line")
 			engine.event("sessionClosed", [("session", .string("s_five")), ("why", .string("check"))])
 		}
 		if let phone = Phone(port: mac.port), let challenge = beginAttach(phone, engine, mac: mac, device: other, keys: second2) {
@@ -555,6 +585,31 @@ enum Flows {
 			}
 			engine.event("closeJoin")
 		}
+
+		Check.section("a pairing channel's lines stay at 64 KiB (#904)")
+		let secret5 = Bytes.random(32)
+		let expires5 = Int64(Date().timeIntervalSince1970) + 300
+		engine.event("openJoin", [("secret", .string(Base64URL.encode(secret5))), ("tokenHash", .string("x")), ("expires", .integer(expires5 * 1000))])
+		let payload5 = try! PairingPayload(
+			pairing: mac.pairing, macName: "Check Mac", channelKey: mac.channel, identityKey: mac.identity, recordKey: mac.record, secret: secret5,
+			relay: "ws://127.0.0.1:9/v1", addresses: [], expires: expires5)
+		if let claimer = Phone(port: mac.port) {
+			let handshake = try! ChannelHandshake.pairingInitiator(payload: payload5, channelKey: PhoneKeys().channel)
+			claimer.send(try! handshake.writeMessage())
+			if let answer = claimer.message(), (try? handshake.readMessage(answer)) != nil, let channel = try? handshake.channel() {
+				claimer.channel = channel
+				_ = claimer.line()
+				claimer.sendTimeout(10)
+				let whole = claimer.sendLine(Data(#"{"pair":""#.utf8) + Data(repeating: UInt8(ascii: "p"), count: 32 * 1024 * 1024) + Data(#""}"#.utf8))
+				Check.expect(!whole && claimer.closesWithin(10), "a claimer's line over 64 KiB closes its pairing channel before pi² Remote holds it")
+				let refused = engine.request("remote.pairRefused")
+				Check.expect(refused?.params["why"]?.stringValue == "silent", "and the engine hears only remote.pairRefused, never the line as a claim", refused.map { JSON.text($0.params) } ?? "nothing")
+				if let refused { engine.answer(refused.id) }
+			} else {
+				Check.expect(false, "a claimer's pairing handshake")
+			}
+		}
+		engine.event("closeJoin")
 
 		Check.section("revocation: revoked, then a new home key to the phones that remain (#776's 25, #845)")
 		guard let (staying, _) = attach(engine, mac: mac, device: other, keys: second2, session: "s_nine") else { Check.stop("the second phone attached again") }
@@ -780,6 +835,16 @@ enum Flows {
 		let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
 		ps.waitUntilExit()
 		return Int(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+	}
+
+	/// A `submit` with what a message on the Mac may carry (#904): ten JPEG pictures of exactly the engine's 5 MiB, in
+	/// base64, in the form the phone sends them (`ConversationPicture.payload`).
+	static func tenPictures(conversation: Int, id: String) -> Data {
+		var bytes = Data(repeating: 0x5A, count: 5 * 1024 * 1024)
+		bytes.replaceSubrange(0 ..< 4, with: [0xFF, 0xD8, 0xFF, 0xE0])
+		let data = bytes.base64EncodedString()
+		let attachments = (1 ... 10).map { "{\"kind\":\"image\",\"name\":\"Photo \($0).jpg\",\"mimeType\":\"image/jpeg\",\"data\":\"\(data)\"}" }
+		return Data("{\"id\":\"\(id)\",\"method\":\"submit\",\"params\":{\"id\":\(conversation),\"text\":\"Ten pictures from the phone\",\"attachments\":[\(attachments.joined(separator: ","))]}}".utf8)
 	}
 
 	/// The first steps of an attach: the handshake as `device`, the engine's challenge, the Mac's proof.

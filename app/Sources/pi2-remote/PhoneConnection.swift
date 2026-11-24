@@ -290,6 +290,12 @@ final class PhoneConnection: @unchecked Sendable {
 		} catch {
 			// The claimer's first transport message did not open: a wrong pre-shared key (3.3).
 			if awaitingClaimerProof { wrongTry("the claimer's first message did not open") }
+			// A line longer than the channel takes (`LineAssembler.take`): said, by its limit alone, at most once a minute
+			// for each device (#919), never what it held. Its length is not known: the frame that passed it was not kept.
+			if error as? RemoteKitError == RemoteKitError("line", "longer than allowed") {
+				let who = device.map { "device \($0)" } ?? "a phone not yet paired"
+				Seldom.shared.say("overlong \(device?.text ?? "")", "a line from \(who) passed the \(channel.maxLineLength) bytes its channel takes; its connection closed")
+			}
 			return end()
 		}
 		if awaitingClaimerProof { claimerProven = true }
