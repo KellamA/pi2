@@ -30,12 +30,15 @@ enum ProjectActivityStyle {
     }
 
     /// "as of 9:40": when the Mac counted the numbers, so that numbers the relay has not updated for a while say so.
-    /// A day ago or more, with the day.
+    /// Another day within the week, with its day ("as of Mon 9:40"); older, the date.
     static func asOf(_ date: Date, now: Date = Date(), calendar: Calendar = .current) -> String {
         if calendar.isDate(date, inSameDayAs: now) {
             return "as of \(date.formatted(date: .omitted, time: .shortened))"
         }
-        return "as of \(date.formatted(.dateTime.weekday(.abbreviated).hour().minute()))"
+        if now.timeIntervalSince(date) < 6 * 86_400 {
+            return "as of \(date.formatted(.dateTime.weekday(.abbreviated).hour().minute()))"
+        }
+        return "as of \(date.formatted(date: .abbreviated, time: .omitted))"
     }
 
     /// The numbers in words, for VoiceOver wherever a form shows them as symbols.

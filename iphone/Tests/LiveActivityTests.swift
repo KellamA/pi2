@@ -107,7 +107,12 @@ struct LiveActivityTests {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try #require(TimeZone(identifier: "UTC"))
         let now = Date(timeIntervalSince1970: 1_764_150_000)
-        #expect(ProjectActivityStyle.asOf(now.addingTimeInterval(-60), now: now, calendar: calendar).hasPrefix("as of "))
+        let today = ProjectActivityStyle.asOf(now.addingTimeInterval(-60), now: now, calendar: calendar)
+        let thisWeek = ProjectActivityStyle.asOf(now.addingTimeInterval(-2 * 86_400), now: now, calendar: calendar)
+        let older = ProjectActivityStyle.asOf(now.addingTimeInterval(-30 * 86_400), now: now, calendar: calendar)
+        #expect(today.hasPrefix("as of ") && !today.contains(","))
+        #expect(thisWeek != today && thisWeek.hasPrefix("as of "))
+        #expect(older == "as of \(now.addingTimeInterval(-30 * 86_400).formatted(date: .abbreviated, time: .omitted))")
         #expect(ProjectActivityStyle.short(0) == "0")
         #expect(ProjectActivityStyle.short(99) == "99")
         #expect(ProjectActivityStyle.short(100) == "99+")
@@ -208,7 +213,9 @@ struct LiveActivityTests {
         await end.apply(to: activity)
         // Ended; and dismissed at once when the push's dismissal date has passed.
         #expect(try await eventually { activity.activityState == .ended || activity.activityState == .dismissed })
-        #expect(activity.content.state == end.state)
+        if activity.activityState == .ended {
+            #expect(try await eventually { activity.content.state == end.state }, "its last numbers, until it is dismissed")
+        }
         try keep(activity, "ended")
         try await awayAndBack()
         await ProjectActivities.endAll()
