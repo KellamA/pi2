@@ -276,6 +276,9 @@ export const FEATURES: Feature[] = [
 	localRun,
 	order,
 	localModels,
+	// What is pushed to paired phones (#689): it follows the `needs` and `limits` events as they are sent, wherever it
+	// stands here, since it listens from when it is made; requests of a device's own, with no greeting.
+	devicePushes,
 	// Agents of a project, and templates (#457): requests only, with no greeting of its own.
 	projectAgents,
 	projectLimits,
@@ -289,8 +292,6 @@ export const FEATURES: Feature[] = [
 	projects,
 	projectRules,
 	needs,
-	// What is pushed to paired phones (#689): it follows the `needs` and `limits` events, with no greeting of its own.
-	devicePushes,
 	reports,
 	work,
 	github,
