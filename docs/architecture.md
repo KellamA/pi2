@@ -64,7 +64,7 @@ app/      SwiftUI app: the window (projects and chat mode), the menu bar, Quick 
           Sources/pi2-remote    pi² Remote, the helper the engine starts for a paired phone: its keys, the home path, the channels (docs/pi2-remote.md)
           Sources/pi2-remote-helper pi² Remote's program; in the app's bundle as Contents/Helpers/pi² Remote.app
           Sources/pi2-remote-helper-check checks pi² Remote, as a process and over loopback, with a real engine under --engine; not part of the app
-          Sources/pi2-relay-check checks the relay's client in memory, and with --relay runs the protocol test against the relay on this computer; not part of the app
+          Sources/pi2-relay-check checks the relay's client in memory, with --relay runs the protocol test against the relay on this computer, and with --sealed the marker session of the sealed-bytes check; not part of the app
           Sources/LoginItemKit  the login item that starts the engine at login: when it must be installed again
           Sources/pi2-login-item-check checks LoginItemKit's decisions, with no plist or launchd call; not part of the app
           Web/transcript        the conversation page the app shows in a web view; Web/test, its tests

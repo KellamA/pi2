@@ -519,6 +519,15 @@ export function maskKeys(text: string): string {
 export const TOO_DEEP = "[too deep to show]";
 const MAX_DEPTH = 256;
 /**
+ * The depth an approval is walked from, wherever it sits: a line a device is sent puts one 2 levels down (the `inbox`
+ * and `needs` events) or 3 (`needs.list`'s answer), and the engine's own record of one, which the gate judges
+ * (`hidesSomething`), has it at 0. Counting each from here, never from where it sits, cuts the phone's copy exactly
+ * where the gate judges it cut. 8 leaves room for a form that nests one deeper; an approval sent deeper than 8 would be
+ * cut sooner than the gate judges, so the devices test holds the forms a phone answers from (the `inbox` event,
+ * `needs.list`'s answer) to the gate's cut at every depth either side of it.
+ */
+export const APPROVAL_DEPTH = 8;
+/**
  * Set beside an approval a device is sent when masking hid part of it, or part was too deep: the phone does not show
  * the whole call, and the engine takes no allowing answer to it from a device (`approvalHidden`, answers.ts).
  */
@@ -526,9 +535,10 @@ export const PART_HIDDEN = "partHidden";
 
 /**
  * `value`, a decoded JSON value, with every string in it masked, the keys of its objects included, and what is nested
- * deeper than 256 levels replaced by TOO_DEEP. Masking the strings rather than the JSON text is what makes it hold: in
- * the text a key after a line break follows `\n`, and one after a colour code follows `\u001b[32m`. `masking.hidden` is
- * set when anything was hidden; an approval (an object of kind "approval" with an id) also gets PART_HIDDEN.
+ * deeper than 256 levels replaced by TOO_DEEP, an approval's insides counted from APPROVAL_DEPTH. Masking the strings
+ * rather than the JSON text is what makes it hold: in the text a key after a line break follows `\n`, and one after a
+ * colour code follows `\u001b[32m`. `masking.hidden` is set when anything was hidden; an approval (an object of kind
+ * "approval" with an id) also gets PART_HIDDEN.
  */
 export function maskValue(value: unknown, masking: { hidden: boolean } = { hidden: false }, depth = 0): unknown {
 	if (typeof value === "string") {
@@ -545,12 +555,14 @@ export function maskValue(value: unknown, masking: { hidden: boolean } = { hidde
 	const record = value as Record<string, unknown>;
 	const approval = record.kind === "approval" && typeof record.id === "string";
 	const own = approval ? { hidden: false } : masking;
+	// Only ever deeper, so a line is never walked past MAX_DEPTH.
+	const at = approval ? Math.max(depth, APPROVAL_DEPTH) : depth;
 	// No prototype: a key `__proto__` stays a key.
 	const out: Record<string, unknown> = Object.create(null);
 	for (const [key, item] of Object.entries(record)) {
 		const name = maskKeys(key);
 		if (name !== key) own.hidden = true;
-		out[name] = maskValue(item, own, depth + 1);
+		out[name] = maskValue(item, own, at + 1);
 	}
 	if (approval && own.hidden) {
 		out[PART_HIDDEN] = true;

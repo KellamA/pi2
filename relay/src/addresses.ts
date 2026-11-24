@@ -4,10 +4,12 @@
 // and the times of the day's registrations, each removed once it has aged out.
 //
 // An address is counted by the group it belongs to: an IPv4 address whole, an IPv6 address by its /64, since a home or
-// a phone network is given a whole /64 and can use any address in it, and an IPv4-mapped, 6to4 or Teredo IPv6 address
-// as the IPv4 address it carries. An IPv6 address is counted again, more loosely, by its block, the /48 it is in: a home or a
-// site given a /56 or a /48 has 256 or 65,536 /64s, each with a count of its own, and the block's count keeps that
-// from multiplying its limits by as much (README.md, "What it decides").
+// a phone network is given a whole /64 and can use any address in it, and an IPv4-mapped IPv6 address as the IPv4
+// address it is. Each of the two tunnelling ranges, 6to4 and Teredo, is one group, whatever address in it: any network
+// may announce them, so whoever Cloudflare routes them to can complete connections as any address in them, and their
+// addresses say nothing of who connects. An IPv6 address is counted again, more loosely, by its block, the /48 it is in:
+// a home or a site given a /56 or a /48 has 256 or 65,536 /64s, each with a count of its own, and the block's count
+// keeps that from multiplying its limits by as much (README.md, "What it decides").
 
 import { DurableObject } from "cloudflare:workers";
 import { hex, utf8 } from "./bytes.ts";
@@ -56,7 +58,11 @@ const BLOCK: Limits = {
  * Whether a connection is taken; if not, until when it is refused, for which limit, and by which count: the address's
  * own group's, or its block's.
  */
-export type Admission = { pass: true } | { pass: false; until: number; limit: "connections" | "registrations"; by: "group" | "block" };
+export type Admission = { pass: true } | Refusal;
+type Refusal = { pass: false; until: number; limit: "connections" | "registrations"; by: "group" | "block" };
+
+/** A block's answer to its /64: taken, with the time it counted it at, which `giveBackBlock` names; or refused. */
+export type BlockAdmission = { pass: true; at: number } | Refusal;
 
 /** What an address is counted by: its group (`addressGroup`), and for an IPv6 address its block, else null. */
 export type Counted = { group: string; block: string | null };
@@ -86,10 +92,10 @@ export function addressGroup(text: string | null): string | null {
 
 /**
  * What an address is counted by, from `CF-Connecting-IP` as Cloudflare gives it. Its group: an IPv4 address as itself
- * (`192.0.2.1`), an IPv6 address as its /64 (`2001:db8:1:2::/64`), an IPv4-mapped IPv6 address (`::ffff:192.0.2.1`) and a
- * 6to4 one (`2002:c000:201::/48`, a whole /48 for one IPv4 address) and a Teredo one (`2001:0:…`, whose client's IPv4
- * address is its last 32 bits inverted) as the IPv4 address they carry. Its block: for an
- * IPv6 address counted as IPv6, its /48 (`2001:db8:1::/48`); else none, since an IPv4 address is one place already.
+ * (`192.0.2.1`), an IPv6 address as its /64 (`2001:db8:1:2::/64`), an IPv4-mapped IPv6 address (`::ffff:192.0.2.1`) as
+ * the IPv4 address it is, and every 6to4 address as one group (`2002::/16`) and every Teredo address as another
+ * (`2001::/32`). Its block: for an IPv6 address counted by its /64, its /48 (`2001:db8:1::/48`); else none, since an
+ * IPv4 address is one place already, and a tunnelling range is one count already.
  * Read strictly, by hand: anything else, a missing header among it, is null, and the relay takes nothing from it.
  */
 export function addressCounted(text: string | null): Counted | null {
@@ -100,12 +106,15 @@ export function addressCounted(text: string | null): Counted | null {
 	if (v6 === null) return null;
 	// ::ffff:0:0/96, an IPv4 address written as IPv6.
 	if (v6.slice(0, 5).every((group) => group === 0) && v6[5] === 0xffff) return { group: quad(v6[6], v6[7]), block: null };
-	// 2002::/16, 6to4 (RFC 3056): the /48 after it is the one IPv4 address's, which the next 32 bits give.
-	if (v6[0] === 0x2002) return { group: quad(v6[1], v6[2]), block: null };
-	// 2001::/32, Teredo (RFC 4380): `2001:0:server:server:flags:port:client:client`, the client's IPv4 address inverted.
-	// Its /64 and /48 are its server's, which the client chooses, so they would count nothing; its client's address is
-	// where the connection comes from.
-	if (v6[0] === 0x2001 && v6[1] === 0) return { group: quad(~v6[6] & 0xffff, ~v6[7] & 0xffff), block: null };
+	// 2002::/16, 6to4 (RFC 3056), and 2001::/32, Teredo (RFC 4380): one shared count each. Both carry an IPv4 address
+	// (6to4 its next 32 bits, Teredo its last 32 inverted), but any network may announce either range as a relay, and
+	// whichever one Cloudflare's traffic to it reaches can complete connections from any address in it: counted as the
+	// IPv4 address it carries, such a network could use up any chosen IPv4 address's limits; counted by /64, it could
+	// make as many /64s as it liked. One count for each range bounds what it can take to that count. No real client
+	// needs more: a host with either address has IPv4 too, which both tunnel over, and RFC 6724's default policy
+	// prefers IPv4 over both, so it reaches the relay over IPv4.
+	if (v6[0] === 0x2002) return { group: SIX_TO_FOUR, block: null };
+	if (v6[0] === 0x2001 && v6[1] === 0) return { group: TEREDO, block: null };
 	const prefix = (length: number) =>
 		v6
 			.slice(0, length)
@@ -113,6 +122,13 @@ export function addressCounted(text: string | null): Counted | null {
 			.join(":");
 	return { group: `${prefix(4)}::/64`, block: `${prefix(3)}::/48` };
 }
+
+/**
+ * The groups of the two tunnelling ranges, written as no /64, /48 or IPv4 address is: each counted against one address's
+ * limits, all its addresses together.
+ */
+export const SIX_TO_FOUR = "2002::/16";
+export const TEREDO = "2001::/32";
 
 /** An IPv4 address from two 16-bit groups. */
 function quad(high: number, low: number): string {
@@ -183,8 +199,8 @@ function markFor(count: number, base: number, limit: number): number {
 }
 
 /**
- * One object for each group (an IPv4 address, an IPv6 /64) and each block (an IPv6 /48) that connects today, named by
- * `addressNames`. A group's object counts against `GROUP`'s limits and, for an IPv6 address, asks its block's object,
+ * One object for each group (an IPv4 address, an IPv6 /64, a tunnelling range) and each block (an IPv6 /48) that
+ * connects today, named by `addressNames`. A group's object counts against `GROUP`'s limits and, for an IPv6 address, asks its block's object,
  * which counts against `BLOCK`'s; a block's object asks no other.
  */
 export class Address extends DurableObject<Env> {
@@ -202,8 +218,13 @@ export class Address extends DurableObject<Env> {
 	private marks = new Map<number, number>();
 	/** Each minute's mark as it was stored when the object loaded: what `markFor` builds on. */
 	private bases = new Map<number, number>();
-	/** The times of the day's registrations, oldest first, as stored. */
+	/** The times of the day's registrations, oldest first: those taken, and those still waiting on the block. */
 	private times: number[] = [];
+	/**
+	 * The times among `times` of the registrations still waiting on the block, which is asked after they are counted here.
+	 * Never stored: one the block then refuses would stay in storage, counted once the object loads again.
+	 */
+	private waiting: number[] = [];
 	private loading: Promise<void> | null = null;
 
 	private load(): Promise<void> {
@@ -226,16 +247,28 @@ export class Address extends DurableObject<Env> {
 	 * there is room, and the block counts only what its /64s let through.
 	 */
 	async admit(registering: boolean, block: string | null = null): Promise<Admission> {
-		const ask = block === null ? undefined : () => this.env.ADDRESSES.get(this.env.ADDRESSES.idFromName(block)).admitBlock(registering);
-		return this.count(registering, GROUP, "group", ask);
+		const stub = block === null ? null : this.env.ADDRESSES.get(this.env.ADDRESSES.idFromName(block));
+		const answer = await this.count(registering, GROUP, "group", stub);
+		return answer.pass ? { pass: true } : answer;
 	}
 
 	/** Counts a connection, and a registration if it is one, against a block's limits: asked by its /64s' objects only. */
-	async admitBlock(registering: boolean): Promise<Admission> {
-		return this.count(registering, BLOCK, "block");
+	async admitBlock(registering: boolean): Promise<BlockAdmission> {
+		return this.count(registering, BLOCK, "block", null);
 	}
 
-	private async count(registering: boolean, limits: Limits, by: "group" | "block", ask?: () => Promise<Admission>): Promise<Admission> {
+	/**
+	 * Takes back a connection, and a registration if it was one, that this block took `at` that time and its /64 then
+	 * could not let through, its own write having failed: asked by that /64's object only. A registration's time is
+	 * written again without it; a connection's mark stays, being at or above the count already.
+	 */
+	async giveBackBlock(registering: boolean, at: number): Promise<void> {
+		await this.load();
+		this.giveBack(Math.floor(at / MINUTE), registering, at);
+		if (registering) await this.ctx.storage.put("times", this.storedTimes());
+	}
+
+	private async count(registering: boolean, limits: Limits, by: "group" | "block", block: DurableObjectStub<Address> | null): Promise<BlockAdmission> {
 		await this.load();
 		const now = Date.now();
 		const refused = this.connectionsRefused(now, limits);
@@ -251,54 +284,82 @@ export class Address extends DurableObject<Env> {
 		// block refuses it, or does not answer.
 		this.minutes.set(minute, (this.minutes.get(minute) ?? 0) + 1);
 		if (registering) this.times.push(now);
-		if (ask !== undefined) {
-			let answer: Admission;
+		// When the block took it, by its own clock: what it is told to give back if this object's write fails.
+		let takenAt: number | null = null;
+		if (block !== null) {
+			let answer: BlockAdmission;
+			if (registering) this.waiting.push(now);
 			try {
-				const result = await ask();
-				answer = result.pass ? { pass: true } : { pass: false, until: result.until, limit: result.limit, by: result.by };
+				const result = await block.admitBlock(registering);
+				answer = result.pass ? { pass: true, at: result.at } : { pass: false, until: result.until, limit: result.limit, by: result.by };
 				// What the runtime keeps for an answer over RPC is let go when it is disposed, rather than left to the garbage
 				// collector (which the runtime warns of).
 				(result as Partial<Disposable>)[Symbol.dispose]?.();
 			} catch (error) {
 				this.giveBack(minute, registering, now);
 				throw error;
+			} finally {
+				if (registering) removeOne(this.waiting, now);
 			}
 			if (!answer.pass) {
 				this.giveBack(minute, registering, now);
 				return answer;
 			}
+			takenAt = answer.at;
 		}
 		const writes: Record<string, unknown> = {};
-		if (registering) writes.times = [...this.times];
+		// The registrations taken, this one among them, and none still waiting on the block, which may yet refuse it.
+		if (registering) writes.times = this.storedTimes();
 		// The minute's count with any still waiting on the block: a mark at or above what passed.
 		const count = this.minutes.get(minute) ?? 0;
-		if (count > (this.marks.get(minute) ?? 0)) {
+		const marked = this.marks.get(minute);
+		if (count > (marked ?? 0)) {
 			this.marks.set(minute, markFor(count, this.bases.get(minute) ?? 0, limits.connectionsAMinute));
 			this.forgetMarks();
 			writes.minutes = Object.fromEntries(this.marks);
 		}
-		if (Object.keys(writes).length === 0) return { pass: true };
-		// Written before the connection is let through, and the alarm that removes it all once it has aged out set with it
-		// (moved only earlier, so a busy address does not set it again each time).
-		const due = this.agedOut(now);
-		const alarm = await this.ctx.storage.getAlarm();
-		const moved = alarm === null || alarm > due;
-		if (moved) writes.cleanupAt = due;
-		// The alarm first, so that nothing is ever stored with no alarm to remove it.
-		if (moved) await this.ctx.storage.setAlarm(due);
-		await this.ctx.storage.put(writes);
-		return { pass: true };
+		if (Object.keys(writes).length === 0) return { pass: true, at: now };
+		try {
+			// Written before the connection is let through, and the alarm that removes it all once it has aged out set with it
+			// (moved only earlier, so a busy address does not set it again each time).
+			const due = this.agedOut(now);
+			const alarm = await this.ctx.storage.getAlarm();
+			const moved = alarm === null || alarm > due;
+			if (moved) writes.cleanupAt = due;
+			// The alarm first, so that nothing is ever stored with no alarm to remove it.
+			if (moved) await this.ctx.storage.setAlarm(due);
+			await this.ctx.storage.put(writes);
+		} catch (error) {
+			// Not let through, so counted by neither: taken back here, and by the block, which took it already. Best effort:
+			// a block that does not hear of it counts one connection more than passed, which only makes it stricter. The
+			// minute's mark goes back to what is stored, so that the next connection writes its own.
+			this.giveBack(minute, registering, now);
+			if (marked === undefined) this.marks.delete(minute);
+			else this.marks.set(minute, marked);
+			if (block !== null && takenAt !== null) {
+				try {
+					await block.giveBackBlock(registering, takenAt);
+				} catch {
+					// Left counted.
+				}
+			}
+			throw error;
+		}
+		return { pass: true, at: now };
 	}
 
-	/** Takes back a connection counted while its block was asked, which the block refused. */
+	/** Takes back a connection counted while its block was asked, which the block refused, or which was not let through. */
 	private giveBack(minute: number, registering: boolean, now: number): void {
 		const count = (this.minutes.get(minute) ?? 1) - 1;
 		if (count > 0) this.minutes.set(minute, count);
 		else this.minutes.delete(minute);
-		if (registering) {
-			const index = this.times.lastIndexOf(now);
-			if (index !== -1) this.times.splice(index, 1);
-		}
+		if (registering) removeOne(this.times, now);
+	}
+
+	/** The registrations' times to store: those taken, without those still waiting on the block. */
+	private storedTimes(): number[] {
+		const waiting = [...this.waiting];
+		return this.times.filter((time) => !removeOne(waiting, time));
 	}
 
 	/** When the oldest of what is kept has aged out: the newest minute an hour on, or the first registration a day on. */
@@ -359,6 +420,13 @@ export class Address extends DurableObject<Env> {
 		const due = this.agedOut(now);
 		// The alarm first, as above.
 		await this.ctx.storage.setAlarm(due);
-		await this.ctx.storage.put({ minutes: Object.fromEntries(this.marks), times: this.times, cleanupAt: due });
+		await this.ctx.storage.put({ minutes: Object.fromEntries(this.marks), times: this.storedTimes(), cleanupAt: due });
 	}
+}
+
+/** Removes the last `value` from `list`, if it holds one; whether it did. */
+function removeOne(list: number[], value: number): boolean {
+	const index = list.lastIndexOf(value);
+	if (index !== -1) list.splice(index, 1);
+	return index !== -1;
 }

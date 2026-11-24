@@ -11,6 +11,8 @@ let package = Package(
         .library(name: "PiModels", targets: ["PiModels"]),
         .library(name: "EngineKit", targets: ["EngineKit"]),
         .library(name: "TranscriptKit", targets: ["TranscriptKit"]),
+        // The channel to pi² Remote, pairing and the relay's client, for the phone's side of them (#680).
+        .library(name: "RemoteKit", targets: ["RemoteKit"]),
     ],
     dependencies: [
         // Updates for release builds. build.sh copies the framework into the app.
