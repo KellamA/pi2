@@ -48,7 +48,9 @@ enum RealEngine {
 	}
 
 	static func findNode() -> String? {
-		for folder in (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":") + ["/opt/homebrew/bin", "/usr/local/bin"] {
+		// As Strings: `split(…) + ["…"]` alone is taken as arrays of characters, which name no folder, so only the two
+		// fallbacks were ever tried, whatever node the PATH named.
+		for folder in (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init) + ["/opt/homebrew/bin", "/usr/local/bin"] {
 			let candidate = "\(folder)/node"
 			if access(candidate, X_OK) == 0 { return candidate }
 		}
