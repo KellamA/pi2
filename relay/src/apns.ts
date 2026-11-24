@@ -281,8 +281,8 @@ export class Apns {
 	 * Posts one Live Activity push to Apple (below, "Live Activities"), to the activity's own token, and says what became
 	 * of it, as `send` does. Nothing is tried again.
 	 */
-	async sendActivity(token: PushToken, sending: ActivitySending, now: number): Promise<Outcome> {
-		const body = activityPayload(sending, now);
+	async sendActivity(token: PushToken, sending: ActivitySending, now: number, timestamp = Math.floor(now / 1000)): Promise<Outcome> {
+		const body = activityPayload(sending, now, timestamp);
 		if (utf8(body).length > MAX_PAYLOAD) return "unavailable";
 		const providerToken = await this.token.get(now);
 		if (providerToken === null) return "unavailable";
@@ -539,15 +539,33 @@ export function isTime(value: unknown): value is number {
 }
 
 /**
- * The payload of a Live Activity push, exactly: `timestamp` is the relay's clock, so that the system orders the pushes
- * as the relay sent them (one pairing's are sent one at a time); the content state is the four numbers, written here
- * from numbers alone; an end leaves the activity on the Lock Screen for ACTIVITY_SHOWN_AFTER_END. No alert, sound,
- * relevance or anything else: whatever is here, Apple and the system read.
+ * How far `at` may be from the relay's clock: a day behind, five minutes ahead. The Mac counts when it sends, so `at` is
+ * normally seconds old; a day lets a Mac that counted, lost the relay and came back within the day still send what it
+ * counted, dated (the phone says "as of"). Five minutes ahead allows a clock that is a little off, and no more, since an
+ * `at` in the future would make the phone's own later updates, which leave out an older count, wait behind it. Past
+ * either, the Mac is answered `refused { what: "push", why: "clock" }`, nothing is sent, counted or written, and its
+ * socket stays open: its clock is wrong, or it sends what it counted long ago.
  */
-export function activityPayload(sending: ActivitySending, now: number): string {
-	const timestamp = Math.floor(now / 1000);
+export const AT_BEHIND = 24 * HOUR;
+export const AT_AHEAD = 5 * MINUTE;
+
+/** Whether `at` is near enough the relay's clock (`AT_BEHIND`, `AT_AHEAD`). */
+export function isNear(at: number, now: number): boolean {
+	return at >= now - AT_BEHIND && at <= now + AT_AHEAD;
+}
+
+/**
+ * The payload of a Live Activity push, exactly: `timestamp` is the relay's clock in seconds (or later, `nextStamp`), by
+ * which the system orders the pushes; the content state is the four numbers, written here from numbers alone; the event
+ * one of the two; an end leaves the activity on the Lock Screen for ACTIVITY_SHOWN_AFTER_END. No alert, sound,
+ * relevance or anything else: whatever is here, Apple and the system read. It checks the numbers and the event again,
+ * so that what is written does not rest on the protocol's reading alone.
+ */
+export function activityPayload(sending: ActivitySending, now: number, timestamp = Math.floor(now / 1000)): string {
 	const { working, needs, finished, at } = sending.state;
 	if (![working, needs, finished].every(isCount) || !isTime(at)) throw new TypeError("not a Live Activity's numbers");
+	if (sending.event !== "update" && sending.event !== "end") throw new TypeError("not a Live Activity's event");
+	if (!Number.isSafeInteger(timestamp) || timestamp <= 0) throw new TypeError("not a timestamp");
 	const aps: Record<string, unknown> = { timestamp, event: sending.event, "content-state": { working, needs, finished, at } };
 	if (sending.event === "end") aps["dismissal-date"] = timestamp + ACTIVITY_SHOWN_AFTER_END;
 	return JSON.stringify({ aps });
@@ -590,4 +608,26 @@ export function liveActivityTokens(tokens: Record<string, ActivityToken> | undef
 	const kept: Record<string, ActivityToken> = {};
 	for (const [id, token] of Object.entries(tokens ?? {})) if (token.until > now) kept[id] = token;
 	return kept;
+}
+
+/**
+ * The `timestamp` of each Live Activity push, which never repeats for an activity: the relay's second, or one past the
+ * last one given to that activity. The system orders an activity's updates by it, in whole seconds, and may drop one
+ * whose timestamp is not later than the last it took: an `update` then an `end` in the same second would otherwise lose
+ * the end. Kept in the pairing's object's memory only, with no write: a pairing's pushes go one at a time through that
+ * one object, and it leaves memory only after some ten seconds with nothing to do, by when its clock has passed any
+ * timestamp it gave (a run ahead of the clock is as long as the pushes to one activity in one second, which its limit
+ * of 60 an hour keeps short). What is left: more than about ten pushes to one activity in one second, then the object
+ * leaving memory within those seconds, could give one timestamp twice, and the system could drop the later push.
+ */
+export class ActivityStamps {
+	private readonly last = new Map<string, number>();
+
+	next(activity: string, now: number): number {
+		const second = Math.floor(now / 1000);
+		if (this.last.size >= 64) for (const [key, stamp] of this.last) if (stamp < second - 60) this.last.delete(key);
+		const stamp = Math.max(second, (this.last.get(activity) ?? 0) + 1);
+		this.last.set(activity, stamp);
+		return stamp;
+	}
 }

@@ -74,7 +74,8 @@ export type Why =
 	| "no-token" // a push for a device that has given no push token
 	| "token-dead" // Apple said the device's push token is no longer good: the relay forgot it
 	| "push-limit" // past 6.6's pushes an hour for the device or the pairing, until the hour is over
-	| "push-later"; // Apple asked the relay to slow down, or could not be reached: nothing is sent there for a while
+	| "push-later" // Apple asked the relay to slow down, or could not be reached: nothing is sent there for a while
+	| "clock"; // a Live Activity push whose `at` is more than a day behind the relay's clock or five minutes ahead (apns.ts)
 
 /** A build, as the end's `CFBundleVersion` or the Mac's build number: up to three numbers with dots between. */
 export type Build = number[];

@@ -5,7 +5,17 @@
 
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ACTIVITY_TOKEN_FOR, activityPayload, MAX_ACTIVITIES, MAX_COUNT, PUSH_LIMITS, type PushLimits } from "../src/apns.ts";
+import {
+	ACTIVITY_TOKEN_FOR,
+	ActivityStamps,
+	activityPayload,
+	AT_AHEAD,
+	AT_BEHIND,
+	MAX_ACTIVITIES,
+	MAX_COUNT,
+	PUSH_LIMITS,
+	type PushLimits,
+} from "../src/apns.ts";
 import { base64url, hex, random } from "../src/bytes.ts";
 import type { Pairing } from "../src/pairing.ts";
 import { ApnsStandIn } from "./apns.ts";
@@ -244,6 +254,64 @@ describe("Apple's answers to a Live Activity push", () => {
 		expect(await activityPush(mac, phone.device, activity)).toEqual(refusal("push-later"));
 		vi.setSystemTime(NOW + 30 * 1000);
 		expect(await activityPush(mac, phone.device, activity)).toEqual(OK);
+	});
+});
+
+describe("what a Live Activity push may carry, and when", () => {
+	it("writes no event but update or end, whatever got past the reading", () => {
+		for (const event of ["start", "", "update ", "END"]) {
+			expect(() => activityPayload({ event: event as "update", state: STATE }, NOW)).toThrow();
+		}
+		expect(() => activityPayload({ event: "update", state: STATE }, NOW, 0)).toThrow();
+		expect(() => activityPayload({ event: "update", state: STATE }, NOW, 1.5)).toThrow();
+	});
+
+	it("takes `at` from a day behind the relay's clock to five minutes ahead, and answers clock past either, sending, counting and writing nothing", async () => {
+		expect(AT_BEHIND).toBe(24 * HOUR);
+		expect(AT_AHEAD).toBe(5 * MINUTE);
+		const { mac, phone, standIn, activity } = await paired();
+		const writes = await countStorageWrites(mac.pairing);
+		for (const at of [NOW - AT_BEHIND - 1, NOW + AT_AHEAD + 1, 1]) {
+			expect(await activityPush(mac, phone.device, activity, "update", { ...STATE, at })).toEqual(refusal("clock"));
+		}
+		expect(writes.count).toBe(0);
+		expect(standIn.pushes).toEqual([]);
+		// The socket stays open, and each edge itself is taken.
+		for (const at of [NOW - AT_BEHIND, NOW + AT_AHEAD]) {
+			expect(await activityPush(mac, phone.device, activity, "update", { ...STATE, at })).toEqual(OK);
+		}
+		expect(standIn.pushes.map((sent) => JSON.parse(sent.payload).aps["content-state"].at)).toEqual([NOW - AT_BEHIND, NOW + AT_AHEAD]);
+	});
+
+	it("never gives one activity the same timestamp twice: an end in the same second as an update comes after it", async () => {
+		const { mac, phone, client, standIn, activity } = await paired();
+		const other = base64url(random(16));
+		client.send({ activityToken: { activity: other, apns: hex(random(80)), environment: "development" } });
+		expect(await client.json()).toEqual({ ok: { what: "activityToken" } });
+		const second = NOW / 1000;
+		const stamps = () => standIn.pushes.map((sent) => JSON.parse(sent.payload).aps.timestamp);
+		expect(await activityPush(mac, phone.device, activity, "update")).toEqual(OK);
+		expect(await activityPush(mac, phone.device, activity, "end", { working: 0, needs: 0, finished: 2, at: AT })).toEqual(OK);
+		// Another activity has its own.
+		expect(await activityPush(mac, phone.device, other, "update")).toEqual(OK);
+		expect(stamps()).toEqual([second, second + 1, second]);
+		const end = JSON.parse(standIn.pushes[1].payload).aps;
+		expect(end["dismissal-date"]).toBe(second + 1 + 15 * 60);
+		// A second later the clock has not caught up with the end's: one past it; once it has, the clock's own.
+		vi.setSystemTime(NOW + 1000);
+		expect(await activityPush(mac, phone.device, activity, "update")).toEqual(OK);
+		vi.setSystemTime(NOW + 10_000);
+		expect(await activityPush(mac, phone.device, activity, "update")).toEqual(OK);
+		expect(stamps().slice(3)).toEqual([second + 2, second + 10]);
+	});
+
+	it("keeps its timestamps for a few dozen activities, and lets go of old ones", () => {
+		const stamps = new ActivityStamps();
+		for (let index = 0; index < 100; index++) expect(stamps.next(`a${index}`, NOW)).toBe(NOW / 1000);
+		expect(stamps.next("a99", NOW)).toBe(NOW / 1000 + 1);
+		// Two minutes on, the old ones go when it next grows, and none is given a timestamp behind the clock.
+		expect(stamps.next("a0", NOW + 2 * MINUTE)).toBe(NOW / 1000 + 120);
+		expect((stamps as unknown as { last: Map<string, number> }).last.size).toBe(1);
 	});
 });
 

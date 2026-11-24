@@ -11,9 +11,11 @@
 
 import { DurableObject } from "cloudflare:workers";
 import {
+	ActivityStamps,
 	type ActivityToken,
 	type Apns,
 	apnsFor,
+	isNear,
 	liveActivityTokens,
 	MAX_WAITING_PUSHES,
 	PUSH_LIMITS,
@@ -167,6 +169,7 @@ const CLOSE: Record<Why, number> = {
 	"token-dead": 4002,
 	"push-limit": 4002,
 	"push-later": 4002,
+	clock: 4002,
 };
 
 export class Pairing extends DurableObject<Env> {
@@ -193,6 +196,8 @@ export class Pairing extends DurableObject<Env> {
 	/** The pushes in hand, one at a time, so that the Mac's answers come in the order it asked; and how many wait. */
 	private pushing: Promise<void> = Promise.resolve();
 	private pushesWaiting = 0;
+	/** Each Live Activity's last push timestamp, so that none repeats (apns.ts, `ActivityStamps`); in memory only. */
+	private readonly activityStamps = new ActivityStamps();
 
 	private meta: Meta | null = null;
 	private devices: Record<string, Device> = {};
@@ -904,6 +909,8 @@ export class Pairing extends DurableObject<Env> {
 		const now = Date.now();
 		const device = this.devices[message.device];
 		if (this.meta === null || device?.listed !== true) return refused(ws, "push", "unknown-device");
+		// Numbers counted more than a day ago, or in the future: the Mac's clock or its queue is wrong (apns.ts, AT_BEHIND).
+		if (!isNear(message.state.at, now)) return refused(ws, "push", "clock");
 		const token = device.activities?.[message.activity];
 		if (token === undefined || token.until <= now) {
 			if (token !== undefined) {
@@ -921,7 +928,8 @@ export class Pairing extends DurableObject<Env> {
 		const first = this.pushCounts.add(message.device, "activity", now);
 		await this.ctx.storage.put("pushes", this.pushCounts.stored());
 		if (first) await this.schedule();
-		const outcome = await apns.sendActivity(token, { event: message.event, state: message.state }, now);
+		const stamp = this.activityStamps.next(`${message.device} ${message.activity}`, now);
+		const outcome = await apns.sendActivity(token, { event: message.event, state: message.state }, now, stamp);
 		if (outcome === "sent") return ok(ws, "push");
 		// Forgotten only if it is still the token Apple refused: the phone may have given another meanwhile.
 		const still = this.devices[message.device]?.activities;
