@@ -285,10 +285,10 @@ export const FEATURES: Feature[] = [
 	orchestrator,
 	// Carrying over (#458): requests, and the `projects` event's `carryOver`, with no greeting of its own.
 	carryOver,
-	// The projects epic (docs/projects.md). Their greetings go to an app in this order (4.4).
-	projects,
 	// What a paired phone may see of the Mac's folders and files (#698): requests only, with no greeting of its own.
 	folders,
+	// The projects epic (docs/projects.md). Their greetings go to an app in this order (4.4).
+	projects,
 	projectRules,
 	needs,
 	reports,

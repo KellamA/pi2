@@ -367,12 +367,34 @@ struct ConversationsTests {
         let orchestrator = try #require(project.conversation)
         #expect(await ConversationsRequests.restorePlan(engine, conversation: orchestrator) == .failure(ConversationsProblem("This conversation is not of a deleted project.")))
         #expect(await ConversationsRequests.stopCommand(engine, command: "bg-1") == "That command is no longer running")
-        // What the engine does not have yet, the demo refuses as it refuses anything it does not do.
-        guard case .failure(let failure) = await ConversationsRequests.folders(engine) else {
-            Issue.record("The demo answered projects.folders")
+        // A new project: the folders the demo's Mac uses, its projects' marked, and a project made with no folder, or
+        // refused from one the Mac does not offer or one a project has.
+        guard case .success(let offered) = await ConversationsRequests.folders(engine) else {
+            Issue.record("The demo did not answer projects.folders")
             return
         }
-        #expect(failure.message.hasPrefix("The demo does not do projects.folders"))
+        let taken = try #require(offered.first { $0.project == "Demo project" })
+        #expect(taken.path == project.folder && taken.name == URL(fileURLWithPath: taken.path).lastPathComponent)
+        #expect(await ConversationsRequests.createProject(engine, folder: "/Users/someone", name: nil, template: nil)
+            == .failure(ConversationsProblem(DemoNewProject.notOffered)))
+        #expect(await ConversationsRequests.createProject(engine, folder: taken.path, name: nil, template: nil)
+            == .failure(ConversationsProblem("There is already a project for this folder: Demo project")))
+        #expect(await ConversationsRequests.createProject(engine, folder: nil, name: "Demo project", template: nil)
+            == .failure(ConversationsProblem("There is already a project called Demo project")))
+        let template = try #require(engine.agents.first { $0.removedAt == nil }?.id)
+        guard case .success(let made) = await ConversationsRequests.createProject(engine, folder: nil, name: nil, template: template) else {
+            Issue.record("The demo made no project")
+            return
+        }
+        #expect(try await eventually { engine.projects.first { $0.id == made }?.name == "No folder" })
+        let new = try #require(engine.projects.first { $0.id == made })
+        #expect(new.folder == nil && new.conversation != nil)
+        #expect(try await eventually { engine.conversations.contains { $0.id == new.conversation } })
+        guard case .success(let second) = await ConversationsRequests.createProject(engine, folder: nil, name: nil, template: nil) else {
+            Issue.record("The demo made no second project")
+            return
+        }
+        #expect(try await eventually { engine.projects.first { $0.id == second }?.name == "No folder 2" })
     }
 
     @Test func theRecordingRefusesWhatItDoesNotAnswerAndTheScreenSaysSo() async throws {
