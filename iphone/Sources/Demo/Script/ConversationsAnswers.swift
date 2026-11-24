@@ -91,13 +91,13 @@ enum DemoNewProject {
     private static func time(_ value: Any?) -> Double { (value as? NSNumber)?.doubleValue ?? 0 }
 
     /// The folders the projects, the agents and the conversations of the world use, as `offeredFolders` lists them: free
-    /// ones first, the one used last first, then the projects', at most 50. (The recording's two folders are in its
-    /// copy's data folder, where `test-copy fill` makes them, which a real engine leaves out; the demo knows no data
-    /// folder, and offers them.)
+    /// ones first, the one used last first, then the projects', at most 50, and none in the Mac's data folder. The
+    /// recording's two folders are in its copy's data folder (`~/Library/Application Support/pi2-demo`), where
+    /// `test-copy fill` makes them, so the demo's Mac offers none, as a real one would not.
     static func folders(_ world: DemoWorld) -> [[String: Any]] {
         var used: [String: Double] = [:]
         func use(_ path: Any?, _ at: Double) {
-            guard let path = path as? String, path.hasPrefix("/"), path != "/" else { return }
+            guard let path = path as? String, path.hasPrefix("/"), path != "/", !inDataFolder(path) else { return }
             used[path] = max(used[path] ?? 0, at)
         }
         let projects = DemoProjects.all(world).filter { !($0["deletedAt"] is NSNumber) }
@@ -125,6 +125,12 @@ enum DemoNewProject {
             }
             return folder
         }
+    }
+
+    /// Whether `path` is in a pi² data folder (`~/Library/Application Support/pi2`, or a copy's `pi2-<suffix>`), which
+    /// the engine never offers.
+    private static func inDataFolder(_ path: String) -> Bool {
+        path.range(of: #"^/Users/[^/]+/Library/Application Support/pi2(-[a-z0-9-]+)?(/|$)"#, options: .regularExpression) != nil
     }
 
     /// A path with the Mac's home folder written `~`: the recording's Mac's home is `/Users/<name>`.

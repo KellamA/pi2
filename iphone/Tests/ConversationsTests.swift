@@ -367,18 +367,14 @@ struct ConversationsTests {
         let orchestrator = try #require(project.conversation)
         #expect(await ConversationsRequests.restorePlan(engine, conversation: orchestrator) == .failure(ConversationsProblem("This conversation is not of a deleted project.")))
         #expect(await ConversationsRequests.stopCommand(engine, command: "bg-1") == "That command is no longer running")
-        // A new project: the folders the demo's Mac uses, its projects' marked, and a project made with no folder, or
-        // refused from one the Mac does not offer or one a project has.
-        guard case .success(let offered) = await ConversationsRequests.folders(engine) else {
-            Issue.record("The demo did not answer projects.folders")
-            return
-        }
-        let taken = try #require(offered.first { $0.project == "Demo project" })
-        #expect(taken.path == project.folder && taken.name == URL(fileURLWithPath: taken.path).lastPathComponent)
+        // A new project: the demo's Mac offers no folder, since its projects' are in its data folder, as the engine
+        // would offer none; a project is made with no folder, and refused from a folder the Mac does not offer.
+        #expect(await ConversationsRequests.folders(engine) == .success([]))
+        let folder = try #require(project.folder)
+        #expect(await ConversationsRequests.createProject(engine, folder: folder, name: nil, template: nil)
+            == .failure(ConversationsProblem(DemoNewProject.notOffered)))
         #expect(await ConversationsRequests.createProject(engine, folder: "/Users/someone", name: nil, template: nil)
             == .failure(ConversationsProblem(DemoNewProject.notOffered)))
-        #expect(await ConversationsRequests.createProject(engine, folder: taken.path, name: nil, template: nil)
-            == .failure(ConversationsProblem("There is already a project for this folder: Demo project")))
         #expect(await ConversationsRequests.createProject(engine, folder: nil, name: "Demo project", template: nil)
             == .failure(ConversationsProblem("There is already a project called Demo project")))
         let template = try #require(engine.agents.first { $0.removedAt == nil }?.id)
