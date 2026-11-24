@@ -73,6 +73,9 @@ final class PhoneLink {
     }
 
     @ObservationIgnored private(set) var steps: [Step] = []
+    /// Called once a pairing has ended and the store is wiped (revoked, unpaired, the keys gone): `PhoneSurfaces` takes
+    /// away what the extensions and iOS still show of the Mac.
+    @ObservationIgnored var onEnded: ((Ending) -> Void)?
     @ObservationIgnored private let phone: @MainActor () -> PhoneDescription
     @ObservationIgnored private var opening = false
     /// Whether the channel attached in this Face ID session: a drop after it keeps the client on the channel, which
@@ -105,6 +108,13 @@ final class PhoneLink {
     /// when nothing is paired (the intent then says so), else only in an open session.
     var isOpenForIntents: Bool {
         !paired || keyring.session.state == .open
+    }
+
+    /// For Shortcuts (`IntentSessions.register`): whether a session Face ID just opened is still being put on its
+    /// transport (the store, the connection, the client), so that an intent waits for it rather than taking the locked
+    /// session's closed client for a Mac out of reach.
+    var isSettlingForIntents: Bool {
+        paired && keyring.session.state == .open && carrier == .none
     }
 
     // MARK: - Launch
@@ -333,6 +343,7 @@ final class PhoneLink {
         session.engine.forgetConversations()
         session.macName = nil
         session.start(LockedTransport(), as: .notPaired)
+        onEnded?(ending)
     }
 
     private func step(_ step: Step) {

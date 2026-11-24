@@ -14,7 +14,7 @@
 // app's own connection, and to pi² Remote, never into an event or a log (3.1).
 
 import { createHash, createHmac, createPublicKey, type KeyObject, randomBytes, timingSafeEqual, verify } from "node:crypto";
-import { hostname } from "node:os";
+import { homedir, hostname } from "node:os";
 import type { Context } from "@earendil-works/chord/context";
 import { defineDoc, type Harness } from "@earendil-works/pi-durable";
 import { type DevicePath, deviceMay, type DeviceSession, devicePlacement, ONLY_ON_THE_MAC } from "./answers.ts";
@@ -595,12 +595,32 @@ export function hidesSomething(value: unknown): boolean {
 type Params = Record<string, unknown>;
 
 /**
+ * `PI2_DEVICE_FAULT`, a test switch: the method whose log line, and whose handling from a device's line, throw before
+ * the request's own `try` (remote.ts), so that engine/test/devices.ts can show that neither ends the engine.
+ */
+export const DEVICE_FAULT = testSwitch("PI2_DEVICE_FAULT");
+
+/**
+ * A line for the log saying what a request did (`summaryLine`), or, should that fail, the method's name alone. It never
+ * throws: a device chooses every parameter it reads, and it runs before the request's own `try` (remote.ts), where a
+ * throw would end the engine.
+ */
+export function summarize(given: string, params: Params): string {
+	try {
+		return summaryLine(given, params);
+	} catch {
+		return loggedMethod(given);
+	}
+}
+
+/**
  * A line for the log saying what a request did, by its method and parameters: the conversation or project it names, by
  * name. An issue that lets a device send a new request adds its line here (12.1). Never the text of a message, which
  * may hold anything.
  */
-export function summarize(given: string, params: Params): string {
+function summaryLine(given: string, params: Params): string {
 	const method = loggedMethod(given);
+	if (DEVICE_FAULT !== undefined && method === DEVICE_FAULT) throw new Error("PI2_DEVICE_FAULT: the log line");
 	const title = typeof params.id === "number" ? names?.conversation(params.id) : undefined;
 	const project = typeof params.projectId === "string" ? names?.project(params.projectId) : undefined;
 	// A conversation not named yet has an empty title: it is left out, as one not found is.
@@ -613,7 +633,7 @@ export function summarize(given: string, params: Params): string {
 		withdraw: () => `Took back a message${inConversation}`,
 		"conversation.create": () => `Started a conversation${params.confirmLimit !== undefined ? " past a limit" : ""}`,
 		"conversation.export": () => `Exported${inConversation}`,
-		"conversation.rename": () => `Renamed a conversation to “${String(params.title ?? "")}”`,
+		"conversation.rename": () => `Renamed a conversation to “${said(params.title ?? "")}”`,
 		"conversation.delete": () => `Deleted${inConversation}`,
 		"conversation.configure": () => `Changed the settings of${inConversation || " a conversation"}`,
 		"inbox.decide": () => `Answered an approval: ${["once", "always", "rule", "deny"].includes(params.decision as string) ? String(params.decision) : "?"}`,
@@ -621,19 +641,54 @@ export function summarize(given: string, params: Params): string {
 		"needs.answer": () => `Answered under Needs you${inProject}`,
 		"agents.allowEverything": () => `Turned Allow everything ${params.on === true ? "on" : "off"}`,
 		"agents.save": () => "Changed an agent's settings",
-		"github.merge": () => `Merged #${String(params.number)}${inProject}`,
+		"github.merge": () => `Merged #${said(params.number)}${inProject}`,
 		"github.settle": () => `Marked a write ${params.happened === true ? "done" : "not done"}${inProject}`,
-		"work.act": () => `${clip(String(params.action ?? "Acted on"), 24)} work #${clip(String(params.id), 12)}${inProject}`,
+		"work.act": () => `${clip(said(params.action ?? "Acted on"), 24)} work #${clip(said(params.id), 12)}${inProject}`,
 		"devices.forgetSelf": () => "Unpaired itself",
 		"devices.acceptPresenceKey": () => "Its new Face ID key was accepted on the Mac",
 		"devices.refusePresenceKey": () => "Its new Face ID key was refused on the Mac",
 		presenceKey: () => "Offered a new Face ID key",
+		"pushes.set": () => {
+			const switches = (["needs", "limits", "answers"] as const).filter((key) => typeof params[key] === "boolean").map((key) => `${key} ${params[key] === true ? "on" : "off"}`);
+			// Whatever the device sent: null or a string is read as an object with nothing in it.
+			const chosen = typeof params.project === "object" && params.project !== null ? (params.project as Params) : {};
+			const name = typeof chosen.id === "string" ? names?.project(chosen.id) : undefined;
+			const quieted = params.project === undefined ? [] : [`${chosen.quiet === true ? "quieted" : "unquieted"} ${name === undefined || name === "" ? "a project" : `“${name}”`}`];
+			return `Notifications: ${[...switches, ...quieted].join(", ") || "read"}`;
+		},
+		"pushes.follow": () => `${params.on === true ? "Followed" : "Stopped following"}${inProject || " a project"} in a Live Activity`,
+		// #698: the folders offered for a new project, a project made from one, and a file shown on the phone, by its name.
+		"projects.folders": () => "Asked for the folders offered for a new project",
+		"projects.create": () => `Made a project ${typeof params.folder === "string" ? `from the folder “${clip(params.folder.split("/").filter(Boolean).at(-1) ?? params.folder, 60)}”` : "with no folder"}${params.template != null ? " and a copy of a template" : ""}`,
+		"files.preview": () => `Showed the file “${previewedPath(params.path)}”${inConversation}`,
 		pair: () => "Paired",
 		attach: () => "Attached",
 		resume: () => "Resumed",
 		suspend: () => "Suspended",
 	};
 	return clip(maskKeys(lines[method]?.() ?? `${method}${inConversation}${inProject}`), MAX_SUMMARY);
+}
+
+/** A value a device gave, as words: an object or an array as "?", since `String` of one can throw (`{"toString": 1}`). */
+const said = (value: unknown) => (typeof value === "object" && value !== null ? "?" : String(value));
+/**
+ * The file `files.preview` names, for the log (#698): as the link named it, which is its path relative to the
+ * conversation's folder for a relative link (`./` and `..` worked out), or its whole path with the home folder as `~`;
+ * at most 120 characters, the end kept.
+ */
+function previewedPath(path: unknown): string {
+	if (typeof path !== "string" || path.trim() === "") return "?";
+	let text = path.trim().replace(/^file:\/\/(?:localhost)?/i, "");
+	const home = homedir();
+	if (home.length > 1 && text.startsWith(`${home}/`)) text = `~${text.slice(home.length)}`;
+	const names: string[] = [];
+	for (const name of text.split("/")) {
+		if (name === "" || name === ".") continue;
+		if (name === ".." && names.length > 0 && names.at(-1) !== "..") names.pop();
+		else names.push(name);
+	}
+	const shown = `${text.startsWith("/") ? "/" : ""}${names.join("/")}`;
+	return shown.length <= 120 ? shown : `…${shown.slice(shown.length - 119)}`;
 }
 
 /** At most `max` characters of `text`, with an ellipsis where it was cut. */
@@ -1191,6 +1246,9 @@ function forget(device: Device, now: number): void {
 	device.suspendedAt = null;
 }
 
+/** Told of each device revoked, once its record says so: what is kept for it elsewhere goes with it (pushes.ts). */
+export const revokedWatchers = new Set<(device: string) => void>();
+
 async function revoke(id: string): Promise<void> {
 	const device = pairedDevice(id);
 	if (device === undefined) throw new Error("No such device is paired.");
@@ -1198,6 +1256,14 @@ async function revoke(id: string): Promise<void> {
 		for (const one of doc.devices) if (one.id === id) forget(one, Date.now());
 	});
 	failures.delete(id);
+	// Each in its own `try`: no watcher's fault keeps the revocation from pi² Remote and the device's sessions.
+	for (const watch of revokedWatchers) {
+		try {
+			watch(id);
+		} catch (error) {
+			log("devices: a watcher of revocations failed:", error instanceof Error ? error.message : error);
+		}
+	}
 	// `revoke` first: pi² Remote sends the phone its signed `revoked` line on the channel, which closing the sessions
 	// next would otherwise have ended (3.6).
 	remoteHooks.toHelper({ kind: "revoke", device: id });
