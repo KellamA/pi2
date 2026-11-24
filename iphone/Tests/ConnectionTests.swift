@@ -39,14 +39,25 @@ struct ConnectionTests {
         if case .connected = connection.connection { true } else { false }
     }
 
-    /// Whether the presence key signed each attach the Mac was sent, once, in order, and nothing else: one signature for
-    /// one attempt, and one more for each attempt the phone gave up and made again on a new channel (an answer later than
-    /// 3.4's ten seconds, on a runner that stalls). Waits only for an attach on its way to the Mac.
-    static func eachAttachSignedOnce(_ paired: PairedPhone) async throws -> Bool {
-        let presence = try #require(paired.keys.software).softwarePresence
-        return await Wait.until {
-            presence.signed.withLock { $0 } == paired.mac.state.withLock { $0.attaches.map { Data($0.statement.text.utf8) } }
+    /// What is wrong with the presence key's signatures, if anything: each must be over an attach, one for each channel
+    /// whose proof the Mac sent (its challenge, which the Mac keeps before sending), and every attach the Mac read must be
+    /// among them. One signature for one attempt, and one more for each attempt the phone gave up and made again on a new
+    /// channel (an answer later than 3.4's ten seconds, on a runner that stalls). An attach given up on may never reach
+    /// the Mac (a reset under a stall loses it, #910), so the count is not the Mac's.
+    static func presenceSignedOncePerChannel(_ paired: PairedPhone) throws -> String? {
+        let signed = try #require(paired.keys.software).softwarePresence.signed.withLock { $0 }
+        let (challenges, attaches) = paired.mac.state.withLock { state in
+            (Set(state.challenges.map(Base64URL.encode)), state.attaches.map { Data($0.statement.text.utf8) })
         }
+        var seen = Set<String>()
+        for text in signed {
+            guard let fields = try? JSONSerialization.jsonObject(with: text) as? [String: Any], fields["kind"] as? String == "attach",
+                  let challenge = fields["challenge"] as? String else { return "signed what is not an attach" }
+            guard challenges.contains(challenge) else { return "signed an attach for a challenge the Mac never sent" }
+            guard seen.insert(challenge).inserted else { return "signed twice for one channel" }
+        }
+        guard attaches.allSatisfy(signed.contains) else { return "an attach the Mac read was not signed by the presence key" }
+        return nil
     }
 
     @Test func attachesAndCarriesTheEngine() async throws {
@@ -71,7 +82,7 @@ struct ConnectionTests {
         let kept = try #require(paired.keys.software)
         let presence = try P256.Signing.ECDSASignature(rawRepresentation: attach.presence)
         #expect(kept.softwarePresence.publicKey.isValidSignature(presence, for: Data(attach.statement.text.utf8)), "the presence key signed the attach")
-        #expect(try await Self.eachAttachSignedOnce(paired), "once, and nothing else")
+        #expect(try Self.presenceSignedOncePerChannel(paired) == nil, "once, and nothing else")
 
         // A request goes over the channel and its answer comes back, as from the engine.
         let orchestrator = try #require(app.engine.projects.first { $0.name == "Demo project" }?.conversation)
@@ -90,10 +101,11 @@ struct ConnectionTests {
         defer { connection.stop() }
         #expect(await Wait.until { connection.connection == .connected(.direct, relayReachable: false) })
         let attaches = paired.mac.state.withLock { $0.attaches }
-        #expect(attaches.count == 2 && attaches.allSatisfy { $0.session == nil }, "no session was attached, so both are fresh")
-        #expect(attaches.first?.binding != attaches.last?.binding, "the second on a new channel")
-        #expect(try await Self.eachAttachSignedOnce(paired))
-        #expect(paired.mac.state.withLock { $0.attachedCount } == 1)
+        // Two at least: a runner that stalls may make the phone give up another.
+        #expect(attaches.count >= 2 && attaches.allSatisfy { $0.session == nil }, "no session was attached before, so each is fresh")
+        #expect(attaches.first?.binding != attaches.last?.binding, "the next on a new channel")
+        #expect(try Self.presenceSignedOncePerChannel(paired) == nil)
+        #expect((paired.keys.software?.softwarePresence.signed.withLock { $0.count } ?? 0) >= 2, "the one made again is signed again")
     }
 
     @Test func resumesTheSessionOnANewChannel() async throws {

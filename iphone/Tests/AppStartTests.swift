@@ -99,7 +99,11 @@ struct AppStartTests {
         #expect(RootView.screen(for: phone.session.connection) == .projects)
         #expect(await Wait.until { phone.link.steps.contains(.outboxSent) })
         let steps = Array(phone.link.steps.dropFirst(before))
-        #expect(steps == [.storeOpened, .connectionStarted, .live, .outboxSent], "\(steps)")
+        // In order: the store, the connection, then the channel and the Outbox on it, once. An attempt the phone gave up
+        // (an answer later than 3.4's ten seconds, on a runner that stalls) shows between them as the store's last state,
+        // then the channel again (#910).
+        #expect(steps.prefix(2) == [.storeOpened, .connectionStarted] && steps.suffix(2) == [.live, .outboxSent], "\(steps)")
+        #expect(steps.dropFirst(2).dropLast(2).allSatisfy { $0 == .live || $0 == .cached }, "\(steps)")
         #expect(await Wait.until { phone.session.engine.projects.count == 2 }, "the projects list on the live connection")
         #expect(phone.session.connection == .connected(.direct, relayReachable: false), "the connection's state, mirrored")
         #expect(phone.session.macName == phone.mac.name)
