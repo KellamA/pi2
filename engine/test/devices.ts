@@ -30,7 +30,6 @@ import { personOnly } from "../src/answers.ts";
 import { ANSWER_NOT_SENT, DEVICE_LINE_FAILED, forDevice, MAX_HELPER_LINE, SESSION_OVER } from "../src/remote.ts";
 import { NOT_LINKED, NOT_OFFERED } from "../src/folders.ts";
 import { offerFolders } from "../src/answers.ts";
-import { symlinkSync } from "node:fs";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
 process.env.PI2_DEMO_TOKENS_PER_SECOND ??= "100000";
