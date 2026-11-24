@@ -228,6 +228,46 @@ struct IntentsTests {
         #expect(needs.asOf == "\(away). This is what it last sent.")
     }
 
+    /// The app's own session, as Pi2App.init registers it, on a phone paired with the test Mac (#901): closed, an intent
+    /// opens pi² for Face ID first, then sends on the channel; with the Mac out of reach, the session runs the store's last
+    /// state and the message waits in the Outbox.
+    @Test func onThePairedPhonesOwnSessionAnIntentAsksFaceIDThenSendsOrKeeps() async throws {
+        let phone = try await AppStartTests.pairedPhone()
+        defer { phone.mac.stop() }
+        phone.link.didPair(phone.record)
+        #expect(try await eventually(60) { phone.link.steps.contains(.outboxSent) && phone.session.engine.projects.count == 2 })
+        let project = try #require(phone.session.engine.projects.first { $0.conversation != nil })
+        phone.keyring.session.end(.lockButton)
+        #expect(!phone.link.isOpenForIntents, "paired, and no session Face ID opened")
+        // The session's end settled: said to the Mac, the client let go (as AppStartTests waits before Face ID again).
+        #expect(try await eventually(60) {
+            phone.mac.state.withLock { $0.sessionEnds } == 1 && phone.session.engine.status != .connected
+                && { if case .outOfReach = phone.session.connection { true } else { false } }()
+        })
+
+        IntentSessions.register(phone.session, isOpen: { phone.link.isOpenForIntents }, settling: { phone.link.isSettlingForIntents })
+        var asked: [String] = []
+        IntentSessions.prompts = IntentSessions.Prompts(confirm: { _ in }, foreground: { why in
+            asked.append(why)
+            await phone.keyring.session.open()
+        })
+        IntentRun.lastProject = nil
+        let before = phone.mac.state.withLock { $0.requests.filter { $0 == "submit" }.count }
+        _ = try await AskOrchestratorIntent(message: "From Siri", project: IntentProject(project)).perform()
+        #expect(asked == [IntentWords.unlock], "pi² opened for Face ID before anything was sent")
+        #expect(phone.link.carrier == .live)
+        #expect(phone.mac.state.withLock { $0.requests.filter { $0 == "submit" }.count } == before + 1, "the message reached the Mac on the channel")
+
+        // The Mac goes out of reach: the session shows the store's last state, and the message waits in the Outbox.
+        phone.mac.stop()
+        #expect(try await eventually(90) { phone.link.carrier == .cached && phone.session.engine.status == .connected })
+        let waiting = phone.link.outbox.items.count
+        let reply = await AskOrchestrator.ask("While away", of: project, session: phone.session, courier: IntentEngineCourier(session: phone.session))
+        #expect(reply.outcome == .kept)
+        #expect(phone.link.outbox.items.count == waiting + 1)
+        #expect(phone.link.outbox.items.last?.method == "submit")
+    }
+
     @Test func lockedOpensPiForFaceIDFirst() async throws {
         var open = false
         let session = try await session(try #require(ReplayTransport.recording()), as: .connected(.home), isOpen: { open })
