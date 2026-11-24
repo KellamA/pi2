@@ -73,6 +73,9 @@ final class PhoneLink {
     }
 
     @ObservationIgnored private(set) var steps: [Step] = []
+    /// Called once a pairing has ended and the store is wiped (revoked, unpaired, the keys gone): `PhoneSurfaces` takes
+    /// away what the extensions and iOS still show of the Mac.
+    @ObservationIgnored var onEnded: ((Ending) -> Void)?
     @ObservationIgnored private let phone: @MainActor () -> PhoneDescription
     @ObservationIgnored private var opening = false
     /// Whether the channel attached in this Face ID session: a drop after it keeps the client on the channel, which
@@ -333,6 +336,7 @@ final class PhoneLink {
         session.engine.forgetConversations()
         session.macName = nil
         session.start(LockedTransport(), as: .notPaired)
+        onEnded?(ending)
     }
 
     private func step(_ step: Step) {

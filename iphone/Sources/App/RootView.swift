@@ -8,6 +8,7 @@ import SwiftUI
 struct RootView: View {
     @Environment(AppSession.self) private var session
     @Environment(PhoneLink.self) private var link: PhoneLink?
+    @Environment(PhoneSurfaces.self) private var surfaces: PhoneSurfaces?
     @Environment(\.scenePhase) private var phase
     @State private var navigator = Navigator()
     #if DEBUG
@@ -32,11 +33,19 @@ struct RootView: View {
             .environment(\.openRoute, OpenRoute { [navigator] route in navigator.open(route) })
             .onChange(of: phase) { _, phase in
                 switch phase {
-                case .active: link?.store.sweep()
-                case .background: link?.store.saveNow()
+                case .active:
+                    if let swept = link?.store.sweep() { surfaces?.swept(swept) }
+                case .background:
+                    link?.store.saveNow()
+                    surfaces?.movedToBackground()
                 default: break
                 }
             }
+            // A widget's or a Live Activity's tap: its route waits until Face ID has opened the session.
+            .onOpenURL { url in surfaces?.open(url) }
+            .onChange(of: surfaces?.pendingRoute, initial: true) { _, _ in openPendingRoute() }
+            .onChange(of: isOpen) { _, _ in openPendingRoute() }
+            .onChange(of: Self.screen(for: session.connection)) { _, _ in openPendingRoute() }
             #if DEBUG
             .onChange(of: session.engine.projects, initial: true) { _, projects in
                 guard !shown, let route = DebugLaunch.current?.route(projects: projects) else { return }
@@ -44,6 +53,21 @@ struct RootView: View {
                 navigator.open(route)
             }
             #endif
+    }
+
+    /// Whether the screens are shown: nothing paired, or a session Face ID opened.
+    private var isOpen: Bool {
+        guard let link, link.paired else { return true }
+        return link.keyring.session.state == .open
+    }
+
+    /// Opens the route a widget, a notification or a Live Activity asked for, once the screens are shown and the projects
+    /// list is the root.
+    private func openPendingRoute() {
+        guard let surfaces, let route = surfaces.pendingRoute, isOpen, Self.screen(for: session.connection) == .projects else { return }
+        surfaces.pendingRoute = nil
+        navigator.open(.home)
+        if route != .home { navigator.open(route) }
     }
 
     @ViewBuilder private var gated: some View {
