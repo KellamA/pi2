@@ -122,7 +122,7 @@ A copy made with `scripts/test-copy` from a development build runs the developme
 - it listens on 127.0.0.1 alone, and only while **Find on this network** is on;
 - it **never** calls the Keychain, makes or reads a Secure Enclave key, advertises on Bonjour, or listens beyond 127.0.0.1: none of those calls is compiled into it.
 
-So it can set off no Keychain prompt, no Local Network prompt and no firewall prompt ([CONTRIBUTING.md](../CONTRIBUTING.md#testing-safely)).
+So it can set off no Keychain prompt, no Local Network prompt and no firewall prompt ([CONTRIBUTING.md](../CONTRIBUTING.md#testing-safely)). `scripts/test-copy start <suffix> --remote` turns remote access on in a copy for it, and `pair` pairs the debug build in a simulator with it, checking first that every socket it has is on 127.0.0.1 ([development.md](development.md#trying-the-phone-against-a-copy)).
 
 ## For the owner: decisions as they stand
 

@@ -18,7 +18,8 @@
 // only for tests (`PI2_NETWORK_WAIT_SCALE`, `PI2_CACHE_PAUSE_MS`, `PI2_LOCAL_GRACE_SECONDS`), are read where they are
 // used.
 
-import { readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -29,14 +30,16 @@ import { fileURLToPath } from "node:url";
  * (carryover.ts), `PI2_DEMO_COMPACTION_GATE` the demo model's summary (providers.ts). `PI2_CARRY_NEVER` makes a data
  * folder as an older version left it. The demo model's: a price (`PI2_DEMO_COST`, usage.ts), a model that cannot see
  * pictures (`PI2_DEMO_TEXT_MODEL`), a picture model on a stand-in server (`PI2_DEMO_PICTURES`) and its typing speed
- * (`PI2_DEMO_TOKENS_PER_SECOND`, all three providers.ts). `PI2_TEST_COPY` is a throwaway copy's suffix, which main.ts
- * checks further against the copy's own folders.
+ * (`PI2_DEMO_TOKENS_PER_SECOND`, all three providers.ts). `PI2_TEST_COPY` is a throwaway copy's suffix, which
+ * `testCopySuffix` checks further against the copy's own folders.
  *
  * The stand-ins (#743): `PI2_TEST_ALLOW_ADDRESS` (look.ts), `PI2_LIMITS_ANTHROPIC_URL`, `PI2_LIMITS_CODEX_URL` and
  * `PI2_LIMITS_KIMI_URL` (limits.ts), `PI2_AWAKE_PROGRAM` and `PI2_AWAKE_POWER` (keepawake.ts), `PI2_LOCAL_CATALOG`
  * (localmodels.ts), and for paired devices (#673): `PI2_REMOTE_STAND_IN`, a program run with the engine's own Node in place
  * of pi² Remote (remote.ts); `PI2_APP_ATTEST_STAND_IN`, which takes a test's own attestations in place of App Attest's,
  * and `PI2_APP_ATTEST_TEAM`, the team id a pairing claim's attestation is checked against (devices.ts);
+ * `PI2_PAIR_UNATTESTED`, which with `PI2_TEST_COPY` takes a claim with no attestation, from the simulator (devices.ts,
+ * set by `scripts/test-copy start --remote`, #681);
  * `PI2_UNPLACED_HANDLER`, a request added to the engine's table and placed in no list, which must stop it starting
  * (main.ts); `PI2_DEVICE_SESSION_MS`, the engine's own bound on a device session, shortened (remote.ts);
  * `PI2_DEVICE_FAULT`, a method whose log line and handling from a device's line throw, which must not end the engine
@@ -82,6 +85,7 @@ export const TEST_SWITCHES = [
 	"PI2_LOCAL_RUN_RETRY_MS",
 	"PI2_LOCAL_STALL_MS",
 	"PI2_OUTPUT_WAIT_SECONDS",
+	"PI2_PAIR_UNATTESTED",
 	"PI2_REMOTE_STAND_IN",
 	"PI2_RESTORE_COMMIT_GATE",
 	"PI2_TEST_ALLOW_ADDRESS",
@@ -106,6 +110,24 @@ export const releaseEngine = engineBuild !== null;
 
 /** A test switch's value: as the environment has it in a development engine, never in a release one. */
 export const testSwitch = (name: TestSwitch, env: NodeJS.ProcessEnv = process.env): string | undefined => (releaseEngine ? undefined : env[name]);
+
+/**
+ * The suffix of the throwaway copy scripts/test-copy started this engine for, or undefined: `PI2_TEST_COPY`, checked
+ * against what only test-copy makes for that copy (not `dev`; its own data folder as `PI2_HOME`, its own Keychain
+ * service, its bundle in this checkout's app/build/test-copies). main.ts's fixtures and answer key and devices.ts's
+ * claim with no attestation (#681) both ask this. Never in a release engine, which reads no test switch.
+ */
+export const testCopySuffix = (env: NodeJS.ProcessEnv = process.env): string | undefined => {
+	const suffix = testSwitch("PI2_TEST_COPY", env);
+	if (suffix === undefined || suffix === "dev" || !/^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/.test(suffix)) return undefined;
+	const home = join(homedir(), "Library", "Application Support", `pi2-${suffix}`);
+	const checkout = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+	return env.PI2_HOME === home && lstatSync(home, { throwIfNoEntry: false })?.isDirectory() === true
+		&& env.PI2_KEYCHAIN_SERVICE === `dev.pi2.credentials.${suffix}`
+		&& existsSync(join(checkout, "app", "build", "test-copies", suffix, `pi² ${suffix}.app`, "Contents", "MacOS", "pi2"))
+		? suffix
+		: undefined;
+};
 
 /** The test switches the environment sets that this engine ignores, being a release engine: none in a development one. */
 export const ignoredTestSwitches = (env: NodeJS.ProcessEnv = process.env): TestSwitch[] => (releaseEngine ? TEST_SWITCHES.filter((name) => env[name] !== undefined) : []);

@@ -32,8 +32,9 @@ reset_devices() {
 		{udid: $t, name: "pi2-taken", state: "Shutdown", isAvailable: true}]}}' >"$DEVICES"
 }
 
-# xcrun simctl: list, create (a new id each time, from a counter), bootstatus -b, shutdown, delete, install, launch
-# (which writes down the SIMCTL_CHILD_ variables it would pass on), ui and io. $T/fail-create makes create fail.
+# xcrun simctl: list, create (a new id each time, from a counter), bootstatus -b, shutdown, delete, install, uninstall,
+# launch (which writes down the SIMCTL_CHILD_ variables it would pass on), spawn, ui and io. $T/fail-create makes create
+# fail.
 cat >"$T/bin/xcrun" <<'EOF'
 #!/bin/bash
 { printf 'xcrun'; printf ' %q' "$@"; echo; } >>"$LOG"
@@ -60,7 +61,15 @@ delete)
 	jq --arg u "$2" '.devices[] |= map(select(.udid != $u))' "$DEVICES" >"$DEVICES.new" && mv "$DEVICES.new" "$DEVICES"
 	;;
 launch) env | grep '^SIMCTL_CHILD_' | sort | sed 's/^/child-env /' >>"$LOG" ;;
-install | ui) ;;
+install | uninstall | ui) ;;
+# notifyutil -g answers with the state set last, as the simulator's own does.
+spawn)
+	if [[ $3 == notifyutil && $4 == -s ]]; then
+		echo "$6" >"$DEVICES.notify"
+	elif [[ $3 == notifyutil && $4 == -g ]]; then
+		echo "$5 $(cat "$DEVICES.notify" 2>/dev/null || echo 0)"
+	fi
+	;;
 io) for last in "$@"; do :; done; echo png >"$last" ;;
 *) echo "stand-in xcrun: no simctl $1" >&2; exit 1 ;;
 esac
@@ -177,7 +186,7 @@ U2=AAAAAAAA-0000-0000-0000-000000000002
 	fail "without a scratch folder, the derived data is not under iphone/build"
 
 # Only this checkout's own simulators.
-for command in build test run "shot x.png" "appearance dark" "text-size large" shutdown delete id; do
+for command in build test run "shot x.png" "appearance dark" "text-size large" "face-id match" shutdown delete id; do
 	set -- $command
 	run "$1 on the booted simulator by name" "$1" pi2-owner "${@:2}"
 	expect_refused "no simulator named 'pi2-owner' was made by this checkout"
@@ -252,9 +261,14 @@ expect_log "xcrun simctl launch --terminate-running-process $U1 dev.pi2.ios -fla
 expect_log "child-env SIMCTL_CHILD_PI2_SHOW=face-id-check"
 expect_log "child-env SIMCTL_CHILD_GREETING=a b=c"
 expect_no_log "SIMCTL_CHILD_LEAKED"
+expect_no_log "simctl uninstall"
 run "run again, booted" run pi2-1
 expect_status 0
 expect_no_log bootstatus
+run "run fresh" run pi2-1 --fresh --env PI2_TRANSPORT=remote
+expect_status 0
+expect_log "xcrun simctl uninstall $U1 dev.pi2.ios"
+grep -A1 -F "simctl uninstall" "$LOG" | grep -qF "xcrun simctl install $U1" || fail "the app was not installed again after it was uninstalled"
 run "run a release build before building it" run pi2-1 --release
 expect_refused "no Release build"
 run "run with a bad --env" run pi2-1 --env 'NO-DASHES=1'
@@ -295,6 +309,23 @@ expect_status 0
 expect_log "xcrun simctl ui $U1 content_size extra-large"
 run "text-size increment" text-size pi2-1 increment
 expect_refused "'increment' is not a text size"
+
+# The simulator's Face ID.
+run "face-id with nothing to do" face-id pi2-1
+expect_refused "face-id takes a simulator's name and enrol, match or no-match"
+run "face-id with an unknown answer" face-id pi2-1 passcode
+expect_refused "face-id takes enrol, match or no-match, not 'passcode'"
+run "face-id enrol" face-id pi2-1 enrol
+expect_status 0
+expect_log "xcrun simctl spawn $U1 notifyutil -s com.apple.BiometricKit.enrollmentChanged 1"
+expect_log "xcrun simctl spawn $U1 notifyutil -p com.apple.BiometricKit.enrollmentChanged"
+expect_log "xcrun simctl spawn $U1 notifyutil -g com.apple.BiometricKit.enrollmentChanged"
+run "face-id match" face-id pi2-1 match
+expect_status 0
+expect_log "xcrun simctl spawn $U1 notifyutil -p com.apple.BiometricKit_Sim.pearl.match"
+run "face-id no-match" face-id pi2-1 no-match
+expect_status 0
+expect_log "xcrun simctl spawn $U1 notifyutil -p com.apple.BiometricKit_Sim.pearl.nomatch"
 
 # id, shutdown, delete.
 run "id" id pi2-1
