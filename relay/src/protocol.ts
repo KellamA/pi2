@@ -6,9 +6,10 @@
 // Nothing a client sends is ever written back to it or anywhere else: a message that is not one of these is refused
 // with a fixed word (`Why`), never with what was in it.
 
-import { MAX_SEALED, type PushKind, SEALED_SIZES } from "./apns.ts";
+import { type ActivityEvent, type ActivityState, isCount, isTime, MAX_SEALED, type PushKind, SEALED_SIZES } from "./apns.ts";
 import { fromBase64, fromBase64url } from "./bytes.ts";
 import { publicKeyBytes } from "./crypto.ts";
+import { MAILBOX } from "./mailbox.ts";
 
 /** The headers the Worker gives a pairing's object, made afresh: the object sees nothing else of the client's request. */
 export const ROUTE_HEADER = "Pi2-Route";
@@ -32,6 +33,11 @@ export const MAX_BINARY = 70 * 1024;
 /** A sealed item: at most 16 KB, and at least HPKE's encapsulated key (65 bytes, an uncompressed point) and a tag. */
 export const MAX_ITEM = 16 * 1024;
 const MIN_ITEM = 65 + 16;
+/**
+ * The most ids a `took` names: the most a take hands over, the Mac's 200 items (a phone's is 100 and its state). Some
+ * 5 KB as written, far below a text message's 48 KB.
+ */
+export const MAX_TOOK = MAILBOX.macItems;
 /** App Attest makes some 6 KB; the verifier takes no more than this. */
 const MAX_ATTESTATION = 32 * 1024;
 
@@ -68,7 +74,8 @@ export type Why =
 	| "no-token" // a push for a device that has given no push token
 	| "token-dead" // Apple said the device's push token is no longer good: the relay forgot it
 	| "push-limit" // past 6.6's pushes an hour for the device or the pairing, until the hour is over
-	| "push-later"; // Apple asked the relay to slow down, or could not be reached: nothing is sent there for a while
+	| "push-later" // Apple asked the relay to slow down, or could not be reached: nothing is sent there for a while
+	| "clock"; // a Live Activity push whose `at` is more than a day behind the relay's clock or five minutes ahead (apns.ts)
 
 /** A build, as the end's `CFBundleVersion` or the Mac's build number: up to three numbers with dots between. */
 export type Build = number[];
@@ -104,13 +111,40 @@ export type AddDevice = { type: "addDevice"; device: string; deviceKey: string; 
 export type RemoveDevice = { type: "removeDevice"; device: string };
 export type State = { type: "state"; device: string; id: string; item: Uint8Array<ArrayBuffer> };
 export type Put = { type: "put"; to: string; id: string; item: Uint8Array<ArrayBuffer>; presence: boolean };
+/** What a reader has kept of what its takes handed over: the ids of its items, and of its state for a phone. */
+export type Took = { type: "took"; ids: string[] };
 export type Token = { type: "token"; apns: string; environment: "development" | "production" };
 export type Leave = { type: "leave"; signature: string };
 /** The Mac's request for a push to one of its devices (apns.ts): `sealed` is the sealed bytes' base64url, as sent. */
 export type Push = { type: "push"; device: string; kind: PushKind; sealed: string; collapse: string | null };
+/**
+ * The Mac's request for a Live Activity push (apns.ts, "Live Activities"): to the activity `activity` of a device,
+ * whose token the phone gave; its numbers only, which cannot be sealed.
+ */
+export type ActivityPush = { type: "push"; device: string; kind: "activity"; activity: string; event: ActivityEvent; state: ActivityState };
+/** A phone's Live Activity push token, for the activity it started under that id; and its taking one back. */
+export type ActivityToken = { type: "activityToken"; activity: string; apns: string; environment: "development" | "production" };
+export type DropActivity = { type: "dropActivity"; activity: string };
 export type Bare = { type: "closeJoin" | "deletePairing" | "take" | "dropToken" };
 
-export type Message = Hello | Register | Proof | Join | OpenJoin | AddDevice | RemoveDevice | State | Put | Token | Leave | Push | Bare;
+export type Message =
+	| Hello
+	| Register
+	| Proof
+	| Join
+	| OpenJoin
+	| AddDevice
+	| RemoveDevice
+	| State
+	| Put
+	| Took
+	| Token
+	| Leave
+	| Push
+	| ActivityPush
+	| ActivityToken
+	| DropActivity
+	| Bare;
 
 type Body = Record<string, unknown>;
 
@@ -149,7 +183,16 @@ export function readMessage(text: string): Message | null {
 		case "dropToken":
 			return exactly(body, []) ? { type: name } : null;
 		case "push":
-			return push(body);
+			return body.kind === "activity" ? activityPush(body) : push(body);
+		case "activityToken":
+			return exactly(body, ["activity", "apns", "environment"]) &&
+				isItemId(body.activity) &&
+				isApnsToken(body.apns) &&
+				(body.environment === "development" || body.environment === "production")
+				? { type: "activityToken", activity: body.activity, apns: body.apns, environment: body.environment }
+				: null;
+		case "dropActivity":
+			return exactly(body, ["activity"]) && isItemId(body.activity) ? { type: "dropActivity", activity: body.activity } : null;
 		case "addDevice":
 			return exactly(body, ["device", "deviceKey", "attestKeyId"]) &&
 				isDeviceId(body.device) &&
@@ -166,6 +209,8 @@ export function readMessage(text: string): Message | null {
 		}
 		case "put":
 			return put(body);
+		case "took":
+			return took(body);
 		case "token":
 			return exactly(body, ["apns", "environment"]) &&
 				typeof body.apns === "string" &&
@@ -245,6 +290,18 @@ function put(body: Body): Put | null {
 }
 
 /**
+ * `took { ids }` (#806): ids rather than "everything through this one", so that what is deleted is exactly what the
+ * reader names, whatever came into the mailbox since, whatever order the relay keeps, and a phone's state with its own
+ * id beside its items. From one id to `MAX_TOOK`, each an item's id, none twice.
+ */
+function took(body: Body): Took | null {
+	if (!exactly(body, ["ids"]) || !Array.isArray(body.ids)) return null;
+	const ids: unknown[] = body.ids;
+	if (ids.length === 0 || ids.length > MAX_TOOK || !ids.every(isItemId) || new Set(ids).size !== ids.length) return null;
+	return { type: "took", ids: ids as string[] };
+}
+
+/**
  * A push (apns.ts): `sealed` is a sealed item as `put` takes one (HPKE's encapsulated key first), padded to one of
  * `SEALED_SIZES` (696, 1,464 or 3,000 bytes), so that the payload it goes into fits Apple's 4 KB and its size says no
  * more than its class; kept as the text it came in, which is the one way of writing those bytes. `collapse`, an alert's only, is 32 bytes (7: an HMAC of the item's id with a key of the
@@ -263,6 +320,31 @@ function push(body: Body): Push | null {
 	const sealed = fromBase64url(body.sealed);
 	if (sealed === null || !SEALED_SIZES.includes(sealed.length) || sealed[0] !== 0x04) return null;
 	return { type: "push", device: body.device, kind: body.kind, sealed: body.sealed, collapse };
+}
+
+/**
+ * A Live Activity push (apns.ts, "Live Activities"): the activity's id (16 bytes, as the phone gave it with its token),
+ * `update` or `end`, and the four numbers, each held to its shape, exactly these members and nothing more.
+ */
+function activityPush(body: Body): ActivityPush | null {
+	if (!exactly(body, ["device", "kind", "activity", "event", "state"]) || !isDeviceId(body.device) || !isItemId(body.activity)) return null;
+	if (body.event !== "update" && body.event !== "end") return null;
+	const state = body.state;
+	if (!isObject(state) || !exactly(state, ["working", "needs", "finished", "at"])) return null;
+	if (!isCount(state.working) || !isCount(state.needs) || !isCount(state.finished) || !isTime(state.at)) return null;
+	return {
+		type: "push",
+		device: body.device,
+		kind: "activity",
+		activity: body.activity,
+		event: body.event,
+		state: { working: state.working, needs: state.needs, finished: state.finished, at: state.at },
+	};
+}
+
+/** A push token, as hexadecimal text: a device's (32 bytes) or a Live Activity's (longer); Apple's own size may change. */
+function isApnsToken(value: unknown): value is string {
+	return typeof value === "string" && /^(?:[0-9a-f]{2}){32,100}$/.test(value);
 }
 
 function readItem(text: unknown): Uint8Array<ArrayBuffer> | null {

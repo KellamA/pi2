@@ -108,6 +108,11 @@ final class EngineClient: EngineSessionHost {
     let browser = BrowserSession()
     /// Projects, carrying over's state and what the sidebar shows of each (Projects.swift).
     let projectStore = ProjectsStore()
+    #if PI2_DEVELOPMENT
+    /// Paired devices and remote access, for Settings › Devices, the menu bar item and the sidebar (DevicesSettings.swift):
+    /// development builds alone until a real phone is paired (#712).
+    let devices = DevicesStore()
+    #endif
 
     let home: URL
     private var lastLaunch = Date.distantPast
@@ -215,6 +220,11 @@ final class EngineClient: EngineSessionHost {
         Task { await self.reconcileEngine(on: connection) }
         Task { await self.noteEngineFromAnotherCheckout() }
         Task { await self.noteIfAnswersRefused(on: connection) }
+        #if PI2_DEVELOPMENT
+        // The `devices` event comes only to a connection that asks for it, and only from the app's (docs/iphone.md 3.3).
+        // A release build never asks (#712).
+        Task { await self.devices.watch(self) }
+        #endif
     }
 
     /// The session let the connection go: make sure an engine is running, and try again shortly.
@@ -237,6 +247,10 @@ final class EngineClient: EngineSessionHost {
             computer.handle(try decoder.decode(ComputerEvent.self, from: line), engine: self)
         case "browser":
             browser.handle(try decoder.decode(BrowserEvent.self, from: line), engine: self)
+        #if PI2_DEVELOPMENT
+        case "devices":
+            devices.take(line: line, decoder: decoder, engine: self)
+        #endif
         default:
             break
         }

@@ -494,6 +494,47 @@ Task { @MainActor in
         check("and a real click where no listed control holds the point, never the outside hit",
               AtPoint.target(at: CGPoint(x: 0, y: 0), hit: "another app's button", listed: listed, parked: true) { _ in false } == nil)
 
+        // What counts as in the window read (#879). Off the screen a hit test finds none of the copy's windows and can
+        // answer with the application element, which has no window; that once counted as in, so a parked copy's click
+        // at a point went as a real click, which it ignored. Stand-ins: each element's enclosing window, as read.
+        let enclosing: [String: String] = ["Send": "main", "button": "main", "row": "main", "overlay": "main", "main": "main",
+                                           "Settings' tab": "Settings", "Cancel": "sheet", "sheet": "sheet"]
+        func parkedTarget(hit: String?, window: String?, ofCopy: Bool = true, at spot: CGPoint = point,
+                          listed controls: [(element: String, frame: CGRect)]? = nil) -> String? {
+            AtPoint.target(at: spot, hit: hit, listed: controls ?? listed, parked: true) { hit in
+                AtPoint.inWindow(hit, ofCopy: ofCopy, enclosing: enclosing[hit], window: window)
+            }
+        }
+        check("the application element as the hit is not in the window: the listed control at the point is taken",
+              parkedTarget(hit: "application", window: "main") == "button")
+        check("nor is an element with no enclosing window", parkedTarget(hit: "detached text", window: "main") == "button")
+        check("nor the window itself, which names nothing in it", parkedTarget(hit: "main", window: "main") == "button")
+        check("nor an element of another of the copy's windows", parkedTarget(hit: "Settings' tab", window: "main") == "button")
+        check("nor one of another process, even in a window of that name",
+              parkedTarget(hit: "overlay", window: "main", ofCopy: false) == "button")
+        check("a hit in the window read is acted on as it is, an overlay too",
+              parkedTarget(hit: "Send", window: "main") == "Send" && parkedTarget(hit: "overlay", window: "main") == "overlay"
+                  && parkedTarget(hit: "row", window: "main") == "row")
+        check("with no window read nothing is in it, and the listed control is taken",
+              parkedTarget(hit: "overlay", window: nil) == "button")
+        check("the application element where no listed control holds the point is a real click, naming nothing",
+              parkedTarget(hit: "application", window: "main", at: CGPoint(x: 0, y: 0)) == nil)
+        // A sheet parked off the screen is read as the window, with only its own controls listed (#798).
+        let cancel = CGRect(x: 1740, y: 1130, width: 70, height: 24)
+        let sheetListed = [(element: "Cancel", frame: cancel), (element: "Get", frame: cancel.offsetBy(dx: 90, dy: 0))]
+        check("in a sheet parked off the screen, the application element as the hit gives the sheet's listed Cancel",
+              parkedTarget(hit: "application", window: "sheet", at: CGPoint(x: 1770, y: 1140), listed: sheetListed) == "Cancel")
+        check("and the sheet's own Cancel, where a hit test finds it, is acted on as it is",
+              parkedTarget(hit: "Cancel", window: "sheet", at: CGPoint(x: 1770, y: 1140), listed: sheetListed) == "Cancel"
+                  && AtPoint.inWindow("Cancel", ofCopy: true, enclosing: "sheet", window: "sheet"))
+        check("the sheet itself, or the window under it, is not in the sheet",
+              !AtPoint.inWindow("sheet", ofCopy: true, enclosing: "sheet", window: "sheet")
+                  && !AtPoint.inWindow("button", ofCopy: true, enclosing: "main", window: "sheet"))
+        asked = 0
+        _ = AtPoint.target(at: point, hit: "application", listed: listed, parked: false) { _ in asked += 1; return false }
+        check("outside a parked copy the application element is still the hit, and nothing more is asked of it",
+              AtPoint.target(at: point, hit: "application", listed: listed, parked: false) { _ in false } == "application" && asked == 0)
+
         // The card and the action choose once: the card's choice is acted on, or refused once it no longer holds.
         var kept = AtPoint.Kept<String>()
         let here: (String) -> CGRect? = { $0 == "button" ? button : $0 == "row" ? row : nil }
