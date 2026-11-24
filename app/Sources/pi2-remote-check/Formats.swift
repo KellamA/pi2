@@ -11,6 +11,7 @@ enum Formats {
 		payload()
 		lines()
 		refusedLine()
+		pairRefusedLine()
 		homeKeyLines()
 		directions()
 		homeTag()
@@ -270,6 +271,48 @@ enum Formats {
 		Check.that((try? ControlLine.parse(Data(#"{"refused":{"reason":"\#(longest)"}}"#.utf8))) != nil, "a reason of 32 letters is read")
 	}
 
+	/// The pairRefused line (#881): a word from a fixed list, a word of the same form this build does not know read as no
+	/// word, and nothing else.
+	static func pairRefusedLine() {
+		Check.section("The pairRefused line")
+		Check.that(PairRefusal.Why.allCases.map(\.rawValue) == ["unsaved", "cancelled"], "the words are exactly the two listed")
+		for why in PairRefusal.Why.allCases {
+			let written = ControlLine.pairRefused(PairRefusal(why)).line
+			Check.that(written == Data(#"{"pairRefused":{"why":"\#(why.rawValue)"}}"#.utf8), "pairRefused \(why.rawValue) is written as remotekit.md says")
+			guard case let .pairRefused(read)? = try? ControlLine.parse(written, from: .mac) else {
+				Check.that(false, "pairRefused \(why.rawValue) reads")
+				continue
+			}
+			Check.that(read.why == why && read == PairRefusal(why), "pairRefused \(why.rawValue) reads back as itself")
+			Check.refuses("pairRefused \(why.rawValue) from a phone") { _ = try ControlLine.parse(written, from: .phone) }
+		}
+		let unknown = Data(#"{"pairRefused":{"why":"moonphase"}}"#.utf8)
+		if case let .pairRefused(read)? = try? ControlLine.parse(unknown) {
+			Check.that(read.why == nil, "a word this build does not know is no word")
+			Check.that(ControlLine.pairRefused(read).line == unknown, "and is written back as it came")
+		} else {
+			Check.that(false, "a word this build does not know is read, not refused")
+		}
+		for (text, why) in [
+			(#"{"pairRefused":{}}"#, "no word"),
+			(#"{"pairRefused":{"why":"unsaved","text":"The Mac could not save the pairing."}}"#, "a field beside the word"),
+			(#"{"pairRefused":{"why":"unsaved","why":"cancelled"}}"#, "the word twice"),
+			(#"{"pairRefused":{"why":""}}"#, "an empty word"),
+			(#"{"pairRefused":{"why":"Unsaved"}}"#, "a word with a capital"),
+			(#"{"pairRefused":{"why":"not-saved"}}"#, "a word with a hyphen"),
+			(#"{"pairRefused":{"why":"The Mac could not save the pairing. Start again."}}"#, "the engine's words"),
+			(#"{"pairRefused":{"why":"abcdefghijklmnopqrstuvwxyzabcdefg"}}"#, "a word of 33 letters"),
+			(#"{"pairRefused":{"why":1}}"#, "a word that is a number"),
+			(#"{"pairRefused":{"why":null}}"#, "a word that is null"),
+			(#"{"pairRefused":"unsaved"}"#, "a word that is not in an object"),
+			(#"{"pairRefused":{"why":"unsaved"},"x":1}"#, "a second member"),
+			(#"{"pairRefused":{"reason":"unsaved"}}"#, "the refused line's member in place of why"),
+			(#"{"pairRefused":{"why":"уnsaved"}}"#, "a word with a Cyrillic letter"),
+		] {
+			Check.refuses("a pairRefused line with \(why)") { _ = try ControlLine.parse(Data(text.utf8)) }
+		}
+	}
+
 	/// The home key in `paired` and in the `homeKey` line (#845): exactly 32 bytes of base64url, never missing, and
 	/// nothing beside it.
 	static func homeKeyLines() {
@@ -345,6 +388,7 @@ enum Formats {
 				(.attached(Attached(session: SessionID("s1")!, resume: false)), .mac, "attached"),
 				(.revoked(try Revocation.make(pairing: pairing, device: device, identity: identity)), .mac, "revoked"),
 				(.refused(Refusal(.update)), .mac, "refused"),
+				(.pairRefused(PairRefusal(.unsaved)), .mac, "pairRefused"),
 				(.homeKey(HomeKey.random()), .mac, "homeKey"),
 				(.pair(try PairClaim.make(device: description, attestation: nil, keyId: nil, pairing: pairing, binding: binding, deviceKey: deviceKey)), .phone, "pair"),
 				(.attach(try AttachClaim.make(

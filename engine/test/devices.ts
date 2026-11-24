@@ -528,7 +528,7 @@ class Phone {
 	};
 	await assert.rejects(deviceRequests["devices.pairConfirm"]!({ digits }, client), /The disk is full/);
 	(harness as unknown as { commit: typeof commit }).commit = commit;
-	assert.deepEqual(told.filter((event) => event.kind === "pairRefused" || event.kind === "paired"), [{ kind: "pairRefused", claim, why: "The Mac could not save the pairing. Start again." }], "the phone is refused, and told nothing else");
+	assert.deepEqual(told.filter((event) => event.kind === "pairRefused" || event.kind === "paired"), [{ kind: "pairRefused", claim, why: "The Mac could not save the pairing. Start again.", reason: "unsaved" }], "the phone is refused, with the word it is told, and told nothing else");
 	assert.equal(devicesState().devices.length, 0, "and nothing was paired");
 
 	// A first pairing whose save is slow (#776's point 21, #881): the window closes before the device is stored, and with
@@ -808,7 +808,9 @@ try {
 	const refusedBefore = remote.events.length;
 	const second = await remote.call("remote.pairClaim", { claim: new Phone("Stranger").claim(remote.pairing, randomBytes(32), randomBytes(32)), binding: b64url(randomBytes(32)), challenge: b64url(randomBytes(32)), path: "relay" });
 	assert.equal(second.error, SECOND_CLAIM, "a second claim is refused");
-	assert.equal((await remote.event("pairRefused", refusedBefore)).claim, first.reply.result.claim, "and so is the first");
+	const firstRefused = await remote.event("pairRefused", refusedBefore);
+	assert.equal(firstRefused.claim, first.reply.result.claim, "and so is the first");
+	assert.equal(firstRefused.reason, undefined, "with no word for the phone");
 	await app.until("the window closed for the second claim", () => app.devicesEvents.at(-1)?.closed?.why === SECOND_CLAIM && app.devicesEvents.at(-1).pairingWindow === null);
 	await assert.rejects(app.call("devices.pairConfirm", { digits: digitsOf(first.channel) }), /No phone is waiting/);
 	const refusals: [string, Record<string, unknown>, (line: any) => void, RegExp][] = [
@@ -843,6 +845,12 @@ try {
 	await unkeptOpen;
 	assert.deepEqual((await remote.call("remote.pairRefused", { why: "not-kept" })).result, {});
 	await app.until("the window closed for a pairing pi² Remote could not keep", () => app.devicesEvents.at(-1)?.closed?.why === "pi² Remote could not keep the pairing on this Mac. Start again.");
+	// A claim waiting while the person cancels on the Mac: its phone is told so, in a word (#881).
+	const cancelled = await claimIn(new Phone("Jo's iPhone"));
+	const cancelledBefore = remote.events.length;
+	await app.call("devices.pairCancel");
+	const cancelledEvent = await remote.event("pairRefused", cancelledBefore);
+	assert.deepEqual([cancelledEvent.claim, cancelledEvent.reason], [cancelled.reply.result.claim, "cancelled"]);
 	const third = await claimIn(new Phone("Kim's iPhone"));
 	assert.ok(third.reply.result.claim);
 	for (let i = 0; i < 3; i++) await assert.rejects(app.call("devices.pairConfirm", { digits: wrong }));

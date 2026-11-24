@@ -63,10 +63,11 @@ struct PairingShots {
         let failures: [(String, PairingFailure)] = [
             ("not-a-code", .notACode), ("expired", .expired), ("unreachable", .unreachable), ("relay-token", .relayRefused("token")),
             ("relay-attestation", .relayRefused("attestation")), ("no-app-attest", .noAppAttest), ("mac-not-proved", .macNotProved),
-            ("mac-did-not-pair", .macDidNotPair), ("attestation", .attestation), ("keys", .keys),
+            ("mac-did-not-pair", .macDidNotPair), ("mac-could-not-save", .macCouldNotSave), ("cancelled-on-mac", .cancelledOnMac),
+            ("attestation", .attestation), ("keys", .keys),
         ]
         for (name, failure) in failures {
-            try await Self.shoot("failed-\(name)", name == "mac-did-not-pair" ? Look.allCases : [.light]) {
+            try await Self.shoot("failed-\(name)", ["mac-did-not-pair", "mac-could-not-save"].contains(name) ? Look.allCases : [.light]) {
                 NavigationStack { PairingFailedScreen(failure: failure, again: {}) }
             }
         }

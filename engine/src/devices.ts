@@ -875,6 +875,13 @@ let lastPaired: { device: string; path: "relay" | "home" } | null = null;
 export const SECOND_CLAIM = "Another device tried to use this code. Start again, and don't show the code on a shared or recorded screen.";
 const NO_WINDOW = "No pairing is open on this Mac.";
 
+/**
+ * Why a claim was refused, in a word the phone is told (`pairRefused` on the pairing channel, docs/remotekit.md, #881):
+ * `unsaved`, the Mac could not save the pairing; `cancelled`, the person closed the pairing on the Mac. pi² Remote
+ * passes the word on and never the engine's words; any other refusal carries none, and the phone is told nothing.
+ */
+export type PairRefusalWord = "unsaved" | "cancelled";
+
 /** Closes the join window, for `why`, refusing a claim that waits; the secret is gone with it. */
 function closeWindow(why: string | null): void {
 	const open = window;
@@ -882,7 +889,8 @@ function closeWindow(why: string | null): void {
 	window = null;
 	clearTimeout(open.timer);
 	open.secret.fill(0);
-	if (open.claim !== null) remoteHooks.toHelper({ kind: "pairRefused", claim: open.claim.id, why: why ?? "The pairing was closed on the Mac." });
+	// No `why`: the person closed it on the Mac (Cancel, a new code, remote access turned off).
+	if (open.claim !== null) remoteHooks.toHelper({ kind: "pairRefused", claim: open.claim.id, why: why ?? "The pairing was closed on the Mac.", ...(why === null ? { reason: "cancelled" satisfies PairRefusalWord } : {}) });
 	remoteHooks.toHelper({ kind: "closeJoin" });
 	closed = why === null ? null : { why, at: Date.now() };
 	if (why !== null) log("devices: the pairing window closed:", why);
@@ -1199,7 +1207,7 @@ async function pairConfirm(params: Params): Promise<{ device: string }> {
 		});
 	} catch (error) {
 		// Nothing was stored: the phone waiting on its pairing channel is told so, rather than left without an answer.
-		remoteHooks.toHelper({ kind: "pairRefused", claim: claim.id, why: "The Mac could not save the pairing. Start again." });
+		remoteHooks.toHelper({ kind: "pairRefused", claim: claim.id, why: NOT_KEPT, reason: "unsaved" satisfies PairRefusalWord });
 		throw error;
 	} finally {
 		saving -= 1;

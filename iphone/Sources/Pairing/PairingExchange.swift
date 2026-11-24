@@ -35,6 +35,10 @@ struct PairingExchange: Sendable {
         /// The Mac closed the channel without pairing: the digits typed did not match, another device tried the code,
         /// the window closed, or the Mac refused the claim.
         case macDidNotPair
+        /// The Mac said it could not save the pairing (`pairRefused` `unsaved`, remotekit.md).
+        case macCouldNotSave
+        /// The Mac said the person cancelled the pairing there (`pairRefused` `cancelled`).
+        case cancelledOnMac
         /// App Attest did not attest the key.
         case attestation
         /// The phone could not make or keep its keys, or its record.
@@ -172,7 +176,16 @@ struct PairingExchange: Sendable {
         // The person types the digits on the Mac, within the window's five minutes.
         let window = max(Double(payload.expires) - now().timeIntervalSince1970, 0) + 30
         guard let answer = try? await channel.nextLine(within: .seconds(window)) else { throw Failure.macDidNotPair }
-        guard case let .paired(paired)? = try? ControlLine.parse(answer, from: .mac), paired.pairing == payload.pairing else { throw Failure.macDidNotPair }
+        let line = try? ControlLine.parse(answer, from: .mac)
+        // The Mac's word for why it did not pair, from its fixed list (#881); a word this build does not know is no word.
+        if case let .pairRefused(refusal)? = line {
+            switch refusal.why {
+            case .unsaved?: throw Failure.macCouldNotSave
+            case .cancelled?: throw Failure.cancelledOnMac
+            case nil: throw Failure.macDidNotPair
+            }
+        }
+        guard case let .paired(paired)? = line, paired.pairing == payload.pairing else { throw Failure.macDidNotPair }
         handedBack = true
         channel.close()
         return PairingRecord(payload: payload, paired: paired, at: now())

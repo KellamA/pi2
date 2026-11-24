@@ -84,6 +84,27 @@ struct PairingTests {
         #expect(mac.state.withLock { $0.paired.isEmpty })
     }
 
+    /// The Mac's word for why it did not pair (#881): shown in place of a silent end, and nothing kept.
+    @Test func theMacSaysWhyItDidNotPair() async throws {
+        for (why, failure) in [(PairRefusal.Why.unsaved, PairingExchange.Failure.macCouldNotSave), (.cancelled, .cancelledOnMac)] {
+            let mac = TestMac(rules: TestMac.Rules(refusePairing: why))
+            defer { mac.stop() }
+            let keys = MemoryKeyStore(), store = MemoryPairingStore()
+            await #expect(throws: failure) {
+                _ = try await Self.pair(mac, keys: keys, store: store)
+            }
+            #expect(try store.load() == nil, "nothing kept after \(why.rawValue)")
+            #expect(try keys.keys() == nil, "the keys made for it are deleted after \(why.rawValue)")
+        }
+        #expect(PairingFailure(.macCouldNotSave).words == "The Mac could not save the pairing. Start again.")
+        // A word this build does not know, from a newer Mac: a plain end.
+        let newer = TestMac(rules: TestMac.Rules(refusePairingLine: Data(#"{"pairRefused":{"why":"later"}}"#.utf8)))
+        defer { newer.stop() }
+        await #expect(throws: PairingExchange.Failure.macDidNotPair) {
+            _ = try await Self.pair(newer, keys: MemoryKeyStore(), store: MemoryPairingStore())
+        }
+    }
+
     @Test func aMacThatCannotProveItselfGetsNothing() async throws {
         let mac = TestMac(rules: TestMac.Rules(proofKey: P256.Signing.PrivateKey()))
         defer { mac.stop() }
@@ -216,7 +237,8 @@ struct PairingTests {
     @Test func everyFailureHasWordsOfItsOwn() {
         let failures: [PairingFailure] = [
             .notACode, .expired, .unreachable, .relayRefused("token"), .relayRefused("attestation"), .relayRefused("update-required"),
-            .relayRefused("busy"), .relayRefused("something-new"), .noAppAttest, .macNotProved, .macDidNotPair, .attestation, .keys,
+            .relayRefused("busy"), .relayRefused("something-new"), .noAppAttest, .macNotProved, .macDidNotPair, .macCouldNotSave, .cancelledOnMac,
+            .attestation, .keys,
         ]
         let words = failures.map(\.words)
         #expect(Set(words).count == words.count)

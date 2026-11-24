@@ -29,6 +29,9 @@ final class TestMac: @unchecked Sendable {
         var proofKey: P256.Signing.PrivateKey?
         /// Refuses every attach with this reason.
         var refuse: Refusal.Reason?
+        /// Answers a claim, once the digits are typed, with `pairRefused` and this word (or the line as given) in place of `paired`.
+        var refusePairing: PairRefusal.Why?
+        var refusePairingLine: Data?
         /// Its clock, ahead of the phone's by this much.
         var clockAhead: TimeInterval = 0
         /// Answers an attach with its signed `revoked` line, signed by this key (its own identity key if nil).
@@ -246,6 +249,13 @@ final class TestMac: @unchecked Sendable {
         guard let shown = try await typed.next(within: .seconds(60)), PairingSecrets.digitsMatch(rules.type(shown), expected) else {
             return channel.close()
         }
+        if let why = rules.refusePairing {
+            return try channel.refusePairing(why)
+        }
+        if let line = rules.refusePairingLine {
+            try channel.send(line: line)
+            return channel.close()
+        }
         let device = DeviceID.random()
         if let relayClient, let link = link as? MacRelayLink {
             // The key and the App Attest key id from the claim the engine verified, never from the relay's notice.
@@ -439,6 +449,14 @@ final class MacChannel: Sendable {
         try order.withLock { _ in
             for message in try channel.seal(line: line) { outgoing.push(message) }
         }
+    }
+
+    /// The `pairRefused` line and `bye`, then the link closes.
+    func refusePairing(_ why: PairRefusal.Why) throws {
+        try order.withLock { _ in
+            for message in try channel.sealPairRefusal(PairRefusal(why)) { outgoing.push(message) }
+        }
+        outgoing.finish()
     }
 
     /// The `refused` line and `bye`, then the link closes.
