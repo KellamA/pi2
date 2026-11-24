@@ -59,6 +59,15 @@ struct AppStartTests {
         let session: AppSession
         let link: PhoneLink
         let record: PairingRecord
+
+        /// Ends the session and stops the connection, then the test Mac: a connection left running keeps reaching for
+        /// the stopped Mac, opening sockets while the tests after this one run (DemoTests counts the process's).
+        @MainActor
+        func stop() {
+            keyring.session.end(.lockButton)
+            link.connection?.stop()
+            mac.stop()
+        }
     }
 
     /// A phone paired with the test Mac through the link's own pairing flow, its session not opened yet.
@@ -84,7 +93,7 @@ struct AppStartTests {
 
     @Test func aSessionOpensTheStoreThenConnectsThenSendsTheOutboxFirst() async throws {
         let phone = try await Self.pairedPhone()
-        defer { phone.mac.stop() }
+        defer { phone.stop() }
         // Something written while the Mac was out of reach, waiting in the Outbox from an earlier session.
         await phone.keyring.session.open()
         phone.store.open(key: try #require(try phone.keyring.session.cacheKey()))
@@ -111,7 +120,7 @@ struct AppStartTests {
 
     @Test func theSessionsEndForgetsTheCacheKeyAndSaysSoToTheMac() async throws {
         let phone = try await Self.pairedPhone()
-        defer { phone.mac.stop() }
+        defer { phone.stop() }
         phone.link.didPair(phone.record)
         #expect(await Wait.until { phone.session.engine.projects.count == 2 })
         #expect(phone.store.isOpen)
@@ -152,7 +161,7 @@ struct AppStartTests {
 
     @Test func faceIDRightAfterTheEndStartsTheConnectionAgain() async throws {
         let phone = try await Self.livePhone()
-        defer { phone.mac.stop() }
+        defer { phone.stop() }
         let before = phone.link.steps.count
 
         phone.keyring.session.end(.lockButton)
@@ -171,7 +180,7 @@ struct AppStartTests {
 
     @Test func aLockWhileReachingTheMacThenFaceIDStartsItAgain() async throws {
         let phone = try await Self.pairedPhone()
-        defer { phone.mac.stop() }
+        defer { phone.stop() }
         let before = phone.link.steps.count
         phone.link.startPaired(phone.record)
         await phone.keyring.session.open()
@@ -193,7 +202,7 @@ struct AppStartTests {
 
     @Test func unlockLockUnlockStartsTheConnectionOnce() async throws {
         let phone = try await Self.livePhone()
-        defer { phone.mac.stop() }
+        defer { phone.stop() }
         let before = phone.link.steps.count
 
         phone.keyring.session.end(.lockButton)
@@ -210,7 +219,7 @@ struct AppStartTests {
 
     @Test func unlockThenLockLeavesTheConnectionStopped() async throws {
         let phone = try await Self.livePhone()
-        defer { phone.mac.stop() }
+        defer { phone.stop() }
         let before = phone.link.steps.count
 
         phone.keyring.session.end(.lockButton)
@@ -231,7 +240,7 @@ struct AppStartTests {
 
     @Test func aWipeAfterTheEndLeavesNothingStarted() async throws {
         let phone = try await Self.livePhone()
-        defer { phone.mac.stop() }
+        defer { phone.stop() }
         let before = phone.link.steps.count
 
         phone.keyring.session.end(.lockButton)
@@ -249,7 +258,7 @@ struct AppStartTests {
 
     @Test func theMacsRevocationWipesTheStoreAndTheKeysAndShowsWhatWasNotSent() async throws {
         let phone = try await Self.pairedPhone()
-        defer { phone.mac.stop() }
+        defer { phone.stop() }
         phone.link.didPair(phone.record)
         #expect(await Wait.until { phone.link.steps.contains(.outboxSent) && phone.session.engine.projects.count == 2 })
         let item = try phone.link.outbox.add("submit", ["id": 9, "text": "Not yet sent"])
