@@ -55,6 +55,12 @@ enum Formats {
 		Check.equal(RelayOutgoing.closeJoin.text, #"{"closeJoin":{}}"#, "closeJoin")
 		Check.equal(RelayOutgoing.deletePairing.text, #"{"deletePairing":{}}"#, "deletePairing")
 		Check.equal(RelayOutgoing.take.text, #"{"take":{}}"#, "take")
+		Check.equal(
+			RelayOutgoing.took(ids: [item, ItemID("AAECAwQFBgcICQoLDA0ODw")!]).text, #"{"took":{"ids":["ICEiIyQlJicoKSorLC0uLw","AAECAwQFBgcICQoLDA0ODw"]}}"#, "took")
+		Check.that((try? RelayOutgoing.took(ids: (0..<RelayLimits.maxTook).map { _ in ItemID.random() }).validate()) != nil, "a took of 200 ids, the most a take brings")
+		Check.refuses("a took of no ids") { try RelayOutgoing.took(ids: []).validate() }
+		Check.refuses("a took of 201 ids") { try RelayOutgoing.took(ids: (0...RelayLimits.maxTook).map { _ in ItemID.random() }).validate() }
+		Check.refuses("a took naming an id twice") { try RelayOutgoing.took(ids: [item, item]).validate() }
 		Check.equal(RelayOutgoing.ping.text, #"{"ping":{}}"#, "ping, as the relay answers without waking its object")
 		Check.equal(
 			RelayOutgoing.addDevice(device, deviceKey: key.publicKey, attestKeyId: keyID).text,
@@ -97,6 +103,8 @@ enum Formats {
 			try? RelayIncoming.parse(#"{"joined":{"device":"dev_EBESExQVFhcYGRobHB0eHw","deviceKey":"\#(keyText)","keyId":"\#(keyID.text)"}}"#, for: .mac),
 			.phoneJoined(RelayJoinNotice(slot: device, deviceKey: key.publicKey, keyId: keyID)), "joined, to the Mac")
 		Check.equal(try? RelayIncoming.parse(#"{"ok":{"what":"openJoin"}}"#, for: .mac), .ok(.openJoin), "ok")
+		Check.equal(try? RelayIncoming.parse(#"{"ok":{"what":"took"}}"#, for: .mac), .ok(.took), "ok for a took, to the Mac")
+		Check.equal(try? RelayIncoming.parse(#"{"ok":{"what":"took"}}"#, for: .device), .ok(.took), "ok for a took, to a phone")
 		Check.equal(try? RelayIncoming.parse(#"{"refused":{"what":"put","why":"mailbox-full"}}"#, for: .device), .requestRefused(.put, .mailboxFull), "a request refused")
 		Check.equal(try? RelayIncoming.parse(#"{"refused":{"why":"not-listed"}}"#, for: .device), .refused(.notListed), "a refusal")
 		Check.equal((try? RelayIncoming.parse(#"{"refused":{"why":"some-new-word"}}"#, for: .mac)).map { "\($0)" }, "refused(some-new-word)", "a refusal with a word this client does not know")
