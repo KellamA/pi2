@@ -564,16 +564,18 @@ public actor ComputerController {
 
     /// What a click or a context menu at `point` in the window last read acts on, as `AtPoint.target` decides it, with
     /// what the hit test there found. Outside a parked copy that is the hit test's own find, as it always was. In a
-    /// parked copy a hit test finds nothing where the window is off the screen or behind another window, as all of it
-    /// is but its corner, so there the innermost listed control at the point is taken instead (#748).
+    /// parked copy a hit test finds nothing in the window where it is off the screen or behind another window, as all
+    /// of it is but its corner (it can answer with the application element, #879), so there the innermost listed control
+    /// at the point is taken instead (#748).
     private static func target(at point: CGPoint, in view: View) -> (element: AXUIElement?, hit: AXUIElement?) {
         let hit = AX.hitTest(view.app, point)
         let listed = view.parked ? view.controls.map { (element: $0.element, frame: $0.statusItem ? CGRect.null : $0.frame) } : []
         let element = AtPoint.target(at: point, hit: hit, listed: listed, parked: view.parked) { hit in
-            // In the window read: the copy's own element, and not one of another of its windows.
+            // In the window read: the copy's own element, inside that window, not another of its windows, nor the
+            // application element a hit test answers with off the screen (#879).
             var owner: pid_t = 0
             guard AXUIElementGetPid(hit, &owner) == .success, owner == view.pid else { return false }
-            return Self.enclosingWindow(of: hit).map { $0 == view.window } ?? true
+            return AtPoint.inWindow(hit, ofCopy: true, enclosing: Self.enclosingWindow(of: hit), window: view.window)
         }
         return (element, hit)
     }
