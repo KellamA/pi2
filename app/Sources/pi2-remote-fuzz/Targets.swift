@@ -29,6 +29,7 @@ enum Targets {
 			requestItem(world),
 			macItem(world),
 			relayMessages(world),
+			relayLeave(world),
 		]
 	}
 
@@ -337,10 +338,12 @@ enum Targets {
 		let item = Base64URL.encode(Data(repeating: 1, count: 16))
 		let key = PublicKeys.text(world.deviceKey.publicKey)
 		let keyID = Data(repeating: 2, count: 32).base64EncodedString()
+		let left = #"{"device":"\#(device)","at":1800000000000,"notice":"\#(Base64URL.encode(Data(repeating: 4, count: 64)))"}"#
 		let texts: [(UInt8, String)] = [
 			(0, #"{"challenge":"\#(Base64URL.encode(Data(repeating: 3, count: 32)))"}"#),
 			(0, #"{"registered":{"pairing":"\#(world.pairing.text)"}}"#),
-			(1, #"{"ready":{"devices":[{"device":"\#(device)","online":true}],"left":["\#(device)"],"pending":false,"mail":2}}"#),
+			(1, #"{"ready":{"devices":[{"device":"\#(device)","online":true}],"left":[\#(left)],"pending":false,"mail":2}}"#),
+			(1, #"{"left":\#(left)}"#),
 			(2, #"{"ready":{"mac":true,"mail":0}}"#),
 			(3, #"{"joined":{"device":"\#(device)"}}"#),
 			(1, #"{"joined":{"device":"\#(device)","deviceKey":"\#(key)","keyId":"\#(keyID)"}}"#),
@@ -370,6 +373,25 @@ enum Targets {
 				Fuzz.violation("relay-messages", "read one text two ways", input)
 			}
 			return true
+		}
+	}
+
+	/// The Mac's check of a phone's leave notice (#813): the input is a device's 16 bytes, a time's 8 and a notice's 64,
+	/// as the relay could pass them on; only the very notice the device key signed, for that device and time, is taken.
+	static func relayLeave(_ world: World) -> Target {
+		let at: Int64 = 1_800_000_000_000
+		let text = try! RelayLeaveNotice.text(pairing: world.pairing, device: world.device, identityKey: world.identity.publicKey, at: at)
+		let notice = try! world.deviceKey.sign(text)
+		let deviceBytes = Base64URL.decode(String(world.device.text.dropFirst(4)), count: 16)!
+		let seed = Array(deviceBytes) + withUnsafeBytes(of: at.bigEndian) { Array($0) } + Array(notice)
+		return Target(name: "relay-leave", seeds: [seed], maxLength: 88) { input in
+			guard input.count == 88 else { return false }
+			let device = DeviceID("dev_" + Base64URL.encode(Data(input[0..<16])))!
+			let time = input[16..<24].reduce(Int64(0)) { $0 << 8 | Int64($1) }
+			let left = RelayLeft(device: device, at: time, notice: Data(input[24...]))
+			let taken = left.verified(pairing: world.pairing, identityKey: world.identity.publicKey, deviceKey: world.deviceKey.publicKey, now: at) != nil
+			if taken, input != seed { Fuzz.violation("relay-leave", "took a leave the device key did not sign", input) }
+			return taken
 		}
 	}
 

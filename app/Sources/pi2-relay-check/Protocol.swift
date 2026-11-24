@@ -179,8 +179,18 @@ enum ProtocolTest {
 		Check.that(!macEvents.all.contains { if case .disconnected = $0 { true } else { false } }, "the Mac, pinging every second, was answered and never dropped")
 
 		// Leaving, and what is left after.
-		try await phoneClient.leave()
-		_ = try await macEvents.next("left") { $0 == .left(device) ? true : nil }
+		// The phone's notice reaches the Mac as it signed it, and the Mac takes it only with its own identity key (#813).
+		let identity = P256.Signing.PrivateKey().publicKey
+		try await phoneClient.leave(mac: identity)
+		let left = try await macEvents.next("left") { (event: RelayEvent) -> RelayLeft? in if case let .left(left) = event { left } else { nil } }
+		Check.equal(left.device, device, "the Mac is told the phone left")
+		let leftSeen = SystemRelayClock().now()
+		Check.equal(
+			left.verified(pairing: pairing, identityKey: identity, deviceKey: deviceKey.publicKey, now: leftSeen)?.device, device,
+			"and the phone's notice, passed on by the relay, verifies against the device key the Mac holds")
+		Check.that(
+			left.verified(pairing: pairing, identityKey: relayKey.publicKey, deviceKey: deviceKey.publicKey, now: leftSeen) == nil,
+			"and for no other Mac's key")
 		Check.equal(try await phoneEvents.next("stopped") { (event: RelayEvent) -> RelayStop? in if case let .stopped(why) = event { why } else { nil } }, RelayStop.refused(.left), "a phone that left stops")
 		try await macClient.removeDevice(device)
 		let gone = try RelayClient(relay: url, role: .device(pairing, device), build: phone, signer: RelaySigner(deviceKey), connector: connector, options: options())
