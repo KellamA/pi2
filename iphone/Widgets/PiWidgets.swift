@@ -12,6 +12,7 @@ struct PiWidgets: WidgetBundle {
         NeedsWidget()
         WorkingWidget()
         SpendingWidget()
+        ProjectActivityWidget()
     }
 }
 

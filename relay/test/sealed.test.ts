@@ -319,9 +319,16 @@ async function sealedSession(recorder: Recorder): Promise<SealedSessionState> {
 		mac.send({ state: { device, id: base64url(random(16)), item: await item(keep) } });
 		expect(await answer(mac)).toEqual({ ok: { what: "state" } });
 		if (keep) break;
+		// Each end takes its mailbox and, as RemoteKit's client does once it has kept what it took, acknowledges it (#806).
 		for (const end of [mac, phone]) {
 			const before = await end.settle();
-			expect(before.length).toBeGreaterThan(0);
+			const ids = before.flatMap((message) => {
+				const value = typeof message === "string" ? JSON.parse(message) : {};
+				return value.item?.id ?? value.state?.id ?? [];
+			});
+			expect(ids.length).toBeGreaterThan(0);
+			end.send({ took: { ids } });
+			expect(await answer(end)).toEqual({ ok: { what: "took" } });
 		}
 	}
 	phone.send({ token: { apns: "ab".repeat(32), environment: "development" } });
@@ -356,6 +363,8 @@ describe("the recorder and the check, in workerd", () => {
 		expect(clean.events.filter((event) => event.kind === "bytes").length).toBe(12);
 		expect(clean.events.some((event) => event.kind === "text" && event.from === "relay" && event.text.startsWith('{"challenge":'))).toBe(true);
 		expect(Object.keys(clean.stored[0].tables).sort()).toEqual(["items", "states"]);
+		// What was taken and acknowledged is gone; what the session left is all that is kept.
+		expect(clean.stored[0].tables.items.length + clean.stored[0].tables.states.length).toBe(state.session.kept.length);
 		expect(await check(clean, null, state.session)).toEqual([]);
 
 		await plant(state);
@@ -369,6 +378,18 @@ describe("the recorder and the check, in workerd", () => {
 		expect(where("not-noise").length).toBe(2);
 		expect(where("not-sealed").length).toBe(1);
 		expect(findings.filter((finding) => !["readable", "not-noise", "not-sealed"].includes(finding.rule))).toEqual([]);
+	});
+
+	it("reads what a take handed over and nobody acknowledged, which the relay still keeps", async () => {
+		const state = await sealedSession(new Recorder());
+		await plant(state);
+		// The phone takes the planted item and never says it kept it: the relay keeps it, and the check reads it there.
+		const handed = await state.phone.settle();
+		expect(handed.some((message) => typeof message === "string" && message.startsWith('{"item":'))).toBe(true);
+		const findings = await check(await readBack(state), null, state.session);
+		expect(findings.some((finding) => finding.rule === "readable" && finding.where.includes("tables.items"))).toBe(true);
+		// And in the take that handed it over.
+		expect(findings.some((finding) => finding.rule === "not-sealed" && finding.where.endsWith("from the relay"))).toBe(true);
 	});
 
 	it("fails when it could not have seen the session: a Noise message or a kept item it never saw", async () => {
@@ -395,6 +416,10 @@ describe("the recorder and the check, in workerd", () => {
 		const [kept] = state.session.kept;
 		const without = { ...state.session, items: state.session.items.filter((hash) => hash !== kept), kept: state.session.kept.filter((hash) => hash !== kept) };
 		expect(await rules(without)).toContain("not-sealed: an item that is not one of the session's sealed items");
+		// One of the session's items, still kept though the session did not leave it: a take it did not acknowledge.
+		expect(await rules({ ...state.session, kept: state.session.kept.filter((hash) => hash !== kept) })).toContain(
+			"acknowledged: an item the session took and acknowledged, or did not leave, still kept",
+		);
 		// An object's file that the read-back did not read.
 		const file = { path: `v3/do/pi2-relay-sealed-test-Pairing/${"ab".repeat(32)}.sqlite`, bytes: new Uint8Array() };
 		expect(await rules(state.session, [file])).toContain("unread: an object the read-back did not read");
@@ -482,6 +507,8 @@ describe("the allow-list of what the relay may see", () => {
 			{ state: { device, id: base64url(random(16)), item } },
 			{ token: { apns: "ab".repeat(32), environment: "production" } },
 			{ ping: {} },
+			{ took: { ids: [base64url(random(16))] } },
+			{ took: { ids: Array.from({ length: 200 }, () => base64url(random(16))) } },
 		];
 		for (const message of fromEnd) expect(messageFault(JSON.stringify(message), "end"), JSON.stringify(message)).toBeNull();
 		const fromRelay = [
@@ -489,6 +516,7 @@ describe("the allow-list of what the relay may see", () => {
 			{ ready: { devices: [{ device, online: true }], left: [], pending: false, mail: 2 } },
 			{ ready: { mac: true, mail: 0 } },
 			{ refused: { what: "put", why: "mailbox-full" } },
+			{ ok: { what: "took" } },
 			{ item: { from: device, id: base64url(random(16)), item, presence: false } },
 			{ held: { device, until: Date.now() } },
 		];
@@ -506,6 +534,17 @@ describe("the allow-list of what the relay may see", () => {
 			[{ ready: { mac: true, mail: 0, macName: "Marker Mac" } }, "relay"],
 			[{ joined: { device, name: "Marker phone" } }, "relay"],
 			[{ challenge: "Marker" }, "relay"],
+			// `took` holds item ids and nothing else, as many as a take hands over, none twice; and is never refused with a `what`.
+			[{ took: { ids: [] } }, "end"],
+			[{ took: { ids: Array.from({ length: 201 }, () => base64url(random(16))) } }, "end"],
+			[{ took: { ids: ["Marker phone"] } }, "end"],
+			[{ took: { ids: [device] } }, "end"],
+			[{ took: { ids: [pairing, pairing] } }, "end"],
+			[{ took: { ids: [pairing], note: "Marker phone" } }, "end"],
+			[{ took: { through: pairing } }, "end"],
+			[{ took: { ids: [pairing] } }, "relay"],
+			[{ refused: { what: "took", why: "malformed" } }, "relay"],
+			[{ ok: { what: "Marker phone" } }, "relay"],
 		];
 		for (const [message, from] of refused) expect(messageFault(JSON.stringify(message), from), JSON.stringify(message)).not.toBeNull();
 	});

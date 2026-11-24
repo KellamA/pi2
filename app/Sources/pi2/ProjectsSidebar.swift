@@ -108,7 +108,15 @@ struct ProjectsSidebar: View {
             .padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 6)
             .background(Theme.side)
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) { SidebarFooter(engine: engine) }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                #if PI2_DEVELOPMENT
+                // Development builds alone until a real phone is paired (#712).
+                SidebarDeviceLine(store: engine.devices)
+                #endif
+                SidebarFooter(engine: engine)
+            }
+        }
         .toolbar {
             ToolbarItem {
                 Button("New Project…", systemImage: "folder.badge.plus") { model.newProject() }
@@ -134,6 +142,23 @@ extension ProjectsSidebar {
         return .projectAgent(project: id, conversation: row)
     }
 }
+
+#if PI2_DEVELOPMENT
+/// The paired device attached now, above the foot of the sidebar (docs/iphone.md 4.4): nothing while none is, or with
+/// the iPhone preview off.
+private struct SidebarDeviceLine: View {
+    let store: DevicesStore
+
+    var body: some View {
+        if store.attachedLine != nil {
+            DevicesAttachedLine(store: store)
+                .padding(.horizontal, 14).padding(.vertical, 7)
+                .background(Theme.acc.opacity(0.08))
+                .overlay(alignment: .top) { Rectangle().fill(Theme.line).frame(height: 1) }
+        }
+    }
+}
+#endif
 
 /// The Dashboard's row, with how many things wait for the person in every project.
 private struct DashboardRow: View {

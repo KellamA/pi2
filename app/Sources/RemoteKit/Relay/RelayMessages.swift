@@ -121,7 +121,7 @@ public struct RelayWhy: Hashable, Sendable, CustomStringConvertible {
 
 /// The Mac's requests and the ends' mailbox requests, as the relay names them in `ok { what }` and `refused { what }`.
 public enum RelayRequestKind: String, Sendable, CaseIterable {
-	case openJoin, closeJoin, addDevice, removeDevice, deletePairing, state, put, take, token
+	case openJoin, closeJoin, addDevice, removeDevice, deletePairing, state, put, take, took, token
 }
 
 /// A device as the Mac's `ready` lists it.
@@ -249,6 +249,9 @@ public enum RelayLimits {
 	/// The most items a mailbox holds (5.3): the Mac's 200, a device's 100, and its state besides.
 	public static let macMailbox = 200
 	public static let deviceMailbox = 100
+	/// The most ids one `took` names (`MAX_TOOK` in `relay/src/protocol.ts`): the most a take hands over, the Mac's 200
+	/// items (a phone's is 100 and its state).
+	public static let maxTook = 200
 
 	/// The most items, not counting a state, that a `take` can bring to this end.
 	static func mailbox(for end: RelayEnd) -> Int { end == .mac ? macMailbox : deviceMailbox }
@@ -422,7 +425,7 @@ extension RelayIncoming {
 		switch kind {
 		case .openJoin, .closeJoin, .addDevice, .removeDevice, .deletePairing, .state: mine = end == .mac
 		case .token: mine = end == .device
-		case .put, .take: mine = true
+		case .put, .take, .took: mine = true
 		}
 		guard mine else { throw RemoteKitError(fields.part, "what is not a request this end sends") }
 		return kind
@@ -444,6 +447,8 @@ public enum RelayOutgoing: Sendable {
 	case state(device: DeviceID, id: ItemID, item: Data)
 	case put(to: RelayAddress, id: ItemID, item: Data, presence: Bool)
 	case take
+	/// What the reader has kept of what its takes handed over, by id: the relay deletes those, and only those (#806).
+	case took(ids: [ItemID])
 	case token(apns: String, environment: RelayPushEnvironment)
 	case leave(signature: Data)
 	case ping
@@ -466,6 +471,7 @@ public enum RelayOutgoing: Sendable {
 		case .state: "state"
 		case .put: "put"
 		case .take: "take"
+		case .took: "took"
 		case .token: "token"
 		case .leave: "leave"
 		case .ping: "ping"
@@ -503,6 +509,8 @@ public enum RelayOutgoing: Sendable {
 			// The flag is left out rather than written false: the relay takes only `true` for it.
 			if presence { body.append(("presence", .bool(true))) }
 			return body
+		case let .took(ids):
+			return [("ids", .array(ids.map { .string($0.text) }))]
 		case let .token(apns, environment):
 			return [("apns", .string(apns)), ("environment", .string(environment.rawValue))]
 		}
@@ -525,6 +533,9 @@ public enum RelayOutgoing: Sendable {
 			guard item.count >= RelayLimits.minItem, item.count <= RelayLimits.maxItem, item.first == 0x04 else {
 				throw RemoteKitError(part, "not a sealed item")
 			}
+		case let .took(ids):
+			guard (1...RelayLimits.maxTook).contains(ids.count) else { throw RemoteKitError(part, "not 1 to \(RelayLimits.maxTook) ids") }
+			guard Set(ids.map(\.text)).count == ids.count else { throw RemoteKitError(part, "an id twice") }
 		case let .token(apns, _):
 			let bytes = Array(apns.utf8)
 			let hex = bytes.allSatisfy { ($0 >= UInt8(ascii: "0") && $0 <= UInt8(ascii: "9")) || ($0 >= UInt8(ascii: "a") && $0 <= UInt8(ascii: "f")) }

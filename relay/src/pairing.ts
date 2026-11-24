@@ -550,6 +550,9 @@ export class Pairing extends DurableObject<Env> {
 				return this.put(ws, message, "mac", now);
 			case "take":
 				return this.take(ws, "mac", now);
+			case "took":
+				this.mailbox.took("mac", message.ids);
+				return ok(ws, "took");
 			case "push":
 				// At most MAX_WAITING_PUSHES wait their turn; one past that is answered push-later in its turn, kept meanwhile
 				// as no more than its socket.
@@ -569,6 +572,9 @@ export class Pairing extends DurableObject<Env> {
 				return this.put(ws, message, id, now);
 			case "take":
 				return this.take(ws, id, now);
+			case "took":
+				this.mailbox.took(id, message.ids);
+				return ok(ws, "took");
 			case "token":
 				// The phone gives its token at every connection (apns.ts): written only when it changed.
 				if (device.token?.apns !== message.apns || device.token.environment !== message.environment) {
@@ -684,13 +690,42 @@ export class Pairing extends DurableObject<Env> {
 		return ok(ws, "put");
 	}
 
+	/**
+	 * Hands over what waits for `reader`, deleting nothing: the reader names what it kept in `took`, and the rest comes
+	 * again at its next take, until it expires (#806).
+	 *
+	 * What a take hands over **again**, an item or a state a take handed over before and the reader did not acknowledge,
+	 * counts against the reader's own day of data (500 MB), as if it had sent it. A reader that never says what it kept
+	 * would otherwise be sent its whole mailbox, up to some 2 MB, at every take, as often as its messages allow (100 a
+	 * second): a take is a few bytes in, and nothing else that small brings so much out. What it is handed for the first
+	 * time is not charged to it: its writer paid for it with its `put` (or the Mac with its `state`), so no end's writing
+	 * spends another's day (6.6), and an honest reader, which acknowledges what it takes, is charged nothing for its
+	 * takes. Against the day alone, not the second's 2 MB, so that a phone's full mailbox handed over again (100 items of
+	 * 16 KB and its state, some 2.2 MB as sent) and the `took` after it pass. An item handed over on a socket that dropped
+	 * before it arrived is charged when it comes again: one mailbox for each drop, at most.
+	 */
 	private async take(ws: WebSocket, reader: string, now: number): Promise<void> {
 		const { items, state } = this.mailbox.take(reader, now);
+		const texts: string[] = [];
+		// Every text here is ASCII (ids, base64url), so its length is its size in bytes.
+		let again = 0;
 		for (const item of items) {
-			send(ws, { item: { from: item.writer, id: item.id, item: base64url(item.item), presence: item.presence } });
+			const text = JSON.stringify({ item: { from: item.writer, id: item.id, item: base64url(item.item), presence: item.presence } });
+			texts.push(text);
+			if (item.handed) again += text.length;
 		}
-		if (state !== null) send(ws, { state: { id: state.id, item: base64url(state.item) } });
-		send(ws, { taken: { count: items.length + (state === null ? 0 : 1) } });
+		if (state !== null) {
+			const text = JSON.stringify({ state: { id: state.id, item: base64url(state.item) } });
+			texts.push(text);
+			if (state.handed) again += text.length;
+		}
+		texts.push(JSON.stringify({ taken: { count: items.length + (state === null ? 0 : 1) } }));
+		if (again > 0) {
+			this.counters.addToDay(reader, again, now);
+			// Saved by weight (limits.ts), so that an object leaving memory forgets at most a few megabytes of it.
+			if (this.counters.due) await this.saveDays();
+		}
+		for (const text of texts) sendText(ws, text);
 	}
 
 	// Revocation, leaving, deleting.
@@ -962,8 +997,12 @@ function isReady(attachment: Attachment): boolean {
 }
 
 function send(ws: WebSocket, message: object): void {
+	sendText(ws, JSON.stringify(message));
+}
+
+function sendText(ws: WebSocket, text: string): void {
 	try {
-		ws.send(JSON.stringify(message));
+		ws.send(text);
 	} catch {
 		// Closed while this was being sent: nothing to tell it.
 	}

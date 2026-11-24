@@ -1,15 +1,18 @@
 // The apps connected to the engine's socket (#483, moved from main.ts): each connection with what it has open, and
 // sending an event to one of them or to every one. main.ts makes a client as one connects and takes it away as it goes.
+// A paired device's session is a client too (remote.ts, #673), whose lines go to pi² Remote tagged with the session.
 
-import type { Socket } from "node:net";
+/** Where a client's lines go: the connection's socket, or a device session's tagged lines (remote.ts). */
+export type Wire = { write(line: string): unknown; readonly destroyed: boolean; destroy(): unknown };
 
 /** `follow` watches the version a chat shows now, if that changed (versions.ts). */
 export type Subscription = { push: () => void; stop: () => Promise<unknown>; follow: () => Promise<void>; older: () => Promise<{ more: boolean }> };
 /**
  * `shown`: the conversations this app has on screen, in its panes or as chat mode's chat (`conversations.shown`).
  * `testCopy`: this connection gave the key of the test copy this engine runs (`test-copy.answerer`), so it may act for the person.
+ * `device`: a paired device's session (remote.ts), never the app's, whatever it sends (docs/iphone.md 4.1).
  */
-export type Client = { socket: Socket; subscriptions: Map<number, Subscription>; shown: Set<number>; testCopy?: true };
+export type Client = { socket: Wire; subscriptions: Map<number, Subscription>; shown: Set<number>; testCopy?: true; device?: { id: string; session: string } };
 export const clients = new Set<Client>();
 
 export function send(client: Client, message: unknown): void {

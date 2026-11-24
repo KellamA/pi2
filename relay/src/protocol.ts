@@ -9,6 +9,7 @@
 import { MAX_SEALED, type PushKind, SEALED_SIZES } from "./apns.ts";
 import { fromBase64, fromBase64url } from "./bytes.ts";
 import { publicKeyBytes } from "./crypto.ts";
+import { MAILBOX } from "./mailbox.ts";
 
 /** The headers the Worker gives a pairing's object, made afresh: the object sees nothing else of the client's request. */
 export const ROUTE_HEADER = "Pi2-Route";
@@ -32,6 +33,11 @@ export const MAX_BINARY = 70 * 1024;
 /** A sealed item: at most 16 KB, and at least HPKE's encapsulated key (65 bytes, an uncompressed point) and a tag. */
 export const MAX_ITEM = 16 * 1024;
 const MIN_ITEM = 65 + 16;
+/**
+ * The most ids a `took` names: the most a take hands over, the Mac's 200 items (a phone's is 100 and its state). Some
+ * 5 KB as written, far below a text message's 48 KB.
+ */
+export const MAX_TOOK = MAILBOX.macItems;
 /** App Attest makes some 6 KB; the verifier takes no more than this. */
 const MAX_ATTESTATION = 32 * 1024;
 
@@ -104,13 +110,15 @@ export type AddDevice = { type: "addDevice"; device: string; deviceKey: string; 
 export type RemoveDevice = { type: "removeDevice"; device: string };
 export type State = { type: "state"; device: string; id: string; item: Uint8Array<ArrayBuffer> };
 export type Put = { type: "put"; to: string; id: string; item: Uint8Array<ArrayBuffer>; presence: boolean };
+/** What a reader has kept of what its takes handed over: the ids of its items, and of its state for a phone. */
+export type Took = { type: "took"; ids: string[] };
 export type Token = { type: "token"; apns: string; environment: "development" | "production" };
 export type Leave = { type: "leave"; signature: string };
 /** The Mac's request for a push to one of its devices (apns.ts): `sealed` is the sealed bytes' base64url, as sent. */
 export type Push = { type: "push"; device: string; kind: PushKind; sealed: string; collapse: string | null };
 export type Bare = { type: "closeJoin" | "deletePairing" | "take" | "dropToken" };
 
-export type Message = Hello | Register | Proof | Join | OpenJoin | AddDevice | RemoveDevice | State | Put | Token | Leave | Push | Bare;
+export type Message = Hello | Register | Proof | Join | OpenJoin | AddDevice | RemoveDevice | State | Put | Took | Token | Leave | Push | Bare;
 
 type Body = Record<string, unknown>;
 
@@ -166,6 +174,8 @@ export function readMessage(text: string): Message | null {
 		}
 		case "put":
 			return put(body);
+		case "took":
+			return took(body);
 		case "token":
 			return exactly(body, ["apns", "environment"]) &&
 				typeof body.apns === "string" &&
@@ -242,6 +252,18 @@ function put(body: Body): Put | null {
 	const item = readItem(body.item);
 	if (item === null) return null;
 	return { type: "put", to: body.to as string, id: body.id, item, presence: body.presence === true };
+}
+
+/**
+ * `took { ids }` (#806): ids rather than "everything through this one", so that what is deleted is exactly what the
+ * reader names, whatever came into the mailbox since, whatever order the relay keeps, and a phone's state with its own
+ * id beside its items. From one id to `MAX_TOOK`, each an item's id, none twice.
+ */
+function took(body: Body): Took | null {
+	if (!exactly(body, ["ids"]) || !Array.isArray(body.ids)) return null;
+	const ids: unknown[] = body.ids;
+	if (ids.length === 0 || ids.length > MAX_TOOK || !ids.every(isItemId) || new Set(ids).size !== ids.length) return null;
+	return { type: "took", ids: ids as string[] };
 }
 
 /**
