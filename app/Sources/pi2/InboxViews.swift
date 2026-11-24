@@ -33,6 +33,8 @@ struct InboxCard: View {
     /// For a browser action: the site it would act on, when the app could say.
     private var targetSite: String? { isBrowser ? item.site.flatMap { $0.isEmpty ? nil : $0 } : nil }
     /// Whether the action is put in words by the app or the engine, rather than shown as the call was written.
+    /// The engine's `SHOWN_IN_WORDS` (engine/src/pushes.ts) names the same tools, so that a phone's notification of one is
+    /// never called whole: change the two together.
     private var inWords: Bool { targetApp != nil || isBrowser || isSchedule || isWorktree }
     /// The line that says what would happen. For a schedule, when it would run: its title is in the heading and its
     /// prompt below.

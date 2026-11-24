@@ -91,7 +91,7 @@ import { conversationSpend, dayKey, noSpend } from "./projectspend.ts";
 import { refusal } from "./requesterror.ts";
 import { delegateTargets } from "./projectagents.ts";
 import { syncWorkForInput } from "./work.ts";
-import { engineBuild, ignoredLine, ignoredTestSwitches, testSwitch } from "./testswitches.ts";
+import { engineBuild, ignoredLine, ignoredTestSwitches, testCopySuffix, testSwitch } from "./testswitches.ts";
 
 // Every line of engine.log starts with the time it was written (log.ts). Not when restoring a backup: what that writes
 // goes to the app, which reads its output and shows its error to the person as it is.
@@ -531,7 +531,11 @@ await wireDevices({
 	context,
 	log,
 	release: build !== null,
-	names: { conversation: (id) => library.conversations[String(id)]?.title, project: (id) => allProjects()[id]?.name },
+	names: { conversation: (id) => library.conversations[String(id)]?.title, project: (id) => {
+		// Its own key only: a name on Object's prototype (`constructor`) is no project.
+		const projects = allProjects();
+		return Object.hasOwn(projects, id) ? projects[id]?.name : undefined;
+	} },
 });
 
 /** A random ID for this installation, made the first time a sign-in asks for one and the same ever after. */
@@ -1517,14 +1521,10 @@ schedulesWatch.start(async (call) => {
 // Only test-copy starts an engine with this switch and the matching copy paths. The fixture implementation is
 // outside src, so an installed engine has neither the handler nor the module, even with the switch in its environment;
 // and a release engine never reads the switch (testswitches.ts).
-const testSuffix = testSwitch("PI2_TEST_COPY");
+const testSuffix = testCopySuffix();
 const checkout = dirname(dirname(dirname(engineMain)));
 const fixtureSource = new URL("../scripts/test-copy-fixture.ts", import.meta.url);
-if (testSuffix !== undefined && testSuffix !== "dev" && /^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/.test(testSuffix)
-	&& home === join(homedir(), "Library", "Application Support", `pi2-${testSuffix}`) && lstatSync(home).isDirectory()
-	&& process.env.PI2_KEYCHAIN_SERVICE === `dev.pi2.credentials.${testSuffix}`
-	&& existsSync(join(checkout, "app", "build", "test-copies", testSuffix, `pi² ${testSuffix}.app`, "Contents", "MacOS", "pi2"))
-	&& existsSync(fixtureSource)) {
+if (testSuffix !== undefined && existsSync(fixtureSource)) {
 	const { fixtureSize, seedTranscript } = await import("../scripts/test-copy-fixture.ts");
 	// The key with which scripts/test-copy answers for the person in this copy (`answer`, `call`; #504), since it is not
 	// the app. A new one at each start, in the copy's own folder in the checkout, which test-copy made and removes at

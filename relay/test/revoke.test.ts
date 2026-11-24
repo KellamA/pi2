@@ -10,6 +10,7 @@ import {
 	addPhone,
 	connect,
 	itemId,
+	leaveMessage,
 	joinHello,
 	macHello,
 	newKey,
@@ -149,10 +150,40 @@ describe("leave", () => {
 		const mac = await register();
 		const phone = await addPhone(mac);
 		const device = await phoneHello(mac.pairing, phone);
-		device.client.send({ leave: { signature: await (await newKey()).sign("anything") } });
+		const stranger = await newKey();
+		device.client.send({ leave: { signature: await stranger.sign("anything"), at: Date.now(), notice: await phone.key.sign("a notice") } });
 		await device.client.refused("signature");
 		const again = await phoneHello(mac.pairing, phone);
 		expect(again.ready.mac).toBe(true);
+	});
+
+	it("refuses a leave without its time and notice for the Mac, or with either not of its form, and keeps the device", async () => {
+		const mac = await register();
+		const phone = await addPhone(mac);
+		const forms = [
+			(leave: Record<string, unknown>) => ({ signature: leave.signature }),
+			(leave: Record<string, unknown>) => ({ signature: leave.signature, at: leave.at }),
+			(leave: Record<string, unknown>) => ({ signature: leave.signature, notice: leave.notice }),
+			(leave: Record<string, unknown>) => ({ ...leave, at: 0 }),
+			(leave: Record<string, unknown>) => ({ ...leave, at: -1 }),
+			(leave: Record<string, unknown>) => ({ ...leave, at: 1.5 }),
+			(leave: Record<string, unknown>) => ({ ...leave, at: String(leave.at) }),
+			// Past the year 2286, which RemoteKit's client would not read in `left`.
+			(leave: Record<string, unknown>) => ({ ...leave, at: 10_000_000_000_000 }),
+			(leave: Record<string, unknown>) => ({ ...leave, notice: base64url(new Uint8Array(63)) }),
+			(leave: Record<string, unknown>) => ({ ...leave, notice: base64url(new Uint8Array(65)) }),
+			(leave: Record<string, unknown>) => ({ ...leave, notice: null }),
+			(leave: Record<string, unknown>) => ({ ...leave, device: phone.device }),
+		];
+		// Read before anything is checked: the challenge signed does not matter to a leave not of its form.
+		const { leave } = await leaveMessage(mac.pairing, phone, base64url(new Uint8Array(32)));
+		for (const form of forms) {
+			const device = await phoneHello(mac.pairing, phone);
+			expect(await mac.client.json()).toEqual({ online: { device: phone.device } });
+			device.client.send({ leave: form(leave) });
+			await device.client.refused("malformed");
+		}
+		expect(Object.keys((await stored(mac.pairing)).get("devices") as object)).toEqual([phone.device]);
 	});
 
 	it("removes a device that leaves, signed over its connection's challenge, and tells the connected Mac", async () => {
@@ -165,7 +196,8 @@ describe("leave", () => {
 		await client.json();
 		expect(await mac.client.json()).toEqual({ online: { device: phone.device } });
 		// A proof's signature is not a leave's: what is signed names what it is for.
-		client.send({ leave: { signature: await phone.key.sign(proofText("device", mac.pairing, phone.device, challenge)) } });
+		const proved = await leaveMessage(mac.pairing, phone, challenge);
+		client.send({ leave: { ...proved.leave, signature: await phone.key.sign(proofText("device", mac.pairing, phone.device, challenge)) } });
 		await client.refused("signature");
 
 		const second = await connect(mac.pairing);
@@ -174,9 +206,11 @@ describe("leave", () => {
 		second.send({ proof: { signature: await phone.key.sign(proofText("device", mac.pairing, phone.device, fresh)) } });
 		await second.json();
 		await mac.client.json();
-		second.send({ leave: { signature: await phone.key.sign(proofText("leave", mac.pairing, phone.device, fresh)) } });
+		const { leave } = await leaveMessage(mac.pairing, phone, fresh);
+		second.send({ leave });
 		await second.refused("left");
-		expect(await mac.client.json()).toEqual({ left: { device: phone.device } });
+		// The time and the notice go to the Mac as the phone gave them: the relay cannot check the notice, the Mac does.
+		expect(await mac.client.json()).toEqual({ left: { device: phone.device, at: leave.at, notice: leave.notice } });
 		expect((await stored(mac.pairing)).get("devices")).toEqual({});
 	});
 
@@ -193,14 +227,19 @@ describe("leave", () => {
 		const { challenge } = await leaving.json();
 		leaving.send({ proof: { signature: await phone.key.sign(proofText("device", mac.pairing, phone.device, challenge)) } });
 		expect(await leaving.json()).toEqual({ ready: { mac: false, mail: 0 } });
-		leaving.send({ leave: { signature: await phone.key.sign(proofText("leave", mac.pairing, phone.device, challenge)) } });
+		const { leave } = await leaveMessage(mac.pairing, phone, challenge, Date.now() - 1000);
+		leaving.send({ leave });
 		await leaving.refused("left");
+		// Kept with the time and the notice, for the Mac to check when it comes; written once the slot is gone.
+		const left = { device: phone.device, at: leave.at, notice: leave.notice };
+		await vi.waitFor(async () => expect((await stored(mac.pairing)).get("meta")).toMatchObject({ left: [left] }));
 
 		const first = await macHello(mac);
-		expect(first.ready).toMatchObject({ devices: [], left: [phone.device] });
+		expect(first.ready).toMatchObject({ devices: [], left: [left] });
 		first.client.close();
 		const second = await macHello(mac);
 		expect(second.ready).toMatchObject({ left: [] });
+		expect((await stored(mac.pairing)).get("meta")).toMatchObject({ left: [] });
 	});
 });
 

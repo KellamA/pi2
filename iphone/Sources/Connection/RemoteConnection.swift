@@ -117,8 +117,10 @@ final class RemoteConnection {
             // The leave keeps the client; `stop` below must not close its socket under it.
             self.relay = nil
             let client = relay.client
+            // The notice the Mac believes names its identity key, which the relay never sees (#813).
+            let identityKey = mac.identityKey
             Task {
-                try? await client.leave()
+                try? await client.leave(mac: identityKey)
                 await client.stop()
             }
         }

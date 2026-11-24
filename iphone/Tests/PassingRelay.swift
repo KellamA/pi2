@@ -17,6 +17,8 @@ final class PassingRelay: RelayConnector {
 
     let mac: Mac
     let connections = Mutex(0)
+    /// How many messages the phone sent on each channel through it, in the order the channels began.
+    let fromPhone = Mutex<[Int]>([])
 
     init(_ mac: Mac) {
         self.mac = mac
@@ -24,18 +26,19 @@ final class PassingRelay: RelayConnector {
 
     func connect(to url: URL, pairing: PairingID?) async throws -> any RelaySocket {
         connections.withLock { $0 += 1 }
-        return PassingSocket(mac)
+        return PassingSocket(self)
     }
 }
 
 final class PassingSocket: RelaySocket {
-    private let mac: PassingRelay.Mac
+    private let relay: PassingRelay
+    private var mac: PassingRelay.Mac { relay.mac }
     private let frames = Inbox<RelayFrame>()
     /// The Mac's end of the channel the phone's bytes go to now.
     private let channel = Mutex<RelayedLink?>(nil)
 
-    init(_ mac: PassingRelay.Mac) {
-        self.mac = mac
+    init(_ relay: PassingRelay) {
+        self.relay = relay
     }
 
     func send(_ frame: RelayFrame) async throws {
@@ -60,6 +63,9 @@ final class PassingSocket: RelaySocket {
                 let link = RelayedLink(toPhone: frames, late: late)
                 channel = link
                 return (link, true)
+            }
+            relay.fromPhone.withLock { counts in
+                if fresh { counts.append(1) } else { counts[counts.count - 1] += 1 }
             }
             link.inbox.push(bytes)
             if fresh { Task { await testMac.serve(link) } }
