@@ -14,7 +14,7 @@
 // app's own connection, and to pi² Remote, never into an event or a log (3.1).
 
 import { createHash, createHmac, createPublicKey, type KeyObject, randomBytes, timingSafeEqual, verify } from "node:crypto";
-import { hostname } from "node:os";
+import { homedir, hostname } from "node:os";
 import type { Context } from "@earendil-works/chord/context";
 import { defineDoc, type Harness } from "@earendil-works/pi-durable";
 import { type DevicePath, deviceMay, type DeviceSession, devicePlacement, ONLY_ON_THE_MAC } from "./answers.ts";
@@ -620,13 +620,33 @@ export function summarize(given: string, params: Params): string {
 		// #698: the folders offered for a new project, a project made from one, and a file shown on the phone, by its name.
 		"projects.folders": () => "Asked for the folders offered for a new project",
 		"projects.create": () => `Made a project ${typeof params.folder === "string" ? `from the folder “${clip(params.folder.split("/").filter(Boolean).at(-1) ?? params.folder, 60)}”` : "with no folder"}${params.template != null ? " and a copy of a template" : ""}`,
-		"files.preview": () => `Showed the file “${clip(typeof params.path === "string" ? (params.path.split("/").filter(Boolean).at(-1) ?? params.path) : "?", 60)}”${inConversation}`,
+		"files.preview": () => `Showed the file “${previewedPath(params.path)}”${inConversation}`,
 		pair: () => "Paired",
 		attach: () => "Attached",
 		resume: () => "Resumed",
 		suspend: () => "Suspended",
 	};
 	return clip(maskKeys(lines[method]?.() ?? `${method}${inConversation}${inProject}`), MAX_SUMMARY);
+}
+
+/**
+ * The file `files.preview` names, for the log (#698): as the link named it, which is its path relative to the
+ * conversation's folder for a relative link (`./` and `..` worked out), or its whole path with the home folder as `~`;
+ * at most 120 characters, the end kept.
+ */
+function previewedPath(path: unknown): string {
+	if (typeof path !== "string" || path.trim() === "") return "?";
+	let text = path.trim().replace(/^file:\/\/(?:localhost)?/i, "");
+	const home = homedir();
+	if (home.length > 1 && text.startsWith(`${home}/`)) text = `~${text.slice(home.length)}`;
+	const names: string[] = [];
+	for (const name of text.split("/")) {
+		if (name === "" || name === ".") continue;
+		if (name === ".." && names.length > 0 && names.at(-1) !== "..") names.pop();
+		else names.push(name);
+	}
+	const shown = `${text.startsWith("/") ? "/" : ""}${names.join("/")}`;
+	return shown.length <= 120 ? shown : `…${shown.slice(shown.length - 119)}`;
 }
 
 /** At most `max` characters of `text`, with an ellipsis where it was cut. */

@@ -10,18 +10,24 @@
 // - the folder of every agent not removed (templates and projects' agents), as the person set it;
 // - the folder of each of the RECENT_CONVERSATIONS newest conversations the person started (not a sub-chat, not a
 //   chat, not deleted), as it works now: set when it was made, or changed in its settings.
-// Never a folder's contents, never a parent of one, never a folder that is not there now, never the data folder or
-// anything in it (pi²'s own worktrees among them) or the scratch folders, and never one whose path holds something
-// shaped like a key, which the masks of 5.7 would change (the phone could not send it back). Folders no project has
-// come first, the one used last first; then those of projects, the same way. Every string of the answer is masked again
-// on its way to a phone (remote.ts, `forDevice`), as everything sent to one is.
+// A deleted project lends none of these, through itself, its agents or its conversations. Never a folder's contents,
+// never a parent of one, never a folder that is not there now, never the data folder or anything in it (pi²'s own
+// worktrees among them) or the scratch folders, nor a folder that holds either (the home folder, `~/Library`, `/`),
+// and never one whose path holds something shaped like a key, which the masks of 5.7 would change (the phone could not
+// send it back). Folders no project has come first, the one used last first; then those of projects, the same way.
+// Every string of the answer is masked again on its way to a phone (remote.ts, `forDevice`), as everything sent to one
+// is. Each offering is also told to answers.ts (`offerFolders`), whose device row for `projects.create` takes a folder
+// from a phone only by the exact text of one offered (4.2): the decision is the device lists', and `offeredFolder`
+// below checks it again, against what is offered at that moment, before the project is made.
 //
 // `files.preview` takes a file only when all of these hold, and says which did not: the conversation has a folder; one
 // of its agent's answers links to the file (a Markdown link or picture, or a `file:` address in angle brackets, outside
-// code, as the conversation's page draws a file link: markdown.js, `fileTarget`); once links are followed the file is
-// under the folder, and not inside a `.git`; it is a regular file with no other name (a hard link could make a file
-// from anywhere on the volume look as if it were in the folder); git does not ignore it; it is at most 256 KB; and it
-// is UTF-8 text with no NUL. The check and the read are of the same file: it is opened with no link followed anywhere
+// code, as the conversation's page draws a file link: markdown.js, `fileTarget`); by its text, and then once links are
+// followed, the file is under the folder; it is not inside a `.git`, nor in pi²'s data folder or a scratch folder (but
+// the conversation's own worktree, there, is its folder); it is a regular file; git does not ignore it, and, in a
+// folder that is no git repository, no name on its path from the folder begins with a dot (`.env`, `.ssh/…`); it has
+// no other name (a hard link could make a file from anywhere on the volume look as if it were in the folder); it is at
+// most 256 KB; and it is UTF-8 text with no NUL. No refusal's words hold a path. The check and the read are of the same file: it is opened with no link followed anywhere
 // on its path (O_NOFOLLOW_ANY on macOS; on Linux the opened descriptor's own path is read back), without waiting on a
 // pipe, and the opened file must be the one checked (device and inode), so a file swapped for a link, or for another
 // file, between the check and the read is refused.
@@ -33,6 +39,7 @@ import { basename, dirname } from "node:path";
 import { AgentDoc, type ConversationId } from "@earendil-works/pi-durable";
 import { commandEnvironment } from "./environment.ts";
 import type { Engine, Feature } from "./features.ts";
+import { offerFolders } from "./answers.ts";
 import { maskKeys } from "./devices.ts";
 import { parseRemote } from "./github.ts";
 import { runOffThread } from "./offthread.ts";
@@ -57,6 +64,9 @@ export const MISSING = "There is no file there. It may have been moved or delete
 export const OUTSIDE = "That file is outside the conversation's folder once its links are followed, so it is not shown on the phone.";
 export const IN_GIT = "That file is inside git's own folder (.git), which is not shown on the phone.";
 export const NOT_A_FILE = "That is not a file pi² shows: a folder, a link, a pipe or a device is not shown on the phone.";
+export const IN_PI2 = "That file is in pi²'s own data or a scratch folder, which is not shown on the phone.";
+export const DOT_OUTSIDE_GIT =
+	"That file, or a folder it is in, has a name that begins with a dot, as secrets' often do (.env, .ssh), and its folder is no git repository, so it is not shown on the phone.";
 export const HARD_LINK = "That file has another name on the Mac (a hard link), so pi² cannot tell it lies only in the conversation's folder. It is not shown on the phone.";
 export const IGNORED = "git ignores that file, so it is not shown on the phone: an ignored file often holds secrets, as an .env file does.";
 export const GIT_UNKNOWN = "pi² could not tell whether git ignores that file, so it is not shown on the phone.";
@@ -117,11 +127,15 @@ export async function offeredFolders(engine: Engine | undefined = wired): Promis
 		if (typeof path !== "string" || !path.startsWith("/")) return;
 		used.set(path, Math.max(used.get(path) ?? 0, at));
 	};
-	const projects = Object.values(allProjects()).filter((project) => project.deletedAt === undefined);
+	const all = Object.values(allProjects());
+	const deleted = new Set(all.filter((project) => project.deletedAt !== undefined).map((project) => project.id));
+	const projects = all.filter((project) => project.deletedAt === undefined);
 	for (const project of projects) use(project.folder, project.updatedAt);
-	for (const agent of Object.values(engine.agents())) if (agent.removedAt === undefined) use(agent.cwd, agent.updatedAt ?? agent.createdAt);
+	for (const agent of Object.values(engine.agents())) {
+		if (agent.removedAt === undefined && !(agent.projectId !== undefined && deleted.has(agent.projectId))) use(agent.cwd, agent.updatedAt ?? agent.createdAt);
+	}
 	const started = Object.entries(engine.library().conversations)
-		.filter(([, meta]) => meta.deleted !== true && meta.parent === undefined && meta.chat !== true)
+		.filter(([, meta]) => meta.deleted !== true && meta.parent === undefined && meta.chat !== true && !(meta.projectId !== undefined && deleted.has(meta.projectId)))
 		.sort(([, a], [, b]) => b.updatedAt - a.updatedAt)
 		.slice(0, RECENT_CONVERSATIONS);
 	for (const [id, meta] of started) {
@@ -136,7 +150,8 @@ export async function offeredFolders(engine: Engine | undefined = wired): Promis
 	const byReal = new Map<string, number>();
 	for (const [path, at] of used) {
 		const found = real(path);
-		if (found === null || found === "/" || own.some((folder) => within(found, folder)) || maskKeys(found) !== found) continue;
+		// Never in pi²'s own folders, nor holding one (the home folder, `~/Library`, `/`).
+		if (found === null || own.some((folder) => within(found, folder) || within(folder, found)) || maskKeys(found) !== found) continue;
 		try {
 			if (!statSync(found).isDirectory()) continue;
 		} catch {
@@ -144,9 +159,10 @@ export async function offeredFolders(engine: Engine | undefined = wired): Promis
 		}
 		byReal.set(found, Math.max(byReal.get(found) ?? 0, at));
 	}
-	const projectOf = new Map(projects.filter((project) => project.folder !== null).map((project) => [project.folder!, project]));
+	// A project's folder by its real path too, should it have become a link since it was set.
+	const projectOf = new Map(projects.filter((project) => project.folder !== null).map((project) => [real(project.folder!) ?? project.folder!, project]));
 	const ordered = [...byReal].sort(([pathA, a], [pathB, b]) => Number(projectOf.has(pathA)) - Number(projectOf.has(pathB)) || b - a);
-	return ordered.slice(0, MAX_FOLDERS).map(([path]) => {
+	const offered = ordered.slice(0, MAX_FOLDERS).map(([path]) => {
 		const project = projectOf.get(path);
 		const repository = project?.repository != null ? `${project.repository.owner}/${project.repository.name}` : repositoryOf(path);
 		return {
@@ -157,15 +173,25 @@ export async function offeredFolders(engine: Engine | undefined = wired): Promis
 			...(repository === undefined ? {} : { repository }),
 		};
 	});
+	offerFolders(offered.map((folder) => folder.path));
+	return offered;
 }
 
-/** `projects.create`'s folder from a phone: its real path when `projects.folders` offers it now, else refused. */
+/**
+ * `projects.create`'s folder from a phone, checked again as the project is made: one `projects.folders` offers at this
+ * moment, by its exact text, as the phone was given it. Nothing the phone names is looked up on the disk unless it is
+ * already one of those; then it is checked to be still that folder, with no link on its way.
+ */
 export async function offeredFolder(value: unknown): Promise<string | null> {
 	if (value === null) return null;
 	if (typeof value !== "string" || value.trim() === "") throw new Error("folder must be a folder's path, or null");
-	const found = real(value);
-	if (found === null || !(await offeredFolders()).some((folder) => folder.path === found)) throw new Error(NOT_OFFERED);
-	return found;
+	if (!(await offeredFolders()).some((folder) => folder.path === value)) throw new Error(NOT_OFFERED);
+	try {
+		if (real(value) !== value || !statSync(value).isDirectory()) throw new Error(NOT_OFFERED);
+	} catch {
+		throw new Error(NOT_OFFERED);
+	}
+	return value;
 }
 
 // ---- files.preview
@@ -221,7 +247,9 @@ export function linkTargets(markdown: string): string[] {
 	}
 	const text = prose.join("\n").replace(/(`+)[\s\S]*?\1/g, " ");
 	const targets: string[] = [];
-	for (const found of text.matchAll(/\]\(\s*(?:<([^<>\n]*)>|([^\s()<>]*(?:\([^\s()<>]*\)[^\s()<>]*)*))(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?\s*\)/g)) {
+	// The bare target is never empty: an empty one let `\s*` either side of it share a run of white space, and the search
+	// took time growing with the square of its length (minutes for a megabyte, on the engine's thread).
+	for (const found of text.matchAll(/\]\(\s*(?:<([^<>\n]*)>|([^\s()<>]+(?:\([^\s()<>]*\)[^\s()<>]*)*|(?:\([^\s()<>]*\)[^\s()<>]*)+))(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?\s*\)/g)) {
 		targets.push(found[1] ?? found[2]!);
 	}
 	for (const found of text.matchAll(/<(file:[^<>\s]+)>/gi)) targets.push(found[1]!);
@@ -230,8 +258,8 @@ export function linkTargets(markdown: string): string[] {
 
 const ANOTHER_REPOSITORY = new Set(["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_NAMESPACE", "GIT_PREFIX", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM"]);
 
-/** Whether git ignores `path`, relative to `folder` (a real path): true, false, or null when it cannot tell. */
-async function gitIgnores(folder: string, path: string): Promise<boolean | null> {
+/** What git says of `path`, relative to `folder` (a real path): ignored, kept, no repository there, or it cannot tell. */
+async function gitIgnores(folder: string, path: string): Promise<"ignored" | "kept" | "no repository" | "unknown"> {
 	// --no-index: a file that matches an ignore rule counts as ignored even if git tracks it. core.fsmonitor off: asking
 	// runs nothing the repository's own configuration names.
 	const { error, stderr } = await runOffThread("git", ["-c", "core.fsmonitor=false", "check-ignore", "--no-index", "-q", "--", path], {
@@ -243,10 +271,10 @@ async function gitIgnores(folder: string, path: string): Promise<boolean | null>
 			Object.entries(commandEnvironment({ GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" })).filter(([name]) => !ANOTHER_REPOSITORY.has(name)),
 		),
 	});
-	if (error === null) return true;
-	if (error.code === 1) return false;
-	if (error.code === 128 && /not a git repository/i.test(stderr)) return false;
-	return null;
+	if (error === null) return "ignored";
+	if (error.code === 1) return "kept";
+	if (error.code === 128 && /not a git repository/i.test(stderr)) return "no repository";
+	return "unknown";
 }
 
 /**
@@ -281,21 +309,32 @@ export async function previewFile(params: Record<string, unknown>, engine: Engin
 	}
 	if (!linked) throw new Error(NOT_LINKED);
 
-	// Under the folder once links are followed, and what it is.
+	// Under the folder: by its text first, so that a link out tells nothing of what is there; then once links are
+	// followed. Then what it is: pi²'s own and git's own are refused before anything is said of the file itself.
 	const realFolder = real(folder);
 	if (realFolder === null) throw new Error(FOLDER_GONE);
+	const folderText = linkPath(folder, "/") ?? folder;
+	if (asked === folderText || asked === realFolder || !(within(asked, folderText) || within(asked, realFolder))) throw new Error(OUTSIDE);
 	const file = real(asked);
 	if (file === null) throw new Error(MISSING);
 	if (file === realFolder || !within(file, realFolder)) throw new Error(OUTSIDE);
 	const relative = realFolder === "/" ? file.slice(1) : file.slice(realFolder.length + 1);
 	if (relative.split("/").includes(".git")) throw new Error(IN_GIT);
+	// pi²'s data folder (its settings, endpoints and MCP servers' command lines, 5.7) and the scratch folders, but for the
+	// conversation's own worktree there, which is its folder.
+	const data = real(engine.home) ?? engine.home;
+	const pi2Own = [data, real(scratchRoot(engine.home)) ?? scratchRoot(engine.home)];
+	const ownWorktree = within(realFolder, `${data}/worktrees`) && realFolder !== `${data}/worktrees`;
+	if (!ownWorktree && pi2Own.some((own) => within(file, own))) throw new Error(IN_PI2);
 	const checked = lstatSync(file, { bigint: true });
 	if (!checked.isFile()) throw new Error(NOT_A_FILE);
+	// git before the size and the other name, so that nothing is said of a file git ignores.
+	const git = await gitIgnores(realFolder, relative);
+	if (git === "ignored") throw new Error(IGNORED);
+	if (git === "unknown") throw new Error(GIT_UNKNOWN);
+	if (git === "no repository" && relative.split("/").some((name) => name.startsWith("."))) throw new Error(DOT_OUTSIDE_GIT);
 	if (checked.nlink > 1n) throw new Error(HARD_LINK);
 	if (checked.size > BigInt(MAX_PREVIEW)) throw new Error(tooLarge(Number(checked.size)));
-	const ignored = await gitIgnores(realFolder, relative);
-	if (ignored === true) throw new Error(IGNORED);
-	if (ignored === null) throw new Error(GIT_UNKNOWN);
 
 	// The read, of the file checked and nothing else: no link followed anywhere on its path, no wait on a pipe.
 	await between?.();

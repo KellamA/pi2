@@ -15,8 +15,8 @@
 // - `lastWords(projectId)`: the orchestrator's last words, for the Dashboard, from orchestrator.ts through
 //   `wireLastWords`, which also marks a new project's conversation for its state block through `wireFresh`.
 //
-// And `offeredFolder(folder)`, the one check of a folder a paired phone gives `projects.create`, from folders.ts through
-// `wireOfferedFolder`: without it, a phone's project has no folder.
+// And `offeredFolder(folder)`, the second check of a folder a paired phone gives `projects.create` (the first is its
+// device row in answers.ts), from folders.ts through `wireOfferedFolder`: without it, a phone's project has no folder.
 //
 // Without them (a stand-in engine in a test), `carryOver` is null, `ruleTokens` zeros and `lastWords` null. `news` is
 // stored by `addNews`, from the commits of the features that tell of something, and delivered by orchestrator.ts.
@@ -448,9 +448,9 @@ export function wireFresh(mark: typeof markFresh): void {
 }
 
 /**
- * The folder a paired phone may make a project from (docs/iphone.md 4.2, #698): one `projects.folders` offers at that
- * moment, compared after links are followed (folders.ts). Until folders.ts wires it, none: a phone cannot browse the
- * Mac's disk, so a folder it names is refused.
+ * The folder a paired phone may make a project from (docs/iphone.md 4.2, #698), checked again as it is made: one
+ * `projects.folders` offers at that moment, by its exact text (folders.ts). The device row in answers.ts has already
+ * refused any other. Until folders.ts wires it, none.
  */
 let offeredFolder = async (value: unknown): Promise<string | null> => {
 	if (value === null) return null;

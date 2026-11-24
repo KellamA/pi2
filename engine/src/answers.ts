@@ -438,12 +438,12 @@ const FROM_A_DEVICE: Record<string, DeviceRow> = {
 	"rules.remove": { why: "removing an allowed command narrows" },
 	"schedules.delete": { why: "deleting a schedule narrows" },
 	"coauthor.set": { why: "the person's ordinary act" },
-	// With a folder only one projects.folders offers at that moment, which its handler checks after following links
-	// (folders.ts, `offeredFolder`). With a template it copies an agent with its reach, as agents.duplicate does, so it
-	// widens (decision 27).
+	// With a folder only one projects.folders offered, by its exact text (`folderOffered` below), and its handler checks
+	// it again against what is offered at that moment (folders.ts, `offeredFolder`). With a template it copies an agent
+	// with its reach, as agents.duplicate does, so it widens (decision 27).
 	"projects.create": {
-		why: "a new project; with a folder only one the Mac offers (projects.folders), checked by its handler; with a template it copies an agent, which widens",
-		may: (params) => (params.template != null ? "face" : "yes"),
+		why: "a new project; with a folder only one the Mac offered (projects.folders), by its exact text; with a template it copies an agent, which widens",
+		may: (params) => (params.folder != null && !folderOffered(params.folder) ? "no" : params.template != null ? "face" : "yes"),
 	},
 	"projects.archive": { why: "putting away narrows" },
 	"projects.startFresh": { why: "the person's ordinary act" },
@@ -462,6 +462,22 @@ const FROM_A_DEVICE: Record<string, DeviceRow> = {
 	"devices.forgetSelf": { why: "it unpairs itself (3.6)" },
 	// remote.mailboxIn (#678, P10) is pi² Remote's and goes in FOR_THE_HELPER.
 };
+
+/**
+ * The folders `projects.folders` offered last (folders.ts tells each offering here), by their real paths as sent. A
+ * phone only ever gives `projects.create` a folder back as it was offered, so its exact text is compared, and nothing a
+ * phone names is looked up on the disk: a folder it was not offered is refused here, whatever a handler does (#698).
+ */
+let foldersOffered: ReadonlySet<string> = new Set();
+
+export function offerFolders(paths: Iterable<string>): void {
+	foldersOffered = new Set(paths);
+}
+
+/** Whether `folder` is, by its exact text, one `projects.folders` offered last. */
+export function folderOffered(folder: unknown): boolean {
+	return typeof folder === "string" && foldersOffered.has(folder);
+}
 
 /** What a phone may send that always widens reach: the Mac notifies the person of each (4.4). */
 const WITH_FACE_ID: Record<string, string> = {

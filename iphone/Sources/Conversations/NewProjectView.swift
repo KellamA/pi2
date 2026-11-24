@@ -140,7 +140,7 @@ struct NewProjectView: View {
         } header: {
             Text("Folder")
         } footer: {
-            Text("Your Mac offers the folders already used with pi²: its projects', its agents' and its recent conversations'. Any other folder is chosen on the Mac, in its own panel.")
+            Text("Your Mac offers the folders you already use with pi²: those of its projects, its agents and your recent conversations. Any other folder is chosen on the Mac.")
         }
     }
 
