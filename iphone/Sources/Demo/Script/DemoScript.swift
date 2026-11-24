@@ -26,7 +26,7 @@ enum DemoScript {
                         // agents.allowEverything (off), branches.refresh
         work,           // Script/WorkAnswers.swift (#694): work.list, work.create, work.act
         conversationsScreens, // Script/ConversationsAnswers.swift (#698): conversation.rename, .delete, settings.setAutoArchive,
-                        // background.output, .stop, projects.unarchive, .restoreConversation
+                        // background.output, .stop, projects.unarchive, .restoreConversation, .folders, .create
     ]
 
     /// The answers by method. Two features answering the same method is a mistake, which the tests catch.
