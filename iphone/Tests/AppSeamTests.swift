@@ -66,6 +66,7 @@ struct AppSeamTests {
             (.backgroundCommands(), BackgroundCommandsView.self),
             (.backgroundCommands(output: "bg-1"), BackgroundCommandsView.self),
             (.newProject, NewProjectView.self),
+            (.outbox, OutboxView.self),
         ]
         for (route, expected) in routes {
             let view = RouteView.view(for: route)
