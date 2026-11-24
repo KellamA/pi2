@@ -21,14 +21,15 @@ struct SoftwareDeviceKey: DeviceKeySigning {
 final class SoftwarePresenceKey: PresenceSigning, Sendable {
     let key = P256.Signing.PrivateKey()
     let open = Mutex(true)
-    let signatures = Mutex(0)
+    /// Every text it signed, in order.
+    let signed = Mutex<[Data]>([])
     var publicKey: P256.Signing.PublicKey { key.publicKey }
 
     func presencePublicKeyDER() throws -> Data? { key.publicKey.derRepresentation }
 
     func signPresence(_ data: Data) async throws -> Data {
         guard open.withLock({ $0 }) else { throw KeysError.sessionNotOpen }
-        signatures.withLock { $0 += 1 }
+        signed.withLock { $0.append(data) }
         return try key.signature(for: data).rawRepresentation
     }
 }
