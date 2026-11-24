@@ -12,8 +12,9 @@ import RemoteKit
 /// markers of `relay/test/sealed/markers.json` every way the relay carries anything: the channel's lines both ways
 /// (padded as the phone pads, one long enough to be cut into `more` frames with a marker across the cut), acks, pings,
 /// `sessionEnd` and `bye`; request items for the Mac (one marked `presence`) and Mac items for the phone, both through
-/// the mailbox; and the Mac's state for the phone. Each end checks that every marker reached the other, opened. Some
-/// items are left in the mailbox, so that the relay holds them when its storage is read. Pushes: none, since the relay
+/// the mailbox; and the Mac's state for the phone. Each end checks that every marker reached the other, opened. Each
+/// take is acknowledged (`took`, #806) once what it brought is opened, verified and remembered, as pi² Remote and the
+/// phone take; some items are left in the mailbox after, so that the relay holds them when its storage is read. Pushes: none, since the relay
 /// at this head sends none (P20, #689).
 ///
 /// It writes what the relay may not read, for `relay/test/sealed/check.mjs`: the markers, the ends' private keys and
@@ -348,19 +349,25 @@ enum SealedSession {
 			try await request(m("method"), .object([("conversation", .integer(7)), ("text", s(m("message")))]), presence: false, keep: false),
 			try await request(m("method in an item"), .object([("answer", s(m("request item"))), ("project", s(m("project")))]), presence: true, keep: false),
 		]
-		let macTook = try await mac.take()
-		Check.equal(macTook.items.map(\.id), sent.map(\.0), "the Mac takes the phone's two request items")
-		for (taken, (id, method, params)) in zip(macTook.items, sent) {
-			let opened = try SealedItem.openRequest(
-				taken.item, at: ItemAddress(pairing: pairing, reader: .mac, id: id), readerKey: macRecord, writer: device,
-				writerRecordKey: phoneRecord.publicKey, deviceKey: deviceKey.publicKey, presenceKey: presenceKey.publicKey)
-			if opened.method == method, opened.params == params {
-				ledger.arrived.insert(method == m("method") ? "method" : "method in an item")
-				if method == m("method in an item") { ledger.arrived.insert("request item") }
+		// Taken as pi² Remote takes them: opened, verified and remembered inside the closure, and acknowledged (`took`, #806)
+		// once it returns, so that the relay deletes them and the check sees a real `took`.
+		let plainMethod = m("method")
+		let itemMethod = m("method in an item")
+		let macTook = try await mac.take { taken in
+			for (item, (id, method, params)) in zip(taken.items, sent) {
+				let opened = try SealedItem.openRequest(
+					item.item, at: ItemAddress(pairing: pairing, reader: .mac, id: id), readerKey: macRecord, writer: device,
+					writerRecordKey: phoneRecord.publicKey, deviceKey: deviceKey.publicKey, presenceKey: presenceKey.publicKey)
+				if opened.method == method, opened.params == params {
+					ledger.arrived.insert(method == plainMethod ? "method" : "method in an item")
+					if method == itemMethod { ledger.arrived.insert("request item") }
+				}
 			}
+			await mac.remember(taken.items)
+			return taken
 		}
-		// As pi² Remote does once it has opened, verified and kept them, so that a repeat is dropped.
-		await mac.remember(macTook.items)
+		Check.equal(macTook.items.map(\.id), sent.map(\.0), "the Mac takes the phone's two request items")
+		Check.equal(try await mac.take { $0 }, RelayTaken(items: [], state: nil, repeats: 0), "and once acknowledged, the relay has deleted them")
 		_ = try await request(m("method"), .object([("text", s(m("message")))]), presence: false, keep: true)
 
 		// The Mac's way: a receipt and the phone's state, taken by the phone; then another of each, left.
@@ -377,14 +384,17 @@ enum SealedSession {
 		Check.equal(try await mac.put(receipt, id: receiptID, to: .device(device)), .stored, "the Mac's receipt is stored")
 		let (stateID, state) = try macItem(kind: "state", number: 1, body: stateBody)
 		try await mac.putState(state, id: stateID, for: device)
-		let phoneTook = try await phone.take()
 		let readerKey = phoneRecord
-		func open(_ item: Data, _ id: ItemID) throws -> MacItem {
+		@Sendable func open(_ item: Data, _ id: ItemID) throws -> MacItem {
 			try SealedItem.openMacItem(item, at: ItemAddress(pairing: pairing, reader: .device(device), id: id), readerKey: readerKey, writerRecordKey: macRecord.publicKey, identityKey: identity.publicKey)
 		}
-		if let taken = phoneTook.items.first, phoneTook.items.count == 1, try open(taken.item, taken.id).body == receiptBody { ledger.arrived.insert("receipt") }
-		if let taken = phoneTook.state, try open(taken.item, taken.id).body == stateBody { ledger.arrived.insert("state") }
-		await phone.remember(phoneTook.items)
+		// The phone's take, acknowledged once it has opened, verified and remembered the receipt and the state.
+		try await phone.take { phoneTook in
+			if let taken = phoneTook.items.first, phoneTook.items.count == 1, try open(taken.item, taken.id).body == receiptBody { ledger.arrived.insert("receipt") }
+			if let taken = phoneTook.state, try open(taken.item, taken.id).body == stateBody { ledger.arrived.insert("state") }
+			await phone.remember(phoneTook.items)
+		}
+		Check.equal(try await phone.take { $0 }, RelayTaken(items: [], state: nil, repeats: 0), "and once acknowledged, the relay has deleted the receipt and the state")
 		let (keptID, keptReceipt) = try macItem(kind: "receipt", number: nil, body: receiptBody)
 		ledger.kept.append(keptReceipt)
 		Check.equal(try await mac.put(keptReceipt, id: keptID, to: .device(device)), .stored, "another receipt, left for the phone")

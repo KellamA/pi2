@@ -354,6 +354,11 @@ const WHY = [
 const why: Kind = (value) => typeof value === "string" && WHY.includes(value);
 const REQUESTS = ["openJoin", "closeJoin", "addDevice", "removeDevice", "deletePairing", "state", "put", "take", "token", "leave"];
 const what: Kind = (value) => typeof value === "string" && REQUESTS.includes(value);
+/** What an `ok` names: a request, or `took` (#806), which is answered `ok` and never refused with a `what` (one malformed closes the socket). */
+const okWhat: Kind = (value) => what(value) || value === "took";
+/** `took`'s ids (#806): 1 to 200 items' ids (`MAX_TOOK` in src/protocol.ts), none twice, as the relay reads them. */
+const tookIds: Kind = (value) =>
+	Array.isArray(value) && value.length >= 1 && value.length <= 200 && value.every(itemId) && new Set(value).size === value.length;
 
 /** A message's fields: each with its kind, `?` after a name for one that may be left out. */
 type Fields = Record<string, Kind>;
@@ -376,6 +381,7 @@ export const FROM_AN_END: Record<string, Fields[]> = {
 	state: [{ device, id: itemId, item: sealed }],
 	put: [{ to: reader, id: itemId, item: sealed, "presence?": isTrue }],
 	take: [{}],
+	took: [{ ids: tookIds }],
 	token: [{ apns, environment }],
 	leave: [{ signature }],
 	ping: [{}],
@@ -389,7 +395,7 @@ export const FROM_THE_RELAY: Record<string, Fields[]> = {
 		{ mac: bool, mail: count },
 	],
 	joined: [{ device }, { device, deviceKey: key, keyId: attestKeyId }],
-	ok: [{ what }],
+	ok: [{ what: okWhat }],
 	refused: [{ why }, { what, why }],
 	item: [{ from: reader, id: itemId, item: sealed, presence: bool }],
 	state: [{ id: itemId, item: sealed }],
@@ -692,6 +698,10 @@ export async function check(recording: Recording, files: File[] | null, session:
 				storedItems.add(hash);
 				if (!items.has(hash) && !session.kept.includes(hash)) {
 					findings.push({ rule: "not-sealed", where: `the ${object.object} object ${object.name}, ${table} row ${index}`, detail: "an item that is not one of the session's sealed items" });
+				} else if (!session.kept.includes(hash)) {
+					// A take deletes nothing (#806): the session acknowledges what it took, and only what it left may still be kept.
+					// Scanned above all the same, wherever it is.
+					findings.push({ rule: "acknowledged", where: `the ${object.object} object ${object.name}, ${table} row ${index}`, detail: "an item the session took and acknowledged, or did not leave, still kept" });
 				}
 			}
 		}
