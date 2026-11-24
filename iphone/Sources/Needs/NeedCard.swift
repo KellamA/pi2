@@ -43,6 +43,10 @@ struct NeedCard: View {
             content
             outcome
         }
+        // As tall as what it holds, whatever height it is offered. A list sizes a row by offering it no limit, then lays
+        // it out in the height that gave: a card that came out shorter there (a line cut to one where it had wrapped)
+        // sat in the middle of a row taller than its cards, a gap above the first (#830).
+        .fixedSize(horizontal: false, vertical: true)
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
@@ -505,6 +509,7 @@ struct NeedCardHeader: View {
                     Text(placeLine)
                         .font(.caption)
                         .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
