@@ -96,6 +96,8 @@ final class RelayEnd: @unchecked Sendable {
 	/// long engine line to a phone is paced rather than closed with `busy`.
 	static let messagesPerSecond = 80
 	static let bytesPerSecond = 1_500_000
+	/// How often the relay's word that another Mac tried to connect is told to the engine, at most, in ms (#921's read).
+	static let anotherMacEvery: Int64 = 60_000
 
 	private struct Target: Equatable {
 		let url: URL
@@ -253,7 +255,7 @@ final class RelayEnd: @unchecked Sendable {
 		case let .macReady(info):
 			isReady = true
 			report(.ready)
-			log("the relay path is ready")
+			Seldom.shared.say("relay ready", "the relay path is ready")
 			inStep(with: info)
 			sendWindow()
 			retryAdds()
@@ -264,16 +266,22 @@ final class RelayEnd: @unchecked Sendable {
 		case .data(nil, _), .online, .offline, .macOnline, .deviceReady:
 			// Presence is the relay's word, and nothing here needs it: a channel shows itself.
 			break
+		// The relay's word, each kind in the log at most once a minute under a kind of its own: a relay that repeats a notice
+		// cannot wash pi² Remote's log, nor hide the home path's lines (#921's security read).
 		case .phoneJoined:
-			log("the relay says a phone joined the pairing window (its word: the channel and the engine decide)")
+			Seldom.shared.say("relay joined", "the relay says a phone joined the pairing window (its word: the channel and the engine decide)")
 		case let .left(device):
-			log("the relay says device \(device) left it: its word alone, so nothing is revoked or forgotten (a signed leave is #897's)")
+			Seldom.shared.say("relay left", "the relay says device \(device) left it: its word alone, so nothing is revoked or forgotten (a signed leave is #897's)")
 		case .anotherMac:
-			anotherMacAt = now
-			log("the relay says another copy of pi² Remote tried to connect as this Mac (its word)")
+			// Told to the engine at most once a minute, with the first time in that minute: each report is a `remote.state`, and
+			// a `devices` event to the app.
+			let at = now
+			if let said = anotherMacAt, at - said < Self.anotherMacEvery { break }
+			anotherMacAt = at
+			Seldom.shared.say("relay anotherMac", "the relay says another copy of pi² Remote tried to connect as this Mac (its word)")
 			report(reported ?? .ready, force: true)
 		case let .held(device, until):
-			log("the relay says it held device \(device) off past a limit, until \(until) (its word)")
+			Seldom.shared.say("relay held", "the relay says it held device \(device) off past a limit, until \(until) (its word)")
 		case .mail:
 			take()
 		case let .disconnected(drop, retryAt):
@@ -365,7 +373,7 @@ final class RelayEnd: @unchecked Sendable {
 		#if PI2_DEVELOPMENT
 		own(why)
 		#else
-		log("register: \(why); the engine is told no pairing")
+		log("register: \(why); the engine is told the relay path is unavailable, and waits for a pairing until its own time runs out")
 		report(.unavailable(why))
 		#endif
 	}
@@ -530,11 +538,11 @@ final class RelayEnd: @unchecked Sendable {
 			removed += 1
 			request("removeDevice", { try await $0.removeDevice(listed.device) })
 		}
-		if removed > 0 { log("the relay listed \(removed) device(s) pi² Remote's own list does not have: removed there") }
+		if removed > 0 { Seldom.shared.say("relay listed", "the relay listed \(removed) device(s) pi² Remote's own list does not have: removed there") }
 		let theirs = Set(info.devices.map(\.device))
 		let missing = remote.devices.filter { !theirs.contains($0.id) && pendingAdds[$0.id] == nil }.count
-		if missing > 0 { log("\(missing) device(s) on pi² Remote's own list are not listed at the relay, it says: they reach this Mac by home and direct until they pair again") }
-		if !info.left.isEmpty { log("the relay says \(info.left.count) device(s) left it: its word alone, nothing is revoked") }
+		if missing > 0 { Seldom.shared.say("relay unlisted", "\(missing) device(s) on pi² Remote's own list are not listed at the relay, it says: they reach this Mac by home and direct until they pair again") }
+		if !info.left.isEmpty { Seldom.shared.say("relay left", "the relay says \(info.left.count) device(s) left it: its word alone, nothing is revoked") }
 	}
 
 	// ---- Channels on the relay path: the same `PhoneConnection` as on TCP
@@ -647,20 +655,40 @@ final class RelayEnd: @unchecked Sendable {
 
 	// ---- The mailbox: what phones left (5.3, 4.3; #806)
 
-	/// Takes what waits in the Mac's mailbox, one take at a time.
+	/// The least time between the starts of two takes (#921's security read): a relay that says `mail` after every `took`
+	/// cannot make pi² Remote open 200 items back to back, only 12 takes and 2,400 items a minute at most. A phone loses
+	/// nothing a working relay gives it: one take brings everything that waits (the Mac's mailbox holds 200 items, 50 from
+	/// any one phone), a `mail` during a take or this wait is taken at its end, and the mailbox carries what a phone leaves
+	/// while the Mac is away, which a few seconds do not change.
+	static let takeEvery: Duration = .seconds(5)
+	private var lastTake: ContinuousClock.Instant?
+	private var takeWaits = false
+
+	/// Takes what waits in the Mac's mailbox, one take at a time, no sooner than `takeEvery` after the one before began.
 	func take() {
 		guard isReady, let client else { return }
 		guard !taking else {
 			takeAgain = true
 			return
 		}
+		if let lastTake, ContinuousClock.now - lastTake < Self.takeEvery {
+			guard !takeWaits else { return }
+			takeWaits = true
+			let wait = Self.takeEvery - (ContinuousClock.now - lastTake)
+			remote.queue.asyncAfter(deadline: .now() + .milliseconds(Int(wait / .milliseconds(1)) + 1)) { [unowned self] in
+				self.takeWaits = false
+				self.take()
+			}
+			return
+		}
+		lastTake = .now
 		taking = true
 		let queue = remote.queue
 		Task {
 			do {
 				_ = try await client.take { taken in await self.keep(taken, client: client) }
 			} catch {
-				queue.async { log("the relay's take: \(error)") }
+				queue.async { Seldom.shared.say("relay take", "the relay's take: \(error)") }
 			}
 			queue.async {
 				self.taking = false
@@ -679,7 +707,14 @@ final class RelayEnd: @unchecked Sendable {
 		case notGenuine(String)
 		/// What could pass later: nothing of the item's own.
 		case later(String)
+		/// Genuine, and more than a day old: the engine would refuse it, and a relay that kept it could hand it over again
+		/// after the device's Face ID key changed. Taken, and never handed on.
+		case expired
 	}
+
+	/// The oldest a phone's item is handed to the engine, in ms: the engine's own bound (`DAY`, for `ITEM_TOO_OLD`, in
+	/// engine/src/devices.ts), and what the relay keeps an item for. pi2-remote-helper-check compares the two (Relayed.swift).
+	static let itemOldest: Int64 = 86_400_000
 
 	/// What a take brought, opened, verified and handed to the engine one item at a time; gives back what the relay may
 	/// delete: what the engine kept or certainly refused, and what certainly is not genuine. An item the engine could
@@ -688,14 +723,21 @@ final class RelayEnd: @unchecked Sendable {
 	private func keep(_ taken: RelayTaken, client: RelayClient) async -> Set<ItemID> {
 		var done = Set<ItemID>()
 		var kept: [RelayMailItem] = []
+		// Said once for the take, with how many, and each kind at most once a minute: a relay's items cannot wash the log.
+		var notGenuine: (count: Int, last: String) = (0, "")
+		var waiting: (count: Int, last: String) = (0, "")
+		var expired = 0
 		if let state = taken.state { done.insert(state.id) }
 		for item in taken.items {
 			switch await onQueue({ self.open(item) }) {
 			case let .notGenuine(why):
-				await onQueue { log("an item in the mailbox is not genuine (\(why)); the relay deletes it") }
+				notGenuine = (notGenuine.count + 1, why)
 				done.insert(item.id)
 			case let .later(why):
-				await onQueue { log("an item in the mailbox waits: \(why)") }
+				waiting = (waiting.count + 1, why)
+			case .expired:
+				expired += 1
+				done.insert(item.id)
 			case let .item(device, plaintext):
 				if await handOn(item.id, from: device, plaintext) {
 					done.insert(item.id)
@@ -704,6 +746,11 @@ final class RelayEnd: @unchecked Sendable {
 			}
 		}
 		if !kept.isEmpty { await client.remember(kept) }
+		await onQueue { [notGenuine, waiting, expired] in
+			if notGenuine.count > 0 { Seldom.shared.say("relay items not genuine", "\(notGenuine.count) item(s) in the mailbox not genuine (the last: \(notGenuine.last)); the relay deletes them") }
+			if waiting.count > 0 { Seldom.shared.say("relay items waiting", "\(waiting.count) item(s) in the mailbox wait (the last: \(waiting.last))") }
+			if expired > 0 { Seldom.shared.say("relay items expired", "\(expired) item(s) in the mailbox more than a day old; the relay deletes them, and the engine is not given them") }
+		}
 		return done
 	}
 
@@ -729,6 +776,7 @@ final class RelayEnd: @unchecked Sendable {
 		} catch {
 			return .notGenuine("its seal or its signatures do not hold")
 		}
+		guard now - request.at <= Self.itemOldest else { return .expired }
 		guard let plaintext = try? JSON.parse(request.plaintext) else { return .notGenuine("not one JSON object") }
 		return .item(device: writer, plaintext: plaintext)
 	}
@@ -743,7 +791,7 @@ final class RelayEnd: @unchecked Sendable {
 		switch result {
 		case let .success(value): return value["taken"]?.boolValue == true
 		case let .failure(why):
-			await onQueue { log("the engine did not take an item from the mailbox now (\(why)); it comes again at the next take") }
+			await onQueue { Seldom.shared.say("relay items not taken", "the engine did not take an item from the mailbox now (\(why)); it comes again at the next take") }
 			return false
 		}
 	}

@@ -205,7 +205,7 @@ final class PhoneConnection: @unchecked Sendable {
 	private func firstMessage(_ message: Data) {
 		guard acceptsFirst(length: message.count) else { return end() }
 		guard admission.firstMessage(from: source, now: remote.now) else {
-			Seldom.shared.say("first messages", "a first message from \(from) over its path's limits; closed")
+			Seldom.shared.say("\(path) first messages", "a first message from \(from) over its path's limits; closed")
 			return end()
 		}
 		message.count == 96 ? startPairing(message) : startConnection(message)
@@ -218,7 +218,7 @@ final class PhoneConnection: @unchecked Sendable {
 		guard let pairing = remote.pairing else { return end() }
 		// A first message seen before from a device is a replay: it would only use up that device's handshakes (D1).
 		guard !admission.replayed(message, now: remote.now) else {
-			Seldom.shared.say("replay", "a connection's first message from \(from) was one seen before (a replay); closed")
+			Seldom.shared.say("\(path) replay", "a connection's first message from \(from) was one seen before (a replay); closed")
 			return end()
 		}
 		let found: (DeviceID, ChannelHandshake)
@@ -229,7 +229,7 @@ final class PhoneConnection: @unchecked Sendable {
 			found = try ChannelHandshake.respond(toFirstMessage: message, pairing: pairing, channelKey: remote.keys.channel, devices: candidates)
 		} catch {
 			admission.unknownFirstMessage(now: remote.now)
-			Seldom.shared.say("no device", "a connection's first message from \(from) was made for no paired device; closed")
+			Seldom.shared.say("\(path) no device", "a connection's first message from \(from) was made for no paired device; closed")
 			return end()
 		}
 		admission.remember(message, now: remote.now)

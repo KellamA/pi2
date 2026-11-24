@@ -147,7 +147,9 @@ enum RealEngine {
 
 	static func home675(engine: Child, app: App, home: URL) {
 
-		guard case .success = app.call("devices.set", .object([("on", .bool(true)), ("preview", .bool(true)), ("relayAddress", .string("ws://127.0.0.1:9/v1"))])) else {
+		// The relay switch off: the home path alone, so that pi² Remote dials no relay at 127.0.0.1:9, where any process may
+		// listen (#921's security read); it makes the pairing's id itself, and the payload still names the address.
+		guard case .success = app.call("devices.set", .object([("on", .bool(true)), ("preview", .bool(true)), ("relay", .bool(false)), ("relayAddress", .string("ws://127.0.0.1:9/v1"))])) else {
 			return Check.expect(false, "remote access turned on")
 		}
 		let opened = app.call("devices.pairStart", within: 180)

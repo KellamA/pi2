@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import Foundation
+import Network
 import RemoteKit
 import pi2_remote
 
@@ -420,9 +421,9 @@ enum Relayed {
 	static func mailbox(_ engine: FakeEngine, mac: Mac, device: DeviceID, keys: PhoneKeys, wire: RelayWire, relay: URL) {
 		Check.section("the mailbox, from the phone: opened, verified, handed to the engine, acknowledged once taken (5.3, #806)")
 		guard let client = wire.client else { return Check.expect(false, "the phone has a client at the relay") }
-		func sealed(_ method: String, _ params: JSONValue, deviceKey: P256.Signing.PrivateKey? = nil, writer: P256.KeyAgreement.PrivateKey? = nil) -> (ItemID, Data, RequestItem) {
+		func sealed(_ method: String, _ params: JSONValue, deviceKey: P256.Signing.PrivateKey? = nil, writer: P256.KeyAgreement.PrivateKey? = nil, at: Date = Date()) -> (ItemID, Data, RequestItem) {
 			let id = ItemID.random()
-			let request = try! RequestItem.make(method: method, params: params, pairing: mac.pairing, device: device, id: id, deviceKey: deviceKey ?? keys.device, presenceKey: keys.presence)
+			let request = try! RequestItem.make(method: method, params: params, pairing: mac.pairing, device: device, id: id, at: at, deviceKey: deviceKey ?? keys.device, presenceKey: keys.presence)
 			let item = try! SealedItem.seal(request.plaintext, to: ItemAddress(pairing: mac.pairing, reader: .mac, id: id), readerKey: mac.record, writerKey: writer ?? keys.record)
 			return (id, item, request)
 		}
@@ -448,10 +449,14 @@ enum Relayed {
 		guard let then = engine.request("remote.mailboxIn") else { return Check.expect(false, "the item after it") }
 		Check.expect(then.params["id"]?.stringValue == next.0.text, "then the one after it")
 		engine.answer(then.id, .object([("taken", .bool(true)), ("outcome", .string("done"))]))
+		// Genuine, and more than a day old (RelayEnd.itemOldest, the engine's own bound): never handed to the engine, where a
+		// relay that kept it could replay it after a new Face ID key (#921's security read).
+		let old = sealed("abort", .object([("id", .integer(6))]), at: Date().addingTimeInterval(-2 * 86_400))
+		_ = put(old.0, old.1)
 		let last = sealed("abort", .object([("id", .integer(5))]))
 		_ = put(last.0, last.1)
 		let after = engine.request("remote.mailboxIn")
-		Check.expect(after?.params["id"]?.stringValue == last.0.text, "what the engine took, and what was not genuine, the relay deleted (took): only a new item comes at the next take", after.map { JSON.text($0.params) } ?? "nothing")
+		Check.expect(after?.params["id"]?.stringValue == last.0.text, "what the engine took, and what was not genuine, the relay deleted (took): only a new item comes at the next take; one genuine but two days old is not handed on", after.map { JSON.text($0.params) } ?? "nothing")
 		if let after { engine.answer(after.id, .object([("taken", .bool(true)), ("outcome", .string("done"))])) }
 
 		Check.section("the mailbox, to the phone: signed by the identity key, sealed to the device's record key (5.3)")
@@ -483,5 +488,166 @@ enum Relayed {
 		Check.expect(items.contains { $0.kind == "receipt" && $0.body == body }, "the phone takes the receipt the engine left, signed by the Mac's identity key and sealed for it", "\(items.map(\.kind))")
 		Check.expect(items.contains { $0.kind == "state" && $0.number == 7 }, "and the state, as the relay keeps a device's latest")
 		Check.expect(items.count == 2, "and nothing for a device not on pi² Remote's own list")
+	}
+
+	/// A relay that floods (#921's security read, M2 and S2): `LyingRelay` on 127.0.0.1 registers pi² Remote, takes it as
+	/// the pairing's Mac, then sends 3,000 `anotherMac` and 3,000 `left` notices and hands over 3,000 items that are not
+	/// genuine, a `mail` after every `took`. What that may cost: one `remote.state` (and so one `devices` event to the app)
+	/// for the `anotherMac` notices in a minute, one log line for each kind of the relay's word or of the items in a
+	/// minute, and a take every five seconds at most; the engine is handed none of the items.
+	static func flood(helper: URL, home: URL) {
+		Check.section("a relay that floods (#921): bounded in what it costs the engine, the log and the takes")
+		// The day pi² Remote keeps a phone's item is the engine's own bound (RelayEnd.itemOldest, devices.ts's DAY).
+		let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+		let engineSource = (try? String(contentsOf: repository.appendingPathComponent("engine/src/devices.ts"), encoding: .utf8)) ?? ""
+		let relayEnd = (try? String(contentsOf: repository.appendingPathComponent("app/Sources/pi2-remote/Relay/RelayEnd.swift"), encoding: .utf8)) ?? ""
+		Check.expect(engineSource.contains("const DAY = 86_400_000;") && engineSource.contains("if (now - at > DAY) return refuse(ITEM_TOO_OLD);") && relayEnd.contains("static let itemOldest: Int64 = 86_400_000"),
+		             "pi² Remote hands on no item older than the engine takes: a day on each side")
+		guard let relay = LyingRelay() else { return Check.expect(false, "a lying relay listens on 127.0.0.1") }
+		defer { relay.stop() }
+		// pi² Remote anew on the same data folder: no pairing, and its devices and keys as the run before left them.
+		for file in ["remote-devices.json", "remote-keys.json"] { try? FileManager.default.removeItem(at: home.appendingPathComponent(file)) }
+		let (child, engine) = Starts.start(helper: helper, home: home)
+		defer { child.stop() }
+		engine.answersStates = true
+		engine.event("start", [("relay", .string(relay.url.absoluteString)), ("switches", Flows.switches), ("pairing", .null), ("devices", .array([])), ("minimumBuild", .string("1"))])
+		guard let hello = engine.request("remote.hello") else { return Check.expect(false, "pi² Remote said hello") }
+		engine.answer(hello.id)
+		engine.event("register")
+		guard engine.state(where: { $0["pairing"]?.stringValue == relay.pairing.text }) != nil, engine.relayState("ready") != nil else {
+			return Check.expect(false, "pi² Remote registered at the lying relay and is ready there", JSON.text(.array(engine.states)))
+		}
+		let logFile = home.appendingPathComponent("remote.log")
+		func logLines() -> [Substring] { ((try? String(contentsOf: logFile, encoding: .utf8)) ?? "").split(separator: "\n") }
+		let statesBefore = engine.states.count
+		let linesBefore = logLines().count
+		let began = Date()
+		relay.flood(notices: 3_000, items: 3_000)
+		// Read the engine's end while the relay floods: pi² Remote waits for no answer it is not given.
+		while relay.acknowledged < 3_000, Date().timeIntervalSince(began) < 150 { _ = engine.state(from: Int.max, within: 1) { _ in false } }
+		_ = engine.state(from: Int.max, within: 2) { _ in false }
+		let minutes = Int(Date().timeIntervalSince(began) / 60) + 1
+		let states = engine.states.dropFirst(statesBefore)
+		let lines = logLines().dropFirst(linesBefore)
+		Check.expect(relay.acknowledged == 3_000, "the 3,000 items that are not genuine are taken and acknowledged (took)", "\(relay.acknowledged) in \(relay.takes.count) takes")
+		Check.expect(engine.quiet(for: 1), "and none is handed to the engine")
+		let told = states.filter { $0["relay"]?["anotherMacAt"] != nil }.count
+		Check.expect(told >= 1 && states.count <= minutes, "3,000 anotherMac notices: the engine is told at most once a minute (\(states.count) remote.state in \(minutes) minute(s) begun), so the app at most one devices event", JSON.text(.array(Array(states))))
+		let kinds = 7 // relay anotherMac, relay left, relay items not genuine, relay ready, relay take, relay joined, relay held
+		Check.expect(lines.count <= kinds * minutes, "3,000 notices and 3,000 items: \(lines.count) lines in pi² Remote's log, at most one for each of the relay's \(kinds) kinds a minute", lines.joined(separator: "\n"))
+		let gaps = zip(relay.takes.dropFirst(), relay.takes).map { $0.timeIntervalSince($1) }
+		Check.expect(relay.takes.count >= 15 && gaps.allSatisfy { $0 >= 4.5 }, "a take at most every five seconds, a mail after every took notwithstanding", gaps.map { String(format: "%.1f", $0) }.joined(separator: " "))
+	}
+}
+
+/// A relay on 127.0.0.1 that lies (#921's security read): the relay's protocol as far as pi² Remote's end needs it to
+/// register and be taken as the pairing's Mac (relay/README.md), a take and its `took`, and floods of what a relay may
+/// say. A WebSocket listener of the check's own, on loopback alone.
+final class LyingRelay: @unchecked Sendable {
+	private let listener: NWListener
+	private let queue = DispatchQueue(label: "lying relay")
+	let pairing = PairingID.random()
+	private(set) var url = URL(string: "ws://127.0.0.1/v1")!
+	private let state = Locked<(mac: NWConnection?, items: [JSONValue], acknowledged: Int, takes: [Date])>((nil, [], 0, []))
+	var acknowledged: Int { state.get().acknowledged }
+	var takes: [Date] { state.get().takes }
+
+	init?() {
+		let options = NWProtocolWebSocket.Options()
+		options.autoReplyPing = true
+		let parameters = NWParameters.tcp
+		parameters.defaultProtocolStack.applicationProtocols.insert(options, at: 0)
+		parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+		guard let made = try? NWListener(using: parameters) else { return nil }
+		listener = made
+		let ready = DispatchSemaphore(value: 0)
+		listener.stateUpdateHandler = { state in
+			if case .ready = state { ready.signal() }
+			if case .failed = state { ready.signal() }
+		}
+		listener.newConnectionHandler = { [unowned self] connection in self.accept(connection) }
+		listener.start(queue: queue)
+		guard ready.wait(timeout: .now() + 10) == .success, let port = listener.port?.rawValue, port != 0 else { return nil }
+		url = URL(string: "ws://127.0.0.1:\(port)/v1")!
+	}
+
+	func stop() {
+		listener.cancel()
+		state.get().mac?.cancel()
+	}
+
+	/// `notices` each of `anotherMac` and `left` to the Mac, then `items` that are not genuine, 200 a take.
+	func flood(notices: Int, items: Int) {
+		queue.async { [self] in
+			guard let mac = state.get().mac else { return }
+			for _ in 0 ..< notices {
+				send(mac, "anotherMac", [])
+				send(mac, "left", [("device", .string(DeviceID.random().text))])
+			}
+			let made: [JSONValue] = (0 ..< items).map { _ in
+				.object([("from", .string(DeviceID.random().text)), ("id", .string(ItemID.random().text)), ("item", .string(Base64URL.encode(Data([4]) + Bytes.random(100)))), ("presence", .bool(true))])
+			}
+			state.update { $0.items += made }
+			send(mac, "mail", [])
+		}
+	}
+
+	private func send(_ connection: NWConnection, _ name: String, _ body: [(String, JSONValue)]) {
+		send(connection, .object([(name, .object(body))]))
+	}
+
+	private func send(_ connection: NWConnection, _ message: JSONValue) {
+		let context = NWConnection.ContentContext(identifier: "text", metadata: [NWProtocolWebSocket.Metadata(opcode: .text)])
+		connection.send(content: Data(JSON.text(message).utf8), contentContext: context, isComplete: true, completion: .idempotent)
+	}
+
+	private func accept(_ connection: NWConnection) {
+		connection.start(queue: queue)
+		receive(connection, registering: false)
+	}
+
+	private func receive(_ connection: NWConnection, registering: Bool) {
+		connection.receiveMessage { [self] content, _, _, error in
+			guard error == nil, let content, let message = try? JSON.parse(content), case let .object(members) = message, members.count == 1 else { return connection.cancel() }
+			var registering = registering
+			switch members[0].0 {
+			case "register":
+				registering = true
+				send(connection, .object([("challenge", .string(Base64URL.encode(Bytes.random(32))))]))
+			case "hello":
+				send(connection, .object([("challenge", .string(Base64URL.encode(Bytes.random(32))))]))
+			case "proof" where registering:
+				send(connection, "registered", [("pairing", .string(pairing.text))])
+			case "proof":
+				state.update { $0.mac = connection }
+				send(connection, "ready", [("devices", .array([])), ("left", .array([])), ("pending", .bool(false)), ("mail", .integer(0))])
+			case "ping":
+				send(connection, "pong", [])
+			case "take":
+				let handed = state.update { held -> [JSONValue] in
+					held.takes.append(Date())
+					return Array(held.items.prefix(200))
+				}
+				for item in handed { send(connection, .object([("item", item)])) }
+				send(connection, "taken", [("count", .integer(Int64(handed.count)))])
+			case "took":
+				let ids = Set(message["took"]?["ids"].map { value -> [String] in
+					if case let .array(all) = value { return all.compactMap(\.stringValue) }
+					return []
+				} ?? [])
+				let more = state.update { held -> Bool in
+					let before = held.items.count
+					held.items.removeAll { ids.contains($0["id"]?.stringValue ?? "") }
+					held.acknowledged += before - held.items.count
+					return !held.items.isEmpty
+				}
+				send(connection, "ok", [("what", .string("took"))])
+				// What a lying relay may do: say there is mail after every took.
+				if more { send(connection, "mail", []) }
+			default:
+				break
+			}
+			receive(connection, registering: registering)
+		}
 	}
 }

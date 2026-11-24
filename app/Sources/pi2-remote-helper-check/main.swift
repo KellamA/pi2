@@ -15,7 +15,8 @@
 //
 // - with `--relay <ws://127.0.0.1:port/v1>`, instead: pi² Remote's relay end (#678) against the relay itself on this
 //   computer, which `scripts/relay-protocol-test --remote` starts for it (Relayed.swift); with `--engine` too, a phone
-//   pairs, attaches and leaves a request in the mailbox through a real engine and that relay.
+//   pairs, attaches and leaves a request in the mailbox through a real engine and that relay; then a relay of its own on
+//   127.0.0.1 that floods pi² Remote with notices and items that are not genuine (Relayed.flood).
 //
 //   cd app && swift build --product pi2-remote-helper && swift build --product pi2-remote-helper-check
 //   .build/debug/pi2-remote-helper-check [--engine ../engine/src/main.ts] [--verbose]
@@ -101,6 +102,8 @@ let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deleti
 if let relayURL {
 	// The relay path's own cases (#678), against the relay scripts/relay-protocol-test started; the rest runs without it.
 	Relayed.run(helper: bundled, home: home, relay: relayURL)
+	// And a relay of the check's own that lies and floods, on 127.0.0.1 (#921's security read).
+	Relayed.flood(helper: bundled, home: home)
 	if let engineMain { RealEngine.run(engineMain: engineMain, helper: built, root: root, relay: relayURL) }
 } else {
 	Units.run(sources: sources, helper: built)
