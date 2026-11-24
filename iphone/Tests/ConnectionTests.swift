@@ -24,7 +24,7 @@ struct ConnectionTests {
     static func paired(_ rules: TestMac.Rules = TestMac.Rules()) async throws -> PairedPhone {
         let mac = TestMac()
         let keys = MemoryKeyStore(), store = MemoryPairingStore()
-        let record = try await PairingTests.pair(mac, keys: keys, store: store)
+        let record = try await PairingTests.pairForSetup(mac, keys: keys, store: store)
         mac.rules.withLock { $0 = rules }
         return PairedPhone(mac: mac, keys: keys, store: store, record: record)
     }

@@ -72,9 +72,10 @@ struct AppStartTests {
         let link = PhoneLink(session: session, keyring: keyring, store: store, routes: PairingTests.routes(), phone: { .test })
         #expect(!link.paired && link.record == nil)
         let flow = link.pairingFlow()
-        flow.scanned(try mac.payload(relay: PairingTests.noRelay, addresses: [address]).text)
-        #expect(await Wait.until { if case .digits = flow.step { true } else { false } })
-        guard case let .digits(digits, _, _) = flow.step else { throw TestFailure("no digits") }
+        // Pairing is this setup's, not the subject: a try a stalled runner broke is made again (#910).
+        guard case let .digits(digits, _, _) = try await PairingTests.digitsForSetup(flow, mac: mac, address: address) else {
+            throw TestFailure("no digits: \(flow.step)")
+        }
         mac.typed.push(digits)
         #expect(await Wait.until { flow.step == .paired(mac: mac.name) })
         let record = try #require(flow.record)
