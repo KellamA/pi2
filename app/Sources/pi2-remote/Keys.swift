@@ -123,17 +123,40 @@ package struct ListedDevice: Sendable {
 			("attestKeyId", attestKeyId.map(JSONValue.string) ?? .null),
 		])
 	}
+}
 
-	package static func list(_ devices: [ListedDevice]) -> Data {
-		JSON.write(.object([("v", .integer(1)), ("devices", .array(devices.map(\.json)))]))
+/// pi² Remote's own list of devices and the home key (#845), kept together in one item, written whole: the two are
+/// saved together or not at all (#675's security read, S1). So no list can be on disk without the device a revocation
+/// dropped while the key that device holds is still beside it: a revocation whose write fails leaves the list and the
+/// key as they were, and the next `start`, which no longer names the device, drops it and makes a new key before
+/// anything is advertised.
+///
+/// `{"v":1,"devices":[…],"home":<the home key's 32 bytes in base64url>}`, `home` left out while there is no key.
+package struct KeptDevices: Sendable {
+	package var devices: [ListedDevice]
+	package var homeKey: HomeKey?
+
+	package init(devices: [ListedDevice] = [], homeKey: HomeKey? = nil) {
+		self.devices = devices
+		self.homeKey = homeKey
 	}
 
-	package static func read(list data: Data) throws -> [ListedDevice] {
+	package var data: Data {
+		var members: [(String, JSONValue)] = [("v", .integer(1)), ("devices", .array(devices.map(\.json)))]
+		if let homeKey { members.append(("home", .string(Base64URL.encode(homeKey.rawRepresentation)))) }
+		return JSON.write(.object(members))
+	}
+
+	package init(data: Data) throws {
 		let value = try JSON.parse(data)
 		guard value["v"]?.integerValue == 1, case let .array(items)? = value["devices"] else { throw Refused("the list of devices is not one pi² Remote wrote") }
-		return try items.map { item in
+		devices = try items.map { item in
 			guard let device = ListedDevice(json: item) else { throw Refused("a device in the list is not one pi² Remote wrote") }
 			return device
+		}
+		if let home = value["home"] {
+			guard let text = home.stringValue, let raw = Base64URL.decode(text), let key = HomeKey(rawRepresentation: raw) else { throw Refused("the home key is not one pi² Remote wrote") }
+			homeKey = key
 		}
 	}
 }
@@ -146,12 +169,11 @@ package protocol KeyVault: Sendable {
 	func macKeys() throws -> MacKeys
 	/// The relay key for the relay at `address`, made the first time that address is used: one key for each relay.
 	func relayKey(for address: String) throws -> SigningKey
-	/// The home key (#845, remotekit.md "The home key"), or nil before the first device is paired.
-	func homeKey() throws -> HomeKey?
-	/// Keeps `key` as the home key, in place of the one before.
-	func saveHomeKey(_ key: HomeKey) throws
-	func devices() throws -> [ListedDevice]
-	func saveDevices(_ devices: [ListedDevice]) throws
+	/// pi² Remote's own list of devices and the home key (#845, remotekit.md "The home key"), empty and none before the
+	/// first pairing.
+	func kept() throws -> KeptDevices
+	/// Keeps both, in one write, in place of what was kept before: both or neither.
+	func keep(_ kept: KeptDevices) throws
 }
 
 package enum KeyVaults {
@@ -217,16 +239,6 @@ package struct KeychainVault: KeyVault {
 	/// The relay key for `address`, in its own item, `relay <address>`.
 	package func relayKey(for address: String) throws -> SigningKey { try signing("relay \(address)") }
 
-	/// The home key, in its own item, `home`: in the Keychain, never the Secure Enclave, since it is a secret the phones
-	/// share and its bytes are sent to them.
-	package func homeKey() throws -> HomeKey? {
-		guard let (inEnclave, data) = try stored("home") else { return nil }
-		guard !inEnclave, let key = HomeKey(rawRepresentation: data) else { throw Refused("the Keychain's home key is not one pi² Remote wrote") }
-		return key
-	}
-
-	package func saveHomeKey(_ key: HomeKey) throws { try items.write("home", encoded(false, key.rawRepresentation)) }
-
 	private func stored(_ account: String) throws -> (inEnclave: Bool, key: Data)? {
 		guard let data = try items.read(account) else { return nil }
 		guard let value = try? JSON.parse(data), let place = value["in"]?.stringValue, let text = value["key"]?.stringValue,
@@ -286,13 +298,15 @@ package struct KeychainVault: KeyVault {
 		})
 	}
 
-	package func devices() throws -> [ListedDevice] {
-		guard let data = try items.read("devices") else { return [] }
-		return try ListedDevice.read(list: data)
+	/// The list of devices and the home key, in one item, `devices`: in the Keychain, never the Secure Enclave, since the
+	/// home key is a secret the phones share and its bytes are sent to them. One item is one write: both or neither.
+	package func kept() throws -> KeptDevices {
+		guard let data = try items.read("devices") else { return KeptDevices() }
+		return try KeptDevices(data: data)
 	}
 
-	package func saveDevices(_ devices: [ListedDevice]) throws {
-		try items.write("devices", ListedDevice.list(devices))
+	package func keep(_ kept: KeptDevices) throws {
+		try items.write("devices", kept.data)
 	}
 }
 
@@ -307,19 +321,8 @@ package struct KeyFiles: KeyVault {
 	package init(folder: URL) { self.folder = folder }
 
 	package var keysFile: URL { folder.appendingPathComponent("remote-keys.json") }
-	package var homeKeyFile: URL { folder.appendingPathComponent("remote-home-key.json") }
-
-	package func homeKey() throws -> HomeKey? {
-		guard let data = try PrivateFile.read(homeKeyFile) else { return nil }
-		guard let value = try? JSON.parse(data), value["v"]?.integerValue == 1, let text = value["key"]?.stringValue, let raw = Base64URL.decode(text),
-		      let key = HomeKey(rawRepresentation: raw)
-		else { throw Refused("remote-home-key.json is not one pi² Remote wrote") }
-		return key
-	}
-
-	package func saveHomeKey(_ key: HomeKey) throws {
-		try PrivateFile.write(homeKeyFile, JSON.write(.object([("v", .integer(1)), ("key", .string(Base64URL.encode(key.rawRepresentation)))])))
-	}
+	/// The list of devices and the home key, in one file: written whole to a new file and moved into place, so both or
+	/// neither.
 	package var devicesFile: URL { folder.appendingPathComponent("remote-devices.json") }
 
 	/// The file read: `{"v":1,"identity","channel","record","relays":{<address>:<key>}}`, each key's raw bytes in base64url.
@@ -369,13 +372,13 @@ package struct KeyFiles: KeyVault {
 		return .software(key)
 	}
 
-	package func devices() throws -> [ListedDevice] {
-		guard let data = try PrivateFile.read(devicesFile) else { return [] }
-		return try ListedDevice.read(list: data)
+	package func kept() throws -> KeptDevices {
+		guard let data = try PrivateFile.read(devicesFile) else { return KeptDevices() }
+		return try KeptDevices(data: data)
 	}
 
-	package func saveDevices(_ devices: [ListedDevice]) throws {
-		try PrivateFile.write(devicesFile, ListedDevice.list(devices))
+	package func keep(_ kept: KeptDevices) throws {
+		try PrivateFile.write(devicesFile, kept.data)
 	}
 }
 #endif

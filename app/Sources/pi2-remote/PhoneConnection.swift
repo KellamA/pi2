@@ -300,6 +300,14 @@ final class PhoneConnection: @unchecked Sendable {
 			refusedClaim("not-bound")
 			return end()
 		}
+		// The first pairing's home key, kept before the claim goes on (#675's security read, S2): if it cannot be, the claim
+		// is refused while the window is open, and the engine pairs nothing. #776 has no word for this; `silent`, "it went
+		// quiet", is the nearest of its three (the claim never reached the engine), and closes the window as the others do.
+		guard remote.keyForClaim() else {
+			log("a pairing claim was refused: the home key could not be kept")
+			refusedClaim("silent")
+			return end()
+		}
 		// The claim as the phone wrote it, passed on whole: the engine checks it again, with its attestation.
 		phase = .claiming(channel)
 		claimReported = true

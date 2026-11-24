@@ -22,12 +22,10 @@ enum Flows {
 	nonisolated(unsafe) static var hello0: JSONValue?
 	nonisolated(unsafe) static var relayKeyText: String?
 
-	/// The home key pi² Remote keeps, read from its file in the data folder.
+	/// The home key pi² Remote keeps, read from its list of devices in the data folder, where it is kept with them.
 	static func storedHomeKey(_ home: URL) -> HomeKey? {
-		guard let data = FileManager.default.contents(atPath: home.appendingPathComponent("remote-home-key.json").path), let value = try? JSON.parse(data),
-		      let text = value["key"]?.stringValue, let raw = Base64URL.decode(text)
-		else { return nil }
-		return HomeKey(rawRepresentation: raw)
+		guard let data = FileManager.default.contents(atPath: home.appendingPathComponent("remote-devices.json").path) else { return nil }
+		return (try? KeptDevices(data: data))?.homeKey
 	}
 
 	static func listed(_ home: URL) -> [String] {
@@ -530,9 +528,104 @@ enum Flows {
 		defer { restarted.stop() }
 		let written = DeviceID.random()
 		let keptBefore = storedHomeKey(home)
-		guard hello(engine2, pairing: pairing, devices: [written.text]) != nil else { Check.stop("pi² Remote said hello again") }
-		Check.expect(storedHomeKey(home) != nil && storedHomeKey(home) != keptBefore, "a device revoked while pi² Remote was not running: a new home key at the next start, before anything is advertised")
+		guard let mac2 = hello(engine2, pairing: pairing, devices: [written.text]) else { Check.stop("pi² Remote said hello again") }
 		Check.expect(listed(home).isEmpty, "a device revoked while pi² Remote was not running is dropped at the next start, and a device the engine lists that was never paired through pi² Remote is not added")
+		Check.expect(keptBefore != nil && storedHomeKey(home) == nil, "and with no device left, the home key it held goes, and none is made that no device holds (S3)")
+		homeKeyKept(helper: helper, home: home, child: restarted, engine: engine2, mac: mac2)
+	}
+
+	/// The home key kept with the list of devices, in one write (#675's security read, S1 to S3): a first pairing whose
+	/// key cannot be kept, a revocation whose write fails and then a crash, a crash just after a revocation's write, and
+	/// the last device revoked. A write fails as it does in the relay key's check: the data folder made read-only.
+	static func homeKeyKept(helper: URL, home: URL, child: Child, engine: FakeEngine, mac: Mac) {
+		var child = child, engine = engine, mac = mac
+		defer { child.stop() }
+		/// A crash: pi² Remote killed where it is, then started again with the devices the engine lists.
+		func crashAndStart(listing devices: [DeviceID]) {
+			kill(child.pid, SIGKILL)
+			child.wait(15)
+			(child, engine) = Starts.start(helper: helper, home: home)
+			guard let again = hello(engine, pairing: mac.pairing, devices: devices.map(\.text)) else { Check.stop("pi² Remote said hello after a crash") }
+			mac = again
+		}
+
+		Check.section("a first pairing whose home key cannot be kept (S2)")
+		chmod(home.path, 0o500)
+		let secret = Bytes.random(32)
+		let expires = Int64(Date().timeIntervalSince1970) + 300
+		engine.event("openJoin", [("secret", .string(Base64URL.encode(secret))), ("tokenHash", .string("x")), ("expires", .integer(expires * 1000))])
+		let payload = try! PairingPayload(
+			pairing: mac.pairing, macName: "Check Mac", channelKey: mac.channel, identityKey: mac.identity, recordKey: mac.record, secret: secret,
+			relay: "ws://127.0.0.1:9/v1", addresses: [], expires: expires)
+		let unkept = Phone(port: mac.port)!
+		Check.expect(unkept.pair(payload: payload, keys: PhoneKeys(), team: team) != nil, "a claimer that proved the secret sends its claim")
+		let refused = engine.request("remote.pairRefused")
+		Check.expect(refused?.params["why"]?.stringValue == "silent", "the first pairing's home key cannot be kept: the claim never reaches the engine, which is told remote.pairRefused (silent, the nearest of #776's words) and closes the window", refused.map { JSON.text($0.params) } ?? "nothing")
+		if let refused { engine.answer(refused.id) }
+		Check.expect(unkept.event() == .bye && unkept.closesWithin(5) && unkept.homeKey == nil, "the phone's channel ends with no paired and no home key")
+		Check.expect(engine.quiet(for: 1), "and no remote.pairClaim reaches the engine, so it pairs nothing")
+		chmod(home.path, 0o700)
+		Check.expect(listed(home).isEmpty && storedHomeKey(home) == nil, "no device and no home key are kept")
+		engine.event("closeJoin")
+
+		Check.section("a revocation whose write fails, then a crash and a restart (S1)")
+		let keysA = PhoneKeys(), keysB = PhoneKeys()
+		guard let a = pair(engine, mac: mac, keys: keysA, claim: "claim_a"), let b = pair(engine, mac: mac, keys: keysB, claim: "claim_b") else { Check.stop("two phones paired") }
+		guard let (staying, _) = attach(engine, mac: mac, device: b, keys: keysB, session: "s_b1"), let (leaving, _) = attach(engine, mac: mac, device: a, keys: keysA, session: "s_a1") else { Check.stop("both phones attached") }
+		let old = staying.homeKey
+		Check.expect(old != nil && leaving.homeKey == old, "both phones hold the home key")
+		chmod(home.path, 0o500)
+		engine.event("revoke", [("device", .string(a.text))])
+		engine.event("sessionClosed", [("session", .string("s_a1")), ("why", .string("revoked"))])
+		if let line = leaving.line(), case .revoked? = try? ControlLine.parse(line, from: .mac) {
+			Check.expect(leaving.event() == .bye, "a revocation whose write fails still tells the phone it is revoked, and ends its channel")
+		} else {
+			Check.expect(false, "a revocation whose write fails still tells the phone it is revoked")
+		}
+		Check.expect(staying.line(within: 1) == nil, "the phone that remains is sent no key: none was kept")
+		Check.expect(storedHomeKey(home) == old && Set(listed(home)) == [a.text, b.text], "on disk, the list and the old key are as they were, together")
+		chmod(home.path, 0o700)
+		crashAndStart(listing: [b])
+		let renewed = storedHomeKey(home)
+		Check.expect(listed(home) == [b.text] && renewed != nil && renewed != old, "after a crash, the next start drops the revoked device and keeps a new home key with the list before anything is advertised")
+		if let (back, _) = attach(engine, mac: mac, device: b, keys: keysB, session: "s_b2") {
+			Check.expect(back.homeKey == renewed && back.homeKey != old, "the phone that remains is sent the new key at its next attach")
+			engine.event("sessionClosed", [("session", .string("s_b2")), ("why", .string("check"))])
+		}
+		if let phone = Phone(port: mac.port) {
+			let handshake = try! ChannelHandshake.connection(initiator: true, pairing: mac.pairing, device: a, channelKey: keysA.channel, remoteChannelKey: mac.channel)
+			phone.send(try! handshake.writeMessage())
+			Check.expect(phone.closesWithin(10) && engine.quiet(for: 0.5), "and the revoked phone's handshake is closed before anything reaches the engine")
+		}
+
+		Check.section("a crash just after a revocation's write")
+		let keysC = PhoneKeys()
+		guard let c = pair(engine, mac: mac, keys: keysC, claim: "claim_c") else { Check.stop("a third phone paired") }
+		engine.event("revoke", [("device", .string(c.text))])
+		let deadline = Date().addingTimeInterval(10)
+		while listed(home) != [b.text], Date() < deadline { usleep(10000) }
+		let written = storedHomeKey(home)
+		Check.expect(listed(home) == [b.text] && written != nil && written != renewed, "the revocation keeps the list and a new key in one write")
+		crashAndStart(listing: [b])
+		Check.expect(storedHomeKey(home) == written && listed(home) == [b.text], "after a crash, the next start finds the two together, and has nothing to renew")
+		if let (back, _) = attach(engine, mac: mac, device: b, keys: keysB, session: "s_b3") {
+			Check.expect(back.homeKey == written, "the phone that remains is sent the key written with the revocation at its next attach")
+
+			Check.section("the last device revoked (S3)")
+			engine.event("revoke", [("device", .string(b.text))])
+			engine.event("sessionClosed", [("session", .string("s_b3")), ("why", .string("revoked"))])
+			if let line = back.line(), case .revoked? = try? ControlLine.parse(line, from: .mac) {
+				Check.expect(back.event() == .bye, "the last device is told it is revoked, and its channel ends")
+			} else {
+				Check.expect(false, "the last device is told it is revoked")
+			}
+			Check.expect(listed(home).isEmpty && storedHomeKey(home) == nil, "with no device left, no home key is kept: none is made that no device holds, and nothing is advertised")
+		} else {
+			Check.expect(false, "the phone that remains attached after the crash")
+		}
+		guard pair(engine, mac: mac, keys: PhoneKeys(), claim: "claim_d") != nil else { return Check.expect(false, "a phone pairs after the last was revoked") }
+		let fresh = storedHomeKey(home)
+		Check.expect(fresh != nil && fresh != written && fresh != renewed && fresh != old, "the next first pairing makes a new home key, and gives it in paired")
 	}
 
 	/// What `pid` holds in memory, in kilobytes.

@@ -16,6 +16,7 @@ enum Units {
 		dataFolder()
 		keychainVault()
 		keyFiles()
+		Advertising.run()
 		sessionLines()
 		parentCode(helper: helper)
 		nothingFromOutside(sources: sources)
@@ -166,7 +167,12 @@ enum Units {
 			return items[account]
 		}
 
-		func write(_ account: String, _ data: Data) throws { items[account] = data }
+		/// A Keychain that refuses every write, as one that is locked or full does.
+		var refuseWrites = false
+		func write(_ account: String, _ data: Data) throws {
+			if refuseWrites { throw Refused("stand-in: the Keychain refused the write") }
+			items[account] = data
+		}
 
 		/// A stand-in for another pi² Remote adding the same account between this one's read and its add.
 		var raceWith: [String: Data] = [:]
@@ -241,16 +247,16 @@ enum Units {
 		plain.items["identity"] = Data("{\"in\":\"elsewhere\",\"key\":\"AA\"}".utf8)
 		Check.expect((try? KeychainVault(items: plain, enclave: StandInEnclave(available: false)).macKeys()) == nil, "an item pi² Remote did not write is refused")
 		let device = ListedDevice(id: DeviceID.random(), deviceKey: P256.Signing.PrivateKey().publicKey, presenceKey: nil, channelKey: Curve25519.KeyAgreement.PrivateKey().publicKey, recordKey: P256.KeyAgreement.PrivateKey().publicKey, attestKeyId: "a2V5+aWQ/=")
-		try! vault.saveDevices([device])
-		let back = try? vault.devices()
-		Check.expect(back?.map(\.id) == [device.id] && back?.first?.attestKeyId == "a2V5+aWQ/=", "the list of devices is kept in the Keychain and read back, with each one's App Attest key id")
+		Check.expect((try? vault.kept()).map { $0.devices.isEmpty && $0.homeKey == nil } == true, "no list of devices and no home key before the first pairing")
 		let home = HomeKey.random()
-		Check.expect((try? vault.homeKey()) == .some(nil), "no home key before the first device is paired")
-		try! vault.saveHomeKey(home)
-		Check.expect((try? vault.homeKey()) == home && place("home") == "software", "the home key is kept in the Keychain, not the Secure Enclave (its bytes go to the phones)")
-		let next = HomeKey.random()
-		try! vault.saveHomeKey(next)
-		Check.expect((try? vault.homeKey()) == next, "and a new one replaces it")
+		try! vault.keep(KeptDevices(devices: [device], homeKey: home))
+		let back = try? vault.kept()
+		Check.expect(back?.devices.map(\.id) == [device.id] && back?.devices.first?.attestKeyId == "a2V5+aWQ/=", "the list of devices is kept in the Keychain and read back, with each one's App Attest key id")
+		Check.expect(back?.homeKey == home && items.items.keys.filter { $0 == "home" || $0 == "devices" } == ["devices"], "the home key is kept with it, in the one item, in the Keychain and not the Secure Enclave (its bytes go to the phones): both are written or neither (S1)")
+		try! vault.keep(KeptDevices(devices: [], homeKey: nil))
+		Check.expect((try? vault.kept()).map { $0.devices.isEmpty && $0.homeKey == nil } == true, "an empty list keeps no home key")
+		items.items["devices"] = Data(#"{"v":1,"devices":[],"home":"AAAA"}"#.utf8)
+		Check.expect((try? vault.kept()) == nil, "a home key that is not 32 bytes is refused")
 		Check.expect((try? KeyVaults.forBuild(.release, folder: URL(fileURLWithPath: "/nonexistent"))) == nil, "a development build cannot make a release build's vault: the Keychain is not compiled into it")
 	}
 
@@ -272,13 +278,13 @@ enum Units {
 		chmod(file.path, 0o600)
 		let link = folder.appendingPathComponent("remote-devices.json")
 		symlink(file.path, link.path)
-		Check.expect((try? vault.devices()) == nil, "a list of devices that is a link is refused")
+		Check.expect((try? vault.kept()) == nil, "a list of devices that is a link is refused")
 		unlink(link.path)
-		Check.expect((try? vault.devices())?.isEmpty == true, "no list yet is an empty list")
+		Check.expect((try? vault.kept())?.devices.isEmpty == true, "no list yet is an empty list")
 		let home = HomeKey.random()
-		try! vault.saveHomeKey(home)
-		let homeMode = (try? FileManager.default.attributesOfItem(atPath: folder.appendingPathComponent("remote-home-key.json").path)[.posixPermissions] as? Int) ?? -1
-		Check.expect((try? vault.homeKey()) == home && homeMode == 0o600, "the home key is kept in a file of its own, readable by the person alone")
+		try! vault.keep(KeptDevices(devices: [], homeKey: home))
+		let homeMode = (try? FileManager.default.attributesOfItem(atPath: link.path)[.posixPermissions] as? Int) ?? -1
+		Check.expect((try? vault.kept())?.homeKey == home && homeMode == 0o600, "the home key is kept in the list's own file, readable by the person alone")
 	}
 
 	static func sessionLines() {

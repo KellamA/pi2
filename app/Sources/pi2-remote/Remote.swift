@@ -54,8 +54,9 @@ package final class Remote: @unchecked Sendable {
 	package var sessionBufferLimit = 4 * 1024 * 1024
 
 	package private(set) var devices: [ListedDevice]
-	/// The home tag's key (#845; remotekit.md, "The home key"): made when the first device is paired, given in `paired`
-	/// and on every attach, made anew at every revocation. Never sent to the engine, never logged.
+	/// The home tag's key (#845; remotekit.md, "The home key"): made when the first pairing's claim goes to the engine,
+	/// given in `paired` and on every attach, made anew at every revocation, none once no device is left. Never sent to
+	/// the engine, never logged. While it is not nil, the vault holds exactly it and `devices` (`keep`).
 	package private(set) var homeKey: HomeKey?
 	private var started = false
 	var switches = Switches()
@@ -75,15 +76,17 @@ package final class Remote: @unchecked Sendable {
 	private var addressTimer: DispatchSourceTimer?
 	private var advertised: String?
 
-	package init(kind: BuildKind, keys: MacKeys, vault: any KeyVault, engine: EngineLink, queue: DispatchQueue) throws {
+	/// `advertiser` is the build's (`Advertisers.forBuild`); the check gives one that records what it is asked to advertise.
+	package init(kind: BuildKind, keys: MacKeys, vault: any KeyVault, engine: EngineLink, queue: DispatchQueue, advertiser: (any Advertiser)?) throws {
 		self.kind = kind
 		self.keys = keys
 		self.vault = vault
 		self.engine = engine
 		self.queue = queue
-		advertiser = Advertisers.forBuild(kind, queue: queue)
-		devices = try vault.devices()
-		homeKey = try vault.homeKey()
+		self.advertiser = advertiser
+		let kept = try vault.kept()
+		devices = kept.devices
+		homeKey = kept.homeKey
 		engine.onEvent = { [unowned self] in self.heard($0) }
 		engine.onSessionLine = { [unowned self] in self.fromEngine(session: $0, message: $1) }
 		engine.onDrained(below: Self.engineDrained) { [unowned self] in self.engineDrained() }
@@ -154,11 +157,11 @@ package final class Remote: @unchecked Sendable {
 		let kept = devices.filter { listed.contains($0.id.text) }
 		if kept.count != devices.count {
 			log("\(devices.count - kept.count) device(s) the engine no longer lists were dropped from pi² Remote's own list")
-			// Revoked while pi² Remote was not running, or before it kept the new home key: the key goes too, before
-			// anything is advertised.
-			renewHomeKey()
+			// Revoked while pi² Remote was not running, or by a revocation whose write failed: the key the device holds goes
+			// too, before anything is advertised (nothing is until `applySwitches` below). A new one if a device is left,
+			// none if not; if it cannot be kept, none at all, and nothing is advertised.
 			devices = kept
-			saveDevices()
+			keep(devices, homeKey: devices.isEmpty ? nil : HomeKey.random())
 		}
 		applySwitches()
 		hello()
@@ -282,9 +285,9 @@ package final class Remote: @unchecked Sendable {
 			advertised = nil
 			return
 		}
-		// No home key before the first device is paired: nothing to recognise, so nothing is advertised (a claimer finds
-		// the Mac by the payload's addresses).
-		guard let homeKey else {
+		// No home key, or no device to hold it (before the first pairing, and after the last device is revoked): nothing
+		// to recognise, so nothing is advertised (a claimer finds the Mac by the payload's addresses).
+		guard let homeKey, !devices.isEmpty else {
 			advertiser.stop()
 			advertised = nil
 			return
@@ -401,26 +404,23 @@ package final class Remote: @unchecked Sendable {
 			log("paired: the engine named a device pi² Remote cannot read; left")
 			return
 		}
-		// The first device: the home key is made, and kept before it is given (#845).
-		if homeKey == nil {
-			let made = HomeKey.random()
-			do {
-				try vault.saveHomeKey(made)
-				homeKey = made
-				advertise()
-			} catch {
-				log("the home key could not be kept: \(error); the device is not told it is paired")
-			}
-		}
-		devices.removeAll { $0.id == device.id }
-		devices.append(device)
-		saveDevices()
-		log("paired device \(device.id): added to pi² Remote's own list")
-		guard let claim = event["claim"]?.stringValue, let connection = claims.removeValue(forKey: claim) else { return }
-		guard let homeKey else {
-			connection.end()
+		// The device and the home key are kept together before the phone is told (#845). The first pairing's key was made
+		// and kept when its claim went to the engine (`keyForClaim`), so a key that cannot be kept refuses the claim while
+		// the window is open; one is made here only if a write failed since.
+		var list = devices
+		list.removeAll { $0.id == device.id }
+		list.append(device)
+		let connection = event["claim"]?.stringValue.flatMap { claims.removeValue(forKey: $0) }
+		guard keep(list, homeKey: homeKey ?? HomeKey.random()), let homeKey else {
+			// Not on pi² Remote's own list, so never attached, and its phone is told nothing but `bye`. The engine has paired
+			// it already and has no request to undo that (#776): the Devices page shows a device that never attaches, which
+			// the person removes there.
+			log("paired device \(device.id) could not be kept on pi² Remote's own list; its phone is not told it is paired")
+			connection?.end()
 			return
 		}
+		log("paired device \(device.id): added to pi² Remote's own list")
+		guard let connection else { return }
 		let answer = event["paired"]
 		guard let pairingText = answer?["pairing"]?.stringValue, let pairingID = PairingID(pairingText), let name = answer?["name"]?.stringValue,
 		      case let .array(items)? = answer?["addresses"],
@@ -434,12 +434,23 @@ package final class Remote: @unchecked Sendable {
 		connection.end()
 	}
 
+	/// The first pairing's claim is about to go to the engine: its home key is made and kept now, with the list as it is,
+	/// so that a key that cannot be kept refuses the claim while the window is still open (`remote.pairRefused`), and
+	/// the engine never pairs a device whose phone could not be given the key (#675's security read, S2). It is not
+	/// advertised while no device holds it, and is given only in `paired`; a claim that does not end paired leaves it for
+	/// the next one. False if it could not be kept.
+	func keyForClaim() -> Bool {
+		if homeKey != nil { return true }
+		return keep(devices, homeKey: HomeKey.random())
+	}
+
 	private func revoke(_ device: DeviceID) {
-		// A new home key, kept first, so that a restart cannot bring back the one the revoked phone holds; then the list.
-		renewHomeKey()
-		let before = devices.count
+		// Dropped at once, and kept with a new home key in one write before anything else (`KeptDevices`), so that no
+		// restart can bring back the key the revoked phone holds; no key at all once no device is left (S3). A write that
+		// fails leaves the list and the key as they were, the device still on the list, and `homeKey` nil: nothing is
+		// advertised, and the next `start`, which no longer names the device, drops it and makes the new key.
 		devices.removeAll { $0.id == device }
-		if devices.count != before { saveDevices() }
+		if keep(devices, homeKey: devices.isEmpty ? nil : HomeKey.random()), homeKey != nil { log("a new home key was made, after a revocation") }
 		// The phone is told first, signed by the identity key, which it acts on alone (3.6); then its channels end.
 		for connection in connections.values where connection.device == device {
 			if let pairing, let revocation = try? Revocation.make(pairing: pairing, device: device, identity: keys.identity) {
@@ -456,28 +467,26 @@ package final class Remote: @unchecked Sendable {
 		for connection in connections.values where connection.isAttached { connection.sendHomeKey() }
 	}
 
-	/// Makes a new home key and keeps it, then advertises its tag at once, never the old one beside it (#845). Nothing
-	/// before the first pairing. A key that cannot be kept stops advertising, rather than go on with the old one.
-	private func renewHomeKey() {
-		guard homeKey != nil else { return }
-		let made = HomeKey.random()
+	/// Keeps `list` and `key` in one write (`KeptDevices`), and only then takes the key as the home key and advertises
+	/// its tag, never the old one beside it. So while `homeKey` is not nil the vault holds exactly it and `devices`, and
+	/// every phone given the key is on the list kept beside it. A write that fails leaves `homeKey` nil: nothing is
+	/// advertised and no key sent until one is kept. `devices` becomes `list` once kept; a caller that drops a device
+	/// whatever happens drops it first.
+	@discardableResult
+	private func keep(_ list: [ListedDevice], homeKey key: HomeKey?) -> Bool {
+		let kept: Bool
 		do {
-			try vault.saveHomeKey(made)
-			homeKey = made
-			log("a new home key was made, after a revocation")
+			try vault.keep(KeptDevices(devices: list, homeKey: key))
+			devices = list
+			homeKey = key
+			kept = true
 		} catch {
 			homeKey = nil
-			log("a new home key could not be kept: \(error); nothing is advertised")
+			log("pi² Remote's own list of devices and the home key could not be kept: \(error); nothing is advertised until they are")
+			kept = false
 		}
 		advertise()
-	}
-
-	private func saveDevices() {
-		do {
-			try vault.saveDevices(devices)
-		} catch {
-			log("pi² Remote's own list of devices could not be saved: \(error)")
-		}
+		return kept
 	}
 
 	// ---- Sessions (4.1, 5.8)

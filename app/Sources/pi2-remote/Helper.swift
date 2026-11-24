@@ -53,7 +53,7 @@ public enum RemoteHelper {
 		do {
 			let vault = try KeyVaults.forBuild(kind, folder: verified.folder.url)
 			let keys = try vault.macKeys()
-			remote = try Remote(kind: kind, keys: keys, vault: vault, engine: engine, queue: queue)
+			remote = try Remote(kind: kind, keys: keys, vault: vault, engine: engine, queue: queue, advertiser: Advertisers.forBuild(kind, queue: queue))
 		} catch {
 			log("the Mac's keys or pi² Remote's list of devices could not be read: \(error); stopping")
 			exit(1)
