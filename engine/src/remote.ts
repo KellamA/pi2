@@ -191,6 +191,16 @@ export const MAX_PHONE_LINE = 72 * 1024 * 1024;
  * requests are far smaller.
  */
 export const MAX_HELPER_LINE = MAX_PHONE_LINE + 64 * 1024;
+/**
+ * The longest line the engine writes pi² Remote, in UTF-8 bytes without its newline (#919): what pi² Remote takes from
+ * the engine (`EngineLink.maxLineLength`, RemoteKit's `Lines.defaultMaxLength`), past which it stops as if the engine
+ * had failed, and every phone's session with it. A session's line goes on to the phone without its wrapping, and a
+ * phone takes as much (`Lines.defaultMaxLength` once attached), so a line that fits here fits there. A phone's own
+ * line may be longer (MAX_PHONE_LINE), and a message's typed text comes back to it in the transcript: so every line is
+ * held to this as it is written (`write`, `sessionLine`). pi2-remote-helper-check and the devices test hold it equal to
+ * pi² Remote's.
+ */
+export const MAX_LINE_TO_HELPER = 64 * 1024 * 1024;
 
 /**
  * Starts or stops pi² Remote as `helperWanted` says. It is stopped a moment after it is no longer wanted, not at once:
@@ -320,8 +330,50 @@ function ready(): Promise<{ addresses: string[] }> {
 	});
 }
 
+/** Whether `line` (without its newline) is longer than pi² Remote takes; counted in bytes only when it could be. */
+const overHelperLimit = (line: string): boolean => line.length * 3 > MAX_LINE_TO_HELPER && Buffer.byteLength(line) > MAX_LINE_TO_HELPER;
+
+/** When a line too long for pi² Remote was last said in engine.log: at most once a minute, by kind and size alone. */
+let tooLongSaid = 0;
+function sayTooLong(what: string, line: string): void {
+	const now = Date.now();
+	if (now - tooLongSaid < 60_000) return;
+	tooLongSaid = now;
+	log?.(`remote: ${what} of ${Buffer.byteLength(line)} bytes was not written to pi² Remote, which takes lines of at most ${MAX_LINE_TO_HELPER} (said at most once a minute)`);
+}
+
+/**
+ * Every line to pi² Remote is written here: a session's (`sessionLine`, which turns an answer too long into a refusal
+ * first), the `remote` event (`toHelper`) and the answers to its own requests (`helperRequest`). One longer than it
+ * takes is not written, so that no line of the engine's stops it.
+ */
 function write(current: Helper | null, message: string): void {
-	if (current !== null && !current.wire.destroyed) current.wire.write(message);
+	if (current === null || current.wire.destroyed) return;
+	const line = message.endsWith("\n") ? message.slice(0, -1) : message;
+	if (overHelperLimit(line)) return sayTooLong("a line", line);
+	current.wire.write(message);
+}
+
+/**
+ * A line `forDevice` made for session `id`, in the session's wrapping, as written to pi² Remote; or null for none. A line
+ * longer than pi² Remote takes (MAX_LINE_TO_HELPER, the wrapping counted) is never written: an answer becomes
+ * ANSWER_NOT_SENT, as one that could not be made fit for a device does, so that no request goes unanswered; an event
+ * is dropped. Either is said in engine.log, by kind and size, never what it held.
+ */
+export function sessionLine(id: string, out: string): string | null {
+	const line = `{"session":${JSON.stringify(id)},"message":${out}}`;
+	if (!overHelperLimit(line)) return `${line}\n`;
+	const event = /^\{"event":"([A-Za-z0-9_.]{1,64})"/.exec(out)?.[1];
+	// As forDevice reads an answer's id: every answer starts with it.
+	const answer = event === undefined ? /^\{"id":(-?\d{1,16}|"[A-Za-z0-9_.:-]{0,64}"|null)[,}]/.exec(out)?.[1] : undefined;
+	sayTooLong(event !== undefined ? `a device's ${event} event` : answer !== undefined ? "an answer to a device" : "a device's line", line);
+	return answer === undefined ? null : `{"session":${JSON.stringify(id)},"message":{"id":${answer},"error":${JSON.stringify(ANSWER_NOT_SENT)}}}\n`;
+}
+
+/** A line for session `id`, as `forDevice` made it, to pi² Remote. */
+function toSession(id: string, out: string): void {
+	const line = sessionLine(id, out);
+	if (line !== null) write(helper, line);
 }
 
 /** A `remote` event, to pi² Remote alone. */
@@ -518,7 +570,7 @@ function deviceWire(session: Session): Wire {
 			for (const line of text.split("\n")) {
 				if (line === "") continue;
 				const out = forDevice(line);
-				if (out !== null) write(helper, `{"session":${JSON.stringify(session.id)},"message":${out}}\n`);
+				if (out !== null) toSession(session.id, out);
 			}
 		},
 		destroy() {
@@ -619,7 +671,7 @@ function deviceLineFailed(id: string, message: unknown): (error: unknown) => voi
 			if (session !== undefined) send(session.client, body);
 			else {
 				const out = forDevice(JSON.stringify(body));
-				if (out !== null) write(helper, `{"session":${JSON.stringify(id)},"message":${out}}\n`);
+				if (out !== null) toSession(id, out);
 			}
 		} catch (again) {
 			log("remote: and its refusal could not be sent:", again instanceof Error ? again.message : again);
@@ -645,7 +697,7 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
 		if (session !== undefined) send(session.client, { id: request.id ?? null, ...body });
 		else {
 			const out = forDevice(JSON.stringify({ id: request.id ?? null, ...body }));
-			if (out !== null) write(helper, `{"session":${JSON.stringify(id)},"message":${out}}\n`);
+			if (out !== null) toSession(id, out);
 		}
 	};
 	const device = session === undefined ? undefined : pairedDevice(session.device);

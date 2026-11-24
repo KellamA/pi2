@@ -27,7 +27,7 @@ import { APPROVAL_DEPTH, checkRequestItem, type Device, deviceRequests, DeviceLo
 import type { Client } from "../src/clients.ts";
 import { attachChallenge, checkAttach, offerPresenceKey, PRESENCE_KEY_ALREADY_WAITS, PRESENCE_KEY_CHANGED, PRESENCE_KEY_WAITS } from "../src/devices.ts";
 import { personOnly } from "../src/answers.ts";
-import { ANSWER_NOT_SENT, DEVICE_LINE_FAILED, forDevice, MAX_HELPER_LINE, MAX_PHONE_LINE, SESSION_OVER } from "../src/remote.ts";
+import { ANSWER_NOT_SENT, DEVICE_LINE_FAILED, forDevice, MAX_HELPER_LINE, MAX_LINE_TO_HELPER, MAX_PHONE_LINE, SESSION_OVER, sessionLine } from "../src/remote.ts";
 import { NOT_LINKED, NOT_OFFERED } from "../src/folders.ts";
 import { offerFolders } from "../src/answers.ts";
 import { symlinkSync } from "node:fs";
@@ -314,7 +314,7 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	// without the other fails here as well as in pi2-remote-helper-check.
 	const values: Record<string, number> = {};
 	const constant = (file: string, name: string) => {
-		const source = readFileSync(new URL(`../../app/Sources/pi2-remote/${file}`, import.meta.url), "utf8");
+		const source = readFileSync(new URL(`../../app/Sources/${file.includes("/") ? file : `pi2-remote/${file}`}`, import.meta.url), "utf8");
 		const expression = new RegExp(`static let ${name} = ([^\\n]+)`).exec(source)?.[1];
 		assert.ok(expression !== undefined, `${name} is found in ${file}`);
 		return expression.split("+").reduce((sum, term) => sum + term.split("*").reduce((product, factor) => {
@@ -327,7 +327,29 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	assert.equal(values["Remote.phoneLineLimit"], MAX_PHONE_LINE, "pi² Remote takes from a phone the longest line the engine takes");
 	assert.equal(constant("EngineLink.swift", "maxLineToEngine"), MAX_HELPER_LINE, "and writes to the engine no longer line than it takes");
 	assert.equal(MAX_PHONE_LINE, 72 * 1024 * 1024);
-	step("a phone's longest line is 72 MiB in pi² Remote and in the engine, and the engine takes it with 64 KiB of wrapping");
+	// The other way (#919): the engine writes pi² Remote no line longer than it takes, which is what a phone takes.
+	values["Lines.defaultMaxLength"] = constant("RemoteKit/Frames.swift", "defaultMaxLength");
+	assert.equal(constant("EngineLink.swift", "maxLineLength"), MAX_LINE_TO_HELPER, "pi² Remote takes from the engine the longest line the engine writes it");
+	assert.equal(values["Lines.defaultMaxLength"], MAX_LINE_TO_HELPER, "and so does a phone once attached, RemoteKit's Lines.defaultMaxLength");
+	assert.match(readFileSync(new URL("../../iphone/Sources/Connection/Attach.swift", import.meta.url), "utf8"), /\.maxLineLength = Lines\.defaultMaxLength\n/, "which the phone takes once attached");
+	step("a phone's longest line is 72 MiB in pi² Remote and in the engine, and the engine takes it with 64 KiB of wrapping; the engine's longest line to pi² Remote is 64 MiB, what it and a phone take");
+
+	// At the edge, in bytes, the session's wrapping counted: an event over it dropped, an answer over it refused.
+	const wrapping = '{"session":"s_x","message":}'.length;
+	const head = '{"event":"conversation","text":"';
+	const fill = MAX_LINE_TO_HELPER - wrapping - head.length - 2;
+	const exact = `${head}${"a".repeat(fill)}"}`;
+	assert.equal(sessionLine("s_x", exact)?.length, MAX_LINE_TO_HELPER + 1, "a line of exactly 64 MiB, wrapped, is written whole, with its newline");
+	assert.equal(sessionLine("s_x", `${head}${"a".repeat(fill + 1)}"}`), null, "an event one byte over is dropped");
+	const wide = `${head}${"é".repeat(Math.floor(fill / 2) + 1)}"}`;
+	assert.ok(wide.length < MAX_LINE_TO_HELPER - wrapping, "in characters it is under");
+	assert.equal(sessionLine("s_x", wide), null, "and one over in UTF-8 bytes, under in characters");
+	for (const id of ["7", '"p11"']) {
+		const answer = `{"id":${id},"result":{"text":"${"a".repeat(fill + 64)}"}}`;
+		assert.equal(sessionLine("s_x", answer), `{"session":"s_x","message":{"id":${id},"error":${JSON.stringify(ANSWER_NOT_SENT)}}}\n`, `an answer over it is refused, to its id ${id}`);
+	}
+	assert.equal(sessionLine("s_x", '{"id":1,"result":{}}'), '{"session":"s_x","message":{"id":1,"result":{}}}\n');
+	step("a line to pi² Remote of exactly 64 MiB in UTF-8 bytes, wrapped, is written; one byte over, an event is dropped and an answer refused");
 }
 
 // ---- A phone of this test's own
@@ -746,6 +768,8 @@ class Remote {
 	pairing = b64url(randomBytes(16));
 	macKeys = { identity: spki(p256().publicKey), channel: b64url(randomBytes(32)), record: spki(p256().publicKey), relay: spki(p256().publicKey), secureEnclave: false };
 	closed = false;
+	/** The longest line the engine wrote this pi² Remote, in UTF-8 bytes without its newline (#919). */
+	longest = 0;
 	#next = 1;
 	#replies = new Map<number, (reply: any) => void>();
 
@@ -753,12 +777,19 @@ class Remote {
 
 	constructor(socket: Socket) {
 		this.socket = socket;
-		let buffer = "";
+		// Only each new chunk is searched for a newline: a line of 64 MiB comes in a thousand chunks.
+		let held: string[] = [];
 		socket.setEncoding("utf8").on("data", (chunk: string) => {
-			buffer += chunk;
-			const lines = buffer.split("\n");
-			buffer = lines.pop()!;
-			for (const line of lines) this.#heard(line);
+			let start = 0;
+			for (let newline = chunk.indexOf("\n"); newline !== -1; newline = chunk.indexOf("\n", start)) {
+				held.push(chunk.slice(start, newline));
+				const line = held.join("");
+				held = [];
+				start = newline + 1;
+				this.longest = Math.max(this.longest, Buffer.byteLength(line));
+				this.#heard(line);
+			}
+			if (start < chunk.length) held.push(chunk.slice(start));
 		});
 		socket
 			.on("close", () => {
@@ -1213,6 +1244,72 @@ try {
 	const longestBack = Math.max(...remote.sessionLines.get(session)!.slice(linesBefore).map((line) => JSON.stringify(line).length));
 	assert.ok(longestBack < 1024 * 1024, `what the device is sent back names the pictures, without them: its longest line is ${longestBack} characters`);
 	step(`a phone's message of ten pictures of 5 MiB (${(tenLine.length / 1024 / 1024).toFixed(1)} MiB) is taken from pi² Remote in ${tenTook} ms, and what goes back to the device names them without carrying them`);
+
+	// ---- A phone's typed text over 64 MiB (#919): taken, its echo never written to pi² Remote, which takes 64 MiB at most
+	{
+		// Another device's session beside it, which must not notice.
+		const other = new Phone("Jo's iPhone");
+		({ device: other.id } = await app.call("devices.pairConfirm", { digits: (await claimIn(other)).digits }));
+		const otherChallenge = (await remote.call("remote.attachBegin")).result.challenge;
+		const otherBinding = randomBytes(32);
+		const otherSession = (await remote.call("remote.attach", { attach: other.attach({ pairing: remote.pairing, challenge: otherChallenge, binding: otherBinding }), binding: b64url(otherBinding), path: "relay" })).result.session as string;
+		await until("the other device's greeting", () => remote.sessionLines.get(otherSession)?.some((line) => line.event === "device"));
+		// The demo model answers `/work 0` with a line of its own, without quoting the text.
+		const typed = (prefix: string, length: number) => `/work 0 1000 ${prefix}${"t".repeat(length)}`;
+		const echoOf = (conversation: number, from: number) =>
+			remote.sessionLines.get(session)!.slice(from).find((line) => line.event === "conversation" && line.id === conversation && line.items.some((item: any) => item.kind === "user"));
+		const opened = async () => {
+			const { id } = (await ask("conversation.create", { model: { provider: "demo", modelId: "demo-1" } })).result;
+			await ask("conversation.open", { id, newestFirst: true });
+			return id as number;
+		};
+
+		const otherFrom = remote.sessionLines.get(otherSession)!.length;
+		// Just under: what the echo's wrapping takes is measured on a short message first, then the text fills the rest
+		// but for 4 KiB.
+		const under = await opened();
+		const shortFrom = remote.sessionLines.get(session)!.length;
+		await ask("submit", { id: under, text: typed("", 1) });
+		const shortEcho = await until("the short message's echo", () => echoOf(under, shortFrom));
+		await until("the short message's answer", () => remote.sessionLines.get(session)!.slice(shortFrom).some((line) => line.event === "conversation" && JSON.stringify(line).includes("Done: I ran it 0 times")));
+		const wrapping = Buffer.byteLength(JSON.stringify({ session, message: shortEcho })) - typed("", 1).length;
+		const underText = typed("under ", MAX_LINE_TO_HELPER - wrapping - 4096 - typed("under ", 0).length);
+		const underFrom = remote.sessionLines.get(session)!.length;
+		assert.ok((await ask("submit", { id: under, text: underText })).result !== undefined, "a text just under is taken");
+		const underEcho = await until("the echo of a text just under 64 MiB", () => echoOf(under, underFrom));
+		assert.equal(underEcho.items.find((item: any) => item.kind === "user").text, underText, "and comes back to the phone whole");
+		assert.ok(remote.longest > MAX_LINE_TO_HELPER - 8192 && remote.longest <= MAX_LINE_TO_HELPER, `in a line of ${remote.longest} bytes`);
+
+		// Over: taken, as the engine does not yet limit a phone's typed text, and its echo not written.
+		const over = await opened();
+		const overText = typed("over ", 65 * 1024 * 1024);
+		const overFrom = remote.sessionLines.get(session)!.length;
+		const logFrom = engineLog.length;
+		const overAnswer = await ask("submit", { id: over, text: overText });
+		assert.ok(overAnswer.result !== undefined, `a text of 65 MiB from a phone is taken: ${JSON.stringify(overAnswer).slice(0, 300)}`);
+		const said = await until("the echo not written, in engine.log", () => engineLog.slice(logFrom).match(/remote: a device's conversation event of (\d+) bytes was not written to pi² Remote, which takes lines of at most (\d+)/) ?? undefined, {
+			over: () => (remote.longest > MAX_LINE_TO_HELPER ? `pi² Remote was written a line of ${remote.longest} bytes` : undefined),
+		});
+		assert.ok(Number(said[1]) > MAX_LINE_TO_HELPER && Number(said[2]) === MAX_LINE_TO_HELPER, said[0]);
+		assert.ok(!engineLog.slice(logFrom).includes("tttttttt"), "by its kind and size, nothing of what it held");
+		assert.ok(!remote.closed && remote.longest <= MAX_LINE_TO_HELPER, `pi² Remote is written no line longer than it takes: ${remote.longest} bytes at most`);
+		assert.equal(echoOf(over, overFrom), undefined, "the phone is sent no echo of it");
+		assert.deepEqual((await ask("engine.info")).result, { build: null, pid: engine.pid }, "and its session goes on");
+		assert.deepEqual((await remote.inSession(otherSession, "engine.info")).result, { build: null, pid: engine.pid }, "so does the other device's");
+		const otherLongest = remote.sessionLines.get(otherSession)!.slice(otherFrom).reduce((most: any, line) => (JSON.stringify(line).length > JSON.stringify(most ?? null).length ? line : most), null);
+		assert.ok(JSON.stringify(otherLongest).length < 1024 * 1024, `which was sent nothing of either text: ${JSON.stringify(otherLongest).slice(0, 300)} (${JSON.stringify(otherLongest).length})`);
+		const open = app.devicesEvents.at(-1).sessions.map((one: any) => one.session);
+		assert.ok(open.includes(session) && open.includes(otherSession), "both sessions are open on the Mac");
+		// What the phone then sees of that conversation, opened again: nothing of its list while the message is among the
+		// newest entries, since the first part, which holds it, is too long to send.
+		await ask("conversation.close", { id: over });
+		const againFrom = remote.sessionLines.get(session)!.length;
+		assert.deepEqual((await ask("conversation.open", { id: over, newestFirst: true })).result, {}, "opened again, it is answered");
+		await ask("engine.info");
+		assert.ok(!remote.sessionLines.get(session)!.slice(againFrom).some((line) => String(line.event).startsWith("conversation") && line.id === over), "and sent nothing of its list");
+		await app.call("devices.revoke", { device: other.id });
+		step(`a phone's typed text of 65 MiB is taken and its echo (${said[1]} bytes) is not written to pi² Remote, which takes ${MAX_LINE_TO_HELPER}: the session and another device's go on; one just under comes back whole`);
+	}
 
 	// ---- A new project's folder, and a file shown, from the phone (#698; engine/test/folders.ts has every refusal)
 	{

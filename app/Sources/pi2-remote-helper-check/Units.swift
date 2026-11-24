@@ -337,7 +337,10 @@ enum Units {
 	/// A phone's longest line as pi² Remote takes it, and the longest line the engine takes from pi² Remote, are the
 	/// engine's own (#904): `MAX_PHONE_LINE` and `MAX_HELPER_LINE` in engine/src/remote.ts, read from its source, so that
 	/// one side raised without the other fails here. Equal, not merely fitting: an engine that takes less stops pi² Remote
-	/// for a line it was right to pass on, and one that takes more takes lines no phone may send.
+	/// for a line it was right to pass on, and one that takes more takes lines no phone may send. And the other way
+	/// (#919): the longest line the engine writes pi² Remote, `MAX_LINE_TO_HELPER`, is what pi² Remote takes from it
+	/// (`EngineLink.maxLineLength`), and what a phone takes once attached (`Lines.defaultMaxLength`): one longer would
+	/// stop pi² Remote, and every phone's session.
 	static func lineLimitsAsTheEngines(sources: URL) {
 		Check.section("a phone's longest line, here and in the engine (#904)")
 		let file = sources.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("engine/src/remote.ts")
@@ -363,6 +366,9 @@ enum Units {
 		Check.expect(phone == Remote.phoneLineLimit, "a phone's longest line is the engine's MAX_PHONE_LINE", "\(Remote.phoneLineLimit) here, \(phone.map(String.init) ?? "none") in remote.ts")
 		Check.expect(helper == EngineLink.maxLineToEngine, "the longest line written to the engine is its MAX_HELPER_LINE", "\(EngineLink.maxLineToEngine) here, \(helper.map(String.init) ?? "none") in remote.ts")
 		Check.expect(Remote.phoneLineLimit == 72 * 1024 * 1024, "and it is 72 MiB: ten pictures of 5 MiB in base64, and their message")
+		let toHelper = constant("MAX_LINE_TO_HELPER")
+		Check.expect(toHelper == EngineLink.maxLineLength, "the longest line the engine writes pi² Remote is the longest it takes from the engine, remote.ts's MAX_LINE_TO_HELPER", "\(EngineLink.maxLineLength) here, \(toHelper.map(String.init) ?? "none") in remote.ts")
+		Check.expect(toHelper == Lines.defaultMaxLength, "and the longest a phone takes once attached", "\(Lines.defaultMaxLength) in RemoteKit, \(toHelper.map(String.init) ?? "none") in remote.ts")
 	}
 
 	/// A development build's executable names none of the calls that could ask macOS for anything (CONTRIBUTING.md,
