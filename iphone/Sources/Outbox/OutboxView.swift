@@ -1,12 +1,12 @@
 import SwiftUI
 
 /// The Outbox (docs/design/iphone.md, "The phone when the Mac is asleep or out of reach"): what the person wrote while
-/// the Mac was out of reach, each saying whether it went. The entry view for the route `.outbox` (to be added to
-/// `Route`, #680): `OutboxView()`. It reads the Outbox from the environment (`.environment(outbox)` at the root, beside
-/// the session); without one, as before Face ID opens the session, it says the Outbox opens with Face ID.
+/// the Mac was out of reach, each saying whether it went. The entry view for the route `.outbox`: `OutboxView()`. It
+/// reads the Outbox from the environment (`.environment(outbox)` at the root while the store is open); without one, as
+/// before Face ID opens the session, it says the Outbox opens with Face ID.
 ///
-/// Drawn `.inline` (`RouteView(.outbox, placement: .inline)`, for the projects list or a conversation), it is one line
-/// that counts what waits, and nothing when nothing does.
+/// Drawn `.inline` (`RouteView(.outbox, placement: .inline)`, under the projects list, where a tap opens the screen), it
+/// is one line that counts what waits, and nothing when nothing does.
 struct OutboxView: View {
     @Environment(Outbox.self) private var outbox: Outbox?
     @Environment(\.placement) private var placement

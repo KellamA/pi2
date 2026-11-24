@@ -22,7 +22,8 @@ import SwiftUI
 /// `more`, `onlyMac`; `project`, `repository`, `orchestrator`, `switches`, `reports`, `limits`, `schedules`,
 /// `lifecycle`), for a picture of what is below the screen. `PI2_SETTINGS_PRESS=<row>` makes one change once the screen
 /// has drawn, as a tap would, so that the engine's answer to it can be pictured: `awake` (Settings), `reports` (a
-/// project's), `run` (the first schedule, on Schedules).
+/// project's), `run` (the first schedule, on Schedules), `live-activity` (a project's Live Activity switch, turned on; with
+/// `PI2_LIVE_ACTIVITY_SWITCH=off-in-ios`, drawn as while iOS has Live Activities off).
 struct SettingsSamples {
     let names: Set<String>
 
