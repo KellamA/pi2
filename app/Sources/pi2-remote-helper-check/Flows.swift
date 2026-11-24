@@ -62,6 +62,11 @@ enum Flows {
 	/// Pairs a phone through a window the check opens, as the engine would; returns the device's id.
 	nonisolated(unsafe) static var home = URL(fileURLWithPath: "/nonexistent")
 
+	/// Whether pi² Remote's log has a line ending `text`.
+	static func logged(_ text: String) -> Bool {
+		((try? String(contentsOf: home.appendingPathComponent("remote.log"), encoding: .utf8)) ?? "").split(separator: "\n").contains { $0.hasSuffix(" \(text)") }
+	}
+
 	static func pair(_ engine: FakeEngine, mac: Mac, keys: PhoneKeys, claim: String) -> DeviceID? {
 		let secret = Bytes.random(32)
 		let expires = Int64(Date().timeIntervalSince1970) + 300
@@ -348,6 +353,7 @@ enum Flows {
 			let whole = phone.sendLine(Data(#"{"attach":""#.utf8) + Data(repeating: UInt8(ascii: "a"), count: 32 * 1024 * 1024) + Data(#""}"#.utf8))
 			Check.expect(!whole && phone.closesWithin(10), "a line over 64 KiB from a phone not yet attached closes its channel before pi² Remote holds it")
 			Check.expect(engine.quiet(for: 1), "and never reaches the engine")
+			Check.expect(Flows.logged("a line from device \(device) passed the \(Lines.firstLinesMaxLength) bytes its channel takes; its connection closed (said at most once a minute)"), "and remote.log says so, by the device and the limit (#919)")
 		}
 		if let phone = Phone(port: mac.port), let challenge = beginAttach(phone, engine, mac: mac, device: device, keys: keys) {
 			let claim = try! AttachClaim.make(pairing: mac.pairing, device: device, session: nil, received: nil, binding: phone.channel!.handshakeHash, challenge: challenge, build: "0", deviceKey: keys.device, presenceKey: keys.presence)
@@ -455,6 +461,8 @@ enum Flows {
 			long.sendLine(over)
 			Check.expect(long.closesWithin(30), "a line from a phone one byte over \(Remote.phoneLineLimit / 1024 / 1024) MiB closes its channel")
 			Check.expect(engine.sessionLine(within: 1) == nil, "and never reaches the engine")
+			Check.expect(Flows.logged("a line from device \(other) passed the \(Remote.phoneLineLimit) bytes its channel takes; its connection closed (said at most once a minute)"), "and remote.log says so, by the device and the limit, nothing of the line (#919)")
+			Check.expect(!((try? String(contentsOf: home.appendingPathComponent("remote.log"), encoding: .utf8)) ?? "").contains("ccccccc"), "nothing of the line")
 			engine.event("sessionClosed", [("session", .string("s_five")), ("why", .string("check"))])
 		}
 		if let phone = Phone(port: mac.port), let challenge = beginAttach(phone, engine, mac: mac, device: other, keys: second2) {
