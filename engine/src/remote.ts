@@ -42,6 +42,7 @@ import { allowsHiddenApproval, type DevicePath, deviceLogged, deviceMay, forTheH
 import { type Client, clients, send, type Wire } from "./clients.ts";
 import {
 	attachChallenge,
+	attachHolds,
 	attachTaken,
 	checkAttach,
 	type Device,
@@ -64,6 +65,7 @@ import {
 	helperGone,
 	activeDevices,
 	remoteHooks,
+	requestLogged,
 	sessionsChanged,
 	summarize,
 } from "./devices.ts";
@@ -410,6 +412,8 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 	},
 	"remote.attach": async (current, params) => {
 		const attached = await checkAttach(params);
+		// Again, with nothing awaited before the session opens: a key accepted, or a revocation, while the attach was saved (#786).
+		attachHolds(attached);
 		const resuming = attached.session === null ? undefined : sessions.get(attached.session);
 		const resumed = resuming !== undefined && resuming.device === attached.device.id;
 		let session: Session;
@@ -620,9 +624,10 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
 	}
 	const gate = { path: session.path, approvalSwitch, approvalHidden };
 	const answer = deviceMay(method, params as Params, gate);
-	const summary = summarize(method, params as Params);
+	// The log's own names (a pairing, an offer of a Face ID key) are the engine's to write: a device's are "unknown" (#786).
+	const summary = summarize(requestLogged(method), params as Params);
 	const record = (outcome: "done" | "refused" | "failed", why?: string) =>
-		void logDevice({ device: device.id, path: session.path, method, summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }).catch((error) =>
+		void logDevice({ device: device.id, path: session.path, method: requestLogged(method), summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }).catch((error) =>
 			log("devices: the log could not be written:", error instanceof Error ? error.message : error),
 		);
 	if (answer === "no" || !Object.hasOwn(handlers, method)) {
