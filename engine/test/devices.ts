@@ -14,7 +14,7 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { createHash, createHmac, generateKeyPairSync, type KeyObject, randomBytes, sign } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -528,6 +528,18 @@ class Phone {
 // ---- A claim with no attestation, from the simulator: only a test copy's engine started with --remote takes it (10)
 
 {
+	// A copy as scripts/test-copy lays one out, which testCopySuffix checks: its data folder under a home of this test's
+	// own, its Keychain service named (nothing is written there), and its bundle in this checkout's app/build/test-copies
+	// (git ignores it), removed at the end.
+	const suffix = `test-unattested-${process.pid}`;
+	const userHome = mkdtempSync(join(work, "user-"));
+	const data = join(userHome, "Library", "Application Support", `pi2-${suffix}`);
+	mkdirSync(data, { recursive: true });
+	const copyFolder = join(import.meta.dirname, "..", "..", "app", "build", "test-copies", suffix);
+	process.on("exit", () => rmSync(copyFolder, { recursive: true, force: true }));
+	mkdirSync(join(copyFolder, `pi² ${suffix}.app`, "Contents", "MacOS"), { recursive: true });
+	writeFileSync(join(copyFolder, `pi² ${suffix}.app`, "Contents", "MacOS", "pi2"), "");
+	const before = { HOME: process.env.HOME, PI2_HOME: process.env.PI2_HOME, PI2_KEYCHAIN_SERVICE: process.env.PI2_KEYCHAIN_SERVICE };
 	const unattested = async (release: boolean, env: Record<string, string | undefined>) => {
 		for (const [name, value] of Object.entries(env)) {
 			if (value === undefined) delete process.env[name];
@@ -560,7 +572,7 @@ class Phone {
 			await harness.close(context);
 		}
 	};
-	const copy = { PI2_TEST_COPY: "test-681", PI2_PAIR_UNATTESTED: "1" };
+	const copy = { HOME: userHome, PI2_HOME: data, PI2_KEYCHAIN_SERVICE: `dev.pi2.credentials.${suffix}`, PI2_TEST_COPY: suffix, PI2_PAIR_UNATTESTED: "1" };
 	const { paired, devices } = await unattested(false, copy);
 	assert.equal(paired.device.attestKeyId, null, "pi² Remote is told the device has no App Attest key");
 	assert.equal(devices.length, 1);
@@ -568,10 +580,85 @@ class Phone {
 	await assert.rejects(unattested(false, { ...copy, PI2_PAIR_UNATTESTED: undefined }), /no App Attest attestation/, "a test copy not started with --remote");
 	await assert.rejects(unattested(false, { ...copy, PI2_TEST_COPY: undefined }), /no App Attest attestation/, "the switch outside a test copy");
 	await assert.rejects(unattested(false, { ...copy, PI2_PAIR_UNATTESTED: "yes" }), /no App Attest attestation/, "a switch that is not 1");
-	await assert.rejects(unattested(true, copy), /no App Attest attestation/, "a release engine");
+	// PI2_TEST_COPY as main.ts checks it for its fixtures, not merely set: the security read paired with "" and "dev".
+	await assert.rejects(unattested(false, { ...copy, PI2_TEST_COPY: "" }), /no App Attest attestation/, "an empty suffix");
+	await assert.rejects(unattested(false, { ...copy, PI2_TEST_COPY: "dev" }), /no App Attest attestation/, "the suffix every development build has");
+	await assert.rejects(unattested(false, { ...copy, PI2_TEST_COPY: "test-none" }), /no App Attest attestation/, "a suffix whose copy is not there");
+	await assert.rejects(unattested(false, { ...copy, PI2_HOME: userHome }), /no App Attest attestation/, "another data folder");
+	await assert.rejects(unattested(false, { ...copy, PI2_KEYCHAIN_SERVICE: "dev.pi2.credentials" }), /no App Attest attestation/, "another Keychain service");
+	await assert.rejects(unattested(true, copy), /no App Attest attestation/, "an engine told it is a release one (wireDevices' release), in this development checkout");
+	assert.equal((await unattested(false, copy)).devices.length, 1, "and the same copy pairs again");
+	rmSync(copyFolder, { recursive: true, force: true });
+	await assert.rejects(unattested(false, copy), /no App Attest attestation/, "once the copy's bundle is gone");
+	for (const [name, value] of Object.entries(before)) {
+		if (value === undefined) delete process.env[name];
+		else process.env[name] = value;
+	}
 	delete process.env.PI2_TEST_COPY;
 	delete process.env.PI2_PAIR_UNATTESTED;
-	step("a claim with no attestation pairs only in a test copy's development engine started with --remote, with no App Attest key kept or told");
+	step("a claim with no attestation pairs only in a test copy's development engine started with --remote: not with PI2_TEST_COPY empty, dev, or without the copy's folders; with no App Attest key kept or told");
+}
+
+// ---- The same claim in a release-laid-out engine: refused, with both switches set and the copy's folders there (10)
+
+{
+	// The engine's source copied twice over into a checkout of this test's own, with a copy laid out as above. Once as
+	// it is (a development engine: the claim is taken), then with a BUILD file beside src, as a release build writes
+	// (testswitches.ts): the same claim is refused as one with no attestation, as on main, though the engine is told
+	// it is not a release one, so that only the BUILD file stops it.
+	const checkout = mkdtempSync(join(work, "release-"));
+	const engine = join(checkout, "engine");
+	cpSync(join(import.meta.dirname, "..", "src"), join(engine, "src"), { recursive: true });
+	cpSync(join(import.meta.dirname, "..", "package.json"), join(engine, "package.json"));
+	symlinkSync(join(import.meta.dirname, "..", "node_modules"), join(engine, "node_modules"));
+	const suffix = "test-release";
+	const userHome = mkdtempSync(join(work, "user-"));
+	const data = join(userHome, "Library", "Application Support", `pi2-${suffix}`);
+	mkdirSync(data, { recursive: true });
+	mkdirSync(join(checkout, "app", "build", "test-copies", suffix, `pi² ${suffix}.app`, "Contents", "MacOS"), { recursive: true });
+	writeFileSync(join(checkout, "app", "build", "test-copies", suffix, `pi² ${suffix}.app`, "Contents", "MacOS", "pi2"), "");
+	const probe = join(engine, "probe.ts");
+	writeFileSync(
+		probe,
+		`import { createHmac, generateKeyPairSync, randomBytes, sign } from "node:crypto";
+import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai";
+import { createRegistry, Harness } from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { deviceRequests, Devices, pairClaim, remoteHooks, wireDevices } from "./src/devices.ts";
+const b64url = (bytes) => Buffer.from(bytes).toString("base64url");
+const p256 = () => generateKeyPairSync("ec", { namedCurve: "P-256" });
+const spki = (key) => b64url(key.publicKey.export({ type: "spki", format: "der" }));
+const harness = await Harness.open(await openNodeSqliteStorage(process.argv[2]), { registry: createRegistry(), models: createModels() }, context);
+const pairing = b64url(randomBytes(16));
+await harness.commit(async (tx) => {
+	const doc = await tx.doc(Devices);
+	Object.assign(doc, { pairing, relay: "ws://127.0.0.1:9/v1", macKeys: { identity: spki(p256()), channel: b64url(randomBytes(32)), record: spki(p256()), relay: spki(p256()), secureEnclave: false } });
+	doc.remote = { ...doc.remote, preview: true, on: true };
+}, context);
+await wireDevices({ harness, context, log: () => {}, release: false, names: { conversation: () => undefined, project: () => undefined } });
+Object.assign(remoteHooks, { toHelper: () => {}, ready: async () => ({ addresses: [] }), addresses: () => [], changed: () => {} });
+await deviceRequests["devices.pairStart"]({}, { socket: { write: () => true, destroyed: false, destroy: () => {} }, subscriptions: new Map(), shown: new Set() });
+const binding = randomBytes(32);
+const device = p256();
+const signed = JSON.stringify({ v: 2, kind: "pair", pairing, binding: b64url(binding) });
+const claim = { v: 2, device: { name: "Simulator", model: "iPhone 17 Pro", system: "iOS 27.1", build: "7", deviceKey: spki(device), presenceKey: spki(p256()), channelKey: b64url(randomBytes(32)), recordKey: spki(p256()) }, attestation: null, keyId: null, signed, signature: b64url(sign("sha256", Buffer.from(signed), { key: device.privateKey, dsaEncoding: "ieee-p1363" })) };
+let outcome = "taken";
+try {
+	await pairClaim({ claim, binding: b64url(binding), challenge: b64url(randomBytes(32)), path: "home" });
+} catch (error) {
+	outcome = error.message;
+}
+await harness.close(context);
+console.log(JSON.stringify(outcome));
+`,
+	);
+	const env = { ...process.env, HOME: userHome, PI2_HOME: data, PI2_KEYCHAIN_SERVICE: `dev.pi2.credentials.${suffix}`, PI2_TEST_COPY: suffix, PI2_PAIR_UNATTESTED: "1" };
+	const claimIn = () => JSON.parse(execFileSync(process.execPath, [probe, join(mkdtempSync(join(work, "probe-")), "session.sqlite")], { env, encoding: "utf8" }).trim().split("\n").at(-1)!);
+	assert.equal(claimIn(), "taken", "laid out as a development engine, the copied engine takes the claim");
+	writeFileSync(join(engine, "BUILD"), "test-release\n");
+	assert.equal(claimIn(), "The claim has no App Attest attestation.", "with a BUILD file beside src, the same claim is refused as on main");
+	step("a release-laid-out engine refuses the claim with no attestation, with both switches set and the copy's folders there; the same engine without BUILD takes it");
 }
 
 // ---- A new Face ID key against a real store (#786): the log's kept share, and the races of a save under way

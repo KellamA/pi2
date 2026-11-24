@@ -275,11 +275,13 @@ else
 fi
 
 # start --remote gives the copy's engine the one switch with which it takes a pairing claim with no attestation, from
-# the simulator (#681): a test switch the engine fences, read in devices.ts together with PI2_TEST_COPY.
+# the simulator (#681): a test switch the engine fences, read in devices.ts together with testCopySuffix, the check
+# of PI2_TEST_COPY against the copy's own folders that main.ts makes for its fixtures.
 devices_src="$(dirname -- "$script")/../engine/src/devices.ts"
 if ! grep -qxF 'REMOTE_ENV=PI2_PAIR_UNATTESTED=1' "$script" ||
 	! grep -qF '	"PI2_PAIR_UNATTESTED",' "$(dirname -- "$script")/../engine/src/testswitches.ts" ||
-	! grep -qF 'testSwitch("PI2_TEST_COPY") !== undefined && testSwitch("PI2_PAIR_UNATTESTED") === "1"' "$devices_src"; then
+	! grep -qF 'testCopySuffix() !== undefined && testSwitch("PI2_PAIR_UNATTESTED") === "1"' "$devices_src" ||
+	! grep -qF 'const testSuffix = testCopySuffix();' "$(dirname -- "$script")/../engine/src/main.ts"; then
 	echo "FAIL: test-copy start --remote, TEST_SWITCHES and devices.ts no longer agree on PI2_PAIR_UNATTESTED"
 	failures=$((failures + 1))
 else

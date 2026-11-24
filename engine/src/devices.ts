@@ -20,7 +20,7 @@ import { defineDoc, type Harness } from "@earendil-works/pi-durable";
 import { type DevicePath, deviceMay, type DeviceSession, devicePlacement, ONLY_ON_THE_MAC } from "./answers.ts";
 import { AppAttestError, type AppAttestEnvironment, type AppAttestResult, verifyAttestation } from "./appattest.ts";
 import type { Client } from "./clients.ts";
-import { testSwitch } from "./testswitches.ts";
+import { testCopySuffix, testSwitch } from "./testswitches.ts";
 
 // ---- The records (3.2, 4.3, 4.4)
 
@@ -1065,7 +1065,7 @@ async function checkClaim(open: PairingWindow, params: Params): Promise<Claim> {
 	// A build without App Attest (the simulator) sends none (attestation and keyId null). Only a throwaway copy's engine
 	// takes it, one scripts/test-copy started with --remote, and never a release engine, which reads no test switch
 	// (iphone.md 10). Such a device is paired with no App Attest key, and pi² Remote is told none.
-	const unattested = claim.attestation === null && claim.keyId === null && !release && testSwitch("PI2_TEST_COPY") !== undefined && testSwitch("PI2_PAIR_UNATTESTED") === "1";
+	const unattested = claim.attestation === null && claim.keyId === null && !release && testCopySuffix() !== undefined && testSwitch("PI2_PAIR_UNATTESTED") === "1";
 	if (!unattested) {
 		// App Attest (P37): a genuine pi² for iPhone vouches for this very device key on this very channel.
 		const attestation = fromBase64url(claim.attestation);
