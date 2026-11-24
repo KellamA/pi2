@@ -5,6 +5,13 @@ import PiModels
 import SwiftUI
 import UserNotifications
 
+// The owner's decision of 22 November 2026: until a real phone is paired (#712), a release build has none of this, not
+// the tab, not the device line in the menu bar item and the sidebar, nor the `devices` event. Everything in this file,
+// and every place that uses it, is inside `PI2_DEVELOPMENT`, the compile-time condition of development builds (their
+// ordinary, optimised and test-copy forms) that a release build never defines; `app/check-release-build.mts` fails a
+// release executable that names it.
+#if PI2_DEVELOPMENT
+
 // Settings › Devices (docs/iphone.md 3.1 to 3.6, 4.4, 6.5; docs/design/iphone.md, The Devices page on the Mac; #679):
 // pairing an iPhone, the paired devices and what each did, and the switches of remote access. Everything here is the
 // Mac's alone: every `devices.*` request but a device's own is the app's (FOR_THE_PERSON_SETTINGS), and so is the
@@ -95,6 +102,9 @@ struct DevicesEvent: Decodable, Equatable {
     var pairingWindow: Window?
     var closed: Closed?
     var notice: Notice?
+    /// Why the engine could not read its record of paired devices, when it could not: then no device can pair or
+    /// connect, and every `devices.*` request but `devices.watch` is refused with these words (#776).
+    var unreadable: String?
 }
 
 /// One line of a device's log (`DeviceLogEntry`, 4.4).
@@ -107,6 +117,10 @@ struct DeviceLogEntry: Decodable, Equatable, Identifiable {
     let presence: Bool
     let outcome: String
     let why: String?
+    /// Refusals of the same request for the same reason within a minute of each other, made one entry: how many, and
+    /// the last one's time (#776).
+    let count: Int?
+    let lastAt: Double?
 
     var id: String { "\(at)-\(method)-\(summary)" }
 }
@@ -293,6 +307,8 @@ struct DevicesSettings: View {
     @State private var newName = ""
     @State private var revoking: PairedDevice?
     @State private var relayDraft = ""
+    /// Why the engine refused the relay's address typed, in its words.
+    @State private var relayProblem: String?
 
     private var store: DevicesStore { engine.devices }
     private var state: DevicesEvent? { store.state }
@@ -302,7 +318,14 @@ struct DevicesSettings: View {
         Form {
             Section {
                 Toggle("iPhone (preview)", isOn: binding(\.preview, "preview"))
-                    .disabled(state == nil)
+                    .disabled(state == nil || state?.unreadable != nil)
+                if let unreadable = state?.unreadable {
+                    Label {
+                        Text(unreadable).font(.callout)
+                    } icon: {
+                        Image(systemName: "exclamationmark.octagon.fill").foregroundStyle(Theme.bad)
+                    }
+                }
                 if let problem {
                     Text(problem).font(.callout).foregroundStyle(Theme.bad)
                 }
@@ -339,7 +362,10 @@ struct DevicesSettings: View {
             Text("It can no longer reach this Mac, at once: its keys are forgotten, its connection is closed, and pi²’s relay forgets it, its mailbox and its notifications. The iPhone is told when it next reaches this Mac, and wipes what it kept. Its log stays here for 90 days.")
         }
         .onAppear { relayDraft = state?.relay ?? "" }
-        .onChange(of: state?.relay) { _, relay in relayDraft = relay ?? "" }
+        .onChange(of: state?.relay) { _, relay in
+            relayDraft = relay ?? ""
+            relayProblem = nil
+        }
         #if PI2_DEVELOPMENT
         .task {
             // The devices arrive a moment after the tab appears.
@@ -385,6 +411,9 @@ struct DevicesSettings: View {
                         .onSubmit(saveRelay)
                     Button("Save", action: saveRelay)
                         .disabled(relayDraft.trimmingCharacters(in: .whitespaces) == (state?.relay ?? ""))
+                }
+                if let relayProblem {
+                    Text(relayProblem).font(.callout).foregroundStyle(Theme.bad)
                 }
             }
             VStack(alignment: .leading, spacing: 3) {
@@ -569,10 +598,20 @@ struct DevicesSettings: View {
         )
     }
 
+    /// The engine keeps the address in its one written form, which comes back in the event and replaces what was typed.
     private func saveRelay() {
         let address = relayDraft.trimmingCharacters(in: .whitespaces)
         guard address != (state?.relay ?? "") else { return }
-        change(["relayAddress": address])
+        Task {
+            do {
+                try await engine.call("devices.set", ["relayAddress": address])
+                relayProblem = nil
+                // Written the same way as before, the event does not change, and the draft is put back by hand.
+                relayDraft = store.state?.relay ?? address
+            } catch {
+                relayProblem = error.localizedDescription
+            }
+        }
     }
 
     private func change(_ params: [String: Any]) {
@@ -732,6 +771,8 @@ struct PairingSheet: View {
     @State private var confirming = false
     @State private var wrong: String?
     @State private var paired: String?
+    /// The digits matched but this Mac could not save the pairing: nothing was paired, and the phone was told so (#776).
+    @State private var notSaved: String?
     /// True once the sheet's window is kept out of captures; the code is drawn only then.
     @State private var hidden = false
 
@@ -740,12 +781,20 @@ struct PairingSheet: View {
     private var claim: DevicesEvent.Claim? { window?.claim }
     /// Why the window closed since this sheet opened it, when it did before a phone paired.
     private var closedWhy: String? {
-        guard payload != nil, paired == nil, window == nil else { return nil }
+        guard payload != nil, pairedName == nil, window == nil else { return nil }
+        if let notSaved { return notSaved }
         if let closed = store.state?.closed, closed.at >= started { return closed.why }
         return "The pairing was closed."
     }
+    /// The phone this sheet paired: by its own Pair, or by a confirmation the engine took from the app another way while
+    /// the sheet was open, which closes the window with no reason and lists the device.
+    private var pairedName: String? {
+        if let paired { return paired }
+        guard payload != nil, window == nil else { return nil }
+        return store.active.last { $0.pairedAt >= started }?.name
+    }
     /// The code shows while it can still be claimed: from the answer until a phone claims it or the window closes.
-    private var codeShows: Bool { payload != nil && window != nil && claim == nil && paired == nil }
+    private var codeShows: Bool { payload != nil && window != nil && claim == nil && pairedName == nil }
 
     var body: some View {
         VStack(spacing: 14) {
@@ -758,8 +807,8 @@ struct PairingSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
             HStack {
                 Spacer()
-                Button(paired == nil ? "Cancel" : "Done") { dismiss() }
-                    .keyboardShortcut(paired == nil ? .cancelAction : .defaultAction)
+                Button(pairedName == nil ? "Cancel" : "Done") { dismiss() }
+                    .keyboardShortcut(pairedName == nil ? .cancelAction : .defaultAction)
             }
         }
         .padding(20)
@@ -769,14 +818,14 @@ struct PairingSheet: View {
         .task { await start() }
         .onDisappear {
             // The window is this sheet's: closing the sheet closes it (3.1), and the secret goes with it.
-            if paired == nil { engine.perform("devices.pairCancel") }
+            if pairedName == nil { engine.perform("devices.pairCancel") }
             payload = nil
         }
     }
 
     @ViewBuilder
     private var content: some View {
-        if let paired {
+        if let paired = pairedName {
             VStack(spacing: 8) {
                 Image(systemName: "checkmark.circle.fill").font(.system(size: 34)).foregroundStyle(Theme.ok)
                 Text("\(paired) is paired with this Mac.").font(.headline)
@@ -850,10 +899,13 @@ struct PairingSheet: View {
             }
             Text("Type the six digits it shows:").font(.callout).foregroundStyle(Theme.tx2)
             TextField("", text: $digits, prompt: Text("000000"))
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.plain)
                 .font(.system(size: 26, weight: .semibold, design: .monospaced))
                 .multilineTextAlignment(.center)
+                .padding(.vertical, 6)
                 .frame(width: 170)
+                .background(Theme.card2, in: .rect(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.line))
                 .accessibilityLabel("The six digits the iPhone shows")
                 .onChange(of: digits) { _, typed in
                     let kept = String(typed.filter(\.isASCII).filter(\.isNumber).prefix(6))
@@ -892,6 +944,7 @@ struct PairingSheet: View {
         defer { starting = false }
         problem = nil
         wrong = nil
+        notSaved = nil
         digits = ""
         payload = nil
         started = Date().timeIntervalSince1970 * 1000
@@ -919,10 +972,17 @@ struct PairingSheet: View {
                 wrong = nil
             } catch {
                 digits = ""
-                // The claim's count of wrong entries, this one included, comes with the event before the answer; three
-                // close the window, and the claim with it.
-                let left = 3 - (self.claim?.wrongDigits ?? claim.wrongDigits + 1)
-                wrong = left > 0 ? "\(error.localizedDescription) \(left == 1 ? "1 try" : "\(left) tries") left." : error.localizedDescription
+                if let still = self.claim, still.wrongDigits > claim.wrongDigits {
+                    // Wrong digits: the claim's count, this entry included, came with the event before the answer.
+                    // Three close the window, and the claim with it.
+                    let left = 3 - still.wrongDigits
+                    wrong = "\(error.localizedDescription) \(left == 1 ? "1 try" : "\(left) tries") left."
+                } else if self.window == nil, store.state?.closed.map({ $0.at >= started }) != true {
+                    // The window closed with no reason of the engine's: the digits matched, and saving failed.
+                    notSaved = "This Mac could not save the pairing, so nothing was paired: \(error.localizedDescription) The iPhone was told. Start again."
+                } else {
+                    wrong = error.localizedDescription
+                }
             }
         }
     }
@@ -1014,23 +1074,24 @@ struct DeviceLogSheet: View {
                     TableColumn("When") { entry in
                         Text(when(entry.at)).monospacedDigit().foregroundStyle(Theme.tx2)
                     }
-                    .width(min: 90, ideal: 110)
+                    .width(76)
                     TableColumn("What") { entry in
-                        Text(entry.summary).lineLimit(2).help(entry.summary)
+                        let times = entry.count.map { $0 > 1 ? " · \($0) times, the last at \(when(entry.lastAt ?? entry.at))" : "" } ?? ""
+                        Text(entry.summary + times).lineLimit(2).help(entry.summary + times)
                     }
-                    .width(min: 180, ideal: 260)
+                    .width(min: 150, ideal: 220)
                     TableColumn("Path") { entry in
                         Text(entry.path).foregroundStyle(Theme.tx2)
                     }
-                    .width(min: 50, ideal: 60)
+                    .width(50)
                     TableColumn("Face ID") { entry in
                         if entry.presence { Image(systemName: "checkmark").foregroundStyle(Theme.ok).accessibilityLabel("Face ID") }
                     }
-                    .width(min: 44, ideal: 50)
+                    .width(50)
                     TableColumn("") { entry in
                         outcome(entry)
                     }
-                    .width(min: 90, ideal: 140)
+                    .width(min: 160, ideal: 230)
                 }
                 .frame(minHeight: 280)
             }
@@ -1043,7 +1104,7 @@ struct DeviceLogSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 640, height: 460)
+        .frame(width: 760, height: 480)
         .task { await load(before: nil) }
     }
 
@@ -1055,7 +1116,7 @@ struct DeviceLogSheet: View {
         }
         return Text(words)
             .foregroundStyle(entry.outcome == "done" ? Theme.tx3 : Theme.bad)
-            .lineLimit(2)
+            .lineLimit(3)
             .help(words)
     }
 
@@ -1082,3 +1143,4 @@ struct DeviceLogSheet: View {
         loaded = true
     }
 }
+#endif

@@ -202,7 +202,7 @@ The copy holds every conversation, agent, project, note, rule and work item, and
 
 ## Devices (preview)
 
-**Settings › Devices** is where an iPhone is paired with this Mac, for pi² for iPhone, which is not given out yet. It is a preview: until **iPhone (preview)** is on, the tab holds that switch alone, nothing runs and no device can pair. With it on:
+**Settings › Devices** is where an iPhone is paired with this Mac, for pi² for iPhone, which is not given out yet. Until a real phone has been paired with pi² (#712), only a development build of pi² has this tab: a release build shows no Devices tab, and no device line in the menu bar item or the sidebar. In a development build it is a preview: until **iPhone (preview)** is on, the tab holds that switch alone, nothing runs and no device can pair. With it on:
 
 - **Reach from an iPhone** lets paired devices reach this Mac while pi² runs; off, they stay paired and can do nothing. **Reach through pi²’s relay** carries them from any network, encrypted end to end, with the relay’s address and whether this Mac is registered there; off, only home and private networks. **Find on this network** talks directly at home; **Direct from any address** takes direct connections from any address, not only home and private networks.
 - **Pair an iPhone…** shows a code to scan with pi² on the iPhone, good for one iPhone and five minutes, and kept out of screen sharing and recordings. The iPhone then shows six digits: type them on the Mac to pair it. Nothing pairs until they match. If another device tries the same code, the code is closed and you start again. An iPhone with the name and model of one already paired can **Replace** it.

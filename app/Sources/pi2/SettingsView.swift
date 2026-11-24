@@ -5,7 +5,11 @@ import SwiftUI
 /// The tabs of the Settings window, by the names a development build can open it on with `PI2_SHOW=settings:<name>`
 /// (docs/development.md). In the order they appear.
 enum SettingsTab: String, CaseIterable {
-    case general, chat, providers, tools, storage, devices
+    case general, chat, providers, tools, storage
+    #if PI2_DEVELOPMENT
+    // Development builds alone until a real phone is paired (#712; DevicesSettings.swift).
+    case devices
+    #endif
 }
 
 /// The sections of those tabs, by the short names `PI2_SHOW=settings:<tab>#<name>` brings to the top of a tab.
@@ -20,8 +24,10 @@ enum SettingsSection: String {
     case servers, commits, priority
     // Storage
     case folder, backup
+    #if PI2_DEVELOPMENT
     // Devices
     case reach, paired
+    #endif
 }
 
 #if PI2_DEVELOPMENT
@@ -200,10 +206,13 @@ struct SettingsView: View {
             StorageSettings(engine: engine)
                 .tabItem { Label("Storage", systemImage: "externaldrive") }
                 .tag(SettingsTab.storage)
-            // Behind the iPhone preview (docs/iphone.md decision 19): with it off, the tab holds its switch alone.
+            #if PI2_DEVELOPMENT
+            // Behind the iPhone preview (docs/iphone.md decision 19): with it off, the tab holds its switch alone. And
+            // in development builds alone until a real phone is paired (#712): a release build has no Devices tab.
             DevicesSettings(engine: engine)
                 .tabItem { Label("Devices", systemImage: "iphone") }
                 .tag(SettingsTab.devices)
+            #endif
         }
         .frame(width: 660, height: 600)
         #if PI2_DEVELOPMENT

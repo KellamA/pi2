@@ -110,7 +110,10 @@ struct ProjectsSidebar: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
+                #if PI2_DEVELOPMENT
+                // Development builds alone until a real phone is paired (#712).
                 SidebarDeviceLine(store: engine.devices)
+                #endif
                 SidebarFooter(engine: engine)
             }
         }
@@ -140,6 +143,7 @@ extension ProjectsSidebar {
     }
 }
 
+#if PI2_DEVELOPMENT
 /// The paired device attached now, above the foot of the sidebar (docs/iphone.md 4.4): nothing while none is, or with
 /// the iPhone preview off.
 private struct SidebarDeviceLine: View {
@@ -154,6 +158,7 @@ private struct SidebarDeviceLine: View {
         }
     }
 }
+#endif
 
 /// The Dashboard's row, with how many things wait for the person in every project.
 private struct DashboardRow: View {

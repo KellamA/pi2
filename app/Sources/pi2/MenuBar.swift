@@ -27,8 +27,11 @@ struct MenuBarView: View {
                 .disabled(engine.status != .connected)
                 .help("Starts a chat with the chat model used last, and opens it in chat mode")
 
+            #if PI2_DEVELOPMENT
             // A paired device attached now: someone may be working the agents from elsewhere (docs/iphone.md 4.4).
+            // Development builds alone until a real phone is paired (#712).
             DevicesAttachedLine(store: engine.devices)
+            #endif
 
             needsByProject
 
