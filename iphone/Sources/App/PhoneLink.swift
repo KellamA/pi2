@@ -110,6 +110,13 @@ final class PhoneLink {
         !paired || keyring.session.state == .open
     }
 
+    /// For Shortcuts (`IntentSessions.register`): whether a session Face ID just opened is still being put on its
+    /// transport (the store, the connection, the client), so that an intent waits for it rather than taking the locked
+    /// session's closed client for a Mac out of reach.
+    var isSettlingForIntents: Bool {
+        paired && keyring.session.state == .open && carrier == .none
+    }
+
     // MARK: - Launch
 
     /// A paired Mac at launch: the lock screen until Face ID opens a session, which the presence gate asks for.

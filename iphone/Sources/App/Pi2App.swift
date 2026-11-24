@@ -30,7 +30,7 @@ struct Pi2App: App {
         Launch.start(link)
         // App Intents run in this process, which iOS may start for one with no scene: they use this session, and open
         // pi² for Face ID first while no session Face ID opened is open (#701).
-        IntentSessions.register(session, isOpen: { [link] in link.isOpenForIntents })
+        IntentSessions.register(session, isOpen: { [link] in link.isOpenForIntents }, settling: { [link] in link.isSettlingForIntents })
         #if DEBUG
         // PI2_LIVE_ACTIVITY: a Live Activity started, pushed or ended as the relay's pushes would (docs/iphone-app.md).
         Task { try? await ProjectActivityDebug.apply() }
