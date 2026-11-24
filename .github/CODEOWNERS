@@ -54,8 +54,14 @@
 /app/test-release-build.mts @KellamA
 /engine/src/devices.ts @KellamA
 /engine/src/remote.ts @KellamA
+/engine/src/pushes.ts @KellamA
+/engine/test/pushes.ts @KellamA
 /engine/test/devices.ts @KellamA
 /engine/src/appattest.ts @KellamA
 /engine/test/appattest.ts @KellamA
 /engine/test/appattest.json @KellamA
 /engine/src/answers.ts @KellamA
+# What a phone may see of the Mac's folders and files (#698): which folders it is offered for a new project, and the
+# checks before a file is shown on it, with the test that holds each refusal.
+/engine/src/folders.ts @KellamA
+/engine/test/folders.ts @KellamA
