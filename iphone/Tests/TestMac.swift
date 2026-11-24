@@ -36,6 +36,9 @@ final class TestMac: @unchecked Sendable {
         var revocationKey: P256.Signing.PrivateKey?
         /// Takes resumes; false answers every resume `resume: false`.
         var resumes = true
+        /// Leaves this many attaches unanswered, the first ones: it reads and checks each, then closes the channel, as the
+        /// phone sees a Mac whose answer did not come within its ten seconds (3.4).
+        var unanswered = 0
     }
 
     struct Device {
@@ -54,6 +57,7 @@ final class TestMac: @unchecked Sendable {
         var attachLines: [Data] = []
         var challenges: [Data] = []
         var refusedAttaches = 0
+        var unansweredAttaches = 0
         var attachedCount = 0
         var current: SessionID?
         var links: [any MessageLink] = []
@@ -324,6 +328,12 @@ final class TestMac: @unchecked Sendable {
             return (session, received)
         }()
         let session = resumed?.0 ?? SessionID("s\(Int.random(in: 1...999_999))")!
+        let unanswered = state.withLock { state in
+            guard state.unansweredAttaches < rules.unanswered else { return false }
+            state.unansweredAttaches += 1
+            return true
+        }
+        if unanswered { return channel.close() }
         state.withLock { state in
             state.attachedCount += 1
             state.current = session

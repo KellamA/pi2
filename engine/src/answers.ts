@@ -160,6 +160,8 @@ const FOR_THE_PERSON_SETTINGS: Record<string, (params: Record<string, unknown>) 
 	"devices.revoke": () => true, // as the person
 	"devices.resume": () => true, // takes a suspended device back
 	"devices.log": () => true, // what each device did
+	"devices.acceptPresenceKey": () => true, // a phone's new Face ID key, which then opens sessions (3.2)
+	"devices.refusePresenceKey": () => true, // drops it
 };
 
 export function settingsForThePerson(method: string, params: Record<string, unknown>): boolean {
@@ -553,6 +555,8 @@ const MAC_ONLY: Record<string, string> = {
 	"devices.revoke": "devices.*",
 	"devices.resume": "devices.*",
 	"devices.log": "devices.*",
+	"devices.acceptPresenceKey": "devices.*", // a phone never accepts its own new Face ID key, nor another's (3.2)
+	"devices.refusePresenceKey": "devices.*",
 	// The handlers the table does not name, listed for the owner in #673's pull request.
 	"github.show": NOT_NAMED,
 	"settings.setAgentDefault": NOT_NAMED,
@@ -562,7 +566,7 @@ const MAC_ONLY: Record<string, string> = {
  * pi² Remote's own requests, taken only on the connection the engine made for the helper it started (5.5), never on
  * its listening socket and never in a device session; remote.mailboxIn (#678, P10) among them.
  */
-const FOR_THE_HELPER: ReadonlySet<string> = new Set(["remote.hello", "remote.state", "remote.pairClaim", "remote.pairWrong", "remote.pairRefused", "remote.attachBegin", "remote.attach", "remote.sessionEnd", "remote.mailboxIn"]);
+const FOR_THE_HELPER: ReadonlySet<string> = new Set(["remote.hello", "remote.state", "remote.pairClaim", "remote.pairWrong", "remote.pairRefused", "remote.attachBegin", "remote.attach", "remote.sessionEnd", "remote.presenceKey", "remote.mailboxIn"]);
 
 export function forTheHelper(method: string): boolean {
 	return FOR_THE_HELPER.has(method);
