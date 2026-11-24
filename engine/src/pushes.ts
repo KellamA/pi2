@@ -24,7 +24,7 @@
 import type { Client } from "./clients.ts";
 import { broadcastWatchers } from "./clients.ts";
 import { isChat } from "./chat.ts";
-import { activeDevices, hidesSomething, maskValue, PART_HIDDEN, pairedDevice, remoteHooks, remoteOn } from "./devices.ts";
+import { activeDevices, hidesSomething, maskKeys, maskValue, PART_HIDDEN, pairedDevice, remoteHooks, remoteOn, revokedWatchers } from "./devices.ts";
 import type { Feature } from "./features.ts";
 import type { NeedItem } from "./needs.ts";
 import { orchestratorRole } from "./orchestrator.ts";
@@ -158,20 +158,31 @@ const NOT_READY_RETRY_MS = 30_000;
 
 // ---- What an alert says
 
-/** What a notification shows nothing of, or the wrong thing: controls (a tab is a space, a line break stays), bidi and zero-width marks. */
-const NOT_SHOWN = /[\p{Cc}\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/gu;
+/**
+ * What a notification shows as nothing, or as something other than what is there, taken out of every text: what
+ * RemoteKit's `ShownText` refuses in a name (every control character, U+200B to U+200F, U+202A to U+202E, U+2066 to
+ * U+2069, U+FEFF), widened to every format character (`Cf`: U+00AD, U+061C, U+2060 to U+2064, the tag characters
+ * U+E0001 and U+E0020 to U+E007F, and the rest), the line and paragraph separators, and every default-ignorable code
+ * point (Hangul fillers, variation selectors). A line break stays; a tab is a space. Either way the text was changed.
+ */
+const NOT_SHOWN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
 
 /** Half of a character, which JSON would write as an escape and a notification as nothing. */
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
 
-/** `text` as a notification shows it, at most `max` characters: what was cut, and whether anything was taken out. */
-export function shown(text: string, max: number): { text: string; cut: boolean; changed: boolean } {
-	const tabs = text.replace(/\t/g, " ");
-	const cleaned = tabs.replace(NOT_SHOWN, (found) => (found === "\n" ? found : "")).replace(LONE_SURROGATE, "");
-	const changed = cleaned !== tabs;
-	const points = [...cleaned];
-	if (points.length <= max) return { text: cleaned, cut: false, changed };
-	return { text: `${points.slice(0, max - 1).join("")}…`, cut: true, changed };
+/**
+ * `text` as a notification shows it, at most `max` characters: what is not shown taken out first, then every key shape
+ * masked (`maskKeys`, so that a key split by a zero-width character is hidden whole once joined), then cut. Says
+ * whether anything was taken out or turned into something else (`changed`), masked here (`masked`), or cut.
+ */
+export function shown(text: string, max: number): { text: string; cut: boolean; changed: boolean; masked: boolean } {
+	const cleaned = text.replace(LONE_SURROGATE, "").replace(NOT_SHOWN, (found) => (found === "\n" ? found : found === "\t" ? " " : ""));
+	const changed = cleaned !== text;
+	const unmasked = maskKeys(cleaned);
+	const masked = unmasked !== cleaned;
+	const points = [...unmasked];
+	if (points.length <= max) return { text: unmasked, cut: false, changed, masked };
+	return { text: `${points.slice(0, max - 1).join("")}…`, cut: true, changed, masked };
 }
 
 /** The arguments' fields a call's one line is taken from, in this order, as the app's `ToolCall.summary` takes them. */
@@ -189,6 +200,12 @@ function callLine(argumentsValue: unknown): { line: string; whole: boolean } {
 	return { line: JSON.stringify(argumentsValue) ?? "", whole: true };
 }
 
+/** The tools whose approval card the Mac puts in words, or shows more of than the call's line (InboxCard): an app, a site, a schedule's timing and prompt, a sub-chat's task. */
+const SHOWN_IN_WORDS: ReadonlySet<string> = new Set(["computer", "browser", "schedule_task", "delegate"]);
+/** An approval's fields the Mac's card shows a line for, which an alert does not: left running, the site, when, the switch that asked. */
+const MORE_ON_THE_CARD = ["background", "site", "when", "projectSwitch"] as const;
+const BINDS: Record<string, string> = { orchestrator: "the orchestrator", everyone: "every agent" };
+
 const TITLES: Record<NeedItem["kind"], [suffix: string, category: Category]> = {
 	approval: ["needs approval", "pi2.approval"],
 	question: ["has a question", "pi2.question"],
@@ -200,9 +217,18 @@ const TITLES: Record<NeedItem["kind"], [suffix: string, category: Category]> = {
 
 /**
  * An alert for an item in Needs you, as `item` is in the `needs` event. The item is masked first, whole, as a device's
- * copy is (`maskValue`, an approval from APPROVAL_DEPTH), and the text taken from the masked copy: cutting it after
- * masking never leaves part of a key that masking would have hidden whole. `gate` is the gate's own judgement of the
- * engine's record of the approval (answers.ts, `approvalHidden`), which marks it too.
+ * copy is (`maskValue`, an approval from APPROVAL_DEPTH), and the text taken from the masked copy, then cleaned, masked
+ * again and cut (`shown`): cutting after masking never leaves part of a key that masking would have hidden whole.
+ * `gate` is the gate's own judgement of the engine's record of the approval (answers.ts, `approvalHidden`), which
+ * marks it too.
+ *
+ * `whole` means the alert says the same facts of what is asked as the Mac's own card for it (app/Sources/pi2:
+ * `InboxCard`, `NeedCard`, `RuleProposalCard`), and nothing of them was changed, taken out, masked or cut: an
+ * approval's tool and its whole call, when the card shows no more than that (no question in its place, no tool the card
+ * puts in words, no line for running in the background, a site, a schedule's timing or the switch that asked, and no
+ * argument beyond the one the line shows); a question; a rule's text and whom it binds, when no reason is given; a
+ * reach request's summary, when no reason is given. A decision (its choices) and a limit card (its reason) are never
+ * whole. The card's frame (who asks, in which project) is the alert's title and subtitle.
  */
 export function needAlert(item: NeedItem, gate: boolean, project: string | undefined, at: number): AlertBody {
 	const masking = { hidden: false };
@@ -213,26 +239,34 @@ export function needAlert(item: NeedItem, gate: boolean, project: string | undef
 	let whole = true;
 	switch (item.kind) {
 		case "approval": {
+			// The tool and its call's summary (7), as "bash: npm test".
 			const call = callLine(copy.arguments);
 			const question = copy.question;
-			line = typeof question === "string" ? question : call.line;
-			whole = typeof question !== "string" && call.whole;
+			line = `${text(copy.tool) || "a tool"}: ${typeof question === "string" ? question : call.line}`;
+			const fields = item as unknown as Record<string, unknown>;
+			whole = typeof question !== "string" && call.whole && !SHOWN_IN_WORDS.has(item.tool) && MORE_ON_THE_CARD.every((field) => fields[field] === undefined);
 			break;
 		}
 		case "question":
+			line = text(copy.question);
+			break;
 		case "decision":
 			line = text(copy.question);
+			whole = false;
 			break;
 		case "reach":
 			line = text((copy.change as Record<string, unknown> | undefined)?.summary) || "Asks for more reach";
+			whole = copy.why == null && line === text((copy.change as Record<string, unknown> | undefined)?.summary);
 			break;
 		case "rule":
-			line = `Proposes a rule: ${text(copy.text)}`;
+			line = `Proposes a rule for ${BINDS[text(copy.binds)] ?? "every agent"}: ${text(copy.text)}`;
+			whole = copy.why == null && Object.hasOwn(BINDS, text(copy.binds));
 			break;
 		case "limit": {
 			const start = (copy.start ?? {}) as Record<string, unknown>;
 			const what = [text(start.title), text(start.task)].filter((one) => one !== "").join(": ");
 			line = what === "" ? "A start is held back by the project's limit" : `Held back by the limit: ${what}`;
+			whole = false;
 			break;
 		}
 		default:
@@ -324,6 +358,8 @@ function finish(body: AlertBody, wholeMatters: boolean): AlertBody {
 	const title = shown(body.title, MAX_TITLE);
 	const subtitle = body.subtitle === undefined ? undefined : shown(body.subtitle, MAX_SUBTITLE);
 	let text = shown(body.body, MAX_BODY);
+	const altered = [title, subtitle, text].some((one) => one !== undefined && (one.changed || one.masked || one.cut));
+	const maskedHere = [title, subtitle, text].some((one) => one?.masked === true);
 	const out: AlertBody = { ...body, title: title.text, body: text.text, ...(subtitle === undefined ? {} : { subtitle: subtitle.text }) };
 	for (let max = MAX_BODY; Buffer.byteLength(JSON.stringify(out)) > MAX_BODY_BYTES && max > 8; max = Math.floor(max / 2)) {
 		text = shown(body.body, max);
@@ -336,8 +372,8 @@ function finish(body: AlertBody, wholeMatters: boolean): AlertBody {
 	const masked = maskValue(out, masking) as AlertBody;
 	// A copy without a prototype (maskValue's) is written as JSON as a plain one is; spread back into one for the reader.
 	const result: AlertBody = { ...masked };
-	if (wholeMatters && (masking.hidden || text.cut || text.changed)) result.whole = false;
-	if (masking.hidden && wholeMatters) result.partHidden = true;
+	if (wholeMatters && (masking.hidden || maskedHere || altered || text.cut)) result.whole = false;
+	if (wholeMatters && (masking.hidden || maskedHere)) result.partHidden = true;
 	return result;
 }
 
@@ -394,14 +430,36 @@ export class Pushes {
 	#asked = new Map<string, Asked>();
 	#next = 0;
 
-	constructor(parts: PushParts, stored: Record<string, PushSettings> = {}) {
+	/** Whether the stored settings are read: until then an event only sets what waits, and nothing is chosen. */
+	#loaded = false;
+	/** The last `limits` event before the settings were read, chosen once they are. */
+	#limitsBefore: readonly LimitNoticeLike[] | null = null;
+
+	/** `stored`: the settings as stored; without it, nothing is chosen until `load` gives them. */
+	constructor(parts: PushParts, stored?: Record<string, PushSettings>) {
 		this.#parts = parts;
 		this.#began = parts.now();
-		this.load(stored);
+		if (stored !== undefined) this.load(stored);
 	}
 
-	/** The settings as stored, read at start. */
+	/** The settings as stored, read at start; then what came meanwhile is chosen as it would have been. */
 	load(stored: Record<string, PushSettings>): void {
+		this.#read(stored);
+		this.#loaded = true;
+		const limits = this.#limitsBefore;
+		this.#limitsBefore = null;
+		if (limits !== null) this.limits(limits);
+		this.flush();
+	}
+
+	/** A device revoked: its settings, its Live Activities and all that waited for it go, at once. */
+	forget(device: string): void {
+		for (const map of [this.#owed, this.#told, this.#gone, this.#answers] as Map<string, unknown>[]) map.delete(device);
+		for (const map of [this.#activities, this.#sent, this.#holds] as Map<string, unknown>[]) for (const key of [...map.keys()]) if (key.startsWith(`${device}:`)) map.delete(key);
+		if (this.#settings.delete(device)) this.#parts.saved(Object.fromEntries(this.#settings));
+	}
+
+	#read(stored: Record<string, PushSettings>): void {
 		for (const [device, settings] of Object.entries(stored)) {
 			if (typeof settings !== "object" || settings === null) continue;
 			const own = { ...defaults(), ...settings };
@@ -499,7 +557,8 @@ export class Pushes {
 		const now = new Map(items.map((item) => [item.id, item]));
 		const before = this.#waiting;
 		this.#waiting = now;
-		if (before === null) return this.flush();
+		// What waits before the settings are read is never pushed, as what waited when the engine started is not.
+		if (before === null || !this.#loaded) return;
 		for (const item of items) {
 			if (before.has(item.id)) continue;
 			const settingOn = (settings: PushSettings) => settings.needs && (item.projectId === null || !settings.quiet.includes(item.projectId));
@@ -527,6 +586,10 @@ export class Pushes {
 	 * the choice began (the 90% stage is never pushed, as the Mac does not notify it).
 	 */
 	limits(notices: readonly LimitNoticeLike[]): void {
+		if (!this.#loaded) {
+			this.#limitsBefore = notices;
+			return;
+		}
 		const current = new Set(notices.map((notice) => `${notice.id} ${notice.stage ?? "nearly"}`));
 		for (const seen of [...this.#stages]) if (!current.has(seen)) this.#stages.delete(seen);
 		for (const notice of notices) {
@@ -613,7 +676,13 @@ export class Pushes {
 		const refusal: Refusal = (REFUSALS as readonly string[]).includes(why) ? (why as Refusal) : "push-later";
 		const now = this.#parts.now();
 		const hold: Hold = { until: HOLDS[refusal] === null ? null : now + HOLDS[refusal]!, since: now };
-		const kinds: PushKind[] = refusal === "unavailable" || refusal === "unknown-device" ? ["alert", "background", "activity"] : [asked.kind];
+		// No token, or a dead one, is the device's, whatever kind found it: alerts and background pushes alike (7.1's table).
+		const kinds: PushKind[] =
+			refusal === "unavailable" || refusal === "unknown-device"
+				? ["alert", "background", "activity"]
+				: (refusal === "no-token" || refusal === "token-dead") && asked.kind !== "activity"
+					? ["alert", "background"]
+					: [asked.kind];
 		if (asked.kind === "activity" && asked.follow !== undefined) {
 			const settings = this.#own(asked.device);
 			if (refusal === "token-dead") {
@@ -890,7 +959,9 @@ export const devicePushes: Feature = (host, engine) => {
 				.catch((error) => engine.log("pushes: the devices' settings could not be saved:", error instanceof Error ? error.message : error));
 		},
 		projectName: (id) => {
-			const project = allProjects()[id];
+			// Its own key only: `constructor` and `toString` are no projects.
+			const projects = allProjects();
+			const project = Object.hasOwn(projects, id) ? projects[id] : undefined;
 			return project === undefined || project.deletedAt !== undefined ? undefined : project.name;
 		},
 		approvalHidden: (id) => {
@@ -913,6 +984,14 @@ export const devicePushes: Feature = (host, engine) => {
 	// waited before, which is never pushed.
 	pushes = new Pushes(parts);
 	broadcastWatchers.add(watch);
+	const revoked = (device: string) => {
+		try {
+			pushes?.forget(device);
+		} catch (error) {
+			engine.log("pushes: a revoked device's settings could not be dropped:", error instanceof Error ? error.message : error);
+		}
+	};
+	revokedWatchers.add(revoked);
 	return {
 		start: async () => {
 			const stored = await engine.harness().snapshot(DevicePushes, engine.context());
@@ -927,6 +1006,7 @@ export const devicePushes: Feature = (host, engine) => {
 		},
 		stopping: async () => {
 			broadcastWatchers.delete(watch);
+			revokedWatchers.delete(revoked);
 			clearTimeout(timer);
 			await saving;
 		},

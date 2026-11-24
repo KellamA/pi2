@@ -643,7 +643,7 @@ try {
 	await assert.rejects(app.call("devices.pairStart"), /Turn on Reach from an iPhone first/);
 	await app.call("devices.set", { on: true });
 	await assert.rejects(app.call("devices.pairStart"), /Turn on Reach from an iPhone first/, "remote access on, the preview off");
-	for (const method of ["remote.attach", "remote.attachBegin", "remote.pairClaim", "remote.pairRefused", "remote.hello", "remote.sessionEnd"]) {
+	for (const method of ["remote.attach", "remote.attachBegin", "remote.pairClaim", "remote.pairRefused", "remote.hello", "remote.sessionEnd", "remote.pushRefused"]) {
 		await assert.rejects(app.call(method, {}), (error: Error) => error.message === ONLY_FROM_THE_HELPER, `${method} on the socket, from a process PeerKit takes for the app`);
 	}
 	assert.ok(!childrenOf(engine.pid!).some((command) => command.includes(standIn)), "no pi² Remote, and no socket pair, was made");
@@ -893,6 +893,31 @@ try {
 	assert.equal(self.device.id, phone.id);
 	assert.ok(!("deviceKey" in self.device) && Array.isArray(self.log), "its own record, without keys, and its log");
 	await assert.rejects(app.call("devices.self"), /Only a paired device/, "which is no one else's to ask");
+	// What it is pushed (#689): its own settings, taken and logged in its session, refused anywhere else.
+	const activity = Buffer.alloc(16, 5).toString("base64url");
+	for (const [method, params] of [["pushes.set", { needs: false }], ["pushes.follow", { projectId: made.id, activity, on: true }]] as const) {
+		await assert.rejects(app.call(method, params), /Only a paired device/, `${method} from the app's connection`);
+	}
+	assert.deepEqual((await ask("pushes.set", { limits: false, project: { id: made.id, quiet: true } })).result, { needs: true, limits: false, answers: true, quiet: [made.id], follows: [] });
+	assert.deepEqual((await ask("pushes.follow", { projectId: made.id, activity, on: true })).result.follows, [{ projectId: made.id, activity }]);
+	assert.match((await ask("pushes.set", { project: { id: "constructor", quiet: true } })).error, /Unknown project/, "a name on Object's prototype is no project");
+	assert.deepEqual((await ask("pushes.set", {})).result.quiet, [made.id], "with nothing, it reads");
+	assert.deepEqual((await ask("pushes.set", { limits: true, project: { id: made.id, quiet: false } })).result.quiet, []);
+	assert.deepEqual((await ask("pushes.follow", { projectId: made.id, activity, on: false })).result.follows, []);
+	for (const deadline = Date.now() + PATIENT_MS; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
+		const logged = (await app.call("devices.log", { device: phone.id })).entries.filter((entry: any) => entry.method.startsWith("pushes."));
+		// The log is newest first.
+		const seen = logged.map((entry: any) => `${entry.method} ${entry.outcome} ${entry.summary}`).reverse();
+		const wanted = [
+			/^pushes\.set done Notifications: limits off, quieted “.+”$/,
+			/^pushes\.follow done Followed \(.+\) in a Live Activity$/,
+			/^pushes\.set failed Notifications: quieted a project$/,
+			/^pushes\.set done Notifications: limits on, unquieted “.+”$/,
+			/^pushes\.follow done Stopped following \(.+\) in a Live Activity$/,
+		];
+		if (seen.length === wanted.length && wanted.every((pattern, i) => pattern.test(seen[i]!))) break;
+		assert.ok(seen.length <= wanted.length && Date.now() < deadline, `pushes.set and pushes.follow logged, saying what changed, and the read not: ${JSON.stringify(seen)}`);
+	}
 	step("a device attaches with both signatures, is greeted as the app less 5.7's events, and its table holds in its session");
 
 	// ---- Secrets and key-shaped strings are never sent to a device (5.7)

@@ -617,7 +617,13 @@ export function summarize(given: string, params: Params): string {
 		"github.settle": () => `Marked a write ${params.happened === true ? "done" : "not done"}${inProject}`,
 		"work.act": () => `${clip(String(params.action ?? "Acted on"), 24)} work #${clip(String(params.id), 12)}${inProject}`,
 		"devices.forgetSelf": () => "Unpaired itself",
-		"pushes.set": () => "Changed what it is notified of",
+		"pushes.set": () => {
+			const switches = (["needs", "limits", "answers"] as const).filter((key) => typeof params[key] === "boolean").map((key) => `${key} ${params[key] === true ? "on" : "off"}`);
+			const chosen = params.project as Params | undefined;
+			const name = typeof chosen?.id === "string" ? names?.project(chosen.id) : undefined;
+			const quieted = chosen === undefined ? [] : [`${chosen.quiet === true ? "quieted" : "unquieted"} ${name === undefined || name === "" ? "a project" : `“${name}”`}`];
+			return `Notifications: ${[...switches, ...quieted].join(", ") || "read"}`;
+		},
 		"pushes.follow": () => `${params.on === true ? "Followed" : "Stopped following"}${inProject || " a project"} in a Live Activity`,
 		pair: () => "Paired",
 		attach: () => "Attached",
@@ -1164,6 +1170,9 @@ function forget(device: Device, now: number): void {
 	device.suspendedAt = null;
 }
 
+/** Told of each device revoked, once its record says so: what is kept for it elsewhere goes with it (pushes.ts). */
+export const revokedWatchers = new Set<(device: string) => void>();
+
 async function revoke(id: string): Promise<void> {
 	const device = pairedDevice(id);
 	if (device === undefined) throw new Error("No such device is paired.");
@@ -1171,6 +1180,7 @@ async function revoke(id: string): Promise<void> {
 		for (const one of doc.devices) if (one.id === id) forget(one, Date.now());
 	});
 	failures.delete(id);
+	for (const watch of revokedWatchers) watch(id);
 	// `revoke` first: pi² Remote sends the phone its signed `revoked` line on the channel, which closing the sessions
 	// next would otherwise have ended (3.6).
 	remoteHooks.toHelper({ kind: "revoke", device: id });

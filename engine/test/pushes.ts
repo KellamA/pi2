@@ -57,12 +57,12 @@ function world(options: { devices?: string[] } = {}) {
 		send: (push) => state.sent.push(push),
 		wake: (at) => state.wakes.push(at),
 		saved: (settings) => (state.saved = structuredClone(settings)),
-		projectName: (id) => projects[id],
+		projectName: (id) => (Object.hasOwn(projects, id) ? projects[id] : undefined),
 		approvalHidden: (id) => state.gated.has(id),
 		conversation: (id) => state.conversations.get(id),
 		orchestrator: (id) => state.orchestrators.get(id),
 	};
-	const pushes = new Pushes(parts);
+	const pushes = new Pushes(parts, {});
 	return {
 		state,
 		pushes,
@@ -155,7 +155,7 @@ const alerts = (pushes: Push[]) => pushes.filter((push): push is Extract<Push, {
 		const body = needAlert(item, false, "Pi Squared", 5);
 		assert.deepEqual([body.title, body.category], [title, category], String(fields.kind));
 	}
-	assert.equal(needAlert(need({ kind: "rule", text: "Run the tests first" }), false, undefined, 5).body, "Proposes a rule: Run the tests first");
+	assert.equal(needAlert(need({ kind: "rule", text: "Run the tests first", binds: "everyone", why: null }), false, undefined, 5).body, "Proposes a rule for every agent: Run the tests first");
 	assert.equal(needAlert(need({ kind: "limit", start: { title: "Docs", task: "Write the guide" } }), false, undefined, 5).body, "Held back by the limit: Docs: Write the guide");
 	step("each kind has the Mac's title and its category");
 }
@@ -282,8 +282,8 @@ const alerts = (pushes: Push[]) => pushes.filter((push): push is Extract<Push, {
 	assert.equal(needAlert(need({ arguments: { command: "npm test", timeout: 5 } }), false, undefined, 5).whole, false, "a call with more than its line is not shown whole");
 	assert.equal(needAlert(need({ arguments: { command: "npm test" }, question: "Allow?" }), false, undefined, 5).whole, false, "a question in place of the call");
 	assert.equal(needAlert(need({ arguments: { command: "echo \u202Etxt.exe" } }), false, undefined, 5).whole, false, "a right-to-left override taken out");
-	assert.equal(needAlert(need({ arguments: { command: "echo \u202Etxt.exe" } }), false, undefined, 5).body, "echo txt.exe");
-	assert.equal(needAlert(need({ arguments: { a: 1 } }), false, undefined, 5).body, '{"a":1}', "a call with no line of its own is shown as it is");
+	assert.equal(needAlert(need({ arguments: { command: "echo \u202Etxt.exe" } }), false, undefined, 5).body, "bash: echo txt.exe");
+	assert.equal(needAlert(need({ arguments: { a: 1 } }), false, undefined, 5).body, 'bash: {"a":1}', "a call with no line of its own is shown as it is");
 
 	// The devices test's sweep: a call nested at each depth either side of the cut. The alert is marked as the gate
 	// judges the engine's record, and as the channel's copies (the `needs` event, `needs.list`'s answer) are cut.
@@ -309,6 +309,88 @@ const alerts = (pushes: Push[]) => pushes.filter((push): push is Extract<Push, {
 	}
 	assert.equal(cut, 258 - cutFrom + 1, "every depth from the cut on was cut");
 	step("an alert's text is masked as a device's copy is (a key wherever it stands, cut after masking), marked partHidden as the channel and the gate mark it at every depth of the sweep, and whole only when it is");
+}
+
+// ---- Whole: the same facts as the Mac's card, nothing changed
+
+{
+	const alert = (fields: Record<string, unknown>) => needAlert(need(fields), false, "Pi Squared", 5);
+	// The tool is in the body, as section 7 says: the reader's example names what the call is.
+	const repository = alert({ tool: "github_delete_repository", arguments: { path: "owner/repo" } });
+	assert.deepEqual([repository.body, repository.whole], ["github_delete_repository: owner/repo", true], "the tool and its one line: the card's facts");
+	assert.deepEqual([alert({}).body, alert({}).whole], ["bash: npm test", true]);
+	// Each line the card shows that the alert does not: never whole.
+	const omitted: [string, Record<string, unknown>][] = [
+		["running in the background", { background: true }],
+		["the site", { tool: "browser", site: "bank.example", arguments: { action: "click", ref: 12 } }],
+		["a schedule's timing", { tool: "schedule_task", when: "Every minute", arguments: { task: "push to main" } }],
+		["the switch that asked", { projectSwitch: "merge", arguments: { command: "gh pr merge 5" } }],
+		["a site alone", { site: "bank.example" }],
+		["a timing alone", { when: "Every minute" }],
+		["an app the card names", { tool: "computer", arguments: { command: "click" } }],
+		["a sub-chat's task", { tool: "delegate", arguments: { task: "fix it" } }],
+		["a browser action with no site", { tool: "browser", arguments: { command: "open" } }],
+		["a question in place of the call", { question: "May I?" }],
+		["an argument beyond the line", { arguments: { command: "ls", cwd: "/" } }],
+	];
+	for (const [what, fields] of omitted) {
+		const body = alert(fields);
+		assert.equal(body.whole, false, what);
+		assert.ok(body.body.startsWith(`${(fields as { tool?: string }).tool ?? "bash"}: `), `${what}: the tool is named`);
+	}
+	// A proposed rule: whom it binds, said; with a reason the card shows, or no binding known, not whole.
+	const rule = (fields: Record<string, unknown>) => alert({ kind: "rule", text: "Run the tests first", why: null, ...fields });
+	assert.deepEqual([rule({ binds: "orchestrator" }).body, rule({ binds: "orchestrator" }).whole], ["Proposes a rule for the orchestrator: Run the tests first", true]);
+	assert.deepEqual([rule({ binds: "everyone" }).body, rule({ binds: "everyone" }).whole], ["Proposes a rule for every agent: Run the tests first", true]);
+	assert.equal(rule({ binds: "everyone", why: "It broke twice" }).whole, false, "a reason the card shows");
+	assert.equal(rule({ binds: undefined }).whole, false, "no binding known");
+	// The other kinds.
+	assert.equal(alert({ kind: "question", question: "Which branch?" }).whole, true);
+	assert.equal(alert({ kind: "decision", question: "Ship it?", choices: [{ id: "c1", label: "Yes" }], words: true }).whole, false, "a decision's choices are on the card");
+	assert.equal(alert({ kind: "reach", change: { summary: "Let Forge run commands" }, why: null }).whole, true);
+	assert.equal(alert({ kind: "reach", change: { summary: "Let Forge run commands" }, why: "To deploy" }).whole, false, "a reason the card shows");
+	assert.equal(alert({ kind: "limit", start: { title: "Docs", task: "Write" }, limit: {} }).whole, false, "a limit card's reason");
+	// A tab, turned into a space, is a change.
+	const tab = alert({ arguments: { command: "printf 'a\tb' > f" } });
+	assert.deepEqual([tab.body, tab.whole], ["bash: printf 'a b' > f", false]);
+	// Every kind of character a notification shows as nothing, or as something else: taken out, and never whole.
+	const invisible: [string, string][] = [
+		["U+0007, a control", "\u0007"],
+		["U+000D, a carriage return", "\r"],
+		["U+00AD, a soft hyphen", "\u00AD"],
+		["U+061C, the Arabic letter mark", "\u061C"],
+		["U+200B, a zero-width space", "\u200B"],
+		["U+200D, a zero-width joiner", "\u200D"],
+		["U+200E, a left-to-right mark", "\u200E"],
+		["U+202E, a right-to-left override", "\u202E"],
+		["U+2028, a line separator", "\u2028"],
+		["U+2029, a paragraph separator", "\u2029"],
+		["U+2060, a word joiner", "\u2060"],
+		["U+2061 to U+2064, invisible operators", "\u2061\u2062\u2063\u2064"],
+		["U+2066, a left-to-right isolate", "\u2066"],
+		["U+206A, an inhibit symmetric swapping", "\u206A"],
+		["U+3164, a Hangul filler", "\u3164"],
+		["U+FE0F, a variation selector", "\uFE0F"],
+		["U+FEFF, a byte order mark", "\uFEFF"],
+		["U+E0001, a language tag", "\u{E0001}"],
+		["U+E0041, a tag character", "\u{E0041}"],
+		["U+E007F, the cancel tag", "\u{E007F}"],
+		["a lone surrogate", "\uD800"],
+	];
+	for (const [what, character] of invisible) {
+		const places: Record<string, unknown>[] = [{ arguments: { command: `r${character}m x` } }, { kind: "question", question: `Merge${character} it?` }, { agentName: `For${character}ge` }];
+		for (const fields of places) {
+			const body = alert(fields);
+			assert.equal(body.whole, false, `${what} in ${JSON.stringify(fields)}`);
+			assert.ok(!JSON.stringify(body).includes(character), `${what}: taken out`);
+		}
+		const subtitle = needAlert(need(), false, `Pi${character} Squared`, 5);
+		assert.equal(subtitle.whole, false, `${what} in the project's name`);
+	}
+	// Masked after what is not shown is taken out, before the cut: a key split by a zero-width space is hidden whole.
+	const split = alert({ arguments: { command: `${"x".repeat(150)} ${key.slice(0, 20)}\u200B${key.slice(20)}` } });
+	assert.ok(!split.body.includes("sk-ant") && split.body.includes("[key") && split.partHidden === true && split.whole === false, split.body);
+	step("whole: the tool in the body, and true only for the same facts as the Mac's card (no background, site, timing, switch, question, tool put in words or argument beyond the line; a rule with whom it binds), with no tab, invisible character or key changed");
 }
 
 // ---- Sizes
@@ -399,6 +481,70 @@ const alerts = (pushes: Push[]) => pushes.filter((push): push is Extract<Push, {
 	later(30_000);
 	assert.equal(sentOf("alert").length, 9);
 	step("the relay's refusals: later a minute, no token until the phone attaches, no push key an hour; what still waits goes after; nothing while pi² Remote is not running");
+}
+
+{
+	// No token, found by an alert, holds the background pushes too, as 7.1's table says; until the phone attaches.
+	const { state, pushes, later, sentOf } = world();
+	pushes.needs([]);
+	const one = need();
+	const two = need();
+	pushes.needs([one, two]);
+	pushes.refused(sentOf("alert")[0]!.id, "no-token");
+	pushes.needs([]);
+	later(GONE_TOGETHER_MS);
+	assert.equal(sentOf("background").length, 0, "nothing named gone while there is no token");
+	state.devices[0]!.lastSeenAt = state.clock;
+	const three = need();
+	pushes.needs([three]);
+	pushes.needs([]);
+	later(GONE_TOGETHER_MS);
+	assert.equal(sentOf("background").length, 1, "after the attach, again");
+	step("no token holds a device's alerts and background pushes alike, until it attaches");
+}
+
+{
+	// Revoked: its settings and Live Activities go at once, stored without it.
+	const { state, pushes } = world({ devices: ["dev_a", "dev_b"] });
+	pushes.set("dev_a", { needs: false });
+	pushes.set("dev_b", { limits: false });
+	pushes.follow("dev_a", { projectId: "p1", activity: Buffer.alloc(16, 1).toString("base64url"), on: true });
+	assert.deepEqual(Object.keys(state.saved).sort(), ["dev_a", "dev_b"]);
+	pushes.forget("dev_a");
+	assert.deepEqual(Object.keys(state.saved), ["dev_b"], "dropped from what is stored");
+	assert.deepEqual(pushes.set("dev_a", {}), { needs: true, limits: true, answers: true, quiet: [], follows: [] }, "and from memory");
+	step("a revoked device's settings and Live Activities are dropped at once");
+}
+
+{
+	// Nothing is chosen before the stored settings are read: what comes meanwhile waits, and a limit is chosen once they are.
+	const sent: Push[] = [];
+	let clock = 5_000;
+	const parts: PushParts = {
+		now: () => clock,
+		devices: () => [{ id: "dev_a", suspendedAt: null, lastSeenAt: 0 }],
+		ready: () => true,
+		send: (push) => sent.push(push),
+		wake: () => {},
+		saved: () => {},
+		projectName: () => "Pi Squared",
+		approvalHidden: () => false,
+		conversation: () => undefined,
+		orchestrator: () => undefined,
+	};
+	const pushes = new Pushes(parts);
+	pushes.needs([]);
+	pushes.needs([need()]);
+	clock += 1;
+	pushes.limits([{ id: "x", name: "X", plan: null, label: "", stage: "reached", reachedAt: clock }]);
+	assert.equal(sent.length, 0, "nothing chosen with every switch at its default");
+	pushes.load({ dev_a: { needs: true, limits: false, answers: true, quiet: [], follows: [] } });
+	assert.equal(sent.length, 0, "once read: this device turned limits off, and the need came before they were read");
+	const other = new Pushes(parts);
+	other.limits([{ id: "y", name: "Y", plan: null, label: "", stage: "reached", reachedAt: clock }]);
+	other.load({});
+	assert.equal(sent.length, 1, "with limits on, the limit goes once the settings are read");
+	step("nothing is chosen before the stored settings are read");
 }
 
 {
