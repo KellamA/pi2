@@ -420,6 +420,16 @@ enum Flows {
 		Check.expect(lapsing.closesWithin(10), "a refused line from a phone, which only the Mac may send, closes the channel")
 		let dropped = Date()
 		Check.expect(engine.sessionLine(within: 1) == nil, "and never reaches the engine")
+		// So is a `pairRefused` line (#881): from a phone in a session it closes the channel, as `refused` does. Here,
+		// before the wait below, so that its handshake is not counted against the device's six a minute after it.
+		if let (refusing, _) = attach(engine, mac: mac, device: other, keys: second2, session: "s_refusing") {
+			refusing.sendLine(Data(#"{"pairRefused":{"why":"unsaved"}}"#.utf8))
+			Check.expect(refusing.closesWithin(10), "a pairRefused line from a phone, which only the Mac may send, closes the channel")
+			Check.expect(engine.sessionLine(within: 1) == nil, "and never reaches the engine")
+			engine.event("sessionClosed", [("session", .string("s_refusing")), ("why", .string("check"))])
+		} else {
+			Check.expect(false, "the second phone attached for its pairRefused line")
+		}
 		if let unansweredAt {
 			usleep(UInt32(max(0, 20 - Date().timeIntervalSince(unansweredAt)) * 1_000_000))
 			Check.expect(unanswered.message(within: 0.2) == nil && !unanswered.closed, "20 s after closeJoin, a claim the engine took and has not answered still waits")

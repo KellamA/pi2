@@ -504,8 +504,8 @@ final class PhoneConnection: @unchecked Sendable {
 		}
 	}
 
-	/// The channel's own lines (remotekit.md), and `refused` (#820), by their one member's name.
-	static let macLines = ["pair", "paired", "attach", "attached", "revoked", "refused", "homeKey", "mac", "sessionEnd"]
+	/// The channel's own lines (remotekit.md), and `refused` (#820) and `pairRefused` (#881), by their one member's name.
+	static let macLines = ["pair", "paired", "pairRefused", "attach", "attached", "revoked", "refused", "homeKey", "mac", "sessionEnd"]
 
 	private func sendAck() {
 		guard case let .attached(channel, _) = phase, let ack = try? channel.sealAck(received), let framed = try? LengthFraming.encode(ack) else { return }

@@ -947,8 +947,11 @@ type ClaimedDevice = { name: string; model: string; system: string; build: strin
 type Claim = { id: string; at: number; path: "relay" | "home"; device: ClaimedDevice; attestKeyId: string; digits: string; wrongDigits: number; replaces: string | null };
 type PairingWindow = { secret: Buffer; pairing: string; expires: number; claiming: boolean; claim: Claim | null; wrongTries: number; timer: ReturnType<typeof setTimeout> };
 
-/** The device the engine's last pairing saved, and the path its claim came by: the one `pairUnkept` may take back. */
-let lastPaired: { device: string; path: "relay" | "home" } | null = null;
+/**
+ * The device the engine's last pairing saved, the path its claim came by, and the device it replaced, if any: the one
+ * `pairUnkept` may take back.
+ */
+let lastPaired: { device: string; path: "relay" | "home"; replaced: string | null } | null = null;
 
 export const SECOND_CLAIM = "Another device tried to use this code. Start again, and don't show the code on a shared or recorded screen.";
 const NO_WINDOW = "No pairing is open on this Mac.";
@@ -1129,7 +1132,11 @@ export async function pairUnkept(id: unknown): Promise<void> {
 	remoteHooks.closeSessions(device.id, "The pairing was not kept.");
 	closed = { why: NOT_KEPT, at: now };
 	log("devices: pi² Remote could not keep the pairing it was sent; the device was taken back");
-	await logDevice({ device: device.id, path: last.path, method: "pair", summary: "Pairing taken back", presence: false, outcome: "failed", why: "pi² Remote could not keep the pairing on this Mac." }, true);
+	// Which phone, by its name as shown (the record is gone, so the Devices page cannot name it), and the device it
+	// replaced, which stays revoked.
+	const replaced = last.replaced === null ? undefined : state.devices.find((one) => one.id === last.replaced);
+	const summary = `Pairing of “${device.name}” taken back${replaced === undefined ? "" : `; it had replaced “${replaced.name}”, which stays revoked`}`;
+	await logDevice({ device: device.id, path: last.path, method: "pair", summary, presence: false, outcome: "failed", why: "pi² Remote could not keep the pairing on this Mac." }, true);
 	announce();
 }
 
@@ -1295,7 +1302,7 @@ async function pairConfirm(params: Params): Promise<{ device: string }> {
 		remoteHooks.toHelper({ kind: "revoke", device: replaced });
 		remoteHooks.closeSessions(replaced, "replaced");
 	}
-	lastPaired = { device: device.id, path: claim.path };
+	lastPaired = { device: device.id, path: claim.path, replaced };
 	remoteHooks.toHelper({
 		kind: "paired",
 		claim: claim.id,

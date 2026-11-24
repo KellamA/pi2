@@ -1091,9 +1091,64 @@ try {
 	await app.until("the pairing taken back", () => app.devicesEvents.at(-1)?.closed?.why === NOT_KEPT && !app.devicesEvents.at(-1).devices.some((one: any) => one.id === lost.id));
 	assert.match((await remote.call("remote.pairUnkept", { device: lost.id })).error ?? "", /may take back only/, "once");
 	const takenBack = (await app.call("devices.log", { device: lost.id })).entries;
-	assert.deepEqual(takenBack.map((entry: any) => [entry.method, entry.outcome, entry.summary]), [["pair", "failed", "Pairing taken back"], ["pair", "done", "Paired"]], "the log says so");
+	assert.deepEqual(takenBack.map((entry: any) => [entry.method, entry.outcome, entry.summary]), [["pair", "failed", "Pairing of “Lee's iPhone” taken back"], ["pair", "done", "Paired"]], "the log says so, naming the phone as shown");
 	assert.deepEqual(app.devicesEvents.at(-1).devices.filter((one: any) => one.revokedAt === null).map((one: any) => one.id), [phone.id], "nothing else was paired, and the first device stays");
 	step(`one claim per window: a second closes it and refuses both; so do ${refusals.length} claims that fail a check, a claimer pi² Remote refused itself, a pairing it could not keep, and three wrong digits; a claim's name and model shown stripped; a pairing pi² Remote could not keep taken back, once, and no other device`);
+
+	// ---- What remote.pairUnkept refuses (#887's security read): every other form, every other caller, every other device
+	const pairNew = async (name: string, replace = false) => {
+		const claimer = new Phone(name);
+		const { digits } = await claimIn(claimer);
+		const before = remote.events.length;
+		({ device: claimer.id } = await app.call("devices.pairConfirm", { digits, ...(replace ? { replace: true } : {}) }));
+		assert.equal((await remote.event("paired", before)).device.id, claimer.id);
+		return claimer;
+	};
+	const stillPaired = (device: string) => app.devicesEvents.at(-1).devices.some((one: any) => one.id === device && one.revokedAt === null);
+	const morgan = await pairNew("Morgan's iPhone");
+	for (const [what, params] of [
+		["a device of null", { device: null }],
+		["an object", { device: { id: morgan.id } }],
+		["an array", { device: [morgan.id] }],
+		["a number", { device: 1 }],
+		["true", { device: true }],
+		["no device", {}],
+		["an extra key", { device: morgan.id, also: true }],
+		["parameters of null", null],
+	] as const) {
+		assert.match((await remote.call("remote.pairUnkept", params as never)).error ?? "", /may take back only the device it was last sent paired for/, what);
+	}
+	for (const [what, params] of [["parameters that are a list", [morgan.id]], ["a string", morgan.id]] as const) {
+		assert.equal((await remote.call("remote.pairUnkept", params as never)).error, "Request parameters must be an object", what);
+	}
+	await assert.rejects(app.call("remote.pairUnkept", { device: morgan.id }), (error: Error) => error.message === ONLY_FROM_THE_HELPER, "from the Mac's app");
+	await app.until("the device kept after each", () => stillPaired(morgan.id));
+	// A second pairing in the same minute: only the newest can be taken back.
+	const noor = await pairNew("Noor's iPhone");
+	assert.match((await remote.call("remote.pairUnkept", { device: morgan.id })).error ?? "", /may take back only/, "the first of two pairings in a minute");
+	assert.deepEqual((await remote.call("remote.pairUnkept", { device: noor.id })).result, {}, "the newest");
+	await app.until("Noor's pairing taken back", () => !app.devicesEvents.at(-1).devices.some((one: any) => one.id === noor.id));
+	await app.until("the first kept", () => stillPaired(morgan.id));
+	assert.match((await remote.call("remote.pairUnkept", { device: noor.id })).error ?? "", /may take back only/, "replayed");
+	// A pairing that replaced a device (Replace, 3.3 step 5), taken back: the log says which it replaced, which stays revoked.
+	const morgan2 = await pairNew("Morgan's iPhone", true);
+	await app.until("Morgan's old device replaced", () => !stillPaired(morgan.id));
+	assert.deepEqual((await remote.call("remote.pairUnkept", { device: morgan2.id })).result, {});
+	await app.until("Morgan's new pairing taken back", () => !app.devicesEvents.at(-1).devices.some((one: any) => one.id === morgan2.id));
+	assert.equal((await app.call("devices.log", { device: morgan2.id })).entries[0].summary, "Pairing of “Morgan's iPhone” taken back; it had replaced “Morgan's iPhone”, which stays revoked");
+	assert.notEqual(app.devicesEvents.at(-1).devices.find((one: any) => one.id === morgan.id)?.revokedAt ?? null, null, "the replaced device stays revoked");
+	// A phone that attached is never taken back, whatever pi² Remote says; nor can a device ask in its session.
+	const quinn = await pairNew("Quinn's iPhone");
+	const quinnChannel = randomBytes(32);
+	const quinnAttach = quinn.attach({ pairing: remote.pairing, challenge: (await remote.call("remote.attachBegin")).result.challenge, binding: quinnChannel });
+	const quinnSession = (await remote.call("remote.attach", { attach: quinnAttach, binding: b64url(quinnChannel), path: "relay" })).result.session as string;
+	assert.ok(quinnSession, "Quinn's phone attached");
+	assert.equal((await remote.inSession(quinnSession, "remote.pairUnkept", { device: quinn.id })).error, ONLY_ON_THE_MAC, "from a device's session");
+	assert.match((await remote.call("remote.pairUnkept", { device: quinn.id })).error ?? "", /not one pi² Remote paired this last minute/, "after the phone attached");
+	await app.until("Quinn's device kept", () => stillPaired(quinn.id));
+	await app.call("devices.revoke", { device: quinn.id });
+	await app.until("the first device alone paired again", () => app.devicesEvents.at(-1).devices.filter((one: any) => one.revokedAt === null).map((one: any) => one.id).join() === phone.id);
+	step("remote.pairUnkept refuses a device of null, an object, an array, a number, true, none, an extra key, and parameters of null, a list or a string; from the Mac's app and from a device's session; the first of two pairings in a minute; a phone that attached; and a replay; a pairing that replaced a device, taken back, says so in the log");
 
 	// ---- Attaching, and the device's table in a session (3.4, 4.1)
 	const attach = async (options: { session?: string | null; binding?: Buffer; at?: number; challenge?: string; device?: KeyObject; presence?: KeyObject | null } = {}) => {
@@ -1578,7 +1633,11 @@ try {
 	await assert.rejects(app.call("devices.pairConfirm", { digits: waiting.digits }), /No phone is waiting/, "nothing is saved that the phone could never be told of");
 	const third3 = await nextRemote(3);
 	assert.deepEqual((await third3.event("start")).devices.map((one: any) => one.id), [phone2.id]);
-	step("a revoked device's key cannot pair again; a claim whose pi² Remote stopped closes the window, and nothing is saved");
+	// Robin's pairing was the engine's last, this last minute, and never attached: a pi² Remote started since was sent
+	// no `paired` for it, and takes it back no more than any other (#887).
+	assert.match((await third3.call("remote.pairUnkept", { device: phone2.id })).error ?? "", /may take back only the device it was last sent paired for/, "after pi² Remote restarted");
+	assert.ok(app.devicesEvents.at(-1).devices.some((one: any) => one.id === phone2.id && one.revokedAt === null), "and the device is kept");
+	step("a revoked device's key cannot pair again; a claim whose pi² Remote stopped closes the window, and nothing is saved; a pi² Remote started since takes back no pairing");
 
 	// ---- Turning remote access off stops pi² Remote; the devices event went to the app alone
 	await app.call("devices.set", { on: false });
