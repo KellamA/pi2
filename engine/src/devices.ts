@@ -617,6 +617,9 @@ export function summarize(given: string, params: Params): string {
 		"github.settle": () => `Marked a write ${params.happened === true ? "done" : "not done"}${inProject}`,
 		"work.act": () => `${clip(String(params.action ?? "Acted on"), 24)} work #${clip(String(params.id), 12)}${inProject}`,
 		"devices.forgetSelf": () => "Unpaired itself",
+		"devices.acceptPresenceKey": () => "Its new Face ID key was accepted on the Mac",
+		"devices.refusePresenceKey": () => "Its new Face ID key was refused on the Mac",
+		presenceKey: () => "Offered a new Face ID key",
 		pair: () => "Paired",
 		attach: () => "Attached",
 		resume: () => "Resumed",
@@ -629,9 +632,12 @@ export function summarize(given: string, params: Params): string {
 const clip = (text: string, max: number) => (text.length <= max ? text : `${text.slice(0, max - 1)}…`);
 
 /** What the log may name, beside the requests the device lists place. */
-const LOG_OWN = new Set(["pair", "attach", "resume", "suspend", "unknown"]);
-/** The entries one device's flood cannot push out: they stay their 90 days. */
-const LOG_KEPT = new Set(["pair", "suspend"]);
+const LOG_OWN = new Set(["pair", "attach", "resume", "suspend", "presenceKey", "unknown"]);
+/**
+ * The entries one device's flood cannot push out: they stay their 90 days. A new Face ID key's offer and the person's
+ * answer to it among them: one key waits at a time, so there are never many.
+ */
+const LOG_KEPT = new Set(["pair", "suspend", "presenceKey", "devices.acceptPresenceKey", "devices.refusePresenceKey"]);
 const MAX_METHOD = 64;
 const MAX_SUMMARY = 200;
 const MAX_WHY = 200;
@@ -748,7 +754,7 @@ async function logEntries(device: string | null, before: number | undefined, cou
 
 // ---- What the person at the Mac is told (4.4)
 
-type Notice = { kind: "claim" | "paired" | "widening" | "suspended"; device: string | null; text: string; at: number };
+type Notice = { kind: "claim" | "paired" | "widening" | "suspended" | "presenceKey"; device: string | null; text: string; at: number };
 
 /** The connections the engine took for the app that asked for the `devices` event: the app's alone (3.3). */
 const watchers = new Set<Client>();
@@ -1274,8 +1280,9 @@ export async function checkAttach(params: Params): Promise<Attached> {
 		throw new Error("The attach is not signed by the device key.");
 	}
 	const presenceKey = device.presenceKey === null ? null : p256Key(device.presenceKey);
-	if (presenceKey === null) return refuse("This device's Face ID key waits to be accepted on the Mac.");
-	if (!signedBy(text, attach.presence, presenceKey)) return refuse("The attach's presence signature is not the presence key's.");
+	if (presenceKey === null) return refuse(PRESENCE_KEY_WAITS);
+	// A key that waits signs nothing: only the accepted one is tried, and a phone whose new key waits is told so.
+	if (!signedBy(text, attach.presence, presenceKey)) return refuse(device.pendingPresenceKey === null ? "The attach's presence signature is not the presence key's." : PRESENCE_KEY_WAITS);
 	if (typeof signed.challenge !== "string" || !takeChallenge(signed.challenge)) return refuse("The attach's challenge is not one this Mac issued, or was used.");
 	if (typeof signed.pairing !== "string" || state.pairing === null || !sameText(signed.pairing, state.pairing)) return refuse("The attach is for another pairing.");
 	if (typeof signed.binding !== "string" || fromBase64url(params.binding, 32) === null || !sameText(signed.binding, params.binding as string)) {
@@ -1301,6 +1308,117 @@ export async function checkAttach(params: Params): Promise<Attached> {
 export async function attachTaken(device: string, path: DevicePath, resumed: boolean): Promise<void> {
 	const method = resumed ? "resume" : "attach";
 	await logDevice({ device, path, method, summary: summarize(method, {}), presence: true, outcome: "done" });
+}
+
+// ---- A new Face ID key (3.2, 4.3, 4.4; #786)
+
+export const PRESENCE_KEY_WAITS = "This device's new Face ID key waits to be accepted on the Mac.";
+export const PRESENCE_KEY_ALREADY_WAITS = "A new Face ID key already waits to be accepted on the Mac. Accept or refuse it there first.";
+const NO_KEY_WAITS = "No new Face ID key waits for this device.";
+
+/**
+ * A phone's offer of a new presence key, made when Face ID was enrolled again or turned on later (`remote.presenceKey`,
+ * 3.2). The old key no longer signs, so the phone can open no session to send a request; the offer comes as an attach
+ * does, through pi² Remote on a channel: `{ offer: { signed, signature, presence }, binding, path }`, with `signed` =
+ * `{"v":2,"kind":"presenceKey","pairing","device","binding","challenge","presenceKey","at"}`, signed by the device key
+ * and by the offered key itself, so that the phone proves it holds it; the challenge one `remote.attachBegin` issued,
+ * the binding this channel's, `at` within two minutes. A key taken is kept as the device's *waiting* key, used for
+ * nothing (no attach, resume or sealed item is checked against it) until the person accepts it on the Mac
+ * (`devices.acceptPresenceKey`), and the Mac is told at once (4.4).
+ *
+ * One key waits at a time: a second offer while one waits is refused, never put in its place, and counted towards the
+ * device's suspension as any refused attach is, so that a phone cannot flood the Mac with offers or notices. The same
+ * key offered again is answered as waiting, without a second notice.
+ */
+export async function offerPresenceKey(params: Params): Promise<{ waiting: true }> {
+	if (!remoteOn()) throw new Error("Reach from an iPhone is off on this Mac.");
+	if (!exactly(params, ["offer", "binding", "path"])) throw new Error("The offer is not in the form pi² Remote sends.");
+	const path = params.path;
+	if (path !== "relay" && path !== "home" && path !== "direct") throw new Error("The offer names no path it came by.");
+	const offer = params.offer;
+	if (!exactly(offer, ["signed", "signature", "presence"])) throw new Error("The offer line is not one.");
+	const signed = readSigned(offer.signed, ["v", "kind", "pairing", "device", "binding", "challenge", "presenceKey", "at"]);
+	if (signed === null || signed.v !== 2 || signed.kind !== "presenceKey") throw new Error("The offer's signed text is not an offer of a Face ID key.");
+	const device = state.devices.find((one) => one.id === signed.device);
+	if (device === undefined) throw new Error("No such device is paired with this Mac.");
+	if (device.revokedAt !== null) throw new Error("This device was revoked on the Mac.");
+	if (device.suspendedAt !== null) throw new Error("This device is suspended. Resume it on the Mac's Devices page.");
+	const text = offer.signed as string;
+	// As for an attach: nothing is counted against the device until its device key proved the offer is its own.
+	if (!signedBy(text, offer.signature, p256Key(device.deviceKey)!)) {
+		unsigned(device.id, "an offer of a Face ID key");
+		throw new Error("The offer is not signed by the device key.");
+	}
+	const refuse = async (why: string): Promise<never> => {
+		await refused(device, path, "presenceKey", why);
+		throw new Error(why);
+	};
+	if (typeof signed.challenge !== "string" || !takeChallenge(signed.challenge)) return refuse("The offer's challenge is not one this Mac issued, or was used.");
+	if (typeof signed.pairing !== "string" || state.pairing === null || !sameText(signed.pairing, state.pairing)) return refuse("The offer is for another pairing.");
+	if (typeof signed.binding !== "string" || fromBase64url(params.binding, 32) === null || !sameText(signed.binding, params.binding as string)) {
+		return refuse("The offer was signed for another channel.");
+	}
+	if (typeof signed.at !== "number" || !Number.isSafeInteger(signed.at) || Math.abs(Date.now() - signed.at) > AT_WITHIN) return refuse("The offer's time is more than two minutes from the Mac's.");
+	const offered = signed.presenceKey;
+	const key = p256Key(offered);
+	if (key === null || typeof offered !== "string") return refuse("The offered Face ID key is not a P-256 key.");
+	if (!signedBy(text, offer.presence, key)) return refuse("The offer is not signed by the key it offers.");
+	if (sameText(offered, device.deviceKey)) return refuse("The offered Face ID key is the device key.");
+	if (device.presenceKey !== null && sameText(offered, device.presenceKey)) return refuse("The offered Face ID key is the one in use.");
+	if (device.pendingPresenceKey !== null) {
+		if (sameText(offered, device.pendingPresenceKey)) return { waiting: true };
+		return refuse(PRESENCE_KEY_ALREADY_WAITS);
+	}
+	let taken = false;
+	await change((doc) => {
+		for (const one of doc.devices) {
+			if (one.id !== device.id || one.revokedAt !== null || one.pendingPresenceKey !== null) continue;
+			one.pendingPresenceKey = offered;
+			one.lastSeenAt = Date.now();
+			one.lastPath = path;
+			taken = true;
+		}
+	});
+	if (!taken) return refuse(PRESENCE_KEY_ALREADY_WAITS);
+	await logDevice({ device: device.id, path, method: "presenceKey", summary: summarize("presenceKey", {}), presence: false, outcome: "done" }, true);
+	notify("presenceKey", device.id, `Face ID was set up again on ${device.name}. Accept the new key in Settings › Devices only if you did it yourself.`);
+	return { waiting: true };
+}
+
+/**
+ * The person accepts a device's waiting key on the Mac (`devices.acceptPresenceKey`, the app's alone): it replaces the
+ * presence key in one commit; pi² Remote is told the new key, then the device's sessions, opened under the old one,
+ * end, as at a revocation; the log keeps it.
+ */
+async function acceptPresenceKey(id: string): Promise<void> {
+	const device = pairedDevice(id);
+	if (device === undefined) throw new Error("No such device is paired.");
+	const key = device.pendingPresenceKey;
+	if (key === null) throw new Error(NO_KEY_WAITS);
+	let accepted = false;
+	await change((doc) => {
+		for (const one of doc.devices) {
+			if (one.id !== id || one.revokedAt !== null || one.pendingPresenceKey !== key) continue;
+			one.presenceKey = key;
+			one.pendingPresenceKey = null;
+			accepted = true;
+		}
+	});
+	if (!accepted) throw new Error(NO_KEY_WAITS);
+	remoteHooks.toHelper({ kind: "presenceKey", device: id, presenceKey: key });
+	remoteHooks.closeSessions(id, "Its new Face ID key was accepted on the Mac.");
+	await logDevice({ device: id, path: device.lastPath ?? "relay", method: "devices.acceptPresenceKey", summary: summarize("devices.acceptPresenceKey", {}), presence: false, outcome: "done" }, true);
+}
+
+/** The person refuses a device's waiting key (`devices.refusePresenceKey`, the app's alone): it is dropped, and logged. */
+async function refusePresenceKey(id: string): Promise<void> {
+	const device = pairedDevice(id);
+	if (device === undefined) throw new Error("No such device is paired.");
+	if (device.pendingPresenceKey === null) throw new Error(NO_KEY_WAITS);
+	await change((doc) => {
+		for (const one of doc.devices) if (one.id === id) one.pendingPresenceKey = null;
+	});
+	await logDevice({ device: id, path: device.lastPath ?? "relay", method: "devices.refusePresenceKey", summary: summarize("devices.refusePresenceKey", {}), presence: false, outcome: "done" }, true);
 }
 
 // ---- Sealed items from the mailbox (4.3, 5.3)
@@ -1422,6 +1540,14 @@ export const deviceRequests: Record<string, (params: Params, client: Client) => 
 	},
 	"devices.revoke": async (params) => {
 		await revoke(deviceId(params));
+		return {};
+	},
+	"devices.acceptPresenceKey": async (params) => {
+		await acceptPresenceKey(deviceId(params));
+		return {};
+	},
+	"devices.refusePresenceKey": async (params) => {
+		await refusePresenceKey(deviceId(params));
 		return {};
 	},
 	"devices.resume": async (params) => {

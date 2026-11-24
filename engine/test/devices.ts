@@ -25,6 +25,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { allowsHiddenApproval, checkDeviceLists, deviceLogged, HIDDEN_FROM_THE_PHONE, deviceMay, devicePlacement, type DeviceSession, ONLY_FROM_THE_HELPER, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID, PERSON_REQUESTS } from "../src/answers.ts";
 import { APPROVAL_DEPTH, checkRequestItem, type Device, deviceRequests, DeviceLog, Devices, devicesState, flushDeviceLog, fromBase64url, hidesSomething, logDevice, macNameNow, pairClaim, PART_HIDDEN, remoteHooks, shownName, TOO_DEEP, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
 import type { Client } from "../src/clients.ts";
+import { PRESENCE_KEY_ALREADY_WAITS, PRESENCE_KEY_WAITS } from "../src/devices.ts";
 import { ANSWER_NOT_SENT, forDevice, MAX_HELPER_LINE, SESSION_OVER } from "../src/remote.ts";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
@@ -190,6 +191,15 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	assert.throws(() => checkDeviceLists(["engine.info"], [], [new Set(["engine.info"])], new Set(["remote.mailboxIn"])), /remote\.mailboxIn is in FOR_THE_HELPER and has no handler/);
 	assert.doesNotThrow(() => checkDeviceLists(["engine.info"], ["remote.attach"], [new Set(["engine.info", "test-copy.fill"])], new Set(["remote.attach"])), "a test copy's own request may be absent");
 	step("the start-up check refuses a handler in no device list, in two, or pi² Remote's anywhere else, and a name placed with no handler");
+
+	// A new Face ID key (#786): only the Mac accepts or refuses one; the offer is pi² Remote's alone.
+	for (const method of ["devices.acceptPresenceKey", "devices.refusePresenceKey"]) {
+		assert.equal(devicePlacement(method)?.list, "MAC_ONLY", method);
+		for (const path of ["relay", "home", "direct", "mailbox"] as const) assert.equal(deviceMay(method, { device: "dev_x" }, { ...relay, path }), "no", `${method} by ${path}`);
+	}
+	assert.equal(devicePlacement("remote.presenceKey")?.list, "FOR_THE_HELPER");
+	assert.equal(deviceMay("remote.presenceKey", {}, relay), "no");
+	step("a new Face ID key is accepted or refused on the Mac alone, by any path, and offered through pi² Remote alone");
 }
 
 // ---- Readers, masking, what a device is sent
@@ -295,7 +305,8 @@ const signText = (text: string, key: KeyObject) => b64url(sign("sha256", Buffer.
 
 class Phone {
 	readonly device = p256();
-	readonly presence = p256();
+	/** Made again when Face ID is enrolled again (#786). */
+	presence = p256();
 	readonly record = p256();
 	readonly channel = randomBytes(32);
 	readonly keyId = randomBytes(32).toString("base64");
@@ -325,6 +336,12 @@ class Phone {
 		const signed = JSON.stringify({ v: 2, kind: "attach", pairing: fields.pairing, device: this.id, session: fields.session ?? null, binding: b64url(fields.binding), challenge: fields.challenge, build: this.build, at: fields.at ?? Date.now() });
 		const presence = keys.presence === null ? "" : signText(signed, keys.presence ?? this.presence.privateKey);
 		return { signed, signature: signText(signed, keys.device ?? this.device.privateKey), presence };
+	}
+
+	/** An offer of a new presence key (#786): `signed` by the device key and by the key offered, unless told otherwise. */
+	offer(fields: { pairing: string; challenge: string; binding: Buffer; presenceKey: string; at?: number }, keys: { device?: KeyObject; presence: KeyObject }) {
+		const signed = JSON.stringify({ v: 2, kind: "presenceKey", pairing: fields.pairing, device: this.id, binding: b64url(fields.binding), challenge: fields.challenge, presenceKey: fields.presenceKey, at: fields.at ?? Date.now() });
+		return { signed, signature: signText(signed, keys.device ?? this.device.privateKey), presence: signText(signed, keys.presence) };
 	}
 
 	/** A request sealed for the mailbox, once opened. */
@@ -399,6 +416,19 @@ class Phone {
 	await assert.rejects(take(replay), /taken before/, "after a restart too");
 	assert.equal(suspended(), false, "two refused presence signatures do not suspend");
 	step("sealed items: the device key's signature first, before anything is logged or counted; then the presence signature, a day (an hour if it widens), its row, and each nonce once, stored before the answer, through a restart");
+
+	// A new Face ID key that waits to be accepted signs no item (#786); the accepted key still does.
+	const waitingKey = p256();
+	await harness.commit(async (tx) => {
+		const doc = await tx.doc(Devices);
+		for (const one of doc.devices) if (one.id === phone.id) one.pendingPresenceKey = spki(waitingKey.publicKey);
+	}, context);
+	await harness.close(context);
+	harness = await open();
+	assert.equal(devicesState().devices.find((one) => one.id === phone.id)!.pendingPresenceKey, spki(waitingKey.publicKey));
+	await assert.rejects(take(phone.item(pairing, "abort", { id: 4 }, { presence: waitingKey.privateKey })), /presence signature is not the presence key's/, "an item signed by the waiting key");
+	assert.equal((await take(phone.item(pairing, "abort", { id: 4 }))).method, "abort", "one signed by the accepted key");
+	step("a waiting Face ID key signs no sealed item, and the accepted one still does");
 
 	// ---- The devices' log (4.4): bounded in what an entry holds, by device, and with repeated refusals made one
 	const other = `dev_${b64url(randomBytes(16))}`;
@@ -959,6 +989,81 @@ try {
 	}
 	step("sessionEnd closes the session at once; the log has the pairing, attaches, resumes, refusals, the suspension and the requests, not the reading");
 
+	// ---- A new Face ID key (3.2, 4.3, 4.4; #786): it waits, signs nothing, and only the Mac accepts or refuses it
+	const offer = async (key: ReturnType<typeof p256>, options: { signer?: KeyObject; device?: KeyObject; via?: Remote } = {}) => {
+		const via = options.via ?? remote;
+		const challenge = (await via.call("remote.attachBegin")).result.challenge;
+		const channel = randomBytes(32);
+		const line = phone.offer({ pairing: remote.pairing, challenge, binding: channel, presenceKey: spki(key.publicKey) }, { presence: options.signer ?? key.privateKey, ...(options.device === undefined ? {} : { device: options.device }) });
+		return via.call("remote.presenceKey", { offer: line, binding: b64url(channel), path: "relay" });
+	};
+	const recordOf = () => app.devicesEvents.at(-1).devices.find((one: any) => one.id === phone.id);
+	const oldPresence = spki(phone.presence.publicKey);
+	const opened2 = await attach();
+	const faceSession = opened2.reply.result.session as string;
+	await until("the session's greeting", () => remote.sessionLines.get(faceSession)?.some((line) => line.event === "device"));
+	await assert.rejects(app.call("remote.presenceKey", {}), (error: Error) => error.message === ONLY_FROM_THE_HELPER, "an offer on the engine's socket");
+	const renewed = p256();
+	assert.match((await offer(renewed, { device: p256().privateKey })).error, /not signed by the device key/, "an offer a stranger signed");
+	assert.match((await offer(renewed, { signer: p256().privateKey })).error, /not signed by the key it offers/, "an offer of a key the phone does not hold");
+	assert.equal(recordOf().pendingPresenceKey, null, "neither waits");
+	const beforeOffer = app.devicesEvents.length;
+	assert.deepEqual((await offer(renewed)).result, { waiting: true });
+	const faceNotice = await app.notice("presenceKey", beforeOffer);
+	assert.equal(faceNotice.device, phone.id);
+	assert.equal(faceNotice.text, "Face ID was set up again on Alex's iPhone. Accept the new key in Settings › Devices only if you did it yourself.");
+	assert.equal(recordOf().pendingPresenceKey, spki(renewed.publicKey), "the offered key waits");
+	assert.equal(recordOf().presenceKey, oldPresence, "and the key in use is unchanged");
+	assert.ok(!JSON.stringify(remote.sessionLines.get(faceSession)).includes("Face ID was set up again"), "the notice goes to the app alone, never to a device");
+	// The same key again is answered as waiting, with no second notice; another key never takes its place.
+	const beforeAgain = app.devicesEvents.length;
+	assert.deepEqual((await offer(renewed)).result, { waiting: true });
+	assert.equal((await offer(p256())).error, PRESENCE_KEY_ALREADY_WAITS, "a second offer does not replace the first unseen");
+	await app.call("engine.info");
+	assert.ok(!app.devicesEvents.slice(beforeAgain).some((event) => event.notice?.kind === "presenceKey"), "no second notice");
+	assert.equal(recordOf().pendingPresenceKey, spki(renewed.publicKey), "the first still waits");
+	// A waiting key signs nothing: an attach under it is refused, with words that say why.
+	assert.equal((await attach({ presence: renewed.privateKey })).reply.error, PRESENCE_KEY_WAITS, "an attach signed by the waiting key");
+	// A device cannot accept or refuse it, its own or another's: refused by the lists, with ONLY_ON_THE_MAC's words.
+	for (const method of ["devices.acceptPresenceKey", "devices.refusePresenceKey"]) {
+		assert.equal((await remote.inSession(faceSession, method, { device: phone.id })).error, ONLY_ON_THE_MAC, method);
+		assert.equal((await remote.inSession(faceSession, method, { device: "dev_another" })).error, ONLY_ON_THE_MAC, `${method} for another`);
+	}
+	assert.equal(recordOf().pendingPresenceKey, spki(renewed.publicKey), "still waiting");
+	// Accepting: the key replaced in one commit, pi² Remote told the new key, then the session opened under the old one closed.
+	const beforeAccept = remote.events.length;
+	assert.deepEqual(await app.call("devices.acceptPresenceKey", { device: phone.id }), {});
+	assert.deepEqual(await remote.event("presenceKey", beforeAccept), { event: "remote", kind: "presenceKey", device: phone.id, presenceKey: spki(renewed.publicKey) });
+	await until("the sessions opened under the old key closed", () => remote.events.slice(beforeAccept).some((event) => event.kind === "sessionClosed" && event.session === faceSession));
+	const toldAccept = remote.events.slice(beforeAccept).map((event) => event.kind);
+	assert.ok(toldAccept.indexOf("presenceKey") < toldAccept.indexOf("sessionClosed"), `pi² Remote is told the key before the session closes: ${toldAccept.join(" ")}`);
+	await app.until("the new key in the record", () => recordOf().presenceKey === spki(renewed.publicKey) && recordOf().pendingPresenceKey === null);
+	assert.equal((await remote.inSession(faceSession, "engine.info")).error, OPEN_WITH_FACE_ID, "the old session is over");
+	await assert.rejects(app.call("devices.acceptPresenceKey", { device: phone.id }), /No new Face ID key waits/);
+	assert.match((await attach()).reply.error, /presence signature is not the presence key's/, "the old key signs nothing now");
+	phone.presence = renewed;
+	const underNew = await attach();
+	assert.equal(underNew.reply.result.resume, false, "the new key opens a session");
+	// Refusing: the waiting key dropped, the key in use kept.
+	const refusedKey = p256();
+	assert.deepEqual((await offer(refusedKey)).result, { waiting: true });
+	assert.deepEqual(await app.call("devices.refusePresenceKey", { device: phone.id }), {});
+	await app.until("the waiting key dropped", () => recordOf().pendingPresenceKey === null);
+	assert.equal(recordOf().presenceKey, spki(renewed.publicKey));
+	await assert.rejects(app.call("devices.refusePresenceKey", { device: phone.id }), /No new Face ID key waits/);
+	await assert.rejects(app.call("devices.acceptPresenceKey", { device: "dev_none" }), /No such device is paired/);
+	const faceLog = (await app.call("devices.log", { device: phone.id })).entries;
+	const faceKinds = faceLog.map((entry: any) => `${entry.method}:${entry.outcome}`);
+	for (const kind of ["presenceKey:done", "presenceKey:refused", "devices.acceptPresenceKey:done", "devices.refusePresenceKey:done", "devices.acceptPresenceKey:refused", "devices.refusePresenceKey:refused"]) {
+		assert.ok(faceKinds.includes(kind), `the log has ${kind}: ${faceKinds.join(" ")}`);
+	}
+	assert.equal(faceLog.filter((entry: any) => entry.method === "presenceKey" && entry.outcome === "done").length, 2, "two offers taken, the one offered again not logged twice");
+	assert.deepEqual(faceLog.find((entry: any) => entry.method === "devices.acceptPresenceKey" && entry.outcome === "done").summary, "Its new Face ID key was accepted on the Mac");
+	assert.deepEqual(faceLog.find((entry: any) => entry.method === "presenceKey" && entry.outcome === "refused" && entry.why === PRESENCE_KEY_ALREADY_WAITS)?.summary, "Offered a new Face ID key");
+	assert.ok(!faceLog.some((entry: any) => entry.why?.includes("not signed by the device key")), "what a stranger signed is not in the log");
+	assert.equal(recordOf().suspendedAt, null, "and the device is not suspended");
+	step("a new Face ID key waits, signs nothing and is told to the app alone; a second cannot replace it; a device cannot accept or refuse one; accepting replaces the key, tells pi² Remote, then ends the session; refusing drops it; the log has each");
+
 	// ---- pi² Remote stopping, then revocation (3.6)
 	const later = await attach();
 	const session3 = later.reply.result.session as string;
@@ -974,6 +1079,9 @@ try {
 	const fourth = await restarted.call("remote.attach", { attach: phone.attach({ pairing: remote.pairing, challenge, binding: channel }), binding: b64url(channel), path: "home" });
 	const session4 = fourth.result.session as string;
 	await until("the fourth session's greeting", () => restarted.sessionLines.get(session4)?.some((line) => line.event === "device"));
+	// A key waiting when the device is revoked goes with its other keys (#786).
+	assert.deepEqual((await offer(p256(), { via: restarted })).result, { waiting: true });
+	await app.until("a key waiting before the revocation", () => recordOf().pendingPresenceKey !== null);
 	const revokedAt = restarted.events.length;
 	await app.call("devices.revoke", { device: phone.id });
 	const told = await until("the revoked device told", () => restarted.sessionLines.get(session4)?.find((line) => line.event === "device" && line.revoked === true));
@@ -984,6 +1092,8 @@ try {
 	assert.ok(told2.indexOf("revoke") < told2.indexOf("sessionClosed"), `revoke goes before the session is closed, for the phone's revoked line: ${told2.join(" ")}`);
 	const record = app.devicesEvents.at(-1).devices.find((one: any) => one.id === phone.id);
 	assert.ok(record.revokedAt !== null && record.deviceKey === "" && record.presenceKey === null, "its keys are forgotten in the same commit");
+	assert.equal(record.pendingPresenceKey, null, "the waiting Face ID key with them");
+	await assert.rejects(app.call("devices.acceptPresenceKey", { device: phone.id }), /No such device is paired/, "and cannot be accepted once revoked");
 	const afterRevoke = await restarted.call("remote.attachBegin");
 	const channel2 = randomBytes(32);
 	assert.match((await restarted.call("remote.attach", { attach: phone.attach({ pairing: remote.pairing, challenge: afterRevoke.result.challenge, binding: channel2 }), binding: b64url(channel2), path: "relay" })).error, /revoked/);

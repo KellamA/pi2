@@ -18,12 +18,14 @@
 // - the `remote` event, `{"event":"remote","kind",…}`, to pi² Remote alone: `start` (the relay, the switches, the
 //   pairing, the paired devices' keys and the lowest build to attach, sent first), `settings`, `register`,
 //   `openJoin` (the pairing's secret and the relay's token hash) and `closeJoin`, `paired` and `pairRefused` (the
-//   answer to a claim), `revoke`, and `sessionClosed`. #689 (P20) adds `push` here.
+//   answer to a claim), `revoke`, `presenceKey` (a device's new Face ID key, accepted on the Mac, #786), and
+//   `sessionClosed`. #689 (P20) adds `push` here.
 //
 // pi² Remote's requests: `remote.hello` (the Mac's public keys, the pairing, the Mac's addresses), `remote.state` (the
 // same when they change), `remote.pairClaim`, `remote.pairWrong` and `remote.pairRefused` (pairing, 3.3), `remote.attachBegin` and
 // `remote.attach` (3.4: an attach or a resume, signed by the device key and the presence key), and
-// `remote.sessionEnd` (the phone's session ended, 4.5). `remote.mailboxIn` (#678, P10) is added here, and checks each
+// `remote.sessionEnd` (the phone's session ended, 4.5), `remote.presenceKey` (a phone's offer of a new Face ID key, signed
+// as an attach is, 3.2, #786). `remote.mailboxIn` (#678, P10) is added here, and checks each
 // item with `checkRequestItem` in devices.ts.
 //
 // A device session is a `Client` of its own (clients.ts) with `device` set, so it has its own subscriptions and
@@ -53,6 +55,7 @@ import {
 	maskValue,
 	shownName,
 	notify,
+	offerPresenceKey,
 	p256Key,
 	pairClaim,
 	pairedDevice,
@@ -432,6 +435,7 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 		closeSession(params.session, "The session ended on the phone.");
 		return {};
 	},
+	"remote.presenceKey": async (_current, params) => offerPresenceKey(params),
 	// "remote.mailboxIn": #678 (P10), with checkRequestItem (devices.ts).
 };
 
