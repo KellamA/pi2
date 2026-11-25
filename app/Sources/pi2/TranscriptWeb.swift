@@ -110,6 +110,7 @@ struct TranscriptWebView: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ view: TranscriptPane, coordinator: TranscriptBridge) {
+        coordinator.close()
         view.page.close()
         // A page taken from the one loaded ahead and never shown is still where it waited.
         view.page.removeFromSuperview()
@@ -138,10 +139,25 @@ final class TranscriptBridge {
     var showOutput: (String) -> Void = { _ in }
     /// Told once the page has come into view and drawn the conversation.
     var onShown: () -> Void = {}
+    /// What `present` calls of this conversation showed (#946), by presentation, as `presented.list` and then
+    /// `conversation.presented` gave them: what the page is sent, and what every message about a presentation is checked
+    /// against.
+    private(set) var records: [String: PresentationRecord] = [:]
+    /// Whether `records` holds the conversation's list yet. Until it does, the page's asks for pictures wait for it.
+    private var recordsLoaded = false
+    private var waitingPictures: [(presentation: String, version: Int, item: Int)] = []
+    /// Reads the list and follows the conversation's presentations; stopped when the conversation or the view goes.
+    private var following: Task<Void, Never>?
 
     init(engine: EngineClient, conversationID: Int) {
         self.engine = engine
         self.conversationID = conversationID
+    }
+
+    /// The view is going: stop following its conversation's presentations.
+    func close() {
+        following?.cancel()
+        following = nil
     }
 
     func makeView(folder: URL) -> TranscriptWebKitView {
@@ -172,6 +188,9 @@ final class TranscriptBridge {
             feed.restart()
             olderOnTheWay = false
             undrawn = true
+            followPresented()
+        } else if following == nil {
+            followPresented()
         }
         self.items = items
         self.earlier = earlier
@@ -230,7 +249,8 @@ final class TranscriptBridge {
         let palette = TranscriptPalette.colors(for: view.effectiveAppearance)
         // A long conversation goes to the page newest first, and the older entries a part at a time, each once the page
         // has drawn the one before (#380): one part on its way at a time, whatever else is sent meanwhile.
-        guard let message = feed.update(items: items, earlier: earlier, older: older, state: state, inbox: inbox, changes: changes, needs: needs, names: names, palette: palette, chat: chat, withOlder: !olderOnTheWay),
+        let presented = records.values.sorted { $0.id.count == $1.id.count ? $0.id < $1.id : $0.id.count < $1.id.count }
+        guard let message = feed.update(items: items, earlier: earlier, older: older, state: state, inbox: inbox, changes: changes, needs: needs, names: names, palette: palette, chat: chat, presented: presented, withOlder: !olderOnTheWay),
               let json = TranscriptFeed.json(message) else {
             drawn?()
             return
@@ -372,15 +392,112 @@ final class TranscriptBridge {
         case .answerNeed(let id, let answer):
             // The page names only a need it was sent a card for; the engine checks the answer again.
             guard needs.contains(where: { $0.id == id }) else { return }
-            Task { [weak self] in
-                guard let self else { return }
-                do {
-                    _ = try await engine.call("needs.answer", ["id": id, "answer": answer.params])
-                    // Nothing is told back: the need leaves the list, and the conversation is told the answer.
-                } catch {
-                    self.sendNeedProblem(id, error.localizedDescription)
-                }
+            answerNeed(id, answer.params)
+        case .presentedImage(let presentation, let version, let item):
+            guard recordsLoaded else {
+                // The list is on its way: the card was drawn from the call's result meanwhile.
+                if waitingPictures.count < 64 { waitingPictures.append((presentation, version, item)) }
+                return
             }
+            guard let found = presentedChecks.item(presentation, version, item) else { return }
+            sendPresentedPicture(presentation: presentation, version: version, item: item, found)
+        case .expand(let presentation, let version, let item):
+            guard presentedChecks.allows(action) else { return }
+            let ref = PresentationRef(conversation: conversationID, presentation: presentation)
+            #if PI2_DEVELOPMENT
+            engine.note("presenting: the window of \(presentation) of conversation \(conversationID) asked for at version \(version), item \(item)")
+            #endif
+            PresentationWindows.shared.show(ref, version: version, item: item)
+        case .choose(let need, let choice):
+            guard presentedChecks.allows(action) else { return }
+            answerNeed(need, ["kind": "decision", "choice": choice])
+        case .answerPresented(let need, let text):
+            guard presentedChecks.allows(action) else { return }
+            answerNeed(need, ["kind": "decision", "text": text])
+        }
+    }
+
+    /// `needs.answer` for a card's answer; the engine checks it again. Nothing is told back on success: the need leaves
+    /// the list, and the conversation is told the answer. A refusal is shown under the card's buttons.
+    private func answerNeed(_ id: String, _ answer: [String: Any]) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await engine.call("needs.answer", ["id": id, "answer": answer])
+            } catch {
+                self.sendNeedProblem(id, error.localizedDescription)
+            }
+        }
+    }
+
+    // MARK: Presentations (#946)
+
+    /// Reads the conversation's presentations and follows them, for the page's cards. The stream is asked for before
+    /// the list, so a record that changes while the list is read is not missed; what it brings is newer than the list.
+    private func followPresented() {
+        following?.cancel()
+        records = [:]
+        recordsLoaded = false
+        waitingPictures = []
+        let id = conversationID
+        let updates = engine.presentedUpdates(conversation: id)
+        // The bridge is held only while it is being told something, never across a wait.
+        following = Task { [weak self, engine] in
+            let list = try? await engine.presentedList(conversation: id)
+            guard !Task.isCancelled, self?.conversationID == id else { return }
+            // Not read (the engine went, or is an older one): asked again at the conversation's next update.
+            guard let list else {
+                self?.following = nil
+                return
+            }
+            self?.loaded(list)
+            for await record in updates {
+                guard self?.conversationID == id else { return }
+                self?.take([record])
+            }
+        }
+    }
+
+    private func loaded(_ list: [PresentationRecord]) {
+        take(list)
+        recordsLoaded = true
+        let waiting = waitingPictures
+        waitingPictures = []
+        for (presentation, version, item) in waiting { perform(.presentedImage(presentation: presentation, version: version, item: item)) }
+    }
+
+    private func take(_ list: [PresentationRecord]) {
+        guard !list.isEmpty else { return }
+        for record in list { records[record.id] = record }
+        push()
+    }
+
+    /// What a message about a presentation is checked against: this conversation's records, and the decisions waiting
+    /// for the person in this conversation as the engine's `needs` list has them (TranscriptAction.PresentedChecks).
+    private var presentedChecks: TranscriptAction.PresentedChecks {
+        let waiting = engine.needs.filter { $0.kind == "decision" && $0.conversationId == conversationID }.map(\.id)
+        return TranscriptAction.PresentedChecks(records: records, waiting: Set(waiting))
+    }
+
+    private static let presentedTypes: Set<String> = pictureTypes.union(["image/svg+xml"])
+
+    /// Fetches a presented picture, or a page's drawn snapshot, and hands it to the page; or tells the page it failed.
+    private func sendPresentedPicture(presentation: String, version: Int, item: Int, _ found: PresentedItem) {
+        let conversationID = conversationID
+        Task { [weak self] in
+            guard let self else { return }
+            var picture: [String: Any] = ["presented": ["presentation": presentation, "version": version, "item": item]]
+            // A page not drawn yet has no picture to ask for: the engine would refuse it.
+            if found.kind == .picture || found.snapshot?.isDrawn == true,
+               let answer = try? await engine.presentedPicture(conversation: conversationID, presentation: presentation, version: version, item: item),
+               Self.presentedTypes.contains(answer.mimeType) {
+                picture["mimeType"] = answer.mimeType
+                picture["data"] = answer.data.base64EncodedString()
+            }
+            guard conversationID == self.conversationID,
+                  let json = try? JSONSerialization.data(withJSONObject: ["image": picture]),
+                  let text = String(data: json, encoding: .utf8) else { return }
+            send(text)
         }
     }
 

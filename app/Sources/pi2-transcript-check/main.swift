@@ -298,6 +298,7 @@ Task { @MainActor in
         if let pictures { try? FileManager.default.createDirectory(at: pictures, withIntermediateDirectories: true) }
         await narrow(folder: url, pictures: pictures)
         await presenting(folder: url, pictures: pictures)
+        await presentingBridge(folder: url)
     } else {
         check("the conversation page is found", false, "no index.html in \(url.path); run from app/ or pass --page <folder>")
     }
