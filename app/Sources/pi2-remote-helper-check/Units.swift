@@ -82,6 +82,8 @@ enum Units {
 		let shakes = (0 ..< 20).filter { _ in gate.handshake(for: "dev_x", now: now) }.count
 		Check.expect(shakes == Admission.handshakesPerDevicePerMinute, "at most \(Admission.handshakesPerDevicePerMinute) handshakes a minute for one device", "\(shakes)")
 		Check.expect(gate.handshake(for: "dev_y", now: now), "which does not hold back another device")
+		// What the relay run's minute's wait after a seventh handshake showed before #1016, on the check's own clock.
+		Check.expect(gate.handshake(for: "dev_x", now: now + 61), "and the device has more a minute later")
 		let recorded = Bytes.random(48)
 		gate.remember(recorded, now: now)
 		Check.expect(gate.replayed(recorded, now: now + 5) && !gate.replayed(Bytes.random(48), now: now + 5), "a first message that found its device, seen again, is a replay; another is not")
