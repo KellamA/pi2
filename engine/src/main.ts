@@ -61,7 +61,7 @@ import { preparedTool } from "./stringargs.ts";
 import { textOf } from "./transcript.ts";
 import { broadcast, type Client, clients, send } from "./clients.ts";
 import { dirtyUsage, overBudget, refreshUsage, scheduleUsageRefresh, Spend, type UsageDocShape, usageById, usageRowsChanged, usageSummary, usageTimer, usageTotals, wireUsage } from "./usage.ts";
-import { checkPersonStart, type Params, startConfirmation, text } from "./requests.ts";
+import { checkPersonStart, type Params, repeated, startConfirmation, text } from "./requests.ts";
 import { providerRequests, wireProviderRequests } from "./providerrequests.ts";
 import { addCommandRule, agentRequests, saveAgent, wireAgentRequests } from "./agentrequests.ts";
 import { conversationRequests, wireConversationEvents } from "./conversationevents.ts";
@@ -558,7 +558,7 @@ setVersions((await harness.snapshot(Versions, context)) ?? { chats: {} });
 async function conversation(id: unknown): Promise<Conversation> {
 	const shown = typeof id === "number" ? (versions.chats[String(id)]?.current ?? id) : undefined;
 	const found = shown === undefined ? undefined : await harness.conversation(shown as unknown as ConversationId, context);
-	if (found === undefined) throw new Error(`Unknown conversation: ${String(id)}`);
+	if (found === undefined) throw new Error(`Unknown conversation: ${repeated(id)}`);
 	return found;
 }
 
@@ -1309,7 +1309,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	// Answered through `claim` (needs.ts), as every answer to what waits for the person is, by whichever route.
 	"inbox.decide": async (params) => {
 		const decision = text(params, "decision");
-		if (!["once", "always", "rule", "deny"].includes(decision)) throw new Error(`Unknown decision: ${decision}`);
+		if (!["once", "always", "rule", "deny"].includes(decision)) throw new Error(`Unknown decision: ${repeated(decision)}`);
 		await claim(text(params, "id"), { kind: "approval", decision: decision as "once" | "always" | "rule" | "deny" });
 		return {};
 	},

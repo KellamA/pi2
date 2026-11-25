@@ -54,13 +54,28 @@ final class TestMac: @unchecked Sendable {
         var dropAfterAcking = 0
         /// Answers `submit` as the engine does, once for each request id; the recording refuses it otherwise.
         var takesMessages = false
+        /// How it answers an offer of a new presence key (#891), as pi² Remote passes on the engine's answer.
+        var offers = OfferAnswer.waiting
+    }
+
+    enum OfferAnswer: Sendable {
+        /// `refused` `presence`: the key waits to be accepted on the Mac.
+        case waiting
+        /// `presenceKeyAccepted`: the person accepted it; attaches are checked against it from then on.
+        case accepted
+        /// `bye` alone, as for a refusal the engine gives no word for.
+        case nothing
+        /// `refused` with this reason, as pi² Remote passes on the engine's refusal of an offer.
+        case refused(Refusal.Reason)
+        /// A line the phone does not read as an answer to an offer (`attached`), then the close.
+        case unreadable
     }
 
     struct Device {
         let id: DeviceID
         let channelKey: Curve25519.KeyAgreement.PublicKey
         let deviceKey: P256.Signing.PublicKey
-        let presenceKey: P256.Signing.PublicKey
+        var presenceKey: P256.Signing.PublicKey
     }
 
     struct State {
@@ -70,6 +85,8 @@ final class TestMac: @unchecked Sendable {
         var claims: [PairClaim] = []
         var attaches: [AttachClaim] = []
         var attachLines: [Data] = []
+        /// Every offer of a new presence key it read (#891).
+        var offers: [PresenceKeyOffer] = []
         var challenges: [Data] = []
         var refusedAttaches = 0
         var unansweredAttaches = 0
@@ -301,6 +318,30 @@ final class TestMac: @unchecked Sendable {
         }
     }
 
+    /// An offer of a new presence key in place of an attach (#891), checked as pi² Remote and the engine check it, and
+    /// answered as `rules.offers` says; the channel ends after the answer, with no session.
+    private func offered(_ offer: PresenceKeyOffer, on channel: MacChannel, device: Device, pairing: PairingID, binding: Data, challenge: Data, rules: Rules) throws {
+        state.withLock { $0.offers.append(offer) }
+        do {
+            try offer.verify(deviceKey: device.deviceKey, pairing: pairing, device: device.id, binding: binding, challenge: challenge, now: Date().addingTimeInterval(rules.clockAhead))
+        } catch {
+            return channel.close()
+        }
+        switch rules.offers {
+        case .waiting: try channel.refuse(.presence)
+        case .accepted:
+            state.withLock { state in
+                if let index = state.devices.firstIndex(where: { $0.id == device.id }) { state.devices[index].presenceKey = offer.presenceKey }
+            }
+            try channel.presenceKeyAccepted()
+        case .nothing: channel.close()
+        case let .refused(reason): try channel.refuse(reason)
+        case .unreadable:
+            try channel.send(.attached(Attached(session: SessionID("s_offer")!, resume: false)))
+            channel.close()
+        }
+    }
+
     private func connect(_ link: any MessageLink, _ first: Data) async throws {
         let (pairing, devices) = state.withLock { state in
             (state.pairing, state.devices.filter { !state.revoked.contains($0.id) })
@@ -321,7 +362,9 @@ final class TestMac: @unchecked Sendable {
 
         guard let line = try await channel.nextLine() else { return channel.close() }
         state.withLock { $0.attachLines.append(line) }
-        guard case let .attach(claim) = try ControlLine.parse(line) else { return channel.close() }
+        let first = try ControlLine.parse(line)
+        if case let .presenceKey(offer) = first { return try offered(offer, on: channel, device: device, pairing: pairing, binding: binding, challenge: challenge, rules: rules) }
+        guard case let .attach(claim) = first else { return channel.close() }
         state.withLock { $0.attaches.append(claim) }
         // pi² Remote's own check first: an attach not signed by this device's key is closed with bye alone.
         do {
@@ -564,6 +607,14 @@ final class MacChannel: Sendable {
     func refusePairing(_ why: PairRefusal.Why) throws {
         try order.withLock { _ in
             for message in try channel.sealPairRefusal(PairRefusal(why)) { outgoing.push(message) }
+        }
+        outgoing.finish()
+    }
+
+    /// The `presenceKeyAccepted` line and `bye`, then the link closes.
+    func presenceKeyAccepted() throws {
+        try order.withLock { _ in
+            for message in try channel.sealPresenceKeyAccepted() { outgoing.push(message) }
         }
         outgoing.finish()
     }
