@@ -13,7 +13,8 @@
 #
 # With --remote, pi² Remote's relay end (#678) instead: `pi2-remote-helper-check --relay` (PATH defaults to
 # app/.build/debug/pi2-remote-helper-check, beside a pi2-remote-helper built with it) against the same relay, and with
-# --engine engine/src/main.ts a real engine on a temporary data folder too.
+# --engine engine/src/main.ts a real engine on a temporary data folder too. Its relay pushes through the stand-in for
+# Apple's service (relay/test/apns.ts), which the check reads at /pushes (#935); nothing is sent anywhere.
 #
 # With --sealed, the check that the relay sees only sealed bytes (docs/iphone.md 10, #683) instead: the same relay with
 # the recorder at its edge (relay/test/sealed/wrangler.jsonc), a marker session (`pi2-relay-check --sealed`), the check
@@ -76,6 +77,10 @@ level=warn
 # The sealed check reads what the relay writes to the console from this output: at `log`, Wrangler passes on the
 # Worker's console.log, info and debug as well as warn and error (the check's canaries show it on every run).
 [[ -z $sealed ]] || { config=test/sealed/wrangler.jsonc; level=log; }
+# pi² Remote's run pushes through the stand-in for Apple's service (test/protocol/worker.ts, #935), so that a push the
+# engine asks for is seen sealed where it leaves the relay; the client's protocol run keeps a relay with no push key.
+stand_in=PUSH_STAND_IN:off
+[[ -z $remote ]] || stand_in=PUSH_STAND_IN:on
 # TMPDIR is this run's folder, so that isolated.mjs's throwaway home goes in it and is removed with it: its own clean-up
 # does not run when the process group is stopped.
 mkdir -p "$work/tmp"
@@ -86,7 +91,7 @@ TMPDIR="$work/tmp" node "$root/relay/scripts/isolated.mjs" wrangler dev \
 	--var APP_ATTEST_TEAM_ID:ABCDE12345 --var APP_ATTEST_BUNDLE_ID:dev.pi2.test \
 	--var APP_ATTEST_ENVIRONMENTS:development --var APP_ATTEST_CATEGORIES:none \
 	--var MIN_BUILD_MAC:100 --var MIN_BUILD_DEVICE:1 \
-	--var ADDRESS_KEY:a-protocol-test-key-for-addresses-not-a-secret \
+	--var ADDRESS_KEY:a-protocol-test-key-for-addresses-not-a-secret --var "$stand_in" \
 	>"$work/relay.log" 2>&1 </dev/null &
 relay_pid=$!
 set +m

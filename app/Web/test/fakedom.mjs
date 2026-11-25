@@ -109,6 +109,23 @@ class Element extends Node {
 	get className() {
 		return this.getAttribute("class") ?? "";
 	}
+	set className(value) {
+		this.setAttribute("class", value);
+	}
+	/** Listeners are kept, for `fire` to call; nothing dispatches by itself. */
+	addEventListener(type, listener) {
+		this._listeners ??= new Map();
+		if (!this._listeners.has(type)) this._listeners.set(type, []);
+		this._listeners.get(type).push(listener);
+	}
+	/** Custom properties and styles set through the CSSOM, which never become a `style` attribute here. */
+	get style() {
+		const properties = (this._style ??= new Map());
+		return {
+			setProperty: (name, value) => properties.set(name, String(value)),
+			getPropertyValue: (name) => properties.get(name) ?? "",
+		};
+	}
 	get classList() {
 		const element = this;
 		return {
@@ -138,6 +155,20 @@ function escapeText(text) {
 
 function escapeAttribute(text) {
 	return text.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** Calls `element`'s listeners for `type` with `event`, as a browser would dispatch it to that element alone. */
+export function fire(element, type, event = {}) {
+	const listeners = element._listeners?.get(type) ?? [];
+	for (const listener of listeners) listener({ stopPropagation() {}, preventDefault() {}, ...event });
+	return listeners.length;
+}
+
+/** Every element under `node`, itself included, in document order. */
+export function elements(node) {
+	const out = node.nodeType === 1 ? [node] : [];
+	for (const child of node.childNodes) out.push(...elements(child));
+	return out;
 }
 
 export function html(node) {

@@ -151,7 +151,8 @@ func drawn(_ folder: URL, layout: TranscriptLayout, width: CGFloat, picture: Str
 /// The whole page as drawn, its full height, to a PNG.
 @MainActor
 func picture(of view: TranscriptWebKitView, width: CGFloat, to file: URL) async {
-    let height = (await js(view, "document.documentElement.scrollHeight") as? Double).map { CGFloat($0) } ?? 844
+    // In CSS pixels, which a page zoomed in (Presenting.swift's larger text) draws larger.
+    let height = (await js(view, "document.documentElement.scrollHeight") as? Double).map { ceil(CGFloat($0) * view.pageZoom) } ?? 844
     view.frame = NSRect(x: 0, y: 0, width: width, height: height)
     view.window?.setContentSize(NSSize(width: width, height: height))
     // Laid out again at the new height, and drawn.

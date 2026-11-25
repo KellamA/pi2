@@ -3,11 +3,12 @@ import Foundation
 /// A project's settings and limits, the app's settings a phone may change, and schedules, answered in the demo (#697) as
 /// the engine answers them: `projects.ts` (`projects.delete`; `.set`, `.rename` and `.archive` are `ProjectAnswers.swift`'s,
 /// `.unarchive` with `settings.setAutoArchive` `ConversationsAnswers.swift`'s), `github.ts` (`github.attach`, `.detach`),
-/// `agentrequests.ts` (`agents.save`, as the settings send it: a name with a model or a summary size), `keepawake.ts`
+/// `keepawake.ts`
 /// (`settings.setAwake`), `settingsrequests.ts` (`settings.setCompaction`, `chat.set`), `coauthor.ts` (`coauthor.set`) and
-/// `scheduleruns.ts` with `schedules.ts` (`schedules.save`, `.delete`). Each checks what the engine checks, refuses in its
-/// words, changes the event the engine sends again, and answers what it answers. `schedules.runNow`, which starts a
-/// conversation, is left to the demo's second part (#697).
+/// `scheduleruns.ts` with `schedules.ts` (`schedules.save`, `.delete`, `.runNow`, which starts a conversation with the
+/// schedule's agent on its prompt, answered by the demo model). Each checks what the engine checks, refuses in its words,
+/// changes the event the engine sends again, and answers what it answers. An agent's model and summary size are saved
+/// with `agents.save`, `Script/AgentAnswers.swift`'s.
 extension DemoScript {
     static let settings: [String: DemoAnswer] = [
         // MARK: A project
@@ -43,39 +44,6 @@ extension DemoScript {
             let id = try DemoSettings.projectID(request, key: "projectId")
             try DemoSettings.changeProject(id, in: world) { project, _ in project["repository"] = NSNull() }
             return [:]
-        },
-
-        // MARK: An agent, as the settings change it
-        "agents.save": { request, world in
-            guard let given = request.params["agent"] as? [String: Any], let id = given["id"] as? String else {
-                throw DemoRefusal("The demo changes only an agent's model or summary size: nothing was changed.")
-            }
-            let name = (given["name"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            if name.isEmpty { throw DemoRefusal("Give the agent a name") }
-            guard DemoSettings.agents(world).contains(where: { $0["id"] as? String == id }) else { throw DemoRefusal("Unknown agent: \(id)") }
-            let changed = Set(given.keys).subtracting(["id", "name"])
-            guard changed.isSubset(of: ["model", "compactionTokens"]) else {
-                throw DemoRefusal("The demo changes only an agent's model or summary size: nothing was changed.")
-            }
-            if let model = given["model"] as? [String: Any] {
-                guard DemoSettings.knownModel(model, in: world) else { throw DemoRefusal("Unknown model: \(model["provider"] ?? "")/\(model["modelId"] ?? "")") }
-            }
-            if let tokens = given["compactionTokens"], !(tokens is NSNull) {
-                guard let value = (tokens as? NSNumber)?.intValue, value >= 0, (tokens as? NSNumber)?.doubleValue == Double(value) else {
-                    throw DemoRefusal("The size for summarizing must be a whole number of tokens, 0 or more, or unset.")
-                }
-            }
-            world.change("agents") { event in
-                event["agents"] = (event["agents"] as? [[String: Any]] ?? []).map { agent in
-                    guard agent["id"] as? String == id else { return agent }
-                    var saved = agent
-                    saved["name"] = name
-                    for key in changed { saved[key] = given[key] }
-                    saved["updatedAt"] = world.now
-                    return saved
-                }
-            }
-            return ["id": id]
         },
 
         // MARK: The app's settings
@@ -182,6 +150,25 @@ extension DemoScript {
                 event["schedules"] = all.sorted { ($0["createdAt"] as? Double ?? 0) < ($1["createdAt"] as? Double ?? 0) }
             }
             return ["id": id]
+        },
+        "schedules.runNow": { request, world in
+            let id = try request.requireString("id")
+            guard let schedule = DemoSettings.schedules(world).first(where: { $0["id"] as? String == id }) else { throw DemoRefusal("Unknown schedule: \(id)") }
+            if let held = schedule["holdReason"] as? String { throw DemoRefusal(held) }
+            let agent = try DemoAgents.agent(schedule["agentId"] as? String, world: world)
+            let conversation = try DemoLibrary.startWith(agent, title: schedule["title"] as? String ?? "", world: world)
+            world.change("schedules") { event in
+                event["schedules"] = DemoSettings.schedules(world).map { each in
+                    guard each["id"] as? String == id else { return each }
+                    var ran = each
+                    ran["lastRunAt"] = world.now
+                    ran["lastConversationId"] = conversation
+                    return ran
+                }
+            }
+            let prompt = schedule["prompt"] as? String ?? ""
+            DemoReplies.take(DemoReplies.Message(submission: world.newSubmissionID(), text: prompt, mode: "queue"), in: conversation, world: world)
+            return ["conversationId": conversation]
         },
         "schedules.delete": { request, world in
             let id = try request.requireString("id")

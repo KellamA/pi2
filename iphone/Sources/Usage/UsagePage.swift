@@ -8,6 +8,9 @@ import SwiftUI
 struct UsagePage: View {
     let reading: UsageReading
     let engine: EngineSession<MessageField>
+    /// What the connection bar says. While the Mac is out of reach or being reached, the page shows what the phone kept
+    /// of its last state, and a change could only be refused: its controls wait, as Settings' do.
+    var connection: AppSession.Connection = .connected(.home)
 
     @Environment(\.openRoute) private var openRoute
 
@@ -31,14 +34,29 @@ struct UsagePage: View {
         }
         .onAppear {
             budgetText = Self.budgetField(reading.usage?.budget.daily)
-            refreshStale()
+        }
+        // The stale subscriptions are asked about once the Mac can be reached: asked from the phone's last state, the
+        // request is refused, and nothing would ask again when the channel comes.
+        .onChange(of: canSend, initial: true) { _, live in
+            if live { refreshStale() }
         }
         .onChange(of: reading.usage?.budget.daily) { _, daily in
             if !budgetFocused { budgetText = Self.budgetField(daily) }
         }
         #if DEBUG
-        .task { await act() }
+        .task(id: canSend) { if canSend { await act() } }
         #endif
+    }
+
+    private var canSend: Bool { Self.canSend(connection, engineConnected: engine.status == .connected) }
+
+    /// Whether a change can reach the Mac now: the client connected on a live channel (or the demo). While the bar says
+    /// the Mac is out of reach or being reached, the client shows the phone's last state, which refuses every change.
+    static func canSend(_ connection: AppSession.Connection, engineConnected: Bool) -> Bool {
+        switch connection {
+        case .outOfReach, .connecting, .notPaired: false
+        case .demo, .connected: engineConnected
+        }
     }
 
     private func list(now: Date) -> some View {
@@ -52,6 +70,11 @@ struct UsagePage: View {
                 }
             }
             #endif
+            if !canSend {
+                Section {
+                    SettingsConnectionLine(connected: false, connection: connection)
+                }
+            }
             Section("Spending") {
                 ForEach(reading.amounts(now: now), id: \.title) { amount in
                     UsageAmountRow(amount: amount)
@@ -94,7 +117,7 @@ struct UsagePage: View {
             ForEach(reading.providers) { provider in
                 UsagePlanCard(
                     provider: provider, now: now, asking: asking.contains(provider.id), problem: refreshProblems[provider.id],
-                    check: { refresh(provider.id) }
+                    canCheck: canSend, check: { refresh(provider.id) }
                 )
             }
         } header: {
@@ -159,10 +182,10 @@ struct UsagePage: View {
                     .accessibilityLabel("Daily budget in dollars")
             }
             Button(budgetSending ? "Setting…" : "Set Budget", action: saveBudget)
-                .disabled(budgetSending || budgetText.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(budgetSending || !canSend || budgetText.trimmingCharacters(in: .whitespaces).isEmpty)
             if reading.budget != nil {
                 Button("Remove Limit", role: .destructive, action: removeBudget)
-                    .disabled(budgetSending)
+                    .disabled(budgetSending || !canSend)
             }
             if let budgetProblem {
                 UsageProblem(text: budgetProblem)
