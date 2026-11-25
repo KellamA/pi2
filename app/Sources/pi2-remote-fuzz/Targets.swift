@@ -286,6 +286,11 @@ enum Targets {
 			pairing: world.pairing, device: world.device, session: nil, received: nil, binding: binding, challenge: challenge, build: "1.0",
 			deviceKey: world.deviceKey, presenceKey: world.presenceKey)))
 		lines.append(.attached(Attached(session: SessionID("s1")!, resume: true)))
+		// The offer of a new presence key (#891), signed by the device key and by the key it offers; and the Mac's answer.
+		lines.append(.presenceKey(try! PresenceKeyOffer.make(
+			pairing: world.pairing, device: world.device, binding: binding, challenge: challenge, build: "1.0", deviceKey: world.deviceKey,
+			offeredKey: world.presenceKey)))
+		lines.append(.presenceKeyAccepted)
 		lines.append(.revoked(try! Revocation.make(pairing: world.pairing, device: world.device, identity: world.identity)))
 		lines.append(.sessionEnd)
 		lines += Refusal.Reason.allCases.map { .refused(Refusal($0)) }
@@ -300,6 +305,7 @@ enum Targets {
 			dictionary: words([
 				"\\\"", "\\\\", "null", "true", "\"v\\\":2", "\"session\"", "\"received\":", "dev_", ",", "{}", "\\u0000", "\"refused\"", "\"reason\"",
 				"\"update\"", "\"pairRefused\"", "\"why\"", "\"unsaved\"", "\\u0061", "\"homeKey\"", "\"key\"", "=", "AA",
+				"\"presenceKey\"", "\"presenceKeyAccepted\"", "\\\"presenceKey\\\":", "\\\"build\\\":", "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE",
 			]),
 			maxLength: 8192
 		) { input in
@@ -323,6 +329,12 @@ enum Targets {
 				}
 			case let .paired(paired):
 				if paired.homeKey.rawRepresentation.count != HomeKey.length { Fuzz.violation("control-lines", "read a paired whose home key is not 32 bytes", input) }
+			case let .presenceKey(offer):
+				// An offer is taken only with its signed text in the engine's order and its key in the one form RemoteKit reads,
+				// written back as the text said.
+				guard case let .object(members) = offer.statement.value, members.map(\.0) == ["v", "kind", "pairing", "device", "binding", "challenge", "presenceKey", "build", "at"],
+				      members[6].1.stringValue.map({ $0.utf8.elementsEqual(PublicKeys.text(offer.presenceKey).utf8) }) == true
+				else { Fuzz.violation("control-lines", "read an offer whose signed text the engine would not read, or whose key is not as written", input) }
 			default: break
 			}
 			// Each line has one writer: read as from it, it is taken; as from the other end, refused.

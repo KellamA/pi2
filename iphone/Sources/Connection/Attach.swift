@@ -115,6 +115,62 @@ enum Attach {
         }
     }
 
+    /// What the Mac answered an offer of a new presence key (#891). The channel ends after it, whatever it is.
+    enum OfferOutcome: Equatable, Sendable {
+        /// The key offered is the one the Mac uses: the person accepted it there.
+        case accepted
+        /// Refused, with the Mac's reason: `presence` while the key waits to be accepted on the Mac; nil for none this
+        /// build knows.
+        case refused(Refusal.Reason?)
+        /// The Mac's identity key revoked this device.
+        case revoked
+        /// The Mac ended the channel with `bye` and no answer: a refusal pi² Remote gives no reason for, such as another
+        /// new key already waiting on the Mac.
+        case closed
+        /// The link ended with no answer and no `bye`: nothing came back (a network or a relay that dropped it).
+        case dropped
+    }
+
+    /// Offers the presence key that waits to be accepted on the Mac (3.2, #891), on the channel that came first, in
+    /// place of an attach: the offer signed by the device key and by the new key, once, and the Mac's answer. Nothing is
+    /// attached on it: the channel is dropped once answered.
+    static func offer(_ proved: Proved, mac: PairedMac, keys: PairedKeys, build: String, now: @Sendable () -> Date = { Date() }) async throws -> OfferOutcome {
+        defer { proved.channel.drop() }
+        let channel = proved.channel
+        let offer: PresenceKeyOffer
+        do {
+            offer = try await PresenceSignatures.offer(
+                pairing: mac.pairing, device: mac.device, binding: channel.channel.handshakeHash, challenge: proved.proof.challenge, build: build, at: now(),
+                deviceKey: keys.device, presence: keys.presence)
+        } catch {
+            if let presence = PresenceError(error) { throw Failure.presence(presence) }
+            throw Failure.deviceKey
+        }
+        try channel.send(.presenceKey(offer))
+        // As `nextLine`, but a `bye` is told from a link that ended with nothing (#1016): the first is the Mac's refusal
+        // with no reason, the second no answer at all.
+        let deadline = ContinuousClock.now + answerWithin
+        let answer: Data
+        reading: while true {
+            let left = deadline - .now
+            guard left > .zero else { throw LinkError.timedOut }
+            switch try await channel.next(within: left) {
+            case let .line(line):
+                answer = line
+                break reading
+            case .ack, .ping: continue
+            case .bye: return .closed
+            case nil: return .dropped
+            }
+        }
+        switch try? ControlLine.parse(answer, from: .mac) {
+        case .presenceKeyAccepted?: return .accepted
+        case let .refused(refusal)?: return .refused(refusal.reason)
+        case let .revoked(revocation)?: return try verified(revocation, mac: mac) ? .revoked : .closed
+        default: throw Failure.unreadable
+        }
+    }
+
     /// Whether a `revoked` line is the Mac's word: its identity key's signature, for this pairing and this device. One
     /// that is not is not believed, and the channel is closed as any other that misbehaves.
     static func verified(_ revocation: Revocation, mac: PairedMac) throws -> Bool {

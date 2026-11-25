@@ -35,11 +35,11 @@ enum Flows {
 		return items.compactMap { $0["id"]?.stringValue }
 	}
 
-	/// `start`, and the `remote.hello` it brings.
-	static func hello(_ engine: FakeEngine, pairing: PairingID, devices: [String] = []) -> Mac? {
+	/// `start`, and the `remote.hello` it brings. `entries`, when given, are the devices `start` lists, as written.
+	static func hello(_ engine: FakeEngine, pairing: PairingID, devices: [String] = [], entries: [JSONValue]? = nil) -> Mac? {
 		engine.event("start", [
 			("relay", .string("ws://127.0.0.1:9/v1")), ("switches", switches), ("pairing", .string(pairing.text)),
-			("devices", .array(devices.map { .object([("id", .string($0))]) })), ("minimumBuild", .string("1")),
+			("devices", .array(entries ?? devices.map { .object([("id", .string($0))]) })), ("minimumBuild", .string("1")),
 		])
 		guard let hello = engine.request("remote.hello") else { return nil }
 		engine.answer(hello.id)
@@ -682,17 +682,31 @@ enum Flows {
 	static func homeKeyKept(helper: URL, home: URL, child: Child, engine: FakeEngine, mac: Mac) {
 		var child = child, engine = engine, mac = mac
 		defer { child.stop() }
-		/// A crash: pi² Remote killed where it is, then started again with the devices the engine lists.
-		func crashAndStart(listing devices: [DeviceID]) {
+		/// A crash: pi² Remote killed where it is, then started again with `start`'s entries for the devices as written.
+		func crashAndStartWith(entries: [JSONValue]) {
 			kill(child.pid, SIGKILL)
 			child.wait(15)
 			(child, engine) = Starts.start(helper: helper, home: home)
-			guard let again = hello(engine, pairing: mac.pairing, devices: devices.map(\.text)) else { Check.stop("pi² Remote said hello after a crash") }
+			guard let again = hello(engine, pairing: mac.pairing, entries: entries) else { Check.stop("pi² Remote said hello after a crash") }
 			mac = again
+		}
+		/// The same, with the devices the engine lists.
+		func crashAndStart(listing devices: [DeviceID]) {
+			crashAndStartWith(entries: devices.map { .object([("id", .string($0.text))]) })
 		}
 
 		// First, on this pi² Remote just started, whose limits on first messages and handshakes no earlier step has used.
 		engineRefusals(engine: engine, mac: mac, home: home)
+		// Each of these uses most of the twenty first messages a minute a start takes from 127.0.0.1: each step after begins
+		// on a start of its own, with no device listed, as it would have.
+		crashAndStart(listing: [])
+		presenceKeyOffers(engine: engine, mac: mac, home: home)
+		crashAndStart(listing: [])
+		presenceKeysAtStart(engine: engine, mac: mac, home: home) { entries in
+			crashAndStartWith(entries: entries)
+			return (engine, mac)
+		}
+		crashAndStart(listing: [])
 
 		Check.section("a first pairing whose home key cannot be kept (S2)")
 		chmod(home.path, 0o500)
@@ -852,6 +866,283 @@ enum Flows {
 		let revokedBy = Date().addingTimeInterval(10)
 		while !listed(home).isEmpty || storedHomeKey(home) != nil, Date() < revokedBy { usleep(10000) }
 		Check.expect(listed(home).isEmpty && storedHomeKey(home) == nil, "the device is revoked again, and with it the home key")
+	}
+
+	/// The presence key on pi² Remote's own list for `device`, as kept in the data folder: nil for none, or no device.
+	static func keptPresenceKey(_ home: URL, _ device: DeviceID) -> Data?? {
+		guard let data = FileManager.default.contents(atPath: home.appendingPathComponent("remote-devices.json").path), let kept = try? KeptDevices(data: data),
+		      let listed = kept.devices.first(where: { $0.id == device })
+		else { return nil }
+		return .some(listed.presenceKey?.derRepresentation)
+	}
+
+	/// The answer a phone reads to its offer or attach: the line before `bye`, as RemoteKit reads it from the Mac, if
+	/// `bye` follows it and the channel closes.
+	static func lastLine(_ phone: Phone) -> ControlLine? {
+		guard case let .line(line)? = phone.event(within: 10), let read = try? ControlLine.parse(line, from: .mac), phone.event() == .bye, phone.closesWithin(10) else { return nil }
+		return read
+	}
+
+	/// A phone's offer of a new Face ID key (iphone.md 3.2, #891), with this check as the engine. Each case fails if
+	/// pi² Remote misses the requirement it names (the security read of #892): an offer on a pairing channel refused; a
+	/// binding of the phone's own never passed; `waiting` opening no session; the offered key used for an attach's
+	/// presence check only once the engine's `presenceKey` event came; a key pi² Remote cannot read harming no other
+	/// device; an offer replayed on another channel. Two devices paired for it, each within its six handshakes a
+	/// minute; both revoked at the end.
+	static func presenceKeyOffers(engine: FakeEngine, mac: Mac, home: URL) {
+		Check.section("a phone's offer of a new Face ID key, passed as remote.presenceKey (#891)")
+		let keys = PhoneKeys()
+		let otherKeys = PhoneKeys()
+		let newKey = P256.Signing.PrivateKey()
+		guard let device = pair(engine, mac: mac, keys: keys, claim: "claim_offer") else { Check.stop("a phone paired for its offers") }
+		guard let other = pair(engine, mac: mac, keys: otherKeys, claim: "claim_offer_other") else { Check.stop("a second phone paired beside it") }
+		func offer(on phone: Phone, challenge: Data, binding: Data? = nil) -> PresenceKeyOffer {
+			try! PresenceKeyOffer.make(
+				pairing: mac.pairing, device: device, binding: binding ?? phone.channel!.handshakeHash, challenge: challenge, build: keys.build, deviceKey: keys.device,
+				offeredKey: newKey)
+		}
+
+		// On a pairing channel: a claimer that proved the code's secret and offers a key in place of `pair` is a claimer
+		// that sent no claim (`remote.pairRefused` not-pair), and nothing of its offer reaches the engine.
+		let secret = Bytes.random(32)
+		let expires = Int64(Date().timeIntervalSince1970) + 300
+		engine.event("openJoin", [("secret", .string(Base64URL.encode(secret))), ("tokenHash", .string("x")), ("expires", .integer(expires * 1000))])
+		let payload = try! PairingPayload(
+			pairing: mac.pairing, macName: "Check Mac", channelKey: mac.channel, identityKey: mac.identity, recordKey: mac.record, secret: secret,
+			relay: "ws://127.0.0.1:9/v1", addresses: ["127.0.0.1:\(mac.port)"], expires: expires)
+		if let claimer = Phone(port: mac.port) {
+			let handshake = try! ChannelHandshake.pairingInitiator(payload: payload, channelKey: keys.channel)
+			claimer.send(try! handshake.writeMessage())
+			if let answer = claimer.message(), (try? handshake.readMessage(answer)) != nil { claimer.channel = try? handshake.channel() }
+			if claimer.channel != nil, let proofLine = claimer.line(), case let .mac(proof)? = try? ControlLine.parse(proofLine, from: .mac) {
+				claimer.sendLine(ControlLine.presenceKey(offer(on: claimer, challenge: proof.challenge)).line)
+				let refused = engine.request("remote.pairRefused")
+				if let refused { engine.answer(refused.id) }
+				Check.expect(refused?.params["why"]?.stringValue == "not-pair" && claimer.closesWithin(10), "an offer of a Face ID key on a pairing channel is refused as no claim (remote.pairRefused not-pair), and the channel closed", refused.map { JSON.text($0.params) } ?? "nothing")
+				Check.expect(engine.quiet(for: 1), "and the offer never reaches the engine")
+			} else {
+				Check.expect(false, "a claimer proved the code's secret")
+			}
+		}
+		engine.event("closeJoin")
+
+		// Signed for a binding the phone chose, not this channel's handshake hash: closed with bye alone, never passed.
+		if let phone = Phone(port: mac.port), let challenge = beginAttach(phone, engine, mac: mac, device: device, keys: keys) {
+			phone.sendLine(ControlLine.presenceKey(offer(on: phone, challenge: challenge, binding: Bytes.random(32))).line)
+			Check.expect(phone.event(within: 10) == .bye && phone.closesWithin(10), "an offer signed for a binding of the phone's own, not this channel's, is closed with bye alone")
+			Check.expect(engine.quiet(for: 1), "and never reaches the engine")
+		}
+
+		// A genuine offer: passed with this channel's binding as pi² Remote computed it; `waiting` is no attach.
+		var sent: Data?
+		if let phone = Phone(port: mac.port), let challenge = beginAttach(phone, engine, mac: mac, device: device, keys: keys) {
+			let made = offer(on: phone, challenge: challenge)
+			sent = ControlLine.presenceKey(made).line
+			phone.sendLine(sent!)
+			if let request = engine.request("remote.presenceKey") {
+				let passed = request.params["offer"]
+				Check.expect(request.params.keys == ["offer", "binding", "path"] && passed?.keys == ["signed", "signature", "presence"], "remote.presenceKey takes the offer, the binding and the path, as the engine reads them", JSON.text(request.params))
+				Check.expect(passed?["signed"]?.stringValue == made.statement.text && passed?["signature"]?.stringValue == made.statement.signatureText && passed?["presence"]?.stringValue == Base64URL.encode(made.presence),
+				             "the offer's signed text and both signatures as the phone made them")
+				Check.expect(request.params["binding"]?.stringValue == Base64URL.encode(phone.channel!.handshakeHash) && request.params["path"]?.stringValue == "home", "the binding is this channel's handshake hash, and the path home")
+				// A hostile answer carrying a session is not one pi² Remote reads; the genuine one is `waiting` alone.
+				engine.answer(request.id, .object([("waiting", .bool(true))]))
+				let answer = lastLine(phone)
+				if case let .refused(refusal)? = answer {
+					Check.expect(refusal.reason == .presence, "an offer the engine answers waiting is told refused presence, then bye: the key waits on the Mac")
+				} else {
+					Check.expect(false, "an offer the engine answers waiting is told refused presence", "\(String(describing: answer))")
+				}
+				Check.expect(phone.homeKey == nil, "and no attached, no session, no home key")
+				Check.expect(engine.quiet(for: 1), "and the engine is asked nothing more for it")
+				Check.expect(keptPresenceKey(home, device) == .some(keys.presence.publicKey.derRepresentation), "the offered key is not on pi² Remote's own list on the engine's answer: the old one is")
+			} else {
+				Check.expect(false, "a genuine offer reaches the engine as remote.presenceKey")
+			}
+		}
+
+		// The same offer, replayed on another channel: its binding and challenge are the first channel's.
+		if let sent, let phone = Phone(port: mac.port), beginAttach(phone, engine, mac: mac, device: device, keys: keys) != nil {
+			phone.sendLine(sent)
+			Check.expect(phone.event(within: 10) == .bye && phone.closesWithin(10), "an offer replayed on another channel is closed with bye alone")
+			Check.expect(engine.quiet(for: 1), "and never reaches the engine")
+		}
+
+		/// An attach as `device`, its presence signed by `presence`, which the check as the engine takes as `session`.
+		func attachTaken(_ who: DeviceID, _ phoneKeys: PhoneKeys, presence: P256.Signing.PrivateKey, session: String) -> (Phone, ControlLine?)? {
+			guard let phone = Phone(port: mac.port), let challenge = beginAttach(phone, engine, mac: mac, device: who, keys: phoneKeys) else { return nil }
+			let claim = try! AttachClaim.make(
+				pairing: mac.pairing, device: who, session: nil, received: nil, binding: phone.channel!.handshakeHash, challenge: challenge, build: phoneKeys.build,
+				deviceKey: phoneKeys.device, presenceKey: presence)
+			phone.sendLine(ControlLine.attach(claim).line)
+			guard let request = engine.request("remote.attach") else { return nil }
+			engine.answer(request.id, .object([("session", .string(session)), ("resume", .bool(false))]))
+			guard case let .line(line)? = phone.event(within: 10) else { return (phone, nil) }
+			return (phone, try? ControlLine.parse(line, from: .mac))
+		}
+		func refusedAfterEngine(_ result: (Phone, ControlLine?)?, session: String, _ what: String) {
+			guard let (phone, line) = result else { return Check.expect(false, "\(what): the attach reached the engine") }
+			if case let .refused(refusal)? = line {
+				Check.expect(refusal.reason == .presence && phone.event() == .bye && phone.closesWithin(10) && phone.homeKey == nil, "\(what): refused presence, then bye, with no session and no home key")
+			} else {
+				Check.expect(false, "\(what): refused presence", "\(String(describing: line))")
+			}
+			let ended = engine.request("remote.sessionEnd")
+			if let ended { engine.answer(ended.id) }
+			Check.expect(ended?.params["session"]?.stringValue == session, "\(what): and the session the engine opened is ended there")
+		}
+
+		// Before the engine's `presenceKey` event, an attach under the new key is not taken, though the engine took it.
+		refusedAfterEngine(attachTaken(device, keys, presence: newKey, session: "s_new_early"), session: "s_new_early", "an attach signed by the waiting key, before the engine's presenceKey event")
+
+		// The person accepts it on the Mac: the engine says `presenceKey`, then closes the device's sessions.
+		engine.event("presenceKey", [("device", .string(device.text)), ("presenceKey", .string(PublicKeys.text(newKey.publicKey)))])
+		engine.event("sessionClosed", [("session", .string("s_none")), ("why", .string("Its new Face ID key was accepted on the Mac."))])
+		var attachedPhone: Phone?
+		if let (phone, line) = attachTaken(device, keys, presence: newKey, session: "s_new") {
+			if case let .attached(attached)? = line {
+				phone.readHomeKey()
+				attachedPhone = phone
+				Check.expect(attached.session.text == "s_new" && phone.homeKey == storedHomeKey(home), "after the engine's presenceKey event, an attach signed by the new key is attached, and sent the home key")
+			} else {
+				Check.expect(false, "after the engine's presenceKey event, an attach signed by the new key is attached", "\(String(describing: line))")
+			}
+		}
+		Check.expect(keptPresenceKey(home, device) == .some(newKey.publicKey.derRepresentation), "the new key is on pi² Remote's own list, kept in the data folder")
+		refusedAfterEngine(attachTaken(device, keys, presence: keys.presence, session: "s_old_late"), session: "s_old_late", "an attach signed by the old key, after the new one was accepted")
+
+		// A key pi² Remote cannot read, for the other device, and an event naming no device on the list: that device has
+		// no presence key on the list, and nothing changes for any other.
+		engine.event("presenceKey", [("device", .string(other.text)), ("presenceKey", .string(Base64URL.encode(newKey.publicKey.compressedRepresentation)))])
+		engine.event("presenceKey", [("device", .string(DeviceID.random().text)), ("presenceKey", .string(PublicKeys.text(P256.Signing.PrivateKey().publicKey)))])
+		engine.event("presenceKey", [("device", .string("not a device")), ("presenceKey", .null)])
+		if let attachedPhone {
+			attachedPhone.sendLine(Data(#"{"id":"k1","method":"engine.info","params":{}}"#.utf8))
+			let passed = engine.sessionLine(within: 10)
+			Check.expect(passed?.0 == "s_new", "after a key it cannot read for another device, pi² Remote runs on and the first device's session goes on", passed.map { String(decoding: $0.1, as: UTF8.self) } ?? "nothing")
+		}
+		Check.expect(keptPresenceKey(home, device) == .some(newKey.publicKey.derRepresentation) && keptPresenceKey(home, other) == .some(nil) && Set(listed(home)) == [device.text, other.text],
+		             "the first device keeps its key; the other has none on the list; no device was added")
+		refusedAfterEngine(attachTaken(other, otherKeys, presence: otherKeys.presence, session: "s_other"), session: "s_other", "the other device, whose new key could not be read")
+
+		// The engine's refusals of an offer carry the reasons an attach's do (#891): each is told the phone, never the words.
+		for reason in [Refusal.Reason.update, .suspended, .presence, .clock] {
+			guard let phone = Phone(port: mac.port), let challenge = beginAttach(phone, engine, mac: mac, device: other, keys: otherKeys) else {
+				Check.expect(false, "an offer begins for the engine's \(reason.rawValue)")
+				continue
+			}
+			let made = try! PresenceKeyOffer.make(
+				pairing: mac.pairing, device: other, binding: phone.channel!.handshakeHash, challenge: challenge, build: otherKeys.build, deviceKey: otherKeys.device,
+				offeredKey: P256.Signing.PrivateKey())
+			phone.sendLine(ControlLine.presenceKey(made).line)
+			guard let request = engine.request("remote.presenceKey") else {
+				Check.expect(false, "the offer reaches the engine for its \(reason.rawValue)")
+				continue
+			}
+			engine.refuse(request.id, "Words of the engine's the phone never reads.", data: .object([("reason", .string(reason.rawValue))]))
+			if case let .refused(refusal)? = lastLine(phone) {
+				Check.expect(refusal.reason == reason, "an offer the engine refuses \(reason.rawValue) is told refused \(reason.rawValue), then bye")
+			} else {
+				Check.expect(false, "an offer the engine refuses \(reason.rawValue) is told refused \(reason.rawValue)")
+			}
+		}
+
+		for one in [device, other] { engine.event("revoke", [("device", .string(one.text))]) }
+		let revokedBy = Date().addingTimeInterval(10)
+		while !listed(home).isEmpty || storedHomeKey(home) != nil, Date() < revokedBy { usleep(10000) }
+		Check.expect(listed(home).isEmpty && storedHomeKey(home) == nil, "both devices are revoked again, and with them the home key")
+	}
+
+	/// The presence keys on pi² Remote's own list from the engine's `start` (#891's security read, held here in place of the
+	/// reader's probe, #1016): a key accepted on the Mac whose `presenceKey` event pi² Remote could not keep is on the list
+	/// after the next start; and at a start, a device not on the list is not added, an entry with no presence key leaves
+	/// the key as it is and one with `null` clears it, a key that cannot be read leaves that device with none and changes
+	/// nothing of the other, and no device, channel or record key changes, whatever the entry names. `restart` is a crash
+	/// and a start with those entries, each on a pi² Remote of its own; the two devices paired for it are dropped by the
+	/// start after.
+	static func presenceKeysAtStart(engine: FakeEngine, mac: Mac, home: URL, restart: ([JSONValue]) -> (FakeEngine, Mac)) {
+		Check.section("the presence keys on pi² Remote's own list from the engine's start (#891's security read)")
+		var engine = engine, mac = mac
+		let keysA = PhoneKeys(), keysB = PhoneKeys()
+		guard let a = pair(engine, mac: mac, keys: keysA, claim: "claim_start_a"), let b = pair(engine, mac: mac, keys: keysB, claim: "claim_start_b") else {
+			Check.stop("two phones paired for the presence keys at start")
+		}
+		/// A device's keys on the list but its presence key: its device, channel and record keys and its App Attest key id.
+		func fixedKeys(_ id: DeviceID) -> [String]? {
+			guard let data = FileManager.default.contents(atPath: home.appendingPathComponent("remote-devices.json").path), let kept = try? KeptDevices(data: data),
+			      let one = kept.devices.first(where: { $0.id == id })
+			else { return nil }
+			return [PublicKeys.text(one.deviceKey), PublicKeys.text(one.channelKey), PublicKeys.text(one.recordKey), one.attestKeyId ?? ""]
+		}
+		func log() -> String { (try? String(contentsOf: home.appendingPathComponent("remote.log"), encoding: .utf8)) ?? "" }
+		/// An entry of `start` for `id` with another phone's device, channel and record keys, and `presence` as given.
+		func entry(_ id: DeviceID, presence: JSONValue?) -> JSONValue {
+			let stranger = PhoneKeys()
+			return .object([
+				("id", .string(id.text)), ("deviceKey", .string(PublicKeys.text(stranger.device.publicKey))), ("channelKey", .string(PublicKeys.text(stranger.channel.publicKey))),
+				("recordKey", .string(PublicKeys.text(stranger.record.publicKey))),
+			] + (presence.map { [("presenceKey", $0)] } ?? []))
+		}
+		/// An attach as `who`, signed by its device key on the list, its presence by `presence`, which the check as the engine
+		/// takes: attached (the session then closed), or refused presence with the session ended there.
+		func attach(_ who: DeviceID, _ phoneKeys: PhoneKeys, presence: P256.Signing.PrivateKey, session: String, taken: Bool, _ what: String) {
+			guard let phone = Phone(port: mac.port), let challenge = beginAttach(phone, engine, mac: mac, device: who, keys: phoneKeys) else { return Check.expect(false, "\(what): the attach began") }
+			let claim = try! AttachClaim.make(
+				pairing: mac.pairing, device: who, session: nil, received: nil, binding: phone.channel!.handshakeHash, challenge: challenge, build: phoneKeys.build,
+				deviceKey: phoneKeys.device, presenceKey: presence)
+			phone.sendLine(ControlLine.attach(claim).line)
+			guard let request = engine.request("remote.attach") else { return Check.expect(false, "\(what): the attach reached the engine") }
+			engine.answer(request.id, .object([("session", .string(session)), ("resume", .bool(false))]))
+			var line: ControlLine?
+			if case let .line(read)? = phone.event(within: 10) { line = try? ControlLine.parse(read, from: .mac) }
+			if taken {
+				if case .attached? = line { Check.expect(true, what) } else { Check.expect(false, what, "\(String(describing: line))") }
+				engine.event("sessionClosed", [("session", .string(session)), ("why", .string("check"))])
+				return
+			}
+			if case let .refused(refusal)? = line { Check.expect(refusal.reason == .presence, what, "\(String(describing: refusal.reason))") } else { Check.expect(false, what, "\(String(describing: line))") }
+			let ended = engine.request("remote.sessionEnd")
+			if let ended { engine.answer(ended.id) }
+			Check.expect(ended?.params["session"]?.stringValue == session, "\(what): and the session the engine opened is ended there")
+		}
+		let fixedA = fixedKeys(a), fixedB = fixedKeys(b)
+		Check.expect(fixedA != nil && fixedB != nil && keptPresenceKey(home, a) == .some(keysA.presence.publicKey.derRepresentation), "two phones paired, each on the list with its own keys")
+
+		// The lost write: the person accepts a new key for A, and the write of the engine's event fails.
+		let newA = P256.Signing.PrivateKey()
+		let unkeptBefore = log().components(separatedBy: "could not be kept").count
+		chmod(home.path, 0o500)
+		engine.event("presenceKey", [("device", .string(a.text)), ("presenceKey", .string(PublicKeys.text(newA.publicKey)))])
+		let triedBy = Date().addingTimeInterval(10)
+		while log().components(separatedBy: "could not be kept").count == unkeptBefore, Date() < triedBy { usleep(20000) }
+		chmod(home.path, 0o700)
+		Check.expect(log().components(separatedBy: "could not be kept").count > unkeptBefore && keptPresenceKey(home, a) == .some(keysA.presence.publicKey.derRepresentation),
+		             "a presenceKey event whose write fails leaves the old key in the kept list")
+
+		// The next start names A's new key beside another phone's device, channel and record keys; B with a key that
+		// cannot be read; and C, which is on no list of pi² Remote's.
+		let c = DeviceID.random()
+		(engine, mac) = restart([
+			entry(a, presence: .string(PublicKeys.text(newA.publicKey))),
+			entry(b, presence: .string(Base64URL.encode(P256.Signing.PrivateKey().publicKey.compressedRepresentation))),
+			entry(c, presence: .string(PublicKeys.text(P256.Signing.PrivateKey().publicKey))),
+		])
+		Check.expect(keptPresenceKey(home, a) == .some(newA.publicKey.derRepresentation), "the key whose write failed is on the list after the next start, from the engine's start")
+		Check.expect(keptPresenceKey(home, b) == .some(nil), "a key start gives that cannot be read leaves that device with none")
+		Check.expect(Set(listed(home)) == [a.text, b.text], "a device start names that is not on the list is not added", listed(home).joined(separator: ", "))
+		Check.expect(fixedKeys(a) == fixedA && fixedKeys(b) == fixedB, "and no device's device, channel or record key changes, though start named others")
+		attach(a, keysA, presence: newA, session: "s_start_new", taken: true, "an attach under the key from start, signed by the device key on the list, gets a session")
+		attach(a, keysA, presence: keysA.presence, session: "s_start_old", taken: false, "an attach under the key before it is refused presence")
+		attach(b, keysB, presence: keysB.presence, session: "s_start_b", taken: false, "an attach by the device whose key could not be read is refused presence")
+
+		// An entry with no presence key leaves the key on the list as it is.
+		(engine, mac) = restart([entry(a, presence: nil), entry(b, presence: nil)])
+		Check.expect(keptPresenceKey(home, a) == .some(newA.publicKey.derRepresentation) && keptPresenceKey(home, b) == .some(nil), "an entry with no presenceKey leaves the device's key on the list as it is")
+		// One with null clears it.
+		(engine, mac) = restart([entry(a, presence: .null), entry(b, presence: nil)])
+		Check.expect(keptPresenceKey(home, a) == .some(nil), "an entry with presenceKey null clears it")
+		Check.expect(Set(listed(home)) == [a.text, b.text] && fixedKeys(a) == fixedA && fixedKeys(b) == fixedB, "and the list and every other key are as they were")
+		attach(a, keysA, presence: newA, session: "s_start_cleared", taken: false, "an attach after it is refused presence")
 	}
 
 	/// What `pid` holds in memory, in kilobytes.

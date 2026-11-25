@@ -290,6 +290,17 @@ public final class Channel: Sendable, CustomStringConvertible, CustomDebugString
 		try sealLast(ControlLine.pairRefused(refusal).line, at: instant)
 	}
 
+	/// pi² Remote's last messages to a phone whose offer of a new presence key named the key the Mac uses already (#891):
+	/// `presenceKeyAccepted`, then `bye`, padded as `sealRefusal` pads, so that its length tells the relay or the network
+	/// nothing of whether the key was accepted or waits (which is answered `refused` with `presence`).
+	///
+	/// The caller's duties (remotekit.md, "The channel's own lines"): call it only on a connection's channel whose offer
+	/// was signed by the device key on pi² Remote's own list for this channel, and only when the engine answered it
+	/// `accepted`; and refuse a `presenceKeyAccepted` line from a phone.
+	public func sealPresenceKeyAccepted(at instant: ContinuousClock.Instant = .now) throws -> [Data] {
+		try sealLast(ControlLine.presenceKeyAccepted.line, at: instant)
+	}
+
 	/// A last line, padded to 256 bytes whatever this end's padding, then `bye`.
 	private func sealLast(_ line: Data, at instant: ContinuousClock.Instant) throws -> [Data] {
 		let frames = try Lines.frames(for: line)

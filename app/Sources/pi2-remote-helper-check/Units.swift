@@ -82,6 +82,8 @@ enum Units {
 		let shakes = (0 ..< 20).filter { _ in gate.handshake(for: "dev_x", now: now) }.count
 		Check.expect(shakes == Admission.handshakesPerDevicePerMinute, "at most \(Admission.handshakesPerDevicePerMinute) handshakes a minute for one device", "\(shakes)")
 		Check.expect(gate.handshake(for: "dev_y", now: now), "which does not hold back another device")
+		// What the relay run's minute's wait after a seventh handshake showed before #1016, on the check's own clock.
+		Check.expect(gate.handshake(for: "dev_x", now: now + 61), "and the device has more a minute later")
 		let recorded = Bytes.random(48)
 		gate.remember(recorded, now: now)
 		Check.expect(gate.replayed(recorded, now: now + 5) && !gate.replayed(Bytes.random(48), now: now + 5), "a first message that found its device, seen again, is a replay; another is not")
@@ -186,6 +188,16 @@ enum Units {
 		let pairing: [(String?, PairRefusal.Why?)] = [("unsaved", .unsaved), ("cancelled", .cancelled), (nil, nil), ("Unsaved", nil), ("not-kept", nil), ("canceled", nil), ("The Mac could not save the pairing. Start again.", nil)]
 		for (word, expected) in pairing {
 			Check.expect(EngineWords.pairRefusal(word) == expected, "pairRefused's reason \(word.map { "\"\($0)\"" } ?? "none") is \(expected?.rawValue ?? "no word for the phone")")
+		}
+		// The engine's answer to an offer of a new Face ID key (#891): exactly one of its two, never a session.
+		let answers: [(String, EngineWords.OfferAnswer?)] = [
+			(#"{"waiting":true}"#, .waiting), (#"{"accepted":true}"#, .accepted), (#"{"waiting":false}"#, nil), (#"{"waiting":1}"#, nil),
+			(#"{"waiting":true,"session":"s1"}"#, nil), (#"{"session":"s1","resume":false}"#, nil), (#"{"Waiting":true}"#, nil), ("{}", nil), ("true", nil),
+			(#"{"accepted":true,"waiting":true}"#, nil),
+		]
+		for (text, expected) in answers {
+			let read = (try? JSON.parse(Data(text.utf8))).flatMap(EngineWords.offerAnswer)
+			Check.expect(read == expected, "remote.presenceKey's answer \(text) is \(expected.map { "\($0)" } ?? "no answer pi² Remote acts on")")
 		}
 	}
 

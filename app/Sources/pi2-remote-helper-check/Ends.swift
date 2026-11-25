@@ -331,7 +331,8 @@ final class Phone {
 /// The keys a phone makes at pairing (3.2), in software.
 struct PhoneKeys {
 	let device = P256.Signing.PrivateKey()
-	let presence = P256.Signing.PrivateKey()
+	/// Replaced by a new key once the Mac accepted one (#891).
+	var presence = P256.Signing.PrivateKey()
 	let channel = Curve25519.KeyAgreement.PrivateKey()
 	let record = P256.KeyAgreement.PrivateKey()
 	let keyId = Data((0 ..< 32).map { _ in UInt8.random(in: 0 ... 255) }).base64EncodedString()
