@@ -963,6 +963,17 @@ console.log(JSON.stringify(outcome));
 	step("a log line is made of whatever a device sends (null, an object for a string) and never throws: at worst it is the method's name");
 }
 
+// ---- A log line shows what a device sent as it reads (#902): nothing invisible, nothing turned around
+
+{
+	assert.equal(summarize("files.preview", { path: "notes\u202Etxt.md" }), "Showed the file “notestxt.md”", "a right-to-left override");
+	assert.equal(summarize("files.preview", { path: "a\u2066b\u2069\u200Bc\u200D\uFEFF\u061C\u2060.md" }), "Showed the file “abc.md”", "isolates, zero-width characters, marks");
+	assert.equal(summarize("conversation.rename", { title: "one\ntwo\u0000\uD800" }), "Renamed a conversation to “one two ”", "a line break, a NUL, half a character");
+	const split = "sk-ant-api03-aKeyShapedString\u200BSplitByAZeroWidthSpace0123456789";
+	assert.equal(summarize("conversation.rename", { title: split }), `Renamed a conversation to “${KEY_HIDDEN}”`, "nothing invisible splits a key out of the masks' sight");
+	step("a log line has right-to-left overrides, other direction controls, zero-width characters and half characters taken out, before the masks");
+}
+
 // ---- A revocation reaches pi² Remote and the device's sessions whatever its watchers do (#895)
 
 {
@@ -1774,7 +1785,10 @@ try {
 		const shown = (await ask("files.preview", { id: linking, path: "notes.md" })).result;
 		assert.equal(shown.text, `notes, and ${KEY_HIDDEN}\n`, "masked, as everything sent to a phone is");
 		assert.equal((await ask("files.preview", { id: linking, path: "other.md" })).error, NOT_LINKED);
+		assert.equal((await ask("files.preview", { id: linking, path: "evil\u202Etxt.md" })).error, NOT_LINKED);
 		const logged = (await app.call("devices.log", { device: phone.id })).entries;
+		assert.ok(logged.some((entry: any) => entry.method === "files.preview" && entry.summary.startsWith("Showed the file “evilt")), "a path with a right-to-left override is logged without it (#902)");
+		assert.ok(!JSON.stringify(logged).includes("\\u202e") && !logged.some((entry: any) => /[\u202A-\u202E]/.test(entry.summary)), "anywhere in the log");
 		assert.ok(logged.some((entry: any) => entry.method === "files.preview" && entry.outcome === "done" && entry.summary.startsWith("Showed the file “notes.md”")), "a file shown is logged, by its path from the folder");
 		assert.ok(logged.some((entry: any) => entry.method === "projects.create" && entry.outcome === "refused" && entry.why === ONLY_ON_THE_MAC), "a folder refused by the table");
 		assert.ok(logged.some((entry: any) => entry.method === "projects.create" && entry.outcome === "failed" && entry.why === NOT_OFFERED), "and one refused as it was made");

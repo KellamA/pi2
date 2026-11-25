@@ -51,8 +51,16 @@ struct ArchiveView: View {
         #if DEBUG
         .task(id: engine.hasLoadedLibrary) {
             guard engine.hasLoadedLibrary || isSample else { return }
-            if await ConversationsSample.take("restore"), let first = listing.conversations.first { unarchive(first) }
-            if await ConversationsSample.take("restore-project"), let first = listing.deletedProjects.first?.conversations.first { showRestore(first) }
+            if await ConversationsSample.take("restore", in: session), let first = listing.conversations.first { unarchive(first) }
+            if await ConversationsSample.take("restore-project", in: session), let first = listing.deletedProjects.first?.conversations.first { showRestore(first) }
+            if await ConversationsSample.take("unarchive-project", in: session), let first = listing.archivedProjects.first { unarchiveProject(first) }
+            if await ConversationsSample.take("restore-project-go", in: session), let first = listing.deletedProjects.first?.conversations.first {
+                // The dry run's sheet, then its Restore.
+                showRestore(first)
+                for _ in 0..<50 where restore == nil { try? await Task.sleep(for: .milliseconds(200)) }
+                try? await Task.sleep(for: .seconds(1))
+                if let shown = restore { go(shown) }
+            }
         }
         #endif
         .sheet(item: $restore) { shown in
@@ -139,11 +147,13 @@ struct ArchiveView: View {
     }
 
     private func restoreProjectButton(_ project: ArchiveListing.Project) -> some View {
-        Button("Restore") {
-            Task { problem = await ConversationsRequests.unarchiveProject(engine, project: project.id).map { "\(project.name) was not restored: \($0)" } }
-        }
-        .buttonStyle(.bordered)
-        .accessibilityLabel("Restore \(project.name)")
+        Button("Restore") { unarchiveProject(project) }
+            .buttonStyle(.bordered)
+            .accessibilityLabel("Restore \(project.name)")
+    }
+
+    private func unarchiveProject(_ project: ArchiveListing.Project) {
+        Task { problem = await ConversationsRequests.unarchiveProject(engine, project: project.id).map { "\(project.name) was not restored: \($0)" } }
     }
 
     private func deletedProject(_ project: ArchiveListing.Project) -> some View {

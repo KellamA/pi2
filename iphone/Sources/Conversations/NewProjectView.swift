@@ -47,12 +47,14 @@ struct NewProjectView: View {
         }
         .navigationTitle("New project")
         .navigationBarTitleDisplayMode(.inline)
-        // Asked once the Mac is connected, and again if it connects anew.
-        .task(id: engine.status == .connected || isSample) {
+        // Asked once the Mac is connected, and again if it connects anew: the client starts on the phone's last state,
+        // which refuses, and moves to the Mac once it is reached.
+        .task(id: isSample ? nil : ConversationsReach(session)) {
             guard engine.status == .connected || isSample else { return }
             await ask()
             #if DEBUG
-            if await ConversationsSample.take("make") { make() }
+            // Once the Mac's folders are here, so that the first it offers is the one chosen.
+            if case .offered = folders, await ConversationsSample.take("make", in: session) { make() }
             #endif
         }
     }

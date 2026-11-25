@@ -15,6 +15,13 @@ extension DemoScript {
         "projects.folders": { _, world in
             ["folders": DemoNewProject.folders(world)]
         },
+        // `{ id, path }`: a file the conversation's agent linked to. The demo's agents' answers link to no file, so the
+        // engine's refusal for one not linked (`NOT_LINKED`, folders.ts).
+        "files.preview": { request, world in
+            _ = try DemoConversations.known(request, world: world)
+            guard request.params["path"] is String else { throw DemoRefusal("That is not the path of a file on the Mac.") }
+            throw DemoRefusal(DemoConversations.notLinked)
+        },
         // `{ folder, name?, template? }`: from a phone, a folder only among those offered; answers `{ id, conversation }`.
         "projects.create": { request, world in
             try DemoNewProject.create(request, world: world)
@@ -238,6 +245,9 @@ enum DemoNewProject {
 @MainActor
 enum DemoConversations {
     /// The conversation a request names, in the list or the Archive, or the engine's refusal.
+    /// The engine's words for a file the conversation does not link to (`NOT_LINKED`, `engine/src/folders.ts`).
+    static let notLinked = "The conversation does not link to that file. Only a file its agent's answers link to is shown on the phone."
+
     static func known(_ request: DemoRequest, world: DemoWorld) throws -> Int {
         guard let id = request.int("id"), DemoLibrary.row(id, world: world) != nil || DemoLibrary.isArchived(id, world: world) else {
             throw DemoRefusal("Unknown conversation: \(request.params["id"] ?? "")")

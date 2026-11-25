@@ -137,7 +137,7 @@ export function installLimitAnswers(host: Host, engine: Engine): FeatureParts {
 			if ("limit" in result) {
 				need.confirmed = rememberReading(need.confirmed ?? [], need.limit);
 				need.limit = result.limit;
-				return { keep: true };
+				return { keep: true, held: result.limit };
 			}
 			await decided(tx, projectId, id, result.child === null
 				? `The person allowed work #${start.work} to start with ${start.agentName}; it starts once it is claimed on GitHub.`
@@ -168,7 +168,7 @@ export function installLimitAnswers(host: Host, engine: Engine): FeatureParts {
 		if (!result.ok) {
 			need.confirmed = card;
 			need.limit = result.limit;
-			return { keep: true };
+			return { keep: true, held: result.limit };
 		}
 		const over = engine.overBudget();
 		if (over !== undefined) throw new Error(`${over} Raise it in Usage to carry on.`);
