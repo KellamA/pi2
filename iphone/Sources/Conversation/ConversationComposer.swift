@@ -44,7 +44,8 @@ struct ConversationComposer: View {
             if !pictures.entries.isEmpty {
                 ConversationPictureStrip(pictures: pictures)
             }
-            if status.busy {
+            // A chat's messages always wait for its answer, as on the Mac: nothing to steer.
+            if status.busy, !status.isChat {
                 Picker("When \(status.agentName) reads it", selection: $steer) {
                     Text("Steer").tag(true)
                     Text("Queue").tag(false)
