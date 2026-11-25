@@ -38,7 +38,7 @@ const AIZA_RUN = `${"AIza"}SyD3noiseNoiseNoise0123456789abcdefg`;
 const pad = (text: string) => text + "A".repeat((4 - (text.length % 4)) % 4);
 import { offerFolders } from "../src/answers.ts";
 import { SETTINGS_ONLY_IN_THE_APP } from "../src/answers.ts";
-import { MAX_OTHER_FROM_A_DEVICE } from "../src/answers.ts";
+import { deviceRequestsListed, MAX_OTHER_FROM_A_DEVICE } from "../src/answers.ts";
 import { PRESENTING_NOT_YET } from "../src/presented.ts";
 import { DatabaseSync } from "node:sqlite";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
@@ -1972,7 +1972,7 @@ try {
 		const fromMac = await app.call("submit", { id: typedIn, text: overByOne });
 		assert.ok(fromMac.submissionId !== undefined, "the same message from the Mac's own app is taken");
 		const logged = (await app.call("devices.log", { device: phone.id })).entries.filter((entry: any) => entry.why === overMessage("just over 1 MB"));
-		assert.ok(logged.some((entry: any) => entry.method === "submit" && entry.outcome === "refused" && entry.summary.startsWith("Sent a message")), "refused in the devices' log, by its summary");
+		assert.ok(logged.some((entry: any) => entry.method === "submit" && entry.outcome === "refused" && entry.summary === "submit: refused for the text it carries"), "refused in the devices' log, summarized by its method alone (#940)");
 		assert.ok(!JSON.stringify(logged).includes("éééé"), "with nothing of the text");
 
 		// By mailbox: the item's signed text, which holds the request whole, is at most 16 KB (`readSigned`, as pi² Remote's
@@ -2136,6 +2136,13 @@ try {
 		for (let level = 0; level < 1_000_000; level++) deep = [deep];
 		assert.equal(typedRefusal("conversation.archive", { id: deep }), overTheRest, "a list a million deep, walked without recursion");
 		assert.equal(typedRefusal("variables.set", { value: "n".repeat(65_531) }), null, "what no device list holds is the table's to refuse");
+		// A row added tomorrow is walked with nobody remembering: every request of both lists, with a field no row names.
+		const listed = deviceRequestsListed();
+		assert.ok(listed.length > 100 && listed.includes("submit") && listed.includes("schedules.save"), `${listed.length} requests a device may send`);
+		for (const method of listed) {
+			assert.equal(typedRefusal(method, { namedByNoRow: "n" }), null, method);
+			assert.equal(typedRefusal(method, { namedByNoRow: "n".repeat(65_536) }), overTheRest, `${method}: a field no row names is held to the rest's count`);
+		}
 		for (const [method, params] of [
 			["memory.add", { text: refused(65_531) }],
 			["conversation.archive", { id: Array.from({ length: 70_000 }, () => 1) }],
@@ -2148,6 +2155,7 @@ try {
 		assert.equal((await ask("inbox.decide", { id: "no-such", decision: `${"d".repeat(60)}${refused(8)}` })).error, ONLY_ON_THE_MAC, "an unknown decision is the table's");
 		assert.equal((await answerOf(app.call("inbox.decide", { id: "no-such", decision: `${"d".repeat(60)}${refused(8)}` }))).error, `Unknown decision: ${"d".repeat(59)}…`, "and the Mac's app is told it cut");
 		assert.equal((await ask("conversation.pin", { id: `${"c".repeat(60)}${refused(8)}`, pinned: true })).error, `Unknown conversation: ${"c".repeat(59)}…`);
+		assert.equal((await ask("conversation.pin", { id: `${"c".repeat(58)}😀${refused(8)}`, pinned: true })).error, `Unknown conversation: ${"c".repeat(58)}…`, "never half a character");
 		assert.equal((await ask("needs.answer", { id: "no-such", answer: { kind: `${"k".repeat(60)}${refused(8)}` } })).error, ONLY_ON_THE_MAC, "an unknown kind is the table's");
 		assert.match((await answerOf(app.call("needs.answer", { id: "no-such", answer: { kind: `${"k".repeat(60)}${refused(8)}` } }))).error ?? "", new RegExp(`^Unknown kind of answer: k{59}…$`), "from the Mac's app too");
 
@@ -2181,6 +2189,22 @@ try {
 		assert.ok(sized.took <= 3 * table.took + 2_000, `in ${Math.round(sized.took)} ms, where the same line refused by the table took ${Math.round(table.took)} ms`);
 		const grew = (one: { before: number; peak: number }) => one.peak - one.before;
 		assert.ok(grew(sized) <= grew(table) + 2 * huge.length, `with the engine grown by ${mb(grew(sized))} MB, where the table's refusal grew it by ${mb(grew(table))} MB`);
+		// The same in fields the devices' log's summary reads (#940's security read): a refused request is summarized by its
+		// method alone, so nothing cleans, masks or splits the title or the path first. Held closer than the task, since a
+		// summary made from them took seconds and grew the engine by gigabytes.
+		const { id: renamed } = (await ask("conversation.create", { model: demo })).result;
+		for (const [what, method, params] of [
+			["title", "conversation.rename", { id: renamed, title: huge }],
+			["path", "files.preview", { id: renamed, path: "/ŧ".repeat(huge.length / 2) }],
+		] as const) {
+			const read = await cost(`huge-${what}`, method, params);
+			assert.equal(read.reply.error, overTheRest, `a ${what} of 66 MiB is past the rest's count`);
+			console.log(`    66 MiB ${what}: refused in ${Math.round(read.took)} ms (${mb(read.before)} MB, at most ${mb(read.peak)} MB)`);
+			assert.ok(read.took <= 2 * table.took + 1_000, `in ${Math.round(read.took)} ms, where the same line refused by the table took ${Math.round(table.took)} ms`);
+			assert.ok(grew(read) <= grew(table) + huge.length, `with the engine grown by ${mb(grew(read))} MB, where the table's refusal grew it by ${mb(grew(table))} MB`);
+			const entry = (await app.call("devices.log", { device: phone.id })).entries.find((one: any) => one.method === method && one.why === overTheRest);
+			assert.equal(entry?.summary, `${method}: refused for the text it carries`, `logged by its method alone: ${JSON.stringify(entry).slice(0, 200)}`);
+		}
 		const hugeParams = { projectId: made.id, id: hugeItem, action: "assign", agentId: helper.id, task: huge };
 		const heapBefore = process.memoryUsage().heapUsed;
 		const checkedIn = performance.now();

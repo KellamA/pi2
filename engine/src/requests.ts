@@ -16,10 +16,15 @@ export const text = (params: Params, key: string): string => {
 /**
  * A value a request gave, as a refusal repeats it (#940): text cut to 60 characters, as the devices' log cuts a phone's
  * folder name, an object or a list as "?", so that a sentence never carries a phone's string whole, nor a list turned
- * into text.
+ * into text. The cut never splits a character in two halves of a surrogate pair.
  */
-export const repeated = (value: unknown): string =>
-	typeof value === "string" ? (value.length <= 60 ? value : `${value.slice(0, 59)}…`) : typeof value === "object" && value !== null ? "?" : String(value);
+export const repeated = (value: unknown): string => {
+	if (typeof value === "object" && value !== null) return "?";
+	if (typeof value !== "string") return String(value);
+	if (value.length <= 60) return value;
+	const high = value.charCodeAt(58);
+	return `${value.slice(0, high >= 0xd800 && high <= 0xdbff ? 58 : 59)}…`;
+};
 
 export function startConfirmation(params: Params): string | undefined {
 	return confirmLimit(params.confirmLimit);

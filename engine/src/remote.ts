@@ -923,7 +923,9 @@ async function deviceRequest(device: Device, path: DevicePath, client: Client, m
 	const gate = { path, approvalSwitch, approvalHidden };
 	const answer = tooLong === null ? deviceMay(method, params as Params, gate) : "no";
 	// The log's own names (a pairing, an offer of a Face ID key) are the engine's to write: a device's are "unknown" (#786).
-	const summary = summarize(requestLogged(method), params as Params);
+	// A request refused for its text is summarized by its method alone: a summary reads the title, path or folder it
+	// names, which would clean and mask the whole of what was refused (#940's security read).
+	const summary = tooLong === null ? summarize(requestLogged(method), params as Params) : `${requestLogged(method)}: refused for the text it carries`;
 	const record = (outcome: "done" | "refused" | "failed", why?: string) =>
 		void logDevice({ device: device.id, path, method: requestLogged(method), summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }).catch((error) =>
 			log("devices: the log could not be written:", error instanceof Error ? error.message : error),

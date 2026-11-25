@@ -349,7 +349,7 @@ const SHORT_TEXT = 200;
  * The most a device's request may carry beside the texts its row names (`typed` and `texts`), counted as `typedRefusal`
  * counts it: each value one, each string its length besides, each key of an object its length (#940). Ids, names,
  * switches, models, paths, a note of 400 characters, a rule of 1,000, a set-up command of 4,000, an agent's settings
- * as the phone sends the fields it changed: all are far under it. Over it, nothing is read further, so a phone's list
+ * as the phone sends the fields it changed: all are far under it. Over it, the walk stops, so a phone's list
  * of millions of values, or an id of 66 MiB where a handler names it in a refusal (`Unknown agent: …`), or turns a
  * list into text (`String(params.id)`), never reaches a handler.
  */
@@ -369,7 +369,8 @@ export const MAX_TYPED_FROM_A_DEVICE = 1024 * 1024;
  * MAX_OTHER_FROM_A_DEVICE in all. Measured in place, before the request is handled, logged or masked, so that refusing
  * a text of tens of megabytes copies none of it: a string's length is read, never the string (but `Buffer.byteLength`
  * for a typed text more than a third of its limit in UTF-16 units, which reads it without copying it), and the walk
- * stops as soon as it is over. A request no device list holds is left to the table, which refuses it.
+ * stops as soon as it is over (but within an object, whose keys `for…in` lists first: at most what the line's own
+ * parse made). A request no device list holds is left to the table, which refuses it.
  */
 export function typedRefusal(method: string, params: Params): string | null {
 	const row = Object.hasOwn(FROM_A_DEVICE, method) ? FROM_A_DEVICE[method]! : undefined;
@@ -428,7 +429,8 @@ const characters = (n: number) => n.toLocaleString("en-US");
 /**
  * Why the parameters are refused for their texts, or null: walked without recursion, a value at a time, each named text
  * measured where it sits, and the rest counted against MAX_OTHER_FROM_A_DEVICE until the count is spent. A list is read
- * by its indices, so a long one costs no copy; an object's keys are what `for…in` lists.
+ * by its indices, so a long one is read only as far as the count; an object's keys are what `for…in` lists, and it
+ * lists them all before the first is counted, a list of pointers no longer than the object the line's parse made.
  */
 function otherTextRefusal(params: Params, tree: TextTree): string | null {
 	let left = MAX_OTHER_FROM_A_DEVICE;
@@ -810,6 +812,11 @@ export function devicePlacement(method: string): { list: DevicePlacement; why: s
 	if (Object.hasOwn(MAC_ONLY, method)) return { list: "MAC_ONLY", why: MAC_ONLY[method]! };
 	if (FOR_THE_HELPER.has(method)) return { list: "FOR_THE_HELPER", why: "pi² Remote's own" };
 	return null;
+}
+
+/** Every request a device may send, from FROM_A_DEVICE and WITH_FACE_ID: for the test that each is walked (#940). */
+export function deviceRequestsListed(): string[] {
+	return [...Object.keys(FROM_A_DEVICE), ...Object.keys(WITH_FACE_ID)];
 }
 
 /** The requests that answer for the person or change what they set, which a device's table must place with care. */
