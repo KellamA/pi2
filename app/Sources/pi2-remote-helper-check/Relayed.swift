@@ -541,7 +541,8 @@ enum Relayed {
 	}
 
 	/// A relay that floods (#921's security read, M2 and S2): `LyingRelay` on 127.0.0.1 registers pi² Remote, takes it as
-	/// the pairing's Mac, lists 16 devices pi² Remote does not have and refuses each `removeDevice`, then sends 3,000 each
+	/// the pairing's Mac, lists 14 devices pi² Remote does not have beside its two (16, the most a `ready` lists) and refuses
+	/// each `removeDevice`, then sends 3,000 each
 	/// of `anotherMac`, `left`, `joined` and `held` notices and hands over 3,000 items that are not genuine, a `mail` after
 	/// every `took`, and 3,000 more `left` naming the two devices on pi² Remote's own list with notices no key signed. What
 	/// that may cost: one `remote.state` (and so one `devices` event to the app) for the `anotherMac` notices in a minute,
@@ -605,7 +606,7 @@ enum Relayed {
 		let joinedLines = lines.filter { $0.contains("a phone joined the pairing window") }.count, heldLines = lines.filter { $0.contains("it held device") }.count
 		Check.expect(joinedLines >= 1 && joinedLines <= minutes && heldLines >= 1 && heldLines <= minutes, "3,000 joined and 3,000 held notices: each in the log at most once a minute", "\(joinedLines) and \(heldLines) lines in \(minutes) minute(s) begun")
 		let refusedLines = logLines().filter { $0.contains("the relay's removeDevice") }.count
-		Check.expect(relay.refused == 16 && refusedLines == 1, "16 removeDevice requests the relay refused, all within the minute: one line in the log", "\(relay.refused) refused, \(refusedLines) lines")
+		Check.expect(relay.refused == 14 && refusedLines == 1, "14 removeDevice requests the relay refused, all within the minute: one line in the log", "\(relay.refused) refused, \(refusedLines) lines")
 		Check.expect(lines.count <= kinds * minutes, "3,000 notices and 3,000 items: \(lines.count) lines in pi² Remote's log, at most one for each of the relay's \(kinds) kinds a minute", lines.joined(separator: "\n"))
 		let gaps = zip(relay.takes.dropFirst(), relay.takes).map { $0.timeIntervalSince($1) }
 		Check.expect(relay.takes.count >= 15 && gaps.allSatisfy { $0 >= 4.5 }, "a take at most every five seconds, a mail after every took notwithstanding", gaps.map { String(format: "%.1f", $0) }.joined(separator: " "))
@@ -685,7 +686,8 @@ final class LyingRelay: @unchecked Sendable {
 	var acknowledged: Int { state.get().acknowledged }
 	var refused: Int { state.get().refused }
 	var takes: [Date] { state.get().takes }
-	/// Devices it lists in `ready` besides 16 of its own making: the ones on pi² Remote's own list, set before it connects.
+	/// Devices it lists in `ready` besides its own making, 16 in all: the ones on pi² Remote's own list, set before it
+	/// connects.
 	var alsoListed: [DeviceID] = []
 
 	init?() {
@@ -778,8 +780,8 @@ final class LyingRelay: @unchecked Sendable {
 				send(connection, "registered", [("pairing", .string(pairing.text))])
 			case "proof":
 				state.update { $0.mac = connection }
-				// 16 devices pi² Remote's list does not have: it asks to remove each, and is refused.
-				let listed: [JSONValue] = (0 ..< 16).map { _ in .object([("device", .string(DeviceID.random().text)), ("online", .bool(false))]) }
+				// 16 devices in all, the most a `ready` lists; those pi² Remote's list does not have it asks to remove, and is refused.
+				let listed: [JSONValue] = (0 ..< 16 - alsoListed.count).map { _ in .object([("device", .string(DeviceID.random().text)), ("online", .bool(false))]) }
 					+ alsoListed.map { .object([("device", .string($0.text)), ("online", .bool(false))]) }
 				send(connection, "ready", [("devices", .array(listed)), ("left", .array([])), ("pending", .bool(false)), ("mail", .integer(0))])
 			case "removeDevice":
