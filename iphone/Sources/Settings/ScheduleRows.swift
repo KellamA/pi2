@@ -45,7 +45,7 @@ struct ScheduleRow: View {
         .accessibilityHint("Edits the schedule")
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button("Delete", systemImage: "trash", role: .destructive) { confirmingDelete = true }
-            Button("Run Now", systemImage: "play") { send(.runSchedule(schedule.id)) }
+            Button("Run Now", systemImage: "play") { send(.runSchedule(schedule.id, title: schedule.title)) }
                 .tint(.pi2Accent)
                 .disabled(schedule.holdReason != nil || !connected)
         }
@@ -61,7 +61,7 @@ struct ScheduleRow: View {
             }
         }
         .contextMenu {
-            Button("Run Now", systemImage: "play") { send(.runSchedule(schedule.id)) }
+            Button("Run Now", systemImage: "play") { send(.runSchedule(schedule.id, title: schedule.title)) }
                 .disabled(schedule.holdReason != nil || !connected)
             if let last = book.lastRun(schedule) {
                 Button("Open Last Run", systemImage: "bubble.left") { openRoute(.conversation(last)) }
@@ -74,7 +74,7 @@ struct ScheduleRow: View {
             Button("Delete", systemImage: "trash", role: .destructive) { confirmingDelete = true }
         }
         .confirmationDialog("Delete “\(schedule.title)”?", isPresented: $confirmingDelete, titleVisibility: .visible) {
-            Button("Delete", role: .destructive) { send(.deleteSchedule(schedule.id)) }
+            Button("Delete", role: .destructive) { send(.deleteSchedule(schedule.id, title: schedule.title)) }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("It will not run again. Conversations its runs started stay as they are.")
