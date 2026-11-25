@@ -564,6 +564,56 @@ enum RealEngine {
 		Check.expect(told, "a device revoked on the Mac is told so over the relay, and its channel ends")
 		let removed = wire.ended(within: 15)
 		Check.expect(removed?.contains("removed") == true, "and the relay removes its slot", removed ?? "still open")
+		leave(app: app, relay: relay)
 		guard case .success = app.call("devices.set", .object([("on", .bool(false))])) else { return Check.expect(false, "remote access turned off") }
+	}
+
+	/// A phone unpaired on the phone (#929): another phone pairs through the relay and sends `leave`, whose notice the relay
+	/// passes on to pi² Remote, which verifies it against its own list and tells the engine, which checks it again (the
+	/// leave text as the phone's RemoteKit wrote it, read by the engine's own code) and revokes the device, logged as
+	/// unpaired on the phone.
+	static func leave(app: App, relay: URL) {
+		Check.section("through a real engine and the relay: a phone unpaired on the phone is revoked on its signed leave (#929)")
+		let opened = app.call("devices.pairStart", within: 180)
+		guard case let .success(window) = opened, let text = window["payload"]?.stringValue, let payload = try? PairingPayload.parse(text) else {
+			return Check.expect(false, "a second pairing opened through the relay", "\(opened)")
+		}
+		let keys = PhoneKeys()
+		guard let link = Relayed.join(relay, pairing: payload.pairing, secret: payload.secret, keys: keys) else { return Check.expect(false, "the second phone joins the relay's window") }
+		let joined = RelayWire(link: link)
+		let phone = Phone(relay: joined)
+		guard let paired = phone.pair(payload: payload, keys: keys, team: team) else { return Check.expect(false, "the second phone's pairing handshake over the relay") }
+		let digits = PairingSecrets.digits(secret: payload.secret, binding: paired.binding)
+		var confirmed: Result<JSONValue, Refused> = .failure(Refused("not tried"))
+		let confirmStart = Date()
+		repeat {
+			confirmed = app.call("devices.pairConfirm", .object([("digits", .string(digits))]))
+			if case let .failure(why) = confirmed, why.description.contains("No phone is waiting") { usleep(200_000) } else { break }
+		} while Date().timeIntervalSince(confirmStart) < 60
+		guard case let .success(confirmation) = confirmed, let deviceText = confirmation["device"]?.stringValue, let device = DeviceID(deviceText) else {
+			return Check.expect(false, "the second phone is paired", "\(confirmed)")
+		}
+		_ = phone.line()
+		joined.close()
+		guard let wire = Relayed.connect(relay, pairing: payload.pairing, device: device, keys: keys), let client = wire.client else {
+			return Check.expect(false, "the second phone connects to the relay as a listed device")
+		}
+		let left = blocking { try await client.leave(mac: payload.identityKey) }
+		Check.expect((try? left.get()) != nil, "the phone sends the relay its leave, with the notice for its Mac", "\(left)")
+		var record: JSONValue?
+		let began = Date()
+		while record?["revokedAt"]?.integerValue == nil, Date().timeIntervalSince(began) < 30 {
+			if case let .success(state) = app.call("devices.watch"), case let .array(devices)? = state["devices"] {
+				record = devices.first { $0["id"]?.stringValue == device.text }
+			}
+			if record?["revokedAt"]?.integerValue == nil { usleep(250_000) }
+		}
+		Check.expect(record?["revokedAt"]?.integerValue != nil && record?["deviceKey"]?.stringValue == "", "the engine revokes the device on its notice, checked again against its own record, and the Devices page is told", record.map(JSON.text) ?? "none")
+		if case let .success(log) = app.call("devices.log", .object([("device", .string(device.text))])), case let .array(entries)? = log["entries"] {
+			let leaves = entries.filter { $0["method"]?.stringValue == "leave" }
+			Check.expect(leaves.count == 1 && leaves.first?["summary"]?.stringValue == "Unpaired itself on the phone" && leaves.first?["path"]?.stringValue == "relay", "the devices' log says, once, that it unpaired itself on the phone", JSON.text(.array(leaves)))
+		} else {
+			Check.expect(false, "the devices' log is read")
+		}
 	}
 }
