@@ -13,10 +13,12 @@
 // answers off, and quiet a project's needs and answers.
 //
 // What a push may say is less than what the channel carries (5.7): an alert's text is the card's title and short line,
-// built from the item as a device's copy of it is built, through `maskValue`, with an approval walked from
+// built from the item as a device's copy of it is built, through `maskValue` (key shapes, and the values of the secrets
+// the engine knows, secrets.ts), with an approval walked from
 // APPROVAL_DEPTH wherever it sits and marked `partHidden` as the channel marks it, or as the gate judges the engine's
 // own record (`hidesSomething`), whichever hides more. So a push never shows what the channel hides, and never offers
-// as whole an approval the gate treats as partly hidden. Never an output, a file, a diff, or any transcript text.
+// as whole an approval the gate treats as partly hidden. A run that reads as a token is hidden in the notification's
+// text alone (`shown`). Never an output, a file, a diff, or any transcript text.
 //
 // The engine keeps no push token: the relay holds each device's, and each Live Activity's (5.3). The engine names a
 // device by its id and an activity by the phone's own id for it.
@@ -29,6 +31,7 @@ import type { Feature } from "./features.ts";
 import type { NeedItem } from "./needs.ts";
 import { orchestratorRole } from "./orchestrator.ts";
 import { allProjects, projectOf } from "./projects.ts";
+import { SECRET_HIDDEN } from "./secrets.ts";
 import { runsAs } from "./state.ts";
 import { defineDoc } from "@earendil-works/pi-durable";
 
@@ -89,6 +92,11 @@ type Unaddressed = Push extends infer One ? (One extends Push ? Omit<One, "id" |
 /** Why the relay refused a push, as pi² Remote passes it on (relay/README.md, "Pushes"). */
 export const REFUSALS = ["no-token", "token-dead", "push-limit", "push-later", "unavailable", "unknown-device"] as const;
 export type Refusal = (typeof REFUSALS)[number];
+/**
+ * pi² Remote's own words for a push it will never send as it is, however often it is asked (7.1): a body that does not
+ * fit the largest sealed push, and one not as 7.1 writes it. That one push is dropped (#914); nothing else is held back.
+ */
+export const DROPPED = ["too-large", "malformed"] as const;
 
 /** A Live Activity a device follows: the phone's own id for it (16 bytes, base64url) and the project it shows. */
 export type Follow = { projectId: string; activity: string; since: number };
@@ -172,18 +180,45 @@ const NOT_SHOWN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
 
 /**
- * `text` as a notification shows it, at most `max` characters: what is not shown taken out first, then every key shape
- * masked (`maskKeys`, so that a key split by a zero-width character is hidden whole once joined), then cut. Says
- * whether anything was taken out or turned into something else (`changed`), masked here (`masked`), or cut.
+ * A run that may be a key or a token with no known prefix (7): 32 or more of base64's characters, base64url's too, with
+ * a letter and a digit among them, and at least 4.25 bits a character (`highEntropy`). Hex (a commit's hash, a UUID)
+ * has at most 4 bits a character, so it is never one; a random token of 32 letters and digits has about 4.6.
  */
-export function shown(text: string, max: number): { text: string; cut: boolean; changed: boolean; masked: boolean } {
+const TOKEN_RUN = /[A-Za-z0-9+/=_-]{32,}/g;
+export const TOKEN_RUN_BITS = 4.25;
+
+/** Whether `run` reads as random: a letter and a digit in it, and TOKEN_RUN_BITS a character or more. */
+export function highEntropy(run: string): boolean {
+	if (!/[A-Za-z]/.test(run) || !/[0-9]/.test(run)) return false;
+	const counts = new Map<string, number>();
+	for (const character of run) counts.set(character, (counts.get(character) ?? 0) + 1);
+	let bits = 0;
+	for (const count of counts.values()) bits -= (count / run.length) * Math.log2(count / run.length);
+	return bits >= TOKEN_RUN_BITS;
+}
+
+/**
+ * `text` as a notification shows it, at most `max` characters: what is not shown taken out first, then every key shape
+ * and every secret the engine knows masked (`maskKeys`, so that a key split by a zero-width character is hidden whole
+ * once joined), then every run that reads as a token (`highEntropy`) shown as SECRET_HIDDEN, then cut. Says whether
+ * anything was taken out or turned into something else (`changed`), masked here (`masked`), shown as a token
+ * (`tokenLike`), or cut.
+ *
+ * A token-like run is hidden in the notification alone, which a Lock Screen can show: the channel carries what agents
+ * ran (5.7), so the card in the app shows the run, and the gate does not judge it. So it makes the alert not whole (no
+ * Allow once, Reply or Accept on the notification), but not `partHidden`: the person allows it in the app, having seen
+ * it. Commit hashes, ids and base64 are everywhere in what agents run, and an approval that holds one stays answerable.
+ */
+export function shown(text: string, max: number): { text: string; cut: boolean; changed: boolean; masked: boolean; tokenLike: boolean } {
 	const cleaned = text.replace(LONE_SURROGATE, "").replace(NOT_SHOWN, (found) => (found === "\n" ? found : found === "\t" ? " " : found === "\u2028" || found === "\u2029" ? "\n" : ""));
 	const changed = cleaned !== text;
 	const unmasked = maskKeys(cleaned);
 	const masked = unmasked !== cleaned;
-	const points = [...unmasked];
-	if (points.length <= max) return { text: unmasked, cut: false, changed, masked };
-	return { text: `${points.slice(0, max - 1).join("")}…`, cut: true, changed, masked };
+	const plain = unmasked.replace(TOKEN_RUN, (run) => (highEntropy(run) ? SECRET_HIDDEN : run));
+	const tokenLike = plain !== unmasked;
+	const points = [...plain];
+	if (points.length <= max) return { text: plain, cut: false, changed, masked, tokenLike };
+	return { text: `${points.slice(0, max - 1).join("")}…`, cut: true, changed, masked, tokenLike };
 }
 
 /** The arguments' fields a call's one line is taken from, in this order, as the app's `ToolCall.summary` takes them. */
@@ -401,7 +436,7 @@ function finish(body: AlertBody, wholeMatters: boolean): AlertBody {
 	const title = shown(body.title, MAX_TITLE);
 	const subtitle = body.subtitle === undefined ? undefined : shown(body.subtitle, MAX_SUBTITLE);
 	let text = shown(body.body, MAX_BODY);
-	const altered = [title, subtitle, text].some((one) => one !== undefined && (one.changed || one.masked || one.cut));
+	const altered = [title, subtitle, text].some((one) => one !== undefined && (one.changed || one.masked || one.tokenLike || one.cut));
 	const maskedHere = [title, subtitle, text].some((one) => one?.masked === true);
 	const out: AlertBody = { ...body, title: title.text, body: text.text, ...(subtitle === undefined ? {} : { subtitle: subtitle.text }) };
 	for (let max = MAX_BODY; Buffer.byteLength(JSON.stringify(out)) > MAX_BODY_BYTES && max > 8; max = Math.floor(max / 2)) {
@@ -441,6 +476,8 @@ export type PushParts = {
 	conversation(id: number): { projectId: string | null; chat: boolean } | undefined;
 	/** The current conversation with a project's orchestrator: its project and the orchestrator's name; else undefined. */
 	orchestrator(id: number): { projectId: string; agent: string | null } | undefined;
+	/** Says something in engine.log. */
+	log?(text: string): void;
 };
 
 type Owed = { collapse: string; need?: string; make: () => AlertBody | null; settingOn: (settings: PushSettings) => boolean };
@@ -712,12 +749,23 @@ export class Pushes {
 	 * gives its token at every connection, and reads what waits as it attaches, so what was held is dropped), or for a
 	 * while for the limits, a busy push service and a relay with no push key, after which alerts still waiting are
 	 * owed again and gone items named again. A Live Activity is sent its latest numbers when the hold ends; one whose
-	 * token is dead has ended, and is followed no more.
+	 * token is dead has ended, and is followed no more. A push pi² Remote will never send as it is (DROPPED) is dropped
+	 * alone, and said in engine.log by its id.
 	 */
 	refused(id: string, why: string): boolean {
 		const asked = this.#asked.get(id);
 		if (asked === undefined) return false;
 		this.#asked.delete(id);
+		if ((DROPPED as readonly string[]).includes(why)) {
+			// Asked again, it would be built the same and refused the same, every minute for as long as it is owed.
+			this.#parts.log?.(`pushes: pi² Remote refused push ${id} (${asked.kind}) as ${why}; it is dropped, and nothing else is held back`);
+			// An item the phone was never told of is not named to it as gone.
+			for (const owed of asked.owed ?? []) {
+				const told = this.#told.get(asked.device);
+				if (owed.need !== undefined && told !== undefined) this.#told.set(asked.device, told.filter((one) => one !== owed.need));
+			}
+			return this.#settle();
+		}
 		const refusal: Refusal = (REFUSALS as readonly string[]).includes(why) ? (why as Refusal) : "push-later";
 		const now = this.#parts.now();
 		const hold: Hold = { until: HOLDS[refusal] === null ? null : now + HOLDS[refusal]!, since: now };
@@ -1024,6 +1072,7 @@ export const devicePushes: Feature = (host, engine) => {
 			const agentId = runsAs(engine.library().conversations[String(id)], engine.agents());
 			return { projectId: project.id, agent: agentId === undefined ? null : (engine.agents()[agentId]?.name ?? null) };
 		},
+		log: (text) => engine.log(text),
 	};
 	// Made, and listening, before any feature starts: the first `needs` and `limits` events, sent as those start, are what
 	// waited before, which is never pushed.

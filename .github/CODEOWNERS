@@ -72,3 +72,6 @@
 # checks before a file is shown on it, with the test that holds each refusal.
 /engine/src/folders.ts @KellamA
 /engine/test/folders.ts @KellamA
+# The values of the secrets the engine knows, which every line a phone is sent and every push is masked of (#894): a
+# value taken out of the set, or a search that misses one, would reach the phone's card and its Lock Screen.
+/engine/src/secrets.ts @KellamA

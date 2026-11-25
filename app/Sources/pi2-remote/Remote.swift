@@ -366,12 +366,13 @@ package final class Remote: @unchecked Sendable {
 	/// must fall before it reads from them again: TCP then holds a phone back, not pi² Remote's memory.
 	package static let engineBacklog = 8 * 1024 * 1024
 	package static let engineDrained = 2 * 1024 * 1024
-	private(set) var phonesPaused = false
+	package private(set) var phonesPaused = false
 
 	/// A phone's line went to the engine: if too much now waits, no phone is read until it has drained.
 	func engineMayBeFull() {
 		guard !phonesPaused, engine.pending > Self.engineBacklog else { return }
 		phonesPaused = true
+		heldBackSince = .now
 		Seldom.shared.say("backlog", "more than \(Self.engineBacklog / 1024 / 1024) MB wait for the engine: phones are not read until it drains")
 		for connection in connections.values where connection.isAttached { connection.pauseReading() }
 	}
@@ -400,6 +401,94 @@ package final class Remote: @unchecked Sendable {
 		largest.end()
 	}
 
+	// ---- What phones' unfinished lines may make pi² Remote hold, and for how long (#908)
+
+	/// What all phones' unfinished lines may hold together: each channel's line begun and not finished
+	/// (`Channel.unfinishedLineLength`), on the home, direct and relay paths alike. Ten attached connections (two for each
+	/// of five devices) could otherwise hold a line of 72 MiB each, 720 MiB; this lets three phones send ten pictures each
+	/// at once. Over it, the connection holding the most is ended (its session keeps what a resume needs). It is checked
+	/// after each frame is held, so it is passed by one frame at most, for a moment.
+	package var lineBudget = 256 * 1024 * 1024
+	/// How long an unfinished line may go with nothing more of it coming, on `lineClock`: a phone that lost its network
+	/// halfway through a message frees what it sent within this and a sixth of it more (the watch's step). Changed (by
+	/// the check alone), the watch takes its new step at once.
+	package var lineStalledAfter: Duration = .seconds(30) {
+		didSet { lineWatch?.schedule(deadline: .now() + lineWatchStep) }
+	}
+	/// The slowest link a line may come by, in bytes a second: a line may take `lineStalledAfter`, and as long again as
+	/// what it holds takes at this rate, so that a piece every few seconds cannot keep a line held for ever. 64 KiB a
+	/// second, about half a megabit: ten pictures (67 MiB) in about 18 minutes; a line of 72 MiB held 20 minutes at most.
+	package var slowestLine = 64 * 1024
+
+	/// Since when phones are held back by the engine's backlog, while they are, and for how long in all before.
+	private var heldBackSince: SuspendingClock.Instant?
+	private var heldBackFor: Duration = .zero
+	private var lineWatch: DispatchSourceTimer?
+
+	/// The clock an unfinished line is timed by: it stands still while phones are held back (`phonesPaused`), since a
+	/// phone pi² Remote does not read cannot send the rest of its line; and, a suspending clock, while the Mac sleeps, when
+	/// pi² Remote reads nothing either (the watch's `DispatchTime` does not run then).
+	var lineClock: SuspendingClock.Instant {
+		let now = SuspendingClock.now
+		return now - heldBackFor - (heldBackSince.map { now - $0 } ?? .zero)
+	}
+
+	/// Whether `line` is overdue at `now`, and why: nothing more of it came for `stalledAfter`, or it has taken longer
+	/// than `stalledAfter` and what it holds takes at `slowest` bytes a second.
+	package static func overdue(_ line: UnfinishedLine, at now: SuspendingClock.Instant, stalledAfter: Duration, slowest: Int) -> LineOverdue? {
+		if now - line.grew >= stalledAfter { return .stalled }
+		if now - line.began > stalledAfter + .seconds(Double(line.held) / Double(max(1, slowest))) { return .tooSlow }
+		return nil
+	}
+
+	/// Ends the connection holding the most of an unfinished line, when all of them together hold more than `lineBudget`.
+	func keepLinesWithinBudget() {
+		let held = connections.values.map { ($0, $0.unfinishedHeld) }
+		guard let largest = Self.overBudget(held, budget: lineBudget) else { return }
+		let who = largest.device.map { "device \($0)" } ?? "a phone not yet attached"
+		Seldom.shared.say("line budget \(largest.device?.text ?? "")", "phones' unfinished lines held more than \(lineBudget / 1024 / 1024) MiB in all; the connection holding the most, of \(who), is closed")
+		largest.end()
+	}
+
+	/// What all phones' channels hold of unfinished lines, together.
+	package var linesHeld: Int { connections.values.reduce(0) { $0 + $1.unfinishedHeld } }
+
+	/// A connection began holding a line: the watch runs while any does, every sixth of `lineStalledAfter`.
+	func watchLines() {
+		guard lineWatch == nil else { return }
+		let timer = DispatchSource.makeTimerSource(queue: queue)
+		timer.setEventHandler { [unowned self] in self.checkLines() }
+		timer.schedule(deadline: .now() + lineWatchStep)
+		timer.resume()
+		lineWatch = timer
+	}
+
+	/// A sixth of `lineStalledAfter`, read at each step.
+	private var lineWatchStep: DispatchTimeInterval {
+		let (seconds, attoseconds) = (lineStalledAfter / 6).components
+		return .nanoseconds(max(1_000_000, Int(seconds) * 1_000_000_000 + Int(attoseconds / 1_000_000_000)))
+	}
+
+	/// Ends each connection whose unfinished line is overdue; the watch stops once no connection holds one.
+	private func checkLines() {
+		let now = lineClock
+		var holding = false
+		for connection in Array(connections.values) {
+			guard let line = connection.unfinished else { continue }
+			if let overdue = Self.overdue(line, at: now, stalledAfter: lineStalledAfter, slowest: slowestLine) {
+				connection.endOverdue(overdue)
+			} else {
+				holding = true
+			}
+		}
+		guard !holding else {
+			lineWatch?.schedule(deadline: .now() + lineWatchStep)
+			return
+		}
+		lineWatch?.cancel()
+		lineWatch = nil
+	}
+
 	/// A device's newest connections are kept; older ones past `attachedPerDevice` end.
 	private func keepNewest(of device: DeviceID) {
 		let attached = connections.values.filter { $0.isAttached && $0.device == device }.sorted { $0.attachedAt > $1.attachedAt }
@@ -412,6 +501,8 @@ package final class Remote: @unchecked Sendable {
 	private func engineDrained() {
 		guard phonesPaused else { return }
 		phonesPaused = false
+		if let since = heldBackSince { heldBackFor += .now - since }
+		heldBackSince = nil
 		for connection in connections.values { connection.resumeReading() }
 	}
 
@@ -594,4 +685,26 @@ package final class Remote: @unchecked Sendable {
 		}
 		return true
 	}
+}
+
+/// A phone's line begun and not finished, as pi² Remote times it (#908): when it began and when it last grew, on
+/// `Remote.lineClock`, and how much of it its channel holds.
+package struct UnfinishedLine: Equatable, Sendable {
+	package var began: SuspendingClock.Instant
+	package var grew: SuspendingClock.Instant
+	package var held: Int
+
+	package init(began: SuspendingClock.Instant, grew: SuspendingClock.Instant, held: Int) {
+		self.began = began
+		self.grew = grew
+		self.held = held
+	}
+}
+
+/// Why an unfinished line ends its connection (`Remote.overdue`).
+package enum LineOverdue: Equatable, Sendable {
+	/// Nothing more of it came for `Remote.lineStalledAfter`.
+	case stalled
+	/// It came slower than `Remote.slowestLine`.
+	case tooSlow
 }

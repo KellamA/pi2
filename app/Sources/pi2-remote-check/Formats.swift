@@ -110,6 +110,14 @@ enum Formats {
 			_ = try assembler.take(try Frame(.more, Data(repeating: 0x61, count: 6)))
 			_ = try assembler.take(try Frame(.data, Data(repeating: 0x61, count: 6)))
 		}
+		Check.that(assembler.unfinishedLength == 6, "the frame that would pass the limit is not held: 6 bytes of the line are (#908)")
+		var growing = LineAssembler(maxLength: 100)
+		Check.runs("an assembler says how much of an unfinished line it holds, and none once the line is whole (#908)") {
+			guard growing.unfinishedLength == 0, try growing.take(try Frame(.more, Data(repeating: 0x61, count: 7))) == nil, growing.unfinishedLength == 7,
+				try growing.take(try Frame(.more, Data(repeating: 0x61, count: 5))) == nil, growing.unfinishedLength == 12,
+				try growing.take(try Frame(.data, Data("b".utf8)))?.count == 13, growing.unfinishedLength == 0
+			else { throw RemoteKitError("check", "unfinishedLength") }
+		}
 		var empty = LineAssembler()
 		Check.refuses("an empty data frame alone") { _ = try empty.take(try Frame(.data)) }
 		var framing = LengthFraming()
