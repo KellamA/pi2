@@ -326,6 +326,14 @@ enum Flows {
 			let got = third.line(within: 240)
 			Check.expect(got?.count == big.utf8.count && got.map { $0.elementsEqual(big.utf8) } == true, "an engine line of \(megabytes) MB reaches the phone whole", "\(got?.count ?? 0) bytes")
 		}
+		// At the edge (#924, #919's second read): a line of exactly the longest the engine writes and pi² Remote takes, its
+		// session's wrapping counted, reaches the phone whole. The engine's devices test holds the engine's side of it.
+		let wrapping = #"{"session":"s_one","message":}"#.utf8.count
+		let head = #"{"event":"check","pad":""#
+		let edgeLine = head + String(repeating: "b", count: EngineLink.maxLineLength - wrapping - head.utf8.count - 2) + #""}"#
+		engine.toSession("s_one", edgeLine)
+		let gotEdge = third.line(within: 240)
+		Check.expect(gotEdge?.count == edgeLine.utf8.count && gotEdge.map { $0.elementsEqual(edgeLine.utf8) } == true, "an engine line of exactly \(EngineLink.maxLineLength) bytes with its session's wrapping, the longest pi² Remote takes, reaches the phone whole", "\(gotEdge?.count ?? 0) bytes")
 		let before = rss(child.pid)
 		let numbers = "{\"id\":\"n1\",\"method\":\"engine.info\",\"params\":{\"x\":[" + String(repeating: "0,", count: 7 * 1024 * 1024) + "0]}}"
 		third.sendLine(Data(numbers.utf8))
