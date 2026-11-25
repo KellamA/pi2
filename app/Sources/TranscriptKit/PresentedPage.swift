@@ -146,8 +146,13 @@ public enum PresentedPagePolicy {
           // this Mac's own addresses, which no proxy is used for. So such a link is followed by a script's navigation
           // instead, which connects to nothing ahead, and which the navigation delegate refuses and says.
           const outbound = (node) => {
-            const link = node?.closest?.("a[href], area[href]");
-            return link && /^https?:$/i.test(link.protocol ?? "") ? link : null;
+            // Up through shadow roots too: a click inside one still follows the link around it.
+            for (let at = node; at; at = at.parentNode ?? at.host) {
+              if ((at.localName === "a" || at.localName === "area") && at.hasAttribute?.("href")) {
+                return /^https?:$/i.test(at.protocol ?? "") ? at : null;
+              }
+            }
+            return null;
           };
           const follow = (link) => {
             const target = (link.target || link.ownerDocument?.querySelector("base[target]")?.target || "_self").toLowerCase();
@@ -171,9 +176,10 @@ public enum PresentedPagePolicy {
             const link = this.isConnected ? null : outbound(this);
             return link ? follow(link) : click.call(this);
           };
+          // A click a script sends may not be cancelable, and a link not in the document has no window to hear it.
           const dispatch = EventTarget.prototype.dispatchEvent;
           EventTarget.prototype.dispatchEvent = function (event) {
-            const link = event?.type === "click" || event?.type === "auxclick" ? (this.isConnected === false ? outbound(this) : null) : null;
+            const link = event?.type === "click" || event?.type === "auxclick" ? outbound(this) : null;
             if (!link) return dispatch.call(this, event);
             if (event.type === "click") follow(link);
             return false;

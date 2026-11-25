@@ -53,8 +53,9 @@ app/      SwiftUI app: the window (projects and chat mode), the menu bar, Quick 
           Sources/FileLinkKit   a file linked in a conversation: its path made whole, and what a click and its menu do with it
           Sources/pi2-file-link-check checks FileLinkKit, in a temporary folder of its own; not part of the app
           Sources/pi2-computer-check  checks how ComputerKit reaches SwiftUI controls, in windows of its own read in-process; not part of the app
-          Sources/TranscriptKit the conversation page's loading and messages, shared with the iPhone app; the Mac's web view and the page loaded ahead; the phone's web view
+          Sources/TranscriptKit the conversation page's loading and messages, shared with the iPhone app; the Mac's web view and the page loaded ahead; the phone's web view; the sandboxed view an agent's presented page is drawn in
           Sources/pi2-transcript-check checks TranscriptKit, with real pages in windows that never come on screen; not part of the app
+          Sources/pi2-presented-check checks the presented page's view against hostile pages, offscreen, with listeners on 127.0.0.1 alone; not part of the app
           Sources/PeerKit       whether the process at the other end of a connection to the engine's socket is the pi² app
           Sources/pi2-peer      the engine's helper that asks PeerKit of one connection; in the app's bundle
           Sources/pi2-peer-check checks PeerKit and pi2-peer on real connections; not part of the app

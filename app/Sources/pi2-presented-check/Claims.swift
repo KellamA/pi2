@@ -370,6 +370,8 @@ func navigations(listener: Listener, net: String) async {
         ("a link not in the page", "<script>const a = document.createElement('a'); a.href = \"\(net)/detached\"; a.click()</script>"),
         ("a click sent to a link not in the page", "<script>const a = document.createElement('a'); a.href = \"\(net)/detached2\"; const s = document.createElement('span'); a.append(s); s.dispatchEvent(new MouseEvent('click', { bubbles: true }))</script>"),
         ("an image map's area", "<map name=m><area id=r shape=rect coords=0,0,10,10 href=\"\(net)/area\"></map><img usemap=#m><script>r.click()</script>"),
+        ("a click that cannot be cancelled", "<a id=a href=\"\(net)/not-cancelable\"><span id=h>x</span></a><script>h.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: false }))</script>"),
+        ("a link around a shadow root", "<a id=a href=\"\(net)/shadow\"><span id=h></span></a><script>const r = h.attachShadow({ mode: 'closed' }); const s = document.createElement('b'); s.textContent = 'x'; r.append(s); s.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }))</script>"),
         ("an SVG link", "<svg><a id=s href=\"\(net)/svg\"><text>x</text></a></svg><script>s.dispatchEvent(new MouseEvent('click', { bubbles: true }))</script>"),
         ("a link in an empty frame, to the top", "<script>const f = document.createElement('iframe'); document.body.append(f); const a = f.contentDocument.createElement('a'); a.href = \"\(net)/iframe\"; a.target = '_top'; a.click()</script>"),
         ("window.open", "<script>window.open(\"\(net)/open\")</script>"),
