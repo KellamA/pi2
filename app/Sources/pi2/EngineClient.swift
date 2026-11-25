@@ -108,6 +108,8 @@ final class EngineClient: EngineSessionHost {
     let browser = BrowserSession()
     /// Projects, carrying over's state and what the sidebar shows of each (Projects.swift).
     let projectStore = ProjectsStore()
+    /// Who follows which conversation's presentations as `conversation.presented` brings them (PresentedEngine.swift).
+    @ObservationIgnored let presentedFollowers = PresentedFollowers()
     #if PI2_DEVELOPMENT
     /// Paired devices and remote access, for Settings › Devices, the menu bar item and the sidebar (DevicesSettings.swift):
     /// development builds alone until a real phone is paired (#712).
@@ -247,6 +249,8 @@ final class EngineClient: EngineSessionHost {
             computer.handle(try decoder.decode(ComputerEvent.self, from: line), engine: self)
         case "browser":
             browser.handle(try decoder.decode(BrowserEvent.self, from: line), engine: self)
+        case "conversation.presented":
+            presentedFollowers.take(line)
         #if PI2_DEVELOPMENT
         case "devices":
             devices.take(line: line, decoder: decoder, engine: self)
