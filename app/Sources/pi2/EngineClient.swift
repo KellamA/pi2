@@ -112,6 +112,9 @@ final class EngineClient: EngineSessionHost {
     @ObservationIgnored let presentedFollowers = PresentedFollowers()
     /// Draws agents' pages offscreen when the engine asks (PresentedDrawing.swift).
     @ObservationIgnored let presentedDrawing = PresentedDrawing()
+    /// How many times the app has connected to an engine: what was read on an earlier connection, and the events it
+    /// missed while it had none, are read again (the transcript's presentations).
+    @ObservationIgnored private(set) var connections = 0
     #if PI2_DEVELOPMENT
     /// Paired devices and remote access, for Settings › Devices, the menu bar item and the sidebar (DevicesSettings.swift):
     /// development builds alone until a real phone is paired (#712).
@@ -212,6 +215,7 @@ final class EngineClient: EngineSessionHost {
 
     func sessionConnected() {
         guard let connection = session.transport else { return }
+        connections += 1
         self.startsWithoutConnecting = 0
         self.launchFailure = nil
         self.lastExit = nil

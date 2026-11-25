@@ -148,6 +148,8 @@ final class TranscriptBridge {
     private var waitingPictures: [(presentation: String, version: Int, item: Int)] = []
     /// Reads the list and follows the conversation's presentations; stopped when the conversation or the view goes.
     private var following: Task<Void, Never>?
+    /// The connection to the engine `following` read the list on.
+    private var followedOn = 0
 
     init(engine: EngineClient, conversationID: Int) {
         self.engine = engine
@@ -189,7 +191,8 @@ final class TranscriptBridge {
             olderOnTheWay = false
             undrawn = true
             followPresented()
-        } else if following == nil {
+        } else if following == nil || followedOn != engine.connections {
+            // Read again on a new connection: `conversation.presented` sent while the app had none was missed.
             followPresented()
         }
         self.items = items
@@ -436,6 +439,7 @@ final class TranscriptBridge {
     /// the list, so a record that changes while the list is read is not missed; what it brings is newer than the list.
     private func followPresented() {
         following?.cancel()
+        followedOn = engine.connections
         records = [:]
         recordsLoaded = false
         waitingPictures = []
