@@ -33,6 +33,18 @@ struct PullRequestFilePage: View {
     var body: some View {
         Group {
             switch diff {
+            case nil where !sample && !PullRequestSource.live(session.connection):
+                if case .outOfReach = session.connection {
+                    PullRequestUnavailable {
+                        ContentUnavailableView(
+                            "Your Mac can't be reached", systemImage: "wifi.slash",
+                            description: Text("The diff comes from your Mac, and shows once it can be reached.")
+                        )
+                    }
+                } else {
+                    ProgressView("Waiting for your Mac…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             case nil, .reading?:
                 ProgressView("Reading the diff from your Mac…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -127,6 +139,13 @@ struct PullRequestFilePage: View {
                     Text(words).font(.footnote).foregroundStyle(.secondary)
                 }
                 if !file.binary { PullRequestCounts(additions: file.additions, removals: file.removals) }
+            }
+            if file.cut {
+                // Said at the top too: its counts are of the part sent, and its end is thousands of lines below.
+                Text("Cut short: the diff is longer than 2 MB, and your Mac sent its first 2 MB. These are the lines up to there.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
