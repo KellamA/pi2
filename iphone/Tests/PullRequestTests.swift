@@ -187,7 +187,8 @@ struct PullRequestTests {
         session.start(transport, as: .demo)
         #expect(try await eventually { !session.engine.projects.isEmpty && session.engine.hasLoadedLibrary })
         guard PullRequestSamples.current == nil else { return }
-        for project in session.engine.projects {
+        // The demo's projects whose work is kept by pi²; Demo site's is on GitHub, and DemoTests open its pull request.
+        for project in session.engine.projects where project.repository == nil {
             let source = PullRequestSource(session.engine, project: project.id, number: 7, store: PullRequestStore())
             guard case .noRepository(let name) = source.state else {
                 Issue.record("a demo project's work is kept by pi², so it has no repository: \(source.state)")

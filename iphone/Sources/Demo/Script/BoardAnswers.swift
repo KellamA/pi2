@@ -5,8 +5,8 @@ import Foundation
 /// them (`engine/src/projectrules.ts`, `knowledge.ts`, `agentrequests.ts`, `worktrees.ts`): a project's rules added,
 /// changed, moved and removed; its notes added, corrected, shared and deleted; an agent's memory switch; Allow everything
 /// turned off, and refused on, as the engine refuses it from a phone (docs/iphone.md 4.2, question 5); and the branches
-/// looked at again. Each change sends its event again whole. Saving an agent's settings, making and removing agents and
-/// worktrees are not answered yet, and are refused as the demo refuses what it does not do.
+/// looked at again. Each change sends its event again whole. Saving, making and removing agents are
+/// `Script/AgentAnswers.swift`'s, and worktrees `Script/WorktreeAnswers.swift`'s.
 extension DemoScript {
     static let board: [String: DemoAnswer] = [
         "projects.rules.add": { request, world in
