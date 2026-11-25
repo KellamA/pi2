@@ -769,7 +769,8 @@ let droppedSaid = 0;
  * (`id` with `result` or `error`), and nothing else; endpoints by name only; then every string in it, the keys of its
  * objects too, masked of key shapes and of the values of the secrets the engine knows (secrets.ts) before it is
  * written again, and what is nested too deep replaced by a marker (devices.ts, `maskValue`), so that one deep call
- * does not keep a whole list from the phone. Anything that still goes wrong drops the line, but an answer, which is answered with an error, so that no request goes unanswered: a line is
+ * does not keep a whole list from the phone. Anything that still goes wrong drops the line, but an answer, which is
+ * answered with an error, so that no request goes unanswered: a line is
  * never sent unmasked, and never throws into what wrote it. It leaves nothing out by a field's name: the one answer
  * whose picture bytes go unmasked is put together by `deviceRequest` (PICTURE_ANSWERS).
  */
@@ -867,29 +868,28 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
 }
 
 /**
- * A device's request once the device is known, on either path: a live session's line (`deviceLine`) or an item from the
- * mailbox that `checkRequestItem` passed (`mailboxIn`). Checked against the device's table on its path, handled as from
- * the app, logged under the log's own rule for a device's names (#786), on disk before it is answered when it widens
- * (4.4), and the person notified of a widening request, done or tried (4.2, 4.4, 4.5). Both paths call this, so that no
- * duty is kept on one alone (#921's security read). `reply` is given the result or the refusal; the outcome is
- * returned. What throws here outside the handler's own `try` (a fault of the engine's) is the caller's to catch, with
- * `DEVICE_LINE_FAILED`'s words.
- */
-/**
  * The answers whose picture bytes a device is sent as they are, unmasked and unsearched (#956), by the request that
  * fills them, never by a field's name or by how a string looks: `conversation.image`'s `data`, which the engine takes
  * from the entry's own image block (`imagesOf`, transcript.ts) and sends only once `isPicture` (attachments.ts) finds
- * it base64 of a picture of its `mimeType`. Masking would break the picture (a run of base64 can look like a key) and
- * would hide nothing a person reads: a picture shows a key as pixels, if it shows one, and no mask ever looked at those.
+ * it base64 of a picture of its `mimeType`, one of PICTURE_TYPES. Masking would break the picture (a run of base64
+ * can look like a key) and would hide nothing a person reads: a picture shows a key as pixels, if it shows one, and no
+ * mask ever looked at those.
  */
 export const PICTURE_ANSWERS: ReadonlySet<string> = new Set(["conversation.image"]);
+
+/**
+ * The picture types whose bytes go to a device unmasked, fixed here on the owner's path: a type that attachments.ts
+ * takes later (one that is text, such as SVG) reaches the exemption only by a change to this list.
+ */
+export const PICTURE_TYPES: ReadonlySet<string> = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 /** `result` as `conversation.image` answers it, `{ data, mimeType }` and nothing else, with bytes of a picture of that type; else undefined. */
 export function pictureAnswer(result: unknown): { data: string; mimeType: string } | undefined {
 	if (typeof result !== "object" || result === null || Array.isArray(result)) return undefined;
 	const fields = result as Record<string, unknown>;
 	const keys = Object.keys(fields).sort();
-	if (keys.length !== 2 || keys[0] !== "data" || keys[1] !== "mimeType" || !isPicture(fields.mimeType, fields.data)) return undefined;
+	if (keys.length !== 2 || keys[0] !== "data" || keys[1] !== "mimeType") return undefined;
+	if (typeof fields.mimeType !== "string" || !PICTURE_TYPES.has(fields.mimeType) || !isPicture(fields.mimeType, fields.data)) return undefined;
 	return { data: fields.data as string, mimeType: fields.mimeType as string };
 }
 
@@ -900,6 +900,15 @@ function withPicture(out: string, data: string): string {
 	return JSON.stringify({ ...answer, result: { ...answer.result, data } });
 }
 
+/**
+ * A device's request once the device is known, on either path: a live session's line (`deviceLine`) or an item from the
+ * mailbox that `checkRequestItem` passed (`mailboxIn`). Checked against the device's table on its path, handled as from
+ * the app, logged under the log's own rule for a device's names (#786), on disk before it is answered when it widens
+ * (4.4), and the person notified of a widening request, done or tried (4.2, 4.4, 4.5). Both paths call this, so that no
+ * duty is kept on one alone (#921's security read). `reply` is given the result or the refusal; the outcome is
+ * returned. What throws here outside the handler's own `try` (a fault of the engine's) is the caller's to catch, with
+ * `DEVICE_LINE_FAILED`'s words.
+ */
 async function deviceRequest(device: Device, path: DevicePath, client: Client, method: string, params: Params, reply: (body: Record<string, unknown>, picture?: string) => void): Promise<"done" | "failed" | "refused"> {
 	const gate = { path, approvalSwitch, approvalHidden };
 	const answer = deviceMay(method, params as Params, gate);

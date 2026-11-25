@@ -482,6 +482,16 @@ export const KEY_HIDDEN = "[key hidden]";
  * the run they cover together is replaced once, by the mark of the one that starts first.
  */
 export function maskKeys(text: string): string {
+	return maskKeysFrom(text, 0);
+}
+
+/**
+ * `text` from character `from` on, masked as `maskKeys` masks the whole of it: what is hidden is found in the whole text
+ * and only then cut, so that a key or a value that begins before `from` is hidden in the part after it too (a
+ * background command's output read from an offset a phone chooses, #894). A run hidden across `from` starts the part
+ * with its mark.
+ */
+export function maskKeysFrom(text: string, from: number): string {
 	const spans: [number, number, string][] = [];
 	for (const { start, run, least, keep } of KEY_SHAPES) {
 		start.lastIndex = 0;
@@ -518,15 +528,22 @@ export function maskKeys(text: string): string {
 		PEM_BEGIN.lastIndex = end;
 	}
 	for (const [from, to] of secretSpans(text)) spans.push([from, to, SECRET_HIDDEN]);
-	if (spans.length === 0) return text;
+	if (spans.length === 0) return from === 0 ? text : text.slice(from);
 	// By where each starts; a key's shape before a known value at the same place (`sort` keeps the order of equals).
 	spans.sort((a, b) => a[0] - b[0]);
+	// Runs that overlap made one, marked as the first; runs that only touch keep a mark each.
+	const runs: [number, number, string][] = [];
+	for (const [start, end, mark] of spans) {
+		const last = runs[runs.length - 1];
+		if (last !== undefined && start < last[1]) last[1] = Math.max(last[1], end);
+		else runs.push([start, end, mark]);
+	}
 	let out = "";
-	let at = 0;
-	for (const [from, to, mark] of spans) {
-		if (to <= at) continue;
-		if (from >= at) out += text.slice(at, from) + mark;
-		at = to;
+	let at = from;
+	for (const [start, end, mark] of runs) {
+		if (end <= from) continue;
+		out += (start < from ? "" : text.slice(at, start)) + mark;
+		at = end;
 	}
 	return out + text.slice(at);
 }

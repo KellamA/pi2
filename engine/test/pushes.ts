@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { forDevice } from "../src/remote.ts";
 import { APPROVAL_DEPTH, hidesSomething, KEY_HIDDEN, PART_HIDDEN, TOO_DEEP } from "../src/devices.ts";
 import type { NeedItem } from "../src/needs.ts";
-import { forgetSecrets, knowSecrets, SECRET_HIDDEN } from "../src/secrets.ts";
+import { forgetEverySecret, forgetSecrets, knowSecrets, SECRET_HIDDEN } from "../src/secrets.ts";
 import {
 	ACTIVITY_EVERY_MS,
 	type AlertBody,
@@ -342,8 +342,11 @@ const alerts = (pushes: Push[]) => pushes.filter((push): push is Extract<Push, {
 	knowSecrets("variables/forge", [rotated]);
 	const after = needAlert(need({ arguments: { command: `echo ${rotated}` } }), false, undefined, 5);
 	assert.deepEqual([after.body, after.partHidden, after.whole], [`bash: echo ${SECRET_HIDDEN}`, true, false]);
+	// The one it replaced, and one removed, are still masked until the engine stops (secrets.ts, RETIRED_KEPT).
 	forgetSecrets("variables/forge");
-	assert.equal(needAlert(need({ arguments: { command: `echo ${rotated}` } }), false, undefined, 5).whole, true, "one no longer known is a call like any other");
+	for (const gone of [value, rotated]) assert.equal(needAlert(need({ arguments: { command: `echo ${gone}` } }), false, undefined, 5).body, `bash: echo ${SECRET_HIDDEN}`);
+	forgetEverySecret();
+	assert.equal(needAlert(need({ arguments: { command: `echo ${rotated}` } }), false, undefined, 5).whole, true, "none known: a call like any other");
 	step("a value of a secret the engine knows is masked in an alert as on the channel, wherever it stands, and the alert marked partHidden; a new value from the moment it is known");
 }
 
