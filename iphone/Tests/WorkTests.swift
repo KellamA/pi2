@@ -146,6 +146,35 @@ struct WorkTests {
         #expect(!none.firstRead && none.items.isEmpty && none.sections(.open).isEmpty)
     }
 
+    /// Found against a copy (#694's second part): an issue's screen asked `github.show` as it opened, while the app still
+    /// showed the store's last state (refused there as "Your Mac can't be reached"), and again for every issue read over a
+    /// minute before, which the engine takes from the Mac alone ("This can be done only on the Mac, in the pi² app.").
+    /// Now it asks only on the channel, only for what the list holds briefly or not at all, and says the refusal where
+    /// the text would be.
+    @Test func anIssueIsReadWholeOnlyOnTheChannelAndOnlyWhenTheListHoldsLess() throws {
+        let ms = Date().timeIntervalSince1970 * 1000
+        let event = try json("""
+            {"projects": {"p-1": {"state": "ok", "readAt": \(ms - 3_600_000), "reading": false, "error": null,
+              "issues": [
+                {"id": 2, "title": "Whole", "text": "Read whole.", "state": "open", "takenBy": null, "notes": [], "updatedAt": \(ms)},
+                {"id": 3, "title": "Brief", "state": "done", "takenBy": null, "notes": [], "updatedAt": \(ms), "partial": true}],
+              "pulls": []}}}
+            """)
+        let listing = WorkListing.github(event, project: "p-1", repository: "example/widgets")
+        // Whole, even read an hour ago: nothing to ask.
+        #expect(!WorkItemScreen.wantsWholeRead(listing, itemID: 2, live: true))
+        // Brief, or not in the list: asked, but only on the channel.
+        #expect(WorkItemScreen.wantsWholeRead(listing, itemID: 3, live: true))
+        #expect(WorkItemScreen.wantsWholeRead(listing, itemID: 40, live: true))
+        #expect(!WorkItemScreen.wantsWholeRead(listing, itemID: 3, live: false))
+        // Nothing read yet, or the list pi² keeps: nothing to ask either.
+        #expect(!WorkItemScreen.wantsWholeRead(.github(nil, project: "p-1", repository: "example/widgets"), itemID: 3, live: true))
+        #expect(!WorkItemScreen.wantsWholeRead(.kept(try json(#"{"projects": {}}"#), project: "p-1"), itemID: 3, live: true))
+
+        #expect(WorkItemScreen.unreadWords("This can be done only on the Mac, in the pi² app.\n") ==
+            "Its text and comments were not read for this iPhone. Your Mac answered: “This can be done only on the Mac, in the pi² app.” Open it on GitHub, or on your Mac, to read them.")
+    }
+
     @Test func aChangeOnItsWayShowsAtOnce() throws {
         let item = try #require(WorkPiece(try json("""
             {"id": 4, "title": "Held", "text": "", "state": "waiting", "takenBy": {"agentId": "forge", "conversationId": 23}, "notes": []}
@@ -319,6 +348,11 @@ struct WorkTests {
         #expect(WorkTime.ago(now.addingTimeInterval(-50 * 3600), now: now) == "2 d ago")
         #expect(WorkComposer.oneLine("  Two\nlines \n") == "Two lines")
         #expect(WorkFilter.allCases.map(\.name) == ["Open", "Waiting", "Done"])
+        // Where a piece given on the Mac is worked on: its sub-chat, and the branch of the worktree made for it, on a
+        // line of its own under the tag (a branch named after the title wrapped beside it, against a copy).
+        #expect(WorkItemScreen.whereWorked(conversation: 166, branch: "work-1-widgets-wobble-on-narrow-screens")
+            == "In sub-chat 166, on work-1-widgets-wobble-on-narrow-screens")
+        #expect(WorkItemScreen.whereWorked(conversation: 17, branch: nil) == "In sub-chat 17")
     }
 }
 
