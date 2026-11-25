@@ -246,6 +246,17 @@ struct ConversationTests {
         #expect(params["index"] as? Int == 1)
     }
 
+    // MARK: The launch value that presses the screen's controls (debug builds)
+
+    @Test func debugActsAreReadInOrder() {
+        #expect(ConversationDebugAct.parse("send:Hello: there|queue:Later|steer:Now|take-back|stop|continue|restore|older|open-picture") == [
+            .send("Hello: there"), .queue("Later"), .steer("Now"), .takeBack, .stop, .carryOn, .restore, .older, .openPicture,
+        ])
+        #expect(ConversationDebugAct.parse("pictures:2:Two of them|pictures:1") == [.pictures(count: 2, text: "Two of them"), .pictures(count: 1, text: "")])
+        // What it cannot do is left out, rather than guessed at.
+        #expect(ConversationDebugAct.parse("pictures:11|pictures:0|send:|jump|") == [])
+    }
+
     // MARK: Pictures
 
     @Test func aLargePhotoIsMadeSmallEnough() throws {
@@ -271,6 +282,39 @@ struct ConversationTests {
     }
 
     // MARK: The page (docs/iphone.md section 8)
+
+    /// Against a copy (#687), a conversation at rest kept the screen's loading line under its page: the page was ready
+    /// before the conversation's state came, that state changed nothing the page draws, so the bridge said the page was
+    /// shown from inside `show`, which SwiftUI calls while it updates the view and where it drops a change to the
+    /// screen's state. It says so after `show` has returned.
+    @Test func thePageIsSaidToBeShownOutsideTheViewsUpdate() async throws {
+        let folder = try #require(TranscriptPage.folder)
+        let items = try decode([Item].self, #"[{"id":1,"kind":"user","text":"Hello"},{"id":2,"kind":"assistant","text":"At rest."}]"#)
+        let names = TranscriptFeed.Names(conversationId: 9, agentName: "Orchestrator", mcp: [:], agents: [], apps: [:])
+        let bridge = ConversationPageBridge()
+        var shown = false
+        bridge.onShown = { shown = true }
+        let view = bridge.makeView(folder: folder)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 852))
+        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene { window.windowScene = scene }
+        view.frame = window.bounds
+        window.addSubview(view)
+        window.isHidden = false
+        defer {
+            view.close()
+            window.isHidden = true
+        }
+        // The entries come first, with no state yet; the page gets them once it is ready.
+        bridge.show(ConversationPageContent(conversationID: 9, items: items, earlier: 0, state: nil, names: names))
+        try #require(try await eventually(Self.patience) { view.isReady }, "the page never said it was ready")
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(!shown, "no state yet")
+        // Then the state, at rest: nothing new for the page.
+        bridge.show(ConversationPageContent(conversationID: 9, items: items, earlier: 0, state: try state(""), names: names))
+        #expect(!shown, "said during show")
+        #expect(try await eventually { shown })
+        #expect(view.alpha == 1)
+    }
 
     /// The page is in this build's bundle, and once it has drawn a conversation holding addresses, pictures and markup
     /// that point at the network, it has loaded nothing but its own files: no picture, no fetch, no navigation. A
