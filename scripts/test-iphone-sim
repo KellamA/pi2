@@ -74,9 +74,14 @@ io) for last in "$@"; do :; done; echo png >"$last" ;;
 *) echo "stand-in xcrun: no simctl $1" >&2; exit 1 ;;
 esac
 EOF
+# xcodebuild says what $T/xcodebuild-says holds, if there is one, as a test run's output, and ends with the status in
+# $T/xcodebuild-status, if there is one.
 cat >"$T/bin/xcodebuild" <<'EOF'
 #!/bin/bash
 { printf 'xcodebuild'; printf ' %q' "$@"; echo; } >>"$LOG"
+here=$(dirname "$LOG")
+[[ ! -f $here/xcodebuild-says ]] || cat "$here/xcodebuild-says"
+exit "$(cat "$here/xcodebuild-status" 2>/dev/null || echo 0)"
 EOF
 cat >"$T/bin/nice" <<'EOF'
 #!/bin/bash
@@ -248,6 +253,151 @@ run "test with an option not listed" test pi2-1 -- -enableCodeCoverage YES
 expect_refused "-enableCodeCoverage is not an option build and test take"
 run "build with an unknown option" build pi2-1 --sign
 expect_refused "build takes --release, --derived-data"
+run "test with an unknown option" test pi2-1 --sign
+expect_refused "test takes --derived-data, --repeat N, --until-failure"
+
+# test --repeat: reading the options. Nothing is run when they are refused.
+for times in 0 -3 abc 1001 3.5 01; do
+	run "test --repeat $times" test pi2-1 --repeat "$times"
+	expect_refused "--repeat takes a number of times from 1 to 1000, not '$times'"
+done
+run "test --repeat with no number" test pi2-1 --repeat
+expect_refused "--repeat needs a number of times"
+run "test --until-failure alone" test pi2-1 --until-failure
+expect_refused "--until-failure needs --repeat N"
+run "build --repeat" build pi2-1 --repeat 3
+expect_refused "--repeat is test's"
+run "build --until-failure" build pi2-1 --until-failure
+expect_refused "--until-failure is test's"
+run "test --repeat with -quiet" test pi2-1 --repeat 3 -- -quiet
+expect_refused "which -quiet leaves out"
+for option in -test-iterations -run-tests-until-failure -retry-tests-on-failure; do
+	run "test with $option after --" test pi2-1 -- "$option"
+	expect_refused "$option is not taken after --: test --repeat N"
+done
+
+# test --repeat: what it passes xcodebuild, and the line it ends with, read from a saved log of a run like the one
+# #909 made (Swift Testing, each test repeated by itself), with the same symbols.
+cat >"$T/xcodebuild-says" <<'EOF'
+Test Suite 'Selected tests' started at 2026-11-24 16:33:52.173.
+Test Suite 'pi2Tests.xctest' started at 2026-11-24 16:33:52.174.
+Test Suite 'pi2Tests.xctest' passed at 2026-11-24 16:33:52.174.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+◇ Test run started.
+↳ Testing Library Version: 2403
+◇ Suite Flaky909Tests started.
+◇ Test coinToss() started.
+◇ Test coinToss() started (repetition 2).
+◇ Test coinToss() started (repetition 3).
+✘ Test coinToss() recorded an issue at Flaky909Tests.swift:6:9: Expectation failed: Bool.random()
+↳ Bool.random() → false
+✘ Test coinToss() failed after 0.009 seconds with 1 issue.
+◇ Test "one in three" started.
+✘ Test "one in three" recorded an issue at Flaky909Tests.swift:10:9: Expectation failed: Int.random(in: 0..<3) != 0
+◇ Test "one in three" started (repetition 2).
+◇ Test "one in three" started (repetition 3).
+✘ Test "one in three" recorded an issue at Flaky909Tests.swift:10:9: Expectation failed: Int.random(in: 0..<3) != 0
+✘ Test "one in three" recorded an issue at Flaky909Tests.swift:11:9: Expectation failed: Test alwaysPasses() started.
+✘ Test "one in three" failed after 0.002 seconds with 2 issues.
+◇ Test alwaysPasses() started.
+◇ Test alwaysPasses() started (repetition 2).
+◇ Test alwaysPasses() started (repetition 3).
+✔ Test alwaysPasses() passed after 0.002 seconds.
+✘ Suite Flaky909Tests failed after 0.015 seconds with 2 issues.
+✘ Test run with 3 tests in 1 suite failed after 0.019 seconds with 2 issues.
+Test session results, code coverage, and logs:
+	/tmp/Test-pi2.xcresult
+
+Failing tests:
+	Flaky909Tests.coinToss()
+	Flaky909Tests."one in three"
+
+** TEST FAILED **
+EOF
+echo 65 >"$T/xcodebuild-status"
+run "test --repeat 3" test pi2-1 --repeat 3 -- -only-testing:pi2Tests/Flaky909Tests
+expect_status 65
+expect_log "-only-testing:pi2Tests/Flaky909Tests -test-iterations 3 CODE_SIGNING_ALLOWED=NO"
+expect_no_log "-run-tests-until-failure"
+summary="iphone-sim: 3 iterations of 3 tests: 1 passed, 2 failed; failed: Flaky909Tests.coinToss() 1 of 3, Flaky909Tests.\"one in three\" 2 of 3"
+[[ $(tail -n 1 "$T/out") == "$summary" ]] || fail "the last line is not: $summary"
+expect_out "✔ Test alwaysPasses() passed after 0.002 seconds."
+cmp -s "$T/xcodebuild-says" "$T/scratch/iphone-build/Logs/iphone-sim-test-repeat.log" ||
+	fail "the whole output was not kept in the derived data's Logs"
+
+# --until-failure: each test stops at its first failure, so their counts differ.
+cat >"$T/xcodebuild-says" <<'EOF'
+◇ Test run started.
+◇ Suite Flaky909Tests started.
+◇ Test coinToss() started.
+✘ Test coinToss() recorded an issue at Flaky909Tests.swift:6:9: Expectation failed: Bool.random()
+✘ Test coinToss() failed after 0.008 seconds with 1 issue.
+◇ Test alwaysPasses() started.
+◇ Test alwaysPasses() started (repetition 2).
+◇ Test alwaysPasses() started (repetition 3).
+◇ Test alwaysPasses() started (repetition 4).
+✔ Test alwaysPasses() passed after 0.001 seconds.
+◇ Test oneInThree() started.
+◇ Test oneInThree() started (repetition 2).
+✘ Test oneInThree() recorded an issue at Flaky909Tests.swift:10:9: Expectation failed: Int.random(in: 0..<3) != 0
+✘ Test oneInThree() failed after 0.003 seconds with 1 issue.
+✘ Test run with 3 tests in 1 suite failed after 0.017 seconds with 2 issues.
+Failing tests:
+	Flaky909Tests.coinToss()
+	Flaky909Tests.oneInThree()
+	OtherTests.oneInThree()
+** TEST FAILED **
+EOF
+run "test --repeat 4 --until-failure" test pi2-1 --until-failure --repeat 4
+expect_status 65
+expect_log "-test-iterations 4 -run-tests-until-failure CODE_SIGNING_ALLOWED=NO"
+summary="iphone-sim: 4 iterations of 3 tests: 2 passed, 2 failed; failed: Flaky909Tests.coinToss() 1 of 1, oneInThree() 1 of 2"
+[[ $(tail -n 1 "$T/out") == "$summary" ]] || fail "the last line is not: $summary"
+
+# Every run passed.
+cat >"$T/xcodebuild-says" <<'EOF'
+◇ Test run started.
+◇ Test jsonValueKeepsEveryKind() started.
+◇ Test jsonValueKeepsEveryKind() started (repetition 2).
+✔ Test jsonValueKeepsEveryKind() passed after 0.001 seconds.
+✔ Test run with 1 test in 1 suite passed after 0.002 seconds.
+** TEST SUCCEEDED **
+EOF
+echo 0 >"$T/xcodebuild-status"
+run "test --repeat 2, passing" test pi2-1 --repeat 2 -- '-only-testing:pi2Tests/PiModelsOnIOSTests/jsonValueKeepsEveryKind()'
+expect_status 0
+[[ $(tail -n 1 "$T/out") == "iphone-sim: 2 iterations of 1 test: 2 passed, 0 failed" ]] || fail "no line saying both passed"
+
+# XCTest's runs, which say how each one ended.
+cat >"$T/xcodebuild-says" <<'EOF'
+Test Suite 'Selected tests' started at 2026-11-24 16:33:52.173.
+Test Case '-[pi2Tests.OldTests testOne]' started.
+Test Case '-[pi2Tests.OldTests testOne]' passed (0.001 seconds).
+Test Case '-[pi2Tests.OldTests testTwo]' started.
+Test Case '-[pi2Tests.OldTests testTwo]' failed (0.002 seconds).
+Test Case '-[pi2Tests.OldTests testOne]' started.
+Test Case '-[pi2Tests.OldTests testOne]' passed (0.001 seconds).
+Test Case '-[pi2Tests.OldTests testTwo]' started.
+Test Case '-[pi2Tests.OldTests testTwo]' passed (0.001 seconds).
+EOF
+echo 65 >"$T/xcodebuild-status"
+run "test --repeat 2, XCTest" test pi2-1 --repeat 2
+expect_status 65
+[[ $(tail -n 1 "$T/out") == "iphone-sim: 2 iterations of 2 tests: 1 passed, 1 failed; failed: OldTests.testTwo 1 of 2" ]] ||
+	fail "no line for XCTest's runs"
+
+# No test ran: a Swift Testing test named without its ().
+cat >"$T/xcodebuild-says" <<'EOF'
+◇ Test run started.
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.
+** TEST SUCCEEDED **
+EOF
+echo 0 >"$T/xcodebuild-status"
+run "test --repeat with no test run" test pi2-1 --repeat 5 -- -only-testing:pi2Tests/PiModelsOnIOSTests/jsonValueKeepsEveryKind
+expect_status 0
+grep -qF "no test ran, so nothing was repeated" <(tail -n 1 "$T/out") || fail "no line saying no test ran"
+grep -qF "a single Swift Testing test needs () after its name" "$T/out" || fail "no word on ()"
+rm "$T/xcodebuild-says" "$T/xcodebuild-status"
 
 # run.
 run "run before a build" run pi2-1
