@@ -288,7 +288,6 @@ private struct PresentationBar: View {
                 .buttonStyle(BarButtonStyle())
                 .help("Draw the page again from its copy (⌘R)")
                 .accessibilityLabel("Reload")
-            network
         }
     }
 
@@ -365,12 +364,13 @@ private struct PresentationNamesChip: View {
     var body: some View {
         HStack(spacing: 6) {
             AgentAvatar(agent: agent, size: 18)
-            name(names.agent, width: 160)
+            // Each already cut to its own length; with too little room, the conversation's gives way first.
+            name(names.agent).layoutPriority(2)
             separator
-            name(names.conversation, width: 260)
+            name(names.conversation)
             if let project = names.project {
                 separator
-                name(project, width: 180)
+                name(project)
             }
         }
         .font(.system(size: 12))
@@ -385,10 +385,8 @@ private struct PresentationNamesChip: View {
         Text(verbatim: "/").foregroundStyle(Theme.tx3)
     }
 
-    private func name(_ text: String, width: CGFloat) -> some View {
+    private func name(_ text: String) -> some View {
         Text(verbatim: text).foregroundStyle(Theme.tx2).lineLimit(1).truncationMode(.middle)
-            .frame(maxWidth: width, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
     }
 }
 

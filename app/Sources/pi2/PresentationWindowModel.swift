@@ -326,7 +326,18 @@ final class PresentationWindowModel {
                 self.pageView = view
                 self.pagePlace = place
                 #if PI2_DEVELOPMENT
-                self.note("presentation window: page process \(Self.process(of: view)) shown, \(PresentedProcesses.shared.taken) places taken")
+                // Its process is started as it loads: said once it has one.
+                Task { [weak self, weak view] in
+                    for _ in 0..<100 {
+                        guard let view, let self else { return }
+                        let pid = Self.process(of: view)
+                        if pid != "0" {
+                            self.note("presentation window: page process \(pid) shown, \(PresentedProcesses.shared.taken) places taken")
+                            return
+                        }
+                        try? await Task.sleep(for: .milliseconds(100))
+                    }
+                }
                 #endif
             } catch {
                 place.release()

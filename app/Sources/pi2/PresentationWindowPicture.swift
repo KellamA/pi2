@@ -54,20 +54,11 @@ enum PresentedPicture {
         let smaller = !full && pixels.width * pixels.height > CGFloat(largest)
         let made = smaller ? thumbnail(source, longest: Self.smaller)
             : CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
-        // Within the bound, drawn once into pixels of its own here, off the main thread, so that it is decoded now (ImageIO
-        // may otherwise decode it as it is first drawn, on the main thread) and kept at exactly its size. A picture larger
-        // than that, asked for at 100%, is left to be decoded as it is drawn: a copy here would hold it twice at once.
-        let large = pixels.width * pixels.height > CGFloat(largest)
-        guard let made, let image = large && !smaller ? made : decoded(made) else { return nil }
+        // Decoded now, off the main thread (`kCGImageSourceShouldCacheImmediately`), so that it is not decoded again as
+        // it is first drawn. Not drawn again into a context of its own: a copy made so and shown in an image view was
+        // measured kept for good, 64 MB a time, as each next picture was shown.
+        guard let image = made else { return nil }
         return Decoded(image: image, pixels: pixels, smaller: smaller, animated: !smaller && mimeType == "image/gif" && CGImageSourceGetCount(source) > 1)
-    }
-
-    /// An image drawn into a bitmap of its own size: its pixels decoded once, now.
-    private static func decoded(_ image: CGImage) -> CGImage? {
-        guard let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: 0,
-                                      space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
-        return context.makeImage()
     }
 
     /// A small picture of the item, `longest` pixels on its longest side at most: for raster bytes by ImageIO, for an SVG
