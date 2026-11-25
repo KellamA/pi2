@@ -60,17 +60,6 @@ extension DemoScript {
         "background.output": { _, _ in
             throw DemoRefusal("pi² no longer has this command's output. While its engine runs, it keeps the output of the commands running and of the last 50 that ended.")
         },
-        // A text file a conversation links to (`folders.ts`, `previewFile`). The recording's answers link to no file, and the
-        // demo has no files to read, so it refuses as the engine refuses a path the conversation does not link to.
-        "files.preview": { request, world in
-            let id = request.int("id") ?? -1
-            guard let conversation = world.conversations[id] else { throw DemoRefusal("Unknown conversation: \(request.params["id"] ?? "undefined")") }
-            guard request.params["path"] is String else { throw DemoRefusal("That is not the path of a file on the Mac.") }
-            guard (conversation.state["agent"] as? [String: Any])?["cwd"] is String else {
-                throw DemoRefusal("This conversation has no folder, so none of its files is shown on the phone.")
-            }
-            throw DemoRefusal("The conversation does not link to that file. Only a file its agent's answers link to is shown on the phone.")
-        },
         "background.stop": { _, _ in
             throw DemoRefusal("That command is no longer running")
         },
