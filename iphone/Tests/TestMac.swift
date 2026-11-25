@@ -65,6 +65,8 @@ final class TestMac: @unchecked Sendable {
         case accepted
         /// `bye` alone, as for a refusal the engine gives no word for.
         case nothing
+        /// `refused` with this reason, as pi² Remote passes on the engine's refusal of an offer.
+        case refused(Refusal.Reason)
     }
 
     struct Device {
@@ -331,6 +333,7 @@ final class TestMac: @unchecked Sendable {
             }
             try channel.presenceKeyAccepted()
         case .nothing: channel.close()
+        case let .refused(reason): try channel.refuse(reason)
         }
     }
 

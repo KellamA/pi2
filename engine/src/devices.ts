@@ -1681,6 +1681,10 @@ async function changeLogged(edit: (doc: DevicesState) => boolean, entry: Omit<De
  * device's suspension as any refused attach is, so that a phone cannot flood the Mac with offers or notices. The same
  * key offered again is answered as waiting, without a second notice; the key in use offered again is answered as
  * accepted, without counting, so that a phone can learn its key was accepted without attaching to find out.
+ *
+ * Four refusals carry the reason an attach's would (`AttachRefusal`, #891), which pi² Remote tells the phone in place of
+ * a bare end: `suspended` (only for an offer the device key signed; not counted, as before), `clock` (counted, as
+ * before), `update` (not counted, as before) and `presence` for a second key while one waits (counted, as before).
  */
 export async function offerPresenceKey(params: Params): Promise<{ waiting: true } | { accepted: true }> {
 	if (!remoteOn()) throw new Error("Reach from an iPhone is off on this Mac.");
@@ -1694,25 +1698,28 @@ export async function offerPresenceKey(params: Params): Promise<{ waiting: true 
 	const device = state.devices.find((one) => one.id === signed.device);
 	if (device === undefined) throw new Error("No such device is paired with this Mac.");
 	if (device.revokedAt !== null) throw new Error("This device was revoked on the Mac.");
-	if (device.suspendedAt !== null) throw new Error("This device is suspended. Resume it on the Mac's Devices page.");
 	const text = offer.signed as string;
+	if (device.suspendedAt !== null) {
+		const why = "This device is suspended. Resume it on the Mac's Devices page.";
+		throw signedBy(text, offer.signature, p256Key(device.deviceKey)!) ? attachRefused(why, "suspended") : new Error(why);
+	}
 	// As for an attach: nothing is counted against the device until its device key proved the offer is its own.
 	if (!signedBy(text, offer.signature, p256Key(device.deviceKey)!)) {
 		unsigned(device.id, "an offer of a Face ID key");
 		throw new Error("The offer is not signed by the device key.");
 	}
-	const refuse = async (why: string): Promise<never> => {
+	const refuse = async (why: string, reason?: AttachRefusal): Promise<never> => {
 		await refused(device, path, "presenceKey", why);
-		throw new Error(why);
+		throw reason === undefined ? new Error(why) : attachRefused(why, reason);
 	};
 	if (typeof signed.challenge !== "string" || !takeChallenge(signed.challenge)) return refuse("The offer's challenge is not one this Mac issued, or was used.");
 	if (typeof signed.pairing !== "string" || state.pairing === null || !sameText(signed.pairing, state.pairing)) return refuse("The offer is for another pairing.");
 	if (typeof signed.binding !== "string" || fromBase64url(params.binding, 32) === null || !sameText(signed.binding, params.binding as string)) {
 		return refuse("The offer was signed for another channel.");
 	}
-	if (typeof signed.at !== "number" || !Number.isSafeInteger(signed.at) || Math.abs(Date.now() - signed.at) > AT_WITHIN) return refuse("The offer's time is more than two minutes from the Mac's.");
+	if (typeof signed.at !== "number" || !Number.isSafeInteger(signed.at) || Math.abs(Date.now() - signed.at) > AT_WITHIN) return refuse("The offer's time is more than two minutes from the Mac's.", "clock");
 	if (!buildText(signed.build)) return refuse("The offer names no build.");
-	if (!buildAtLeast(signed.build, MINIMUM_PHONE_BUILD)) throw new Error("This build of pi² for iPhone is too old for this Mac. Update it.");
+	if (!buildAtLeast(signed.build, MINIMUM_PHONE_BUILD)) throw attachRefused("This build of pi² for iPhone is too old for this Mac. Update it.", "update");
 	const build = signed.build;
 	const offered = signed.presenceKey;
 	const key = p256Key(offered);
@@ -1722,7 +1729,7 @@ export async function offerPresenceKey(params: Params): Promise<{ waiting: true 
 	if (device.presenceKey !== null && sameText(offered, device.presenceKey)) return { accepted: true };
 	if (device.pendingPresenceKey !== null) {
 		if (sameText(offered, device.pendingPresenceKey)) return { waiting: true };
-		return refuse(PRESENCE_KEY_ALREADY_WAITS);
+		return refuse(PRESENCE_KEY_ALREADY_WAITS, "presence");
 	}
 	const taken = await changeLogged(
 		(doc) => {
@@ -1739,7 +1746,7 @@ export async function offerPresenceKey(params: Params): Promise<{ waiting: true 
 		},
 		{ device: device.id, path, method: "presenceKey" },
 	);
-	if (!taken) return refuse(PRESENCE_KEY_ALREADY_WAITS);
+	if (!taken) return refuse(PRESENCE_KEY_ALREADY_WAITS, "presence");
 	notify("presenceKey", device.id, `Face ID was set up again on ${device.name}. Accept the new key in Settings › Devices only if you did it yourself.`);
 	return { waiting: true };
 }

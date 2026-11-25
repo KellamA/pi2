@@ -693,9 +693,10 @@ enum Flows {
 
 		// First, on this pi² Remote just started, whose limits on first messages and handshakes no earlier step has used.
 		engineRefusals(engine: engine, mac: mac, home: home)
+		// Each of these uses most of the twenty first messages a minute a start takes from 127.0.0.1: each step after begins
+		// on a start of its own, with no device listed, as it would have.
+		crashAndStart(listing: [])
 		presenceKeyOffers(engine: engine, mac: mac, home: home)
-		// The two used 17 of the twenty first messages a minute this start takes from 127.0.0.1: the steps below begin on a
-		// start of their own, with no device listed, as they would have.
 		crashAndStart(listing: [])
 
 		Check.section("a first pairing whose home key cannot be kept (S2)")
@@ -1014,6 +1015,28 @@ enum Flows {
 		Check.expect(keptPresenceKey(home, device) == .some(newKey.publicKey.derRepresentation) && keptPresenceKey(home, other) == .some(nil) && Set(listed(home)) == [device.text, other.text],
 		             "the first device keeps its key; the other has none on the list; no device was added")
 		refusedAfterEngine(attachTaken(other, otherKeys, presence: otherKeys.presence, session: "s_other"), session: "s_other", "the other device, whose new key could not be read")
+
+		// The engine's refusals of an offer carry the reasons an attach's do (#891): each is told the phone, never the words.
+		for reason in [Refusal.Reason.update, .suspended, .presence, .clock] {
+			guard let phone = Phone(port: mac.port), let challenge = beginAttach(phone, engine, mac: mac, device: other, keys: otherKeys) else {
+				Check.expect(false, "an offer begins for the engine's \(reason.rawValue)")
+				continue
+			}
+			let made = try! PresenceKeyOffer.make(
+				pairing: mac.pairing, device: other, binding: phone.channel!.handshakeHash, challenge: challenge, build: otherKeys.build, deviceKey: otherKeys.device,
+				offeredKey: P256.Signing.PrivateKey())
+			phone.sendLine(ControlLine.presenceKey(made).line)
+			guard let request = engine.request("remote.presenceKey") else {
+				Check.expect(false, "the offer reaches the engine for its \(reason.rawValue)")
+				continue
+			}
+			engine.refuse(request.id, "Words of the engine's the phone never reads.", data: .object([("reason", .string(reason.rawValue))]))
+			if case let .refused(refusal)? = lastLine(phone) {
+				Check.expect(refusal.reason == reason, "an offer the engine refuses \(reason.rawValue) is told refused \(reason.rawValue), then bye")
+			} else {
+				Check.expect(false, "an offer the engine refuses \(reason.rawValue) is told refused \(reason.rawValue)")
+			}
+		}
 
 		for one in [device, other] { engine.event("revoke", [("device", .string(one.text))]) }
 		let revokedBy = Date().addingTimeInterval(10)

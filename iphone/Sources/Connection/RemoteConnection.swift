@@ -464,7 +464,7 @@ enum ConnectionProblem: Equatable, Sendable {
         case .presenceKeyWaits:
             "Face ID was set up again on this iPhone, so pi² made a new key for it and sent it to your Mac. On your Mac, accept it in pi² › Settings › Devices, only if you set up Face ID yourself. Then tap Try again here."
         case .presenceKeyNotTaken:
-            "Your Mac did not take the new key pi² made when Face ID was set up again on this iPhone. If your Mac shows another new key for this iPhone in pi² › Settings › Devices, refuse it there, then tap Try again here."
+            "Your Mac did not take the new key pi² made when Face ID was set up again on this iPhone. Make sure pi² on your Mac is open and up to date, then tap Try again here."
         case let .relaySaid(word):
             switch word {
             case "left", "removed", "not-listed", "deleted", "unknown-pairing":

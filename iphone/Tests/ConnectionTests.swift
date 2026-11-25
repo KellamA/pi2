@@ -465,6 +465,22 @@ struct ConnectionTests {
         #expect(paired.mac.state.withLock { ($0.offers.count, $0.attaches.count) } == (1, 0))
     }
 
+    /// The Mac's refusals of an offer (#891): each reason stops the phone with its own words, and it does not try again by
+    /// itself. `presence` there is a key that waits, this one or another made before it.
+    @Test(arguments: [(Refusal.Reason.update, ConnectionProblem.update), (.suspended, .suspended), (.clock, .clock), (.presence, .presenceKeyWaits)])
+    func anOfferRefusedWithAReasonIsToldItsWords(reason: Refusal.Reason, problem: ConnectionProblem) async throws {
+        let paired = try await Self.paired(TestMac.Rules(offers: .refused(reason)))
+        defer { paired.mac.stop() }
+        try #require(paired.keys.software).softwarePresence.waiting.withLock { $0 = true }
+        let connection = try Self.connection(paired)
+        connection.start()
+        defer { connection.stop() }
+        #expect(await Wait.until { connection.problem == problem })
+        #expect(connection.problem?.words.isEmpty == false)
+        try await Task.sleep(for: .seconds(1))
+        #expect(paired.mac.state.withLock { ($0.offers.count, $0.attaches.count) } == (1, 0), "one offer, no attach, no retry")
+    }
+
     @Test func aKeyThatDoesNotWaitIsNeverOffered() async throws {
         let paired = try await Self.paired()
         defer { paired.mac.stop() }
