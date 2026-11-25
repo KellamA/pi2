@@ -917,12 +917,15 @@ function withPicture(out: string, data: string): string {
  * `DEVICE_LINE_FAILED`'s words.
  */
 async function deviceRequest(device: Device, path: DevicePath, client: Client, method: string, params: Params, reply: (body: Record<string, unknown>, picture?: string) => void): Promise<"done" | "failed" | "refused"> {
-	// A typed text over 1 MB first (#924), measured in place: nothing below reads or copies it before it is refused.
+	// A typed text over 1 MB first (#924), and any other text over its bound (#940), measured in place: nothing below
+	// reads or copies it before it is refused.
 	const tooLong = typedRefusal(method, params as Params);
 	const gate = { path, approvalSwitch, approvalHidden };
 	const answer = tooLong === null ? deviceMay(method, params as Params, gate) : "no";
 	// The log's own names (a pairing, an offer of a Face ID key) are the engine's to write: a device's are "unknown" (#786).
-	const summary = summarize(requestLogged(method), params as Params);
+	// A request refused for its text is summarized by its method alone: a summary reads the title, path or folder it
+	// names, which would clean and mask the whole of what was refused (#940's security read).
+	const summary = tooLong === null ? summarize(requestLogged(method), params as Params) : `${requestLogged(method)}: refused for the text it carries`;
 	const record = (outcome: "done" | "refused" | "failed", why?: string) =>
 		void logDevice({ device: device.id, path, method: requestLogged(method), summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }).catch((error) =>
 			log("devices: the log could not be written:", error instanceof Error ? error.message : error),

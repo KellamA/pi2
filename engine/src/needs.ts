@@ -31,6 +31,7 @@ import { type AgentProfile, type InboxItem, Library, type Meta, runsAs } from ".
 import { chatIdOf } from "./versions.ts";
 import { arrivedIn, arriveIn } from "./wakes.ts";
 import { answerGoesTo } from "./orchestrator.ts";
+import { repeated } from "./requests.ts";
 
 // ---- What is stored (3.9)
 
@@ -258,7 +259,7 @@ function words(value: unknown, field: string): string {
 export function checkAnswer(given: unknown): NeedAnswer {
 	if (!isObject(given)) throw new Error("answer must be an object with a kind");
 	const kind = given.kind as NeedItem["kind"];
-	if (!KINDS.includes(kind)) throw new Error(`Unknown kind of answer: ${String(given.kind)}`);
+	if (!KINDS.includes(kind)) throw new Error(`Unknown kind of answer: ${repeated(given.kind)}`);
 	const flag = (field: string) => {
 		if (typeof given[field] !== "boolean") throw new Error(`${field} must be true or false`);
 		return given[field] as boolean;
@@ -326,7 +327,7 @@ function inboxAnswer(item: InboxItem, answer: NeedAnswer): string {
 function checkStored(need: StoredNeed, answer: NeedAnswer): void {
 	if (answer.kind !== need.kind) throw new Error(`This is ${NAMED[need.kind]}, not ${NAMED[answer.kind]}`);
 	if (need.kind === "decision" && answer.kind === "decision") {
-		if ("choice" in answer && !need.choices.some((choice) => choice.id === answer.choice)) throw new Error(`There is no choice ${answer.choice} in this decision`);
+		if ("choice" in answer && !need.choices.some((choice) => choice.id === answer.choice)) throw new Error(`There is no choice ${repeated(answer.choice)} in this decision`);
 		if ("text" in answer && !need.words) throw new Error("This decision takes one of its choices, not an answer in words");
 	}
 }
