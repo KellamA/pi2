@@ -1952,6 +1952,34 @@ try {
 		step("a picture whose base64 holds a key-shaped run comes back to the phone byte for byte from conversation.image, as to the Mac's app; the same run typed is still masked");
 	}
 
+	// ---- A presented picture whose base64 holds a key-shaped run comes to the phone whole too (#946, PICTURE_ANSWERS)
+	{
+		// A PNG's signature and header (33 bytes) and three more, so that what follows starts a base64 group of its own.
+		const header = Buffer.concat([Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"), Buffer.from([0, 0, 0, 8, 0, 0, 0, 8, 8, 2, 0, 0, 0]), Buffer.alloc(4), Buffer.alloc(3)]);
+		const bytes = Buffer.concat([header, Buffer.from(pad(AIZA_RUN), "base64"), randomBytes(3000)]);
+		const data = bytes.toString("base64");
+		assert.ok(data.includes(pad(AIZA_RUN)), "the run is in the picture's base64");
+		const file = join(work, "presented-noise.png");
+		writeFileSync(file, bytes);
+		const { id: shown } = await app.call("conversation.create", { agentId: "forge" });
+		await app.call("conversation.open", { id: shown });
+		const tools = () => app.conversations.get(shown)?.items.filter((item: any) => item.kind === "tool" && item.name === "present") ?? [];
+		await app.call("submit", { id: shown, text: `/tool present ${JSON.stringify({ title: "Noise", items: [{ path: file, caption: `caption ${AIZA_RUN}` }] })}` });
+		const result = await app.until("the presentation", () => tools()[0]);
+		assert.equal(result.isError, false, result.text);
+		const picture = { id: shown, presentation: "p1", version: 1, item: 0 };
+		const before = remote.sessionLines.get(session)!.length;
+		const got = await ask("presented.picture", picture);
+		assert.equal(got.result.mimeType, "image/png");
+		assert.ok(got.result.data === data, `byte for byte: ${got.result.data.length} characters of ${data.length}`);
+		assert.deepEqual(await app.call("presented.picture", picture), { mimeType: "image/png", data }, "as the Mac's app gets it");
+		// What is not such a picture is masked as any answer: the item's caption, in what the phone is sent of the call.
+		await ask("conversation.open", { id: shown });
+		const line = await until("the presentation in the phone's transcript", () => remote.sessionLines.get(session)!.slice(before).find((one) => one.event === "conversation" && one.id === shown && JSON.stringify(one).includes("caption ")));
+		assert.ok(JSON.stringify(line).includes(`caption ${KEY_HIDDEN}`) && !JSON.stringify(line).includes(AIZA_RUN), "the caption's run is masked");
+		step("a presented picture whose base64 holds a key-shaped run comes to the phone byte for byte from presented.picture, as to the Mac's app; its caption's run is masked");
+	}
+
 	// ---- A phone's typed text over 64 MiB (#919): taken, its echo never written to pi² Remote, which takes 64 MiB at most
 	{
 		// Another device's session beside it, which must not notice.
