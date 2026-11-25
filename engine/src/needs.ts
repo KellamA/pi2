@@ -146,8 +146,13 @@ export type NeedAnswer =
 
 export type StoredKind = StoredNeed["kind"];
 
-/** What a kind's handler may ask of `claim`: keep the item waiting (as it changed it), and do something once stored. */
-export type AnswerOutcome = { keep?: true; after?: () => Promise<void> };
+/**
+ * What a kind's handler may ask of `claim`: keep the item waiting (as it changed it), and do something once stored.
+ * `held`: a limit card's start was held again, on this new reading, and the card is kept with it (#953).
+ */
+export type AnswerOutcome = { keep?: true; after?: () => Promise<void>; held?: LimitReading };
+/** What `needs.answer` answers: nothing, or that the start the card holds was held again, and on which reading. */
+export type AnswerResult = Record<string, never> | { held: true; limit: LimitReading };
 
 /**
  * What a kind's answer does (3.9): run inside the commit that takes the item off the list, so the answer and its effect
@@ -334,16 +339,16 @@ function checkStored(need: StoredNeed, answer: NeedAnswer): void {
  * An approval or `ask_user` question answers the call that waits on it, as `inbox.decide` and `inbox.answer` did. A
  * stored need is taken in one commit with what its kind's handler (`onAnswer`) does.
  */
-export async function claim(id: string, answer: NeedAnswer): Promise<void> {
+export async function claim(id: string, answer: NeedAnswer): Promise<AnswerResult> {
 	if (wired === undefined || running === undefined) throw new Error("Needs you is not running");
 	if (wired.inbox.get(id) !== undefined) {
 		if (wired.inbox.take(id, (item) => inboxAnswer(item, answer)) === undefined) throw new Error(GONE);
-		return;
+		return {};
 	}
 	const seen = current.items[id];
 	if (seen === undefined) throw new Error(GONE);
 	const engine = running;
-	const after = await engine.harness().commit(async (tx) => {
+	const outcome = await engine.harness().commit(async (tx) => {
 		const doc = await needsIn(tx);
 		const need = doc.items[id];
 		if (need === undefined) throw new Error(GONE);
@@ -359,10 +364,11 @@ export async function claim(id: string, answer: NeedAnswer): Promise<void> {
 		delete doc.items[id];
 		const outcome = await handler(tx, taken as never, answer as never);
 		if (outcome?.keep === true) doc.items[id] = taken;
-		return outcome?.after;
+		return outcome;
 	}, engine.context());
 	await reload();
-	await after?.();
+	await outcome?.after?.();
+	return outcome?.held === undefined ? {} : { held: true, limit: outcome.held };
 }
 
 // ---- Questions and decisions: the answer wakes the conversation that asked
@@ -659,11 +665,13 @@ export const needs: Feature = (host, engine) => {
 				if (!liveProject(params.projectId, true)) throw new Error(`Unknown project: ${params.projectId}`);
 				return { items: needItems().filter((item) => item.projectId === params.projectId) };
 			},
-			/** `{ id, answer }`: answers an item of any kind with a `NeedAnswer`, through `claim`. */
+			/**
+			 * `{ id, answer }`: answers an item of any kind with a `NeedAnswer`, through `claim`. `{}`, or `{ held: true, limit }`
+			 * when Start Anyway found the start past a limit its card did not cover, and the card stays with that reading.
+			 */
 			"needs.answer": async (params) => {
 				if (typeof params.id !== "string") throw new Error("id must be the id of an item waiting");
-				await claim(params.id, checkAnswer(params.answer));
-				return {};
+				return await claim(params.id, checkAnswer(params.answer));
 			},
 		},
 	};

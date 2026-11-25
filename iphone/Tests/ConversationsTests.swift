@@ -393,6 +393,102 @@ struct ConversationsTests {
         #expect(try await eventually { engine.projects.first { $0.id == second }?.name == "No folder 2" })
     }
 
+    // MARK: - A file a conversation links to (files.preview)
+
+    @Test func aPreviewIsAskedForByTheLinksTextAndItsAnswerAndRefusalAreTakenAsTheEngineGivesThem() async throws {
+        let transport = ConversationsRecordingTransport(refusal: nil)
+        // The engine's answer, as `previewFile` gives it (engine/src/folders.ts): the text and its size in bytes.
+        transport.answers = ["files.preview": ["text": "# Plan\n\nStep one: read the notes.\nStep two: write the page.\n", "size": 60]]
+        let session = AppSession()
+        session.start(transport, as: .connected(.home))
+        let engine = session.engine
+        #expect(try await eventually { engine.status == .connected })
+
+        guard case .success(let file) = await ConversationsRequests.preview(engine, conversation: 146, path: "notes/plan.md") else {
+            Issue.record("The answer was not read")
+            return
+        }
+        #expect(file.size == 60)
+        #expect(file.detail == "4 lines · 60 bytes, as it is on your Mac now")
+        #expect(transport.sent.map(\.method) == ["files.preview"])
+        #expect(transport.sent[0].params["id"] as? Int == 146)
+        // The link's target as the answer wrote it: the engine makes it whole against the conversation's folder.
+        #expect(transport.sent[0].params["path"] as? String == "notes/plan.md")
+
+        // Each of the engine's refusals is said in its own words (folders.ts: OUTSIDE, NOT_LINKED, IGNORED).
+        for refusal in [
+            "That file is outside the conversation's folder once its links are followed, so it is not shown on the phone.",
+            "The conversation does not link to that file. Only a file its agent's answers link to is shown on the phone.",
+            "git ignores that file, so it is not shown on the phone: an ignored file often holds secrets, as an .env file does.",
+        ] {
+            transport.refusal = refusal
+            #expect(await ConversationsRequests.preview(engine, conversation: 146, path: "../outside.txt") == .failure(ConversationsProblem(refusal)))
+        }
+        // An answer of another shape says it could not be read, rather than showing nothing.
+        transport.refusal = nil
+        transport.answers = ["files.preview": ["contents": "x"]]
+        guard case .failure(let unread) = await ConversationsRequests.preview(engine, conversation: 146, path: "a.md") else {
+            Issue.record("An answer with no text was taken")
+            return
+        }
+        #expect(unread.message.hasPrefix("Your Mac's answer could not be read"))
+    }
+
+    @Test func aPreviewsTitleAndLineAreTheFilesNameAndSize() throws {
+        #expect(FilePreview.name(of: "notes/plan.md") == "plan.md")
+        #expect(FilePreview.name(of: "~/Documents/a b.txt") == "a b.txt")
+        #expect(FilePreview.name(of: "file:///Users/someone/site/README.md") == "README.md")
+        #expect(FilePreview.name(of: "notes/") == "notes")
+        #expect(FilePreview.name(of: "") == "File")
+        #expect(FilePreview(text: "", size: 0).detail == "0 lines · Zero KB, as it is on your Mac now")
+        #expect(FilePreview(text: "one line, no newline", size: 20).detail.hasPrefix("1 line · "))
+        let large = try decode(FilePreview.self, #"{"text": "a\nb\nc\n", "size": 244186}"#)
+        #expect(large.detail == "3 lines · 244 KB, as it is on your Mac now")
+    }
+
+    @Test func aFileLinksRouteIsReadFromTheLaunchValue() {
+        #expect(DebugLaunch.route("file:146:notes/plan.md", projects: []) == .filePreview(conversation: 146, path: "notes/plan.md"))
+        // The target keeps its own colons, as a `file:` address has.
+        #expect(DebugLaunch.route("file:9:file:///tmp/a.txt", projects: []) == .filePreview(conversation: 9, path: "file:///tmp/a.txt"))
+        #expect(DebugLaunch.route("file:146", projects: []) == nil)
+        #expect(DebugLaunch.route("file:x:a.md", projects: []) == nil)
+        #expect(DebugLaunch.route("file:146:", projects: []) == nil)
+    }
+
+    @Test func theDemoRefusesAFileNoAnswerLinksToAsTheEngineDoes() async throws {
+        let transport = try #require(DemoTransport.recorded())
+        transport.world.pace = 0.02
+        let session = AppSession()
+        session.start(transport, as: .demo)
+        let engine = session.engine
+        #expect(try await eventually { engine.hasLoadedLibrary })
+        let conversation = try #require(engine.conversations.first?.id)
+        #expect(await ConversationsRequests.preview(engine, conversation: conversation, path: "notes/plan.md")
+            == .failure(ConversationsProblem(DemoConversations.notLinked)))
+        #expect(await ConversationsRequests.preview(engine, conversation: 999_999, path: "a.md")
+            == .failure(ConversationsProblem("Unknown conversation: 999999")))
+    }
+
+    // MARK: - Reaching the Mac
+
+    /// A paired phone's client starts on what the Mac last sent, which refuses every request, its status connected, and
+    /// moves to the Mac once reached: a screen that asks as it opens asks again then (found against a copy, #698).
+    @Test func aScreenAsksAgainWhenTheClientMovesFromTheLastStateToTheMac() async throws {
+        let session = AppSession()
+        session.start(ConversationsRecordingTransport(refusal: "Your Mac can't be reached, and this needs it."), as: .outOfReach(lastSeen: nil))
+        #expect(try await eventually { session.engine.status == .connected })
+        let cached = ConversationsReach(session, for: "bg-1")
+        #expect(cached.connected && !cached.ready)
+
+        session.start(ConversationsRecordingTransport(refusal: nil), as: .connected(.direct, relayReachable: false))
+        #expect(try await eventually { ConversationsReach(session).ready })
+        let live = ConversationsReach(session, for: "bg-1")
+        #expect(live.ready)
+        #expect(live != cached)
+        #expect(ConversationsReach(session, for: "bg-2") != live)
+        #expect(ConversationsReach(AppSession(connection: .demo)).live)
+    }
+
     @Test func theRecordingRefusesWhatItDoesNotAnswerAndTheScreenSaysSo() async throws {
         let session = try await replaySession()
         guard case .failure(let failure) = await ConversationsRequests.folders(session.engine) else {

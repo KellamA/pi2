@@ -15,6 +15,13 @@ extension DemoScript {
         "projects.folders": { _, world in
             ["folders": DemoNewProject.folders(world)]
         },
+        // `{ id, path }`: a file the conversation's agent linked to. The demo's agents' answers link to no file, so the
+        // engine's refusal for one not linked (`NOT_LINKED`, folders.ts).
+        "files.preview": { request, world in
+            _ = try DemoConversations.known(request, world: world)
+            guard request.params["path"] is String else { throw DemoRefusal("That is not the path of a file on the Mac.") }
+            throw DemoRefusal(DemoConversations.notLinked)
+        },
         // `{ folder, name?, template? }`: from a phone, a folder only among those offered; answers `{ id, conversation }`.
         "projects.create": { request, world in
             try DemoNewProject.create(request, world: world)
@@ -52,6 +59,17 @@ extension DemoScript {
         // The demo's agents start no command in the background, so there is no output to read and none to stop.
         "background.output": { _, _ in
             throw DemoRefusal("pi² no longer has this command's output. While its engine runs, it keeps the output of the commands running and of the last 50 that ended.")
+        },
+        // A text file a conversation links to (`folders.ts`, `previewFile`). The recording's answers link to no file, and the
+        // demo has no files to read, so it refuses as the engine refuses a path the conversation does not link to.
+        "files.preview": { request, world in
+            let id = request.int("id") ?? -1
+            guard let conversation = world.conversations[id] else { throw DemoRefusal("Unknown conversation: \(request.params["id"] ?? "undefined")") }
+            guard request.params["path"] is String else { throw DemoRefusal("That is not the path of a file on the Mac.") }
+            guard (conversation.state["agent"] as? [String: Any])?["cwd"] is String else {
+                throw DemoRefusal("This conversation has no folder, so none of its files is shown on the phone.")
+            }
+            throw DemoRefusal("The conversation does not link to that file. Only a file its agent's answers link to is shown on the phone.")
         },
         "background.stop": { _, _ in
             throw DemoRefusal("That command is no longer running")
@@ -238,6 +256,9 @@ enum DemoNewProject {
 @MainActor
 enum DemoConversations {
     /// The conversation a request names, in the list or the Archive, or the engine's refusal.
+    /// The engine's words for a file the conversation does not link to (`NOT_LINKED`, `engine/src/folders.ts`).
+    static let notLinked = "The conversation does not link to that file. Only a file its agent's answers link to is shown on the phone."
+
     static func known(_ request: DemoRequest, world: DemoWorld) throws -> Int {
         guard let id = request.int("id"), DemoLibrary.row(id, world: world) != nil || DemoLibrary.isArchived(id, world: world) else {
             throw DemoRefusal("Unknown conversation: \(request.params["id"] ?? "")")

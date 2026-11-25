@@ -26,7 +26,7 @@ enum DemoScript {
                         // agents.allowEverything (off), branches.refresh
         work,           // Script/WorkAnswers.swift (#694): work.list, work.create, work.act
         conversationsScreens, // Script/ConversationsAnswers.swift (#698): conversation.rename, .delete, settings.setAutoArchive,
-                        // background.output, .stop, projects.unarchive, .restoreConversation, .folders, .create
+                        // background.output, .stop, files.preview, projects.unarchive, .restoreConversation, .folders, .create
         github,         // Script/GitHubAnswers.swift (#684, #694, #695): github.refresh, .show, .diff, .merge, .sendBack, .settle
         agents,         // Script/AgentAnswers.swift (#684, #696): agents.save, .duplicate, .delete, .restore, .updateFromTemplate,
                         // projects.addAgent, .setOrchestrator, rules.add, .remove

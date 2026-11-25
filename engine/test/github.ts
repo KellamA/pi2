@@ -94,9 +94,17 @@ class Client extends EngineClient {
 	order: string[] = [];
 	/** The projects a `github` event has said a read is under way for (#599). */
 	readingSeen = new Set<string>();
+	/** Each project's `readAt`s, in the order the events said them: when each read that landed began (#903). */
+	readAts = new Map<string, number[]>();
 	override receive(message: any): void {
 		if (typeof message.event === "string") this.order.push(message.event);
-		if (message.event === "github") for (const [id, one] of Object.entries<any>(message.projects ?? {})) if (one.reading === true) this.readingSeen.add(id);
+		if (message.event === "github") {
+			for (const [id, one] of Object.entries<any>(message.projects ?? {})) {
+				if (one.reading === true) this.readingSeen.add(id);
+				const seen = this.readAts.get(id) ?? [];
+				if (typeof one.readAt === "number" && seen.at(-1) !== one.readAt) this.readAts.set(id, [...seen, one.readAt]);
+			}
+		}
 		super.receive(message);
 	}
 	results(id: number, name: string) {
@@ -207,25 +215,52 @@ try {
 	assert.match(listing.text, /\(GitHub's listing of example\/widgets, read /);
 	assert.match(listing.text, /^1 item: 1 open\.$/m, "a line an item, a count, and no text (#595)");
 
-	const [a, b] = await Promise.all([client.work(worker, "take", { id: 1 }), client.work(reviewer, "take", { id: 1 })]);
-	assert.notEqual(a.isError, b.isError, `exactly one gets it: ${a.text} / ${b.text}`);
-	const winner = a.isError ? reviewer : worker;
-	const winnerAgent = a.isError ? reviewerId : workerId;
-	const loser = (a.isError ? a : b).text;
-	assert.equal(loser, `#1 is taken by ${winner === worker ? "Worker" : "Reviewer"}, in sub-chat ${winner}`);
-	assert.equal(said(a.isError ? b : a), "Took #1 “Make widgets blue”: in progress, held by you.");
-	await client.until("the holder listed", () => client.github(projectId)?.issues?.find((one: any) => one.id === 1 && one.takenBy?.agentId === winnerAgent && one.takenBy.conversationId === winner));
-	// Both claimed and the later one let go, or the later one read the issue after the first was in progress and claimed
-	// nothing: either way, one claim stands.
+	// Two take it at once, in the order that once failed on CI by luck (#928): the Worker's take is held between its claim
+	// and its read-back until the Reviewer has claimed too, and the Reviewer's between its read-back and its letting go
+	// until the Worker has answered. The Worker reads back both claims standing, and holds it: the earlier claim stands.
+	const hold = (name: string) => client.until(`the stand-in held the ${name}`, () => (existsSync(`${state}.blocked.${name}`) ? Number(readFileSync(`${state}.blocked.${name}`, "utf8")) : undefined));
+	const letGo = (name: string) => writeFileSync(`${state}.release.${name}`, "");
+	changeStandIn((whole) => void (whole.block = [{ name: "worker", match: "Taken by Worker", when: "after" }, { name: "reviewer", match: "Released: Reviewer", when: "before" }]));
+	const workerTake = client.work(worker, "take", { id: 1 });
+	blockedPids.push(await hold("worker"));
+	const reviewerTake = client.work(reviewer, "take", { id: 1 });
+	// A check failing before it is awaited is what the run reports, not this wait ending with the connection.
+	reviewerTake.catch(() => {});
+	blockedPids.push(await hold("reviewer"));
+	letGo("worker");
+	assert.equal(said(await workerTake), "Took #1 “Make widgets blue”: in progress, held by you.");
+	// The listing says so too while the Reviewer's claim still stands, before it lets go.
+	const whileBoth = await client.until("the issue listed in progress", () => client.github(projectId)?.issues?.find((one: any) => one.id === 1 && one.state === "in_progress"));
+	assert.deepEqual(whileBoth.takenBy, { agentId: workerId, conversationId: worker }, "the earlier claim holds while the later one has not let go yet");
+	assert.equal(widgets().issues[0].comments.filter((comment: any) => comment.body.includes("Released")).length, 0, "the Reviewer has not let go yet");
+	letGo("reviewer");
+	const refused = await reviewerTake;
+	assert.equal(refused.isError, true, refused.text);
+	assert.equal(refused.text, `#1 is taken by Worker, in sub-chat ${worker}`);
+	changeStandIn((whole) => delete whole.block);
+	for (const name of ["worker", "reviewer"]) for (const end of ["blocked", "release"]) rmSync(`${state}.${end}.${name}`);
+	await client.until("the holder listed", () => client.github(projectId)?.issues?.find((one: any) => one.id === 1 && one.takenBy?.agentId === workerId && one.takenBy.conversationId === worker));
+	// Both claimed and the later one let go: one claim stands.
 	const comments = widgets().issues[0].comments.map((comment: any) => comment.body.split("\n\n")[1]);
-	const claims = comments.filter((text: string) => text.startsWith("Taken by")).length;
-	assert.equal(claims - comments.filter((text: string) => text.startsWith("Released")).length, 1, comments.join(" / "));
-	console.log(`    (${claims === 2 ? "both claimed; the later one let go" : "the later one found it taken before claiming"})`);
+	assert.deepEqual(comments.map((text: string) => text.split(",")[0].split(":")[0]), ["Taken by Worker", "Taken by Reviewer", "Released"], comments.join(" / "));
 	assert.deepEqual(widgets().issues[0].labels.map((label: any) => label.name).sort(), ["agent", "cloud model", "in progress"]);
-	if (winner !== worker) {
-		await client.work(winner, "release", { id: 1 });
-		said(await client.work(worker, "take", { id: 1 }));
-	}
+	// A take that won, but reads the issue back after it changed hands, is refused, naming the holder (#928): the Worker's
+	// take is held after its labels while the orchestrator lets it go and the Reviewer takes it.
+	said(await client.work(parent, "release", { id: 1 }));
+	changeStandIn((whole) => void (whole.block = [{ name: "late", match: "--add-label", when: "after" }]));
+	const lateTake = client.work(worker, "take", { id: 1 });
+	lateTake.catch(() => {});
+	blockedPids.push(await hold("late"));
+	changeStandIn((whole) => delete whole.block);
+	said(await client.work(parent, "release", { id: 1 }));
+	assert.equal(said(await client.work(reviewer, "take", { id: 1 })), "Took #1 “Make widgets blue”: in progress, held by you.");
+	letGo("late");
+	const late = await lateTake;
+	assert.equal(late.isError, true, late.text);
+	assert.equal(late.text, `#1 is taken by Reviewer, in sub-chat ${reviewer}`);
+	for (const end of ["blocked", "release"]) rmSync(`${state}.${end}.late`);
+	said(await client.work(reviewer, "release", { id: 1 }));
+	assert.equal(said(await client.work(worker, "take", { id: 1 })), "Took #1 “Make widgets blue”: in progress, held by you.");
 	// Taking what it holds already is no error (#604).
 	const commentsBefore = widgets().issues[0].comments.length;
 	const again = await client.work(worker, "take", { id: 1 });
@@ -237,7 +272,7 @@ try {
 	assert.match(shown, /^#1 in progress · cloud model · (Worker|Reviewer), sub-chat \d+ · changed .+ · Make widgets blue$/m);
 	assert.match(shown, /\n\nThey are grey\./);
 	assert.ok(!shown.includes("Notes ("), "no notes yet");
-	step("an agent files an issue (labels made as scripts/issue makes them), two take it at once and one holds it");
+	step("an agent files an issue (labels made as scripts/issue makes them), two take it at once and the earlier holds it, said so before the later lets go; a take read back after it changed hands is refused");
 
 	const opened = await client.work(worker, "pull_request", { id: 1, title: "Blue widgets" });
 	assert.equal(opened.isError, false, opened.text);
@@ -411,9 +446,14 @@ try {
 	});
 	client.readingSeen.clear();
 	await client.call("work.act", { projectId, id: 4, action: "note", text: "Read behind" });
-	const landed = await client.until("the read landed", () => client.github(projectId)?.reading === false && client.github(projectId).readAt !== readBefore && client.github(projectId));
+	// The read that saw the note: a read already under way when it was posted may land first (#903).
+	const landed = await client.until("the read landed", () => {
+		const now = client.github(projectId);
+		return now?.reading === false && now.readAt !== readBefore && now.issues.find((one: any) => one.id === 4)?.notes.at(-1)?.text === "Read behind" && now;
+	});
 	const read = calls().slice(logged).filter((one) => ["issue list", "pr list"].includes(one.args.slice(0, 2).join(" ")));
-	const lastRead = read.slice(-4);
+	// Its four questions: asked once it began, and before any read after it, which begins only once it has landed.
+	const lastRead = read.filter((one: any) => one.at >= landed.readAt).sort((x: any, y: any) => x.at - y.at).slice(0, 4);
 	const flag = (one: { args: string[] }, name: string) => (one.args.includes(`--${name}`) ? one.args[one.args.indexOf(`--${name}`) + 1] : undefined);
 	assert.deepEqual(lastRead.map((one) => `${one.args[0]} ${flag(one, "state")} ${flag(one, "json") === "number" ? "numbers" : (flag(one, "search") ?? "").replace(/[\dT:+-]+$/, "")}`).sort(), [
 		"issue all updated:>=",
@@ -421,8 +461,13 @@ try {
 		"pr closed updated:>=",
 		"pr open ",
 	]);
+	// Since ten minutes before the read before it began, as that read was recorded to begin, to the second GitHub's
+	// search takes: never a window on the test's clock, which a loaded Mac can overrun (#903).
 	const changesSince = Date.parse(flag(lastRead.find((one) => flag(one, "state") === "all")!, "search")!.replace("updated:>=", ""));
-	assert.ok(changesSince <= readBefore - 10 * 60_000 && changesSince > readBefore - 10 * 60_000 - 2_000, "changes since ten minutes before the last read began");
+	const readAts = client.readAts.get(projectId)!;
+	const lastBegan = readAts[readAts.indexOf(landed.readAt) - 1]!;
+	assert.ok(lastBegan >= readBefore, "the read before it is the last one before the note, or one after");
+	assert.equal(changesSince, Math.floor((lastBegan - 10 * 60_000) / 1000) * 1000, "changes since ten minutes before the last read began");
 	const times = lastRead as unknown as { at: number; ended: number }[];
 	assert.ok(Math.max(...times.map((one) => one.at)) < Math.min(...times.map((one) => one.ended)), "the four questions of one read ran at the same time");
 	assert.equal(landed.issues.find((one: any) => one.id === 5).title, "Held back", "an issue GitHub does not count as changed is not read again");
