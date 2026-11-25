@@ -228,6 +228,7 @@ const OPEN_TO_ANY = new Set([
 	"presented.list", // reads what agents presented in a conversation (#946); it changes nothing
 	"presented.picture", // reads a presented picture or a page's snapshot, as conversation.image does
 	"presented.file", // reads one file of a presented page, by its manifest's path, which the engine copied
+	"presented.page", // reads a presented page's list of files, its manifest, which the engine made
 	"projects.carryOver", // a dry run alone since carrying over runs by itself at the update (#715): it changes nothing
 	"reports.wake", // waking never widens; the limits bound it
 	"wakes.cancel",
@@ -573,6 +574,7 @@ const MAC_ONLY: Record<string, string> = {
 	"presented.network": "a presented page's network switch, the person's setting at the Mac",
 	"presented.list": "presenting's window, the Mac's for now",
 	"presented.file": "a presented page's files, the Mac's for now",
+	"presented.page": "a presented page's list of files, the Mac's for now",
 	// The Mac's upkeep.
 	"backup.create": "the Mac's upkeep",
 	"priority.set": "the Mac's upkeep",

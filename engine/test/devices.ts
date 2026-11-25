@@ -216,15 +216,15 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	step("a new Face ID key is accepted or refused on the Mac alone, by any path, and offered through pi² Remote alone");
 
 	// Presenting's requests (#963, design/presenting.md): a phone reads presented.picture alone, as conversation.image,
-	// with a channel and unlogged; the app's host role, the network switch, the window's list and a page's files are
-	// the Mac's by every path. On the socket, the host role and the switch are the app's alone, the three reads open.
+	// with a channel and unlogged; the app's host role, the network switch, the window's list, a page's list of files and
+	// its files are the Mac's by every path. On the socket, the host role and the switch are the app's alone, the four reads open.
 	const picture = { id: 1, presentation: "p", version: 1, item: 0 };
 	assert.deepEqual(devicePlacement("presented.picture"), { list: "FROM_A_DEVICE", why: "reading: a picture an agent presented, or a page's snapshot, as conversation.image is (#946)" });
 	for (const path of ["relay", "home", "direct"] as const) assert.equal(deviceMay("presented.picture", picture, { ...relay, path }), "yes", `presented.picture by ${path}`);
 	assert.equal(deviceMay("presented.picture", picture, { ...relay, path: "mailbox" }), "no", "reading needs a channel");
 	assert.equal(deviceLogged("presented.picture", picture), false, "reading is not logged");
 	assert.equal(personOnly("presented.picture", picture), undefined);
-	const presentingMacOnly = { "present.register": "the app's host role", "present.drawn": "the app's host role", "presented.list": "presenting's window, the Mac's for now", "presented.file": "a presented page's files, the Mac's for now", "presented.network": "a presented page's network switch, the person's setting at the Mac" };
+	const presentingMacOnly = { "present.register": "the app's host role", "present.drawn": "the app's host role", "presented.list": "presenting's window, the Mac's for now", "presented.file": "a presented page's files, the Mac's for now", "presented.page": "a presented page's list of files, the Mac's for now", "presented.network": "a presented page's network switch, the person's setting at the Mac" };
 	for (const [method, why] of Object.entries(presentingMacOnly)) {
 		assert.deepEqual(devicePlacement(method), { list: "MAC_ONLY", why }, method);
 		for (const path of ["relay", "home", "direct", "mailbox"] as const) {
@@ -232,8 +232,8 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 		}
 	}
 	for (const method of ["present.register", "present.drawn", "presented.network"]) assert.equal(personOnly(method, { ...picture, allow: false }), SETTINGS_ONLY_IN_THE_APP, `${method} on the socket is the app's alone`);
-	for (const method of ["presented.list", "presented.file"]) assert.equal(personOnly(method, picture), undefined, `${method} on the socket is open to any, as reading`);
-	step("presenting's requests: a phone may send presented.picture alone, with a channel, as reading; the other five are the Mac's by every path, and three the app's alone on the socket");
+	for (const method of ["presented.list", "presented.file", "presented.page"]) assert.equal(personOnly(method, picture), undefined, `${method} on the socket is open to any, as reading`);
+	step("presenting's requests: a phone may send presented.picture alone, with a channel, as reading; the other six are the Mac's by every path, and three the app's alone on the socket");
 }
 
 // ---- Readers, masking, what a device is sent
@@ -1789,9 +1789,9 @@ try {
 		const picture = { id: 99_999, presentation: "p1", version: 1, item: 0 };
 		assert.equal((await ask("presented.picture", picture)).error, "Unknown conversation: 99999", "presented.picture reaches its handler");
 		assert.equal((await ask("presented.picture", { ...picture, id: plain })).error, NOT_PRESENTED, "and is refused by that conversation's record");
-		const macOnly = ["present.register", "present.drawn", "presented.list", "presented.file", "presented.network"];
+		const macOnly = ["present.register", "present.drawn", "presented.list", "presented.file", "presented.page", "presented.network"];
 		for (const method of macOnly) assert.equal((await ask(method, { ...picture, path: "index.html", allow: true, requestId: "r", ok: true })).error, ONLY_ON_THE_MAC, method);
-		for (const method of ["presented.picture", "presented.list", "presented.file", "presented.network"]) {
+		for (const method of ["presented.picture", "presented.list", "presented.file", "presented.page", "presented.network"]) {
 			await assert.rejects(app.call(method, { ...picture, path: "index.html", allow: true }), /^Error: Unknown conversation: 99999$/, `${method} from the app reaches its handler`);
 		}
 		assert.deepEqual(await app.call("present.drawn", { requestId: "r", ok: true }), { answered: false }, "present.drawn from the app reaches its handler: no draw was asked for");
@@ -1805,7 +1805,7 @@ try {
 		assert.deepEqual((await remote.call("remote.mailboxIn", { device: phone.id, id: JSON.parse(mailed.signed).nonce, item: mailed })).result, { taken: true, outcome: "refused" }, "presented.picture by mailbox");
 		const mailedReceipt = await remote.event("mailboxOut", beforeMailed);
 		assert.deepEqual([mailedReceipt.item.body.method, mailedReceipt.item.body.outcome, mailedReceipt.item.body.why], ["presented.picture", "refused", ONLY_ON_THE_MAC]);
-		step("from the phone: presented.picture passes its row to its handler, unlogged, and is refused by the record; by mailbox, by its row; present.register, present.drawn, presented.list, presented.file and presented.network are refused as the Mac's, and logged; the app reaches all six handlers");
+		step("from the phone: presented.picture passes its row to its handler, unlogged, and is refused by the record; by mailbox, by its row; present.register, present.drawn, presented.list, presented.file, presented.page and presented.network are refused as the Mac's, and logged; the app reaches all seven handlers");
 	}
 
 	// ---- Resume, refusals, suspension (3.4, 3.6, 5.8)
