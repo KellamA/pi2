@@ -31,6 +31,7 @@ import { ANSWER_NOT_SENT, DEVICE_LINE_FAILED, forDevice, MAX_HELPER_LINE, MAX_LI
 import { NOT_LINKED, NOT_OFFERED } from "../src/folders.ts";
 import { offerFolders } from "../src/answers.ts";
 import { SETTINGS_ONLY_IN_THE_APP } from "../src/answers.ts";
+import { NOT_PRESENTED } from "../src/presented.ts";
 import { DatabaseSync } from "node:sqlite";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
@@ -1787,6 +1788,7 @@ try {
 	{
 		const picture = { id: 99_999, presentation: "p1", version: 1, item: 0 };
 		assert.equal((await ask("presented.picture", picture)).error, "Unknown conversation: 99999", "presented.picture reaches its handler");
+		assert.equal((await ask("presented.picture", { ...picture, id: plain })).error, NOT_PRESENTED, "and is refused by that conversation's record");
 		const macOnly = ["present.register", "present.drawn", "presented.list", "presented.file", "presented.network"];
 		for (const method of macOnly) assert.equal((await ask(method, { ...picture, path: "index.html", allow: true, requestId: "r", ok: true })).error, ONLY_ON_THE_MAC, method);
 		for (const method of ["presented.picture", "presented.list", "presented.file", "presented.network"]) {
@@ -1797,7 +1799,13 @@ try {
 		const logged = (await app.call("devices.log", { device: phone.id })).entries;
 		for (const method of macOnly) assert.ok(logged.some((entry: any) => entry.method === method && entry.outcome === "refused" && entry.why === ONLY_ON_THE_MAC), `${method} logged as refused`);
 		assert.ok(!logged.some((entry: any) => entry.method === "presented.picture"), "presented.picture is reading, and not logged");
-		step("from the phone: presented.picture passes its row to its handler, unlogged; present.register, present.drawn, presented.list, presented.file and presented.network are refused as the Mac's, and logged; the app reaches all six handlers");
+		// Left in the mailbox, it is refused by its row: reading needs a channel.
+		const mailed = phone.item(remote.pairing, "presented.picture", { ...picture, id: plain });
+		const beforeMailed = remote.events.length;
+		assert.deepEqual((await remote.call("remote.mailboxIn", { device: phone.id, id: JSON.parse(mailed.signed).nonce, item: mailed })).result, { taken: true, outcome: "refused" }, "presented.picture by mailbox");
+		const mailedReceipt = await remote.event("mailboxOut", beforeMailed);
+		assert.deepEqual([mailedReceipt.item.body.method, mailedReceipt.item.body.outcome, mailedReceipt.item.body.why], ["presented.picture", "refused", ONLY_ON_THE_MAC]);
+		step("from the phone: presented.picture passes its row to its handler, unlogged, and is refused by the record; by mailbox, by its row; present.register, present.drawn, presented.list, presented.file and presented.network are refused as the Mac's, and logged; the app reaches all six handlers");
 	}
 
 	// ---- Resume, refusals, suspension (3.4, 3.6, 5.8)
