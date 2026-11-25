@@ -56,6 +56,8 @@ struct ConversationStatus: Equatable {
     }
 
     var agentName = "the agent"
+    /// A chat with pi²'s own assistant: no agent to name, and a message sent while it answers waits for the answer.
+    var isChat = false
     var busy = false
     /// A sub-chat: a message to it goes to the agent directly, and the orchestrator is told.
     var isSubChat = false
@@ -72,6 +74,7 @@ struct ConversationStatus: Equatable {
 
     /// The field's placeholder, as the Mac's.
     func placeholder(steer: Bool) -> String {
+        if isChat { return busy ? "Write your next message…" : "Ask anything" }
         if busy { return steer ? "Steer \(agentName) while it works…" : "Queue a follow-up for \(agentName)…" }
         return isSubChat ? "Message \(agentName) directly…" : "Message \(agentName)…"
     }
@@ -79,10 +82,11 @@ struct ConversationStatus: Equatable {
     /// What the screen reads of the engine's view of the conversation.
     static func make(
         conversationID: Int, state: ConversationState?, agentName: String?, outgoing: [OutgoingMessage], connected: Bool,
-        inbox: [InboxItem], needs: [TranscriptFeed.Need], archivedInLibrary: Bool, models: [ModelInfo]
+        inbox: [InboxItem], needs: [TranscriptFeed.Need], archivedInLibrary: Bool, models: [ModelInfo], chat: Bool = false
     ) -> ConversationStatus {
         var status = ConversationStatus()
-        let name = agentName ?? "the agent"
+        status.isChat = chat || state?.chat == true
+        let name = agentName ?? (status.isChat ? "pi²’s assistant" : "the agent")
         status.agentName = name
         status.busy = state?.busy ?? false
         status.isSubChat = state?.agent.parent != nil
@@ -115,7 +119,8 @@ struct ConversationStatus: Equatable {
             )
         }
 
-        if status.busy, let waits = state?.messageWaits {
+        // A chat's message always waits for the answer, which the Mac does not say either.
+        if status.busy, !status.isChat, let waits = state?.messageWaits {
             let agent = agentName ?? "The agent"
             status.arrivalSteered = waits.sentence(agent: agent, steer: true, limit: state?.limitWait)
             status.arrivalQueued = waits.sentence(agent: agent, steer: false, limit: state?.limitWait)
