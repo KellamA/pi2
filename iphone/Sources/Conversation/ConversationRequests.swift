@@ -14,6 +14,8 @@ struct ConversationRequests {
     /// `EngineSession.submit`, which keeps it in `outgoing` until the conversation shows it). `steer` while the agent
     /// works and the person chose Steer; queued otherwise.
     func send(_ text: String, pictures: [ConversationPicture], steer: Bool) async -> SendOutcome {
+        // Refused here as the engine would refuse it (#924), and given back to the field without a request.
+        if let tooLong = TypedTextLimit.refusal(text) { return .refused(Self.sentence("Not sent.", tooLong)) }
         let outcome = await engine.submit(text, attachments: pictures.map(\.payload), to: conversationID, steer: steer)
         switch outcome {
         case .sent:

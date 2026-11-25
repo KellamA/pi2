@@ -150,13 +150,42 @@ enum RealEngine {
 	/// The longest line the engine writes pi² Remote, and a phone takes from the Mac.
 	static let lineToHelper = 64 * 1024 * 1024
 
-	/// A phone's typed text over 64 MiB (#919), through the real engine and pi² Remote: the engine takes it (it does not
-	/// yet limit a phone's typed text), and its echo to the session that has the conversation open would be longer than
-	/// pi² Remote takes from the engine, and a phone from the Mac. The engine writes no such line: pi² Remote keeps
-	/// running, the phone's session goes on with no cut line, and another device's session is untouched. The other device
-	/// is given back, still attached, for `typedTextUnder`.
+	/// What the engine answers a phone for a message of more than 1 MB of typed text (#924, `typedRefusal` in answers.ts).
+	static func tooLong(_ size: String) -> String {
+		"A message from a phone can carry at most 1 MB of typed text; this one has \(size). Shorten it, or send it from the Mac."
+	}
+
+	/// `app.call` on a thread of its own while `body` reads a phone on this one, so that neither end waits on the other's
+	/// reading: the engine's answer to the app and its lines to the phone go at once.
+	static func callAside(_ app: App, _ method: String, _ params: JSONValue, while body: () -> Void) -> Result<JSONValue, Refused> {
+		final class Aside: @unchecked Sendable {
+			let app: App
+			let params: JSONValue
+			var result: Result<JSONValue, Refused> = .failure(Refused("not answered"))
+			let done = DispatchSemaphore(value: 0)
+			init(app: App, params: JSONValue) {
+				self.app = app
+				self.params = params
+			}
+		}
+		let aside = Aside(app: app, params: params)
+		Thread {
+			aside.result = aside.app.call(method, aside.params, within: 600)
+			aside.done.signal()
+		}.start()
+		body()
+		aside.done.wait()
+		return aside.result
+	}
+
+	/// A typed text over 64 MiB (#919), through the real engine and pi² Remote. From an attached phone the engine refuses
+	/// it, in words the phone shows, since a phone's typed text is at most 1 MB (#924); from the Mac's own app it is taken,
+	/// and its echo to the phone's session, which has the conversation open, would be longer than pi² Remote takes from
+	/// the engine, and a phone from the Mac. The engine writes no such line: pi² Remote keeps running, the phone's session
+	/// goes on with no cut line, and another device's session is untouched. The other device is given back, still
+	/// attached, for `typedTextUnder`.
 	static func typedTextOver(app: App, engine: Child, remote: (pid: pid_t, command: String)?, home: URL, phone: Phone, ask: (Phone, String, String, String) -> JSONValue?, pairAnother: () -> (Phone, String)?) -> (Phone, String)? {
-		Check.section("a phone's typed text over 64 MiB, through the real engine (#919)")
+		Check.section("a typed text over 64 MiB, through the real engine: refused from a phone, taken from the Mac (#919, #924)")
 		guard let (other, otherSession) = pairAnother() else {
 			Check.expect(false, "a second device paired and attached")
 			return nil
@@ -166,17 +195,30 @@ enum RealEngine {
 			Check.expect(false, "the phone opened a conversation")
 			return nil
 		}
+		let overText = "/work 0 1000 " + String(repeating: "o", count: 65 * 1024 * 1024)
+		var beforeOver: [JSONValue?] = []
 		// The app reads what it is sent meanwhile, as pi² does.
 		app.drained {
-			let overText = "/work 0 1000 " + String(repeating: "o", count: 65 * 1024 * 1024)
 			let line = submit("o1", over, overText)
 			Check.expect(line.count > lineToHelper && line.count <= Remote.phoneLineLimit, "the phone's line is over 64 MiB and under its 72 MiB", "\(line.count) bytes")
 			phone.sendLine(line)
-			let (overAnswer, beforeOver) = until("o1", on: phone)
-			Check.expect(overAnswer?["result"] != nil, "a typed text of 65 MiB from an attached phone is taken by the engine", overAnswer.map(JSON.text) ?? "no answer")
+			let (overAnswer, lines) = until("o1", on: phone)
+			beforeOver = lines
+			Check.expect(overAnswer?["error"]?.stringValue == tooLong("65.0 MB"), "a typed text of 65 MiB from an attached phone is refused by the engine, in words the phone shows", overAnswer.map(JSON.text) ?? "no answer")
+		}
+		// The same text from the Mac's own app, while the phone reads what it is sent.
+		var fromMac: [JSONValue?] = []
+		let taken = callAside(app, "submit", .object([("id", .integer(over)), ("text", .string(overText))])) {
 			phone.sendLine(Data(#"{"id":"o2","method":"engine.info","params":{}}"#.utf8))
-			let (afterOver, rest) = until("o2", on: phone)
-			let seen = beforeOver + rest
+			fromMac = until("o2", on: phone).lines
+		}
+		var tookIt = false
+		if case .success = taken { tookIt = true }
+		Check.expect(tookIt, "the same text from the Mac's own app is taken", "\(taken)")
+		app.drained {
+			phone.sendLine(Data(#"{"id":"o3","method":"engine.info","params":{}}"#.utf8))
+			let (afterOver, rest) = until("o3", on: phone)
+			let seen = beforeOver + fromMac + rest
 			Check.expect(afterOver?["result"]?["pid"]?.integerValue == Int64(engine.pid), "the phone's session goes on: it asks, and is answered")
 			Check.expect(!seen.contains { $0 == nil }, "every line the phone got was whole")
 			Check.expect(!seen.contains { userText($0, over) != nil }, "and none was the text's echo: it is not sent")
@@ -194,11 +236,13 @@ enum RealEngine {
 	}
 
 	/// A typed text whose echo is just under 64 MiB comes back to `phone` whole (#919): the echo's own fields measured on
-	/// a short message first, the text filling the rest but for 4 KiB. On the second device, at the end, so that the
-	/// steps before it read no line of tens of megabytes they do not expect.
+	/// a short message first, the text filling the rest but for 4 KiB. Sent from the Mac's own app, since a phone's typed
+	/// text is at most 1 MB (#924). On the second device, at the end, so that the steps before it read no line of tens of
+	/// megabytes they do not expect.
 	static func typedTextUnder(app: App, phone: Phone, session: String, ask: (Phone, String, String, String) -> JSONValue?) {
-		Check.section("a phone's typed text just under 64 MiB, through the real engine (#919)")
+		Check.section("a typed text from the Mac just under 64 MiB, to a phone through the real engine (#919, #924)")
 		guard let under = opened(app: app, phone: phone, ask: ask) else { return Check.expect(false, "the phone opened a conversation") }
+		var measured: String?
 		app.drained {
 			let wrapping = "{\"session\":\"\(session)\",\"message\":}".utf8.count
 			let short = "/work 0 1000 t"
@@ -216,15 +260,18 @@ enum RealEngine {
 				return Check.expect(false, "a short message is taken, echoed and answered", "\(shortAnswer.map(JSON.text) ?? "no answer"), echo \(shortEcho.map(String.init) ?? "none"), answered \(answered)")
 			}
 			let fields = shortEcho + wrapping - short.utf8.count
-			let underText = "/work 0 1000 " + String(repeating: "u", count: lineToHelper - fields - 4096 - 13)
-			phone.sendLine(submit("u2", under, underText))
-			let (underAnswer, beforeUnder) = until("u2", on: phone)
-			var underEcho = beforeUnder.first { userText($0, under) != nil } ?? nil
-			while underEcho == nil, let line = phone.line(within: 120) {
+			measured = "/work 0 1000 " + String(repeating: "u", count: lineToHelper - fields - 4096 - 13)
+		}
+		guard let underText = measured else { return }
+		var underEcho: JSONValue?
+		let underAnswer = callAside(app, "submit", .object([("id", .integer(under)), ("text", .string(underText))])) {
+			while underEcho == nil, let line = phone.line(within: 240) {
 				if let value = try? JSON.parse(line), userText(value, under) != nil { underEcho = value }
 			}
-			Check.expect(underAnswer?["result"] != nil && userText(underEcho, under) == underText, "a typed text whose echo is just under 64 MiB (\(underText.utf8.count) bytes) comes back to the phone whole")
 		}
+		var tookIt = false
+		if case .success = underAnswer { tookIt = true }
+		Check.expect(tookIt && userText(underEcho, under) == underText, "a typed text from the Mac whose echo is just under 64 MiB (\(underText.utf8.count) bytes) comes back to the phone whole", "\(underAnswer)")
 	}
 
 	static func run(engineMain: String, helper: URL, root: URL) {

@@ -214,6 +214,37 @@ struct ConversationTests {
         #expect(await requests.restore(9) == "Not restored. The recorded session (PI2_TRANSPORT=replay) does not answer conversation.unarchive.")
     }
 
+    /// A message from the phone carries at most 1 MB of typed text (#924), counted in UTF-8 bytes as the engine counts
+    /// it: the composer says so in the engine's words, and a send over it is refused before any request, so the text goes
+    /// back in the field.
+    @Test func aMessageOverOneMegabyteIsHeldBackInTheEnginesWords() async throws {
+        let head = "/work 0 1000 "
+        let exactly = head + String(repeating: "t", count: TypedTextLimit.bytes - head.utf8.count)
+        let overByOne = head + String(repeating: "é", count: (TypedTextLimit.bytes - head.utf8.count - 1) / 2) + "tt"
+        #expect(exactly.utf8.count == 1_048_576 && overByOne.utf8.count == 1_048_577)
+        #expect(overByOne.count < 600_000, "far under the limit counted in characters")
+        #expect(TypedTextLimit.refusal(exactly) == nil)
+        // The engine's sentences, as engine/test/devices.ts holds them.
+        #expect(TypedTextLimit.refusal(overByOne) == "A message from a phone can carry at most 1 MB of typed text; this one has just over 1 MB. Shorten it, or send it from the Mac.")
+        #expect(TypedTextLimit.refusal(String(repeating: "t", count: 1_258_292)) == "A message from a phone can carry at most 1 MB of typed text; this one has 1.2 MB. Shorten it, or send it from the Mac.")
+        #expect(TypedTextLimit.refusal(overByOne, answer: true) == "An answer from a phone can carry at most 1 MB of typed text; this one has just over 1 MB. Shorten it, or answer on the Mac.")
+        #expect(TypedTextLimit.sizeText(66 * 1024 * 1024 + 13) == "66.0 MB")
+        // A half rounds up, as JavaScript's toFixed(1) does: 1.25 and 1.75 MB.
+        #expect(TypedTextLimit.sizeText(1_310_720) == "1.3 MB" && TypedTextLimit.sizeText(1_835_008) == "1.8 MB")
+
+        let transport = RecordingTransport()
+        let session = AppSession()
+        session.start(transport, as: .connected(.home))
+        #expect(try await eventually { session.engine.status == .connected })
+        let requests = ConversationRequests(engine: session.engine, conversationID: 9)
+        let outcome = await requests.send(overByOne, pictures: [], steer: false)
+        #expect(outcome == .refused("Not sent. A message from a phone can carry at most 1 MB of typed text; this one has just over 1 MB. Shorten it, or send it from the Mac."))
+        #expect(transport.params(of: "submit") == nil, "no request is made")
+        #expect(session.engine.outgoing[9] == nil)
+        _ = await requests.send(exactly, pictures: [], steer: false)
+        #expect(transport.params(of: "submit")?["text"] as? String == exactly, "exactly 1 MB goes")
+    }
+
     @Test func sendingAPicturePutsItInTheRequest() async throws {
         let transport = RecordingTransport()
         let session = AppSession()

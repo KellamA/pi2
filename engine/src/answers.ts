@@ -18,6 +18,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { Socket } from "node:net";
 import { dirname, isAbsolute, join } from "node:path";
+import { sizeText } from "./attachments.ts";
 import type { SwitchName } from "./projects.ts";
 
 /** What a connection that is not the app's is told: it reaches an agent that tried, so it says what to do instead. */
@@ -313,7 +314,41 @@ type DeviceRow = {
 	reading?: true | ((params: Params) => boolean);
 	/** Whether it may also wait in the relay's mailbox as a sealed item (4.2's last column). */
 	mailbox?: (params: Params) => boolean;
+	/** The text it hands a conversation as the person's own words, held to MAX_TYPED_FROM_A_DEVICE (`typedRefusal`, #924). */
+	typed?: Typed;
 };
+
+/** What a request's typed text is, for its refusal's words, and where it is in the parameters. */
+type Typed = { what: "message" | "answer"; text: (params: Params) => unknown };
+
+const typedMessage: Typed = { what: "message", text: (params) => params.text };
+const typedAnswer: Typed = { what: "answer", text: (params) => params.text };
+
+/**
+ * The most typed text a phone may hand a conversation in one request (#924, the owner's decision): 1 MB of UTF-8. The
+ * Mac's own app is not held to it. The phone says the same before it sends (`TypedTextLimit` in iphone/).
+ */
+export const MAX_TYPED_FROM_A_DEVICE = 1024 * 1024;
+
+/**
+ * Why a device's request is refused for its typed text, or null: a message, an edit, a message handed to an agent, or
+ * an answer in words over MAX_TYPED_FROM_A_DEVICE bytes of UTF-8. Measured in place, before the request is handled,
+ * logged or masked, so that refusing a text of tens of megabytes copies none of it (`Buffer.byteLength` reads the
+ * string; a string of at most a third of the limit in UTF-16 units cannot be over it, and is not read at all).
+ */
+export function typedRefusal(method: string, params: Params): string | null {
+	const typed = Object.hasOwn(FROM_A_DEVICE, method) ? FROM_A_DEVICE[method]!.typed : undefined;
+	if (typed === undefined) return null;
+	const text = typed.text(params);
+	if (typeof text !== "string" || text.length * 3 <= MAX_TYPED_FROM_A_DEVICE) return null;
+	const bytes = Buffer.byteLength(text, "utf8");
+	if (bytes <= MAX_TYPED_FROM_A_DEVICE) return null;
+	// Rounded to a tenth, a text barely over the limit would read as "1.0 MB; at most 1 MB", as a picture's would.
+	const size = sizeText(bytes) === sizeText(MAX_TYPED_FROM_A_DEVICE) ? "just over 1 MB" : sizeText(bytes);
+	return typed.what === "message"
+		? `A message from a phone can carry at most 1 MB of typed text; this one has ${size}. Shorten it, or send it from the Mac.`
+		: `An answer from a phone can carry at most 1 MB of typed text; this one has ${size}. Shorten it, or answer on the Mac.`;
+}
 
 /** The switches whose approvals are the person's ordinary acts; an approval for any other widens (4.2). */
 const NARROW_SWITCHES: ReadonlySet<SwitchName> = new Set<SwitchName>(["startAgents", "fileWork", "closeWork"]);
@@ -363,8 +398,10 @@ const FROM_A_DEVICE: Record<string, DeviceRow> = {
 	// Messages, starts and stops.
 	submit: {
 		why: "a message, as the person sends one at the Mac",
-		// Text only, at most 4,000 characters, in the mailbox.
-		mailbox: (params) => params.attachments === undefined && typeof params.text === "string" && [...params.text].length <= 4_000,
+		// Text only, at most 4,000 characters, in the mailbox: never more than 8,000 UTF-16 units, so that a long text is
+		// refused without being spread into characters.
+		mailbox: (params) => params.attachments === undefined && typeof params.text === "string" && params.text.length <= 8_000 && [...params.text].length <= 4_000,
+		typed: typedMessage,
 	},
 	continue: { why: "a message's ordinary next step" },
 	abort: { why: "stopping only narrows", mailbox: always },
@@ -373,10 +410,11 @@ const FROM_A_DEVICE: Record<string, DeviceRow> = {
 	"chat.continueWithAgent": {
 		why: "Continue with an Agent; with an explicit folder it is the Mac's, past a limit it widens",
 		may: (params) => (params.cwd != null ? "no" : pastALimit(params)),
+		typed: typedMessage,
 	},
 	"conversation.compact": { why: "the person's ordinary act" },
 	"conversation.reset": { why: "the person's ordinary act" },
-	"conversation.edit": { why: "the person's ordinary act" },
+	"conversation.edit": { why: "the person's ordinary act", typed: typedMessage },
 	"conversation.version": { why: "the person's ordinary act" },
 	"conversation.retry": { why: "Try Again, on the same model or another the person has (4.2, two rows)" },
 	"background.stop": { why: "stopping only narrows" },
@@ -398,7 +436,7 @@ const FROM_A_DEVICE: Record<string, DeviceRow> = {
 		may: (params, session) => approvalAnswer(params.decision, params.id, session),
 		mailbox: always,
 	},
-	"inbox.answer": { why: "an answer to an agent's question", mailbox: always },
+	"inbox.answer": { why: "an answer to an agent's question", mailbox: always, typed: typedAnswer },
 	"needs.answer": {
 		why: "an answer under Needs you; allowing a reach request or Start anyway on a limit widens",
 		may: (params, session) => {
@@ -420,6 +458,11 @@ const FROM_A_DEVICE: Record<string, DeviceRow> = {
 			}
 		},
 		mailbox: always,
+		// A question's or a decision's answer in words, or a rule's text.
+		typed: {
+			what: "answer",
+			text: (params) => (typeof params.answer === "object" && params.answer !== null ? (params.answer as Params).text : undefined),
+		},
 	},
 	"work.act": { why: "what the person does by hand on the board; it merges nothing (4.2); past a limit, it widens", may: pastALimit },
 	"github.settle": {
