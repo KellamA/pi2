@@ -94,6 +94,9 @@ enum NeedAnswering {
         case taken
         /// Kept in the Outbox, to go once the Mac can be reached: the engine has not seen it yet.
         case kept
+        /// Start anyway, which the engine took and held again past a limit the card did not cover, keeping the card with
+        /// its new reading: it answers `{ held: true, limit }` (#953).
+        case held
         /// Not sent, with why, as the person reads it.
         case refused(String)
     }
@@ -108,19 +111,25 @@ enum NeedAnswering {
     static func deliver(_ reply: NeedReply, to id: String, through engine: EngineSession<MessageField>) async -> Sent {
         let request = reply.request(for: id)
         do {
-            let result = try await engine.call(request.method, request.params)
-            // `CachedTransport` answers with the Outbox's item, `{ "outbox": id }`; the engine never does.
-            return result["outbox"]?.stringValue != nil ? .kept : .taken
+            return sent(try await engine.call(request.method, request.params))
         } catch {
             return .refused(error.localizedDescription)
         }
+    }
+
+    /// What an answer the request was given says came of it.
+    nonisolated static func sent(_ result: JSONValue) -> Sent {
+        // `CachedTransport` answers with the Outbox's item, `{ "outbox": id }`; the engine never does.
+        if result["outbox"]?.stringValue != nil { return .kept }
+        return result["held"] == .bool(true) ? .held : .taken
     }
 }
 
 /// A start allowed past the project's limit that the engine held again: it takes Start anyway, finds the limit has moved
 /// on since the card was drawn (more spent, a tighter window), and keeps the card with the new reading for the person to
 /// read again, answering the request as done (`onAnswer("limit")` in engine/src/projectlimitstarts.ts). The card is then
-/// to be answered again, not shown as answered.
+/// to be answered again, not shown as answered. Since #953 the engine says so itself (`Sent.held`); this is for a Mac
+/// whose engine is older.
 enum NeedHeldAgain {
     static func isHeldAgain(_ reply: NeedReply, need id: String, waiting: [NeedItem]) -> Bool {
         guard case .limit(start: true) = reply else { return false }
