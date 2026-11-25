@@ -146,6 +146,29 @@ EOF
 
 die() { echo "test-copy: $*" >&2; exit 1; }
 
+# The path $1 names with every symbolic link in it followed, so that two spellings of one place compare equal (macOS
+# keeps /tmp at /private/tmp, where a conversation's scratch folder is; #880) and a link cannot pass for somewhere
+# else. What does not exist yet is kept as given, below the deepest part of it that does.
+resolved() {
+	local p=$1 rest="" link links=0 dir
+	[[ $p == /* ]] || p="$PWD/$p"
+	while :; do
+		if [[ -L $p ]] && ((links++ < 64)); then
+			link=$(readlink -- "$p")
+			[[ $link == /* ]] || link="$(dirname -- "$p")/$link"
+			p=$link
+		elif [[ -d $p && ! -L $p ]] && dir=$(cd -P -- "$p" 2>/dev/null && pwd -P); then
+			[[ $dir == / && -n $rest ]] && dir=""
+			printf '%s' "$dir$rest"
+			return 0
+		else
+			# Not a folder, or not there: resolve its folder and keep its name.
+			rest="/$(basename -- "$p")$rest"
+			p=$(dirname -- "$p")
+		fi
+	done
+}
+
 ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 SOURCE="$ROOT/app/build/pi² dev.app"
 RELEASE="$ROOT/app/build/pi².app"
@@ -196,6 +219,15 @@ names() {
 	lower_data=$(tr '[:upper:]' '[:lower:]' <<<"$DATA")
 	[[ $lower_id != "$USUAL_ID" && $lower_id != "$USUAL_ID.dev" ]] || die "refusing the bundle id $ID"
 	[[ $lower_data != "$(tr '[:upper:]' '[:lower:]' <<<"$USUAL_HOME")" ]] || die "refusing the data folder $DATA"
+	# And where it leads: a symbolic link must not make the usual data folder, or one inside it, or the development
+	# build's as built (pi2-dev), the copy's. Compared in lower case, as the disk ignores case.
+	local real usual
+	real=$(resolved "$DATA" | tr '[:upper:]' '[:lower:]')
+	for usual in "$USUAL_HOME" "$USUAL_HOME-dev"; do
+		usual=$(resolved "$usual" | tr '[:upper:]' '[:lower:]')
+		[[ $real != "$usual" && $real != "$usual/"* ]] ||
+			die "refusing the data folder $(tidy "$DATA"): it leads to $(tidy "$(resolved "$DATA")"), which is not the copy's own"
+	done
 	[[ $SERVICE != "$USUAL_SERVICE" && $SERVICE == "$USUAL_SERVICE".?* ]] || die "refusing the Keychain service $SERVICE"
 }
 
@@ -614,7 +646,9 @@ require_source() {
 	main=$("$PLIST" -c 'Print :PI2EngineMain' "$SOURCE/Contents/Info.plist" 2>/dev/null || true)
 	[[ ! -L $SOURCE && -n $main && ! -e "$SOURCE/Contents/Resources/engine" ]] ||
 		die "$(tidy "$SOURCE") is not a development build (it carries its own engine, is a symlink, or has no PI2EngineMain)"
-	[[ $main == "$ROOT/engine/src/main.ts" && -f $main ]] ||
+	# build.sh writes the checkout as the shell it ran in spelled it, which may be through a link (/tmp for
+	# /private/tmp); ROOT is resolved, so resolve this side too.
+	[[ -n $main && $(resolved "$main") == "$ROOT/engine/src/main.ts" && -f $main ]] ||
 		die "$(tidy "$SOURCE") runs the engine at $(tidy "$main"), not this checkout's; build it again here with ./app/build.sh"
 	[[ -d "$ROOT/engine/node_modules" ]] || die "the engine's packages are not installed: run (cd engine && npm ci)"
 }
@@ -624,6 +658,11 @@ copy_bundle() {
 	ditto "$SOURCE" "$app" || die "could not copy the latest development build"
 	"$PLIST" -c "Set :CFBundleIdentifier $ID" -c "Set :CFBundleName $NAME" -c "Set :CFBundleDisplayName $NAME" \
 		"$app/Contents/Info.plist" >/dev/null || die "could not give the copy its own bundle id and name"
+	# The engine as this checkout's resolved path, the same file require_source found the build names: the copy's app
+	# finds its own folder in the checkout from it (TestCopyControl), and compares it with where the copy's bundle is,
+	# which is resolved, as ROOT is.
+	"$PLIST" -c "Set :PI2EngineMain $ROOT/engine/src/main.ts" "$app/Contents/Info.plist" >/dev/null ||
+		die "could not name the checkout's engine in the copy"
 	[[ $("$PLIST" -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist") == "$ID" ]] ||
 		die "the copy's bundle id did not change"
 	# Editing Info.plist breaks the signature; sign it again, ad hoc. ditto kept Sparkle's symbolic links.
@@ -638,7 +677,7 @@ require_copy() {
 		die "the copy's bundle is missing or has a different bundle id"
 	local main
 	main=$("$PLIST" -c 'Print :PI2EngineMain' "$APP/Contents/Info.plist" 2>/dev/null || true)
-	[[ $main == "$ROOT/engine/src/main.ts" && ! -e "$APP/Contents/Resources/engine" ]] ||
+	[[ -n $main && $(resolved "$main") == "$ROOT/engine/src/main.ts" && ! -e "$APP/Contents/Resources/engine" ]] ||
 		die "the copy is not a development build of this checkout"
 	[[ $APP_EXE == "$APP/Contents/MacOS/pi2" ]] || die "the recorded app executable is not the copy"
 }

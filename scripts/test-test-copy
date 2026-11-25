@@ -153,6 +153,28 @@ mkdir -p "$root/engine/src"
 touch "$root/engine/src/main.ts"
 /usr/libexec/PlistBuddy -c "Set :PI2EngineMain $root/engine/src/main.ts" "$dev/Contents/Info.plist"
 expect "the engine's packages are not installed" start test-7
+# A checkout reached through a symbolic link, as a scratch folder under /tmp is (/private/tmp; #880): build.sh names
+# the engine as the shell spelled the checkout, and the script, run by that spelling too, takes it as this checkout's.
+ln -s checkout "$T/linked"
+/usr/libexec/PlistBuddy -c "Set :PI2EngineMain $T/linked/engine/src/main.ts" "$dev/Contents/Info.plist"
+expect "the engine's packages are not installed" start test-7
+copy=$T/linked/scripts/test-copy expect "the engine's packages are not installed" start test-7
+/usr/libexec/PlistBuddy -c "Set :PI2EngineMain $root/engine/src/main.ts" "$dev/Contents/Info.plist"
+copy=$T/linked/scripts/test-copy expect "the engine's packages are not installed" start test-7
+# A link elsewhere is still elsewhere.
+mkdir -p "$T/other/engine/src"
+touch "$T/other/engine/src/main.ts"
+ln -s other "$T/linked-other"
+/usr/libexec/PlistBuddy -c "Set :PI2EngineMain $T/linked-other/engine/src/main.ts" "$dev/Contents/Info.plist"
+expect "not this checkout's" start test-7
+# A bundle that is itself a link, to the installed app or anything else, is never copied.
+mv "$dev" "$T/installed.app"
+ln -s "$T/installed.app" "$dev"
+/usr/libexec/PlistBuddy -c "Set :PI2EngineMain $root/engine/src/main.ts" "$T/installed.app/Contents/Info.plist"
+expect "is not a development build" start test-7
+rm "$dev"
+mv "$T/installed.app" "$dev"
+rm -rf "$T/other" "$T/linked-other"
 mkdir "$root/engine/node_modules"
 
 # A copy of that name started from this checkout already, or starting: its folder is there.
@@ -594,6 +616,8 @@ HOME="$T/home" expect "different bundle id" reopen test-7
 /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier dev.pi2.app.test-7' "$saved/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :PI2EngineMain /elsewhere/main.ts' "$saved/Contents/Info.plist"
 HOME="$T/home" expect "not a development build of this checkout" reopen test-7
+/usr/libexec/PlistBuddy -c "Set :PI2EngineMain $T/linked/engine/src/main.ts" "$saved/Contents/Info.plist"
+HOME="$T/home" expect "recorded app executable is not the copy" reopen test-7
 /usr/libexec/PlistBuddy -c "Set :PI2EngineMain $root/engine/src/main.ts" "$saved/Contents/Info.plist"
 HOME="$T/home" expect "recorded app executable is not the copy" reopen test-7
 printf '%s\n' "app_pid=$$" 'app_start=not this process' \
@@ -965,6 +989,24 @@ for test in test-test-copy-send.mjs test-test-copy-drive.mjs; do
 	fi
 done
 HOME="$T/home" expect "refusing a symlink" reopen test-7
+
+# A copy's data folder that is a link to the usual data folder (a stand-in here, never the real one), into it, or to
+# the development build's as built, is refused by every command, before anything is made, read or removed (#880).
+support="$T/home/Library/Application Support"
+mkdir -p "$support/pi2/worktrees" "$support/pi2-dev"
+for target in pi2 pi2/ pi2/worktrees PI2 pi2-dev "$support/pi2"; do
+	ln -s "$target" "$support/pi2-test-9"
+	for command in start stop status call socket reopen; do
+		HOME="$T/home" expect "refusing the data folder" "$command" test-9
+	done
+	rm -- "$support/pi2-test-9"
+done
+# And through a chain of links, one of them relative.
+ln -s "$support/pi2" "$T/usual-elsewhere"
+ln -s "../../../usual-elsewhere" "$support/pi2-test-9"
+HOME="$T/home" expect "refusing the data folder" start test-9
+rm -- "$support/pi2-test-9" "$T/usual-elsewhere"
+rm -rf -- "$support/pi2" "$support/pi2-dev"
 
 if ! swiftc -D PI2_DEVELOPMENT "$sources/ProjectCopyView.swift" "$(dirname -- "$script")/test-test-copy-project.swift" -o "$T/check-project-view" ||
 	! PI2_SHOW='project:Demo project#now' PI2_HUB=conversation-folded "$T/check-project-view"; then
