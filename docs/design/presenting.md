@@ -93,7 +93,7 @@ defineTool({
 });
 ```
 
-- **Refused before anything is copied**, each with what to do instead: no items or more than six; a label over 12 characters or two the same; a path `read` could not read (the same reach and the same checks); a file that is neither a picture of a kind it takes nor HTML (`.html`, `.htm`); one over the [limits](#where-presented-files-are-copied-and-their-limits); `choices` without `question`, or not 2 to 6 of at most 60 characters; `wait: false` outside a project ("In a conversation outside a project, a question waits for its answer; leave out wait"); `update` naming no presentation of this conversation.
+- **Refused before anything is copied**, each with what to do instead: no title, or one over 120 characters; no items or more than six; a label over 12 characters or two the same (compared without case, an agent's label against a default letter too); a caption over 400 characters; a path `read` could not read (the same reach and the same checks: the conversation's folder, `~`, `$PI2_SCRATCH`, and no other variable), or one whose last part is a symbolic link (present follows none: "present the file it points to"); a file that is neither a picture of a kind it takes nor HTML (`.html`, `.htm`); one over the [limits](#where-presented-files-are-copied-and-their-limits); `choices` without `question`, or not 2 to 6 of at most 60 characters; `wait: false` outside a project ("In a conversation outside a project, a question waits for its answer; leave out wait"); `update` naming no presentation of this conversation.
 - **A text-only model** uses it as any other: it writes the page, presents it, and learns from the answer whether it drew (an empty page, a script error, a stylesheet it could not reach), and can `look` at the snapshot when the person has chosen a model that looks at pictures ([pictures.md](../pictures.md#a-model-that-looks-at-pictures)).
 - **Its prompt section**: none. The description says when to use it; agents of this repository are told to present what `scripts/test-copy shot` and `scripts/iphone-sim shot` make ([below](#from-a-test-copy-or-a-simulator)).
 
@@ -139,7 +139,9 @@ presented/<conversation>/blobs/<sha256>          each file's bytes, once, by con
 presented/<conversation>/pages/<sha256>.json     a page's manifest: { "entry": "index.html", "files": { "<path>": { "sha256", "bytes", "type" } } }
 ```
 
-`<conversation>` is the conversation's id, or for a chat's versions the chat's (`chatIdOf`). A page's folder is the HTML file's own folder and everything below it, without hidden files or folders (`.git`), `node_modules`, and symbolic links that lead out of the folder; paths in the manifest are relative, `/`-separated and normalised (no `..`).
+`<conversation>` is the conversation's id, or for a chat's versions the chat's (`chatIdOf`). A page's folder is the HTML file's own folder and everything below it, without hidden files or folders (`.git`), `node_modules`, and symbolic links, whether they lead out of the folder or not (as built: a link is never followed, so none is judged); paths in the manifest are relative, `/`-separated and normalised (no `.` or `..` part, no backslash or control character, 1,024 characters at most; a file whose path is not is left out). A page whose folder is the home folder, one that holds it, or `~/Library` is refused before anything in it is read: walking it would read the person's whole Mac, and folders macOS asks before letting pi² read. A walk that opens more than 2,000 folders is refused as no mockup's.
+
+Every file is read once, from one descriptor opened without following a link at its name (`O_NOFOLLOW`): its size is checked on that descriptor, exactly that many bytes must be read, and its size, time and inode must be the same after, or it "changed while it was being copied" and the call is refused. The blob is written from those bytes, to a new name and then renamed, so a reader never sees half of one.
 
 | Limit | |
 |---|---|
@@ -185,7 +187,7 @@ type PresentedItem = {
 	sha256: string;          // a picture's blob, or a page's manifest
 	bytes: number;           // a picture's, or a page's folder's
 	files: number;           // 1 for a picture
-	width: number | null;    // a picture's pixels; a page's drawn width in CSS pixels (1280)
+	width: number | null;    // a picture's pixels (an SVG's stated size, or null); a page's drawn width in CSS pixels (1280), null until drawn
 	height: number | null;   // a picture's pixels; a page's drawn height, the whole of it
 	/** A page's picture as drawn: "drawn" with its blob, "pending" while no app has drawn it, "failed" with why. */
 	snapshot: { state: "drawn"; sha256: string } | { state: "pending" } | { state: "failed"; reason: string } | null; // null for a picture
@@ -195,7 +197,7 @@ type PresentedItem = {
 
 type PresentedQuestion = {
 	text: string;
-	choices: { id: string; label: string }[];   // ids "1", "2", … as needs.ts makes them
+	choices: { id: string; label: string }[];   // ids "c1", "c2", … as needs.ts makes them
 	words: true;                                 // an answer in words is always taken
 	need: string;                                // the Inbox item's id (it waits) or the stored need's ("n…", wait: false)
 	/** Set once it has ended: the choice's label or the words, or why it ended. */
@@ -203,13 +205,14 @@ type PresentedQuestion = {
 };
 ```
 
-The tool's result (`details`) holds `{ presentation: "p2", version: 3 }` and the whole `PresentedVersion` as it was when it was presented, so an Export, a fork, or a page with no access to the document still draws the card; the document is the newer truth (a snapshot drawn later, an answer).
+The tool's result (`details`) holds the whole `PresentedVersion` as it was when it was presented, with `presentation: "p2"` beside its fields (`{ presentation, version, callId, createdAt, title, items, question }`, one flat object, as the transcript page reads it), and, once its question is answered, that answer in `question.answer`; so an Export, a fork, or a page with no access to the document still draws the card; the document is the newer truth (a snapshot drawn later, an answer).
 
 ### The question
 
 - **It waits** (the default): an Inbox item, as `ask_user`'s, with `kind: "question"`, `tool: "present"`, and two new optional fields, `choices` and `presentation: { conversationId, presentation, version }`. On the wire (`needs` event, 3.9 of [projects.md](../projects.md)) it is a **`decision`** with `blocking: true`, `words: true` and the same `presentation`, so every Needs you card and the phone already draw it and answer it with `{ kind: "decision", choice }` or `{ kind: "decision", text }` through `claim`. The waiting call is given the chosen choice's label or the words.
 - **`wait: false`** (a project only): a stored need of kind `decision` with `presentation` added, put as `needs_you` puts one; the answer comes back as a wake of kind `answer` (`wakes.ts`).
-- Either way the engine sets `question.answer` in `pi2.presented` when it ends, in the commit that ends it.
+- Either way the engine sets `question.answer` in `pi2.presented` when it ends. A stored decision's answer or withdrawal is written in the commit that ends it (`claim`'s, `needs_you`'s withdraw, a conversation put away). An Inbox item is taken in memory, as every one is, and the waiting call writes the answer in its next commit; a message ends it as `{ ended: "messaged" }`, stopping the run as `{ ended: "stopped" }` in a commit of the engine's own, since the call's context is cancelled.
+- With no `choices`, there is one per item, "Use A" for item A: with a single item, that is one button, and the person can still answer in words. The answer the agent is given says a default choice by its item's label ("The person chose B.") and one of its own in quotation marks ("The person chose “Neither”.").
 
 ### Drawing a page: the engine asks the app
 
@@ -219,9 +222,9 @@ The engine never loads a page. As the browser does, it asks the app that registe
 |---|---|---|
 | app → engine | `present.register {}` | This connection draws pages. The latest app to ask draws. Answer `{}` |
 | engine → app | event `present.draw { requestId, conversationId, presentation, version, item, width: 1280, height: 800 }` | Draw this page as [below](#how-a-page-is-drawn), offscreen |
-| app → engine | `present.drawn { requestId, ok, loadMs, blank, height, console, blocked, snapshot?: { mimeType: "image/png", data }, reason? }` | What it found. `console` at most 50 lines of 500 characters; `blocked` at most 20 addresses. Answer `{ answered }` |
+| app → engine | `present.drawn { requestId, ok, loadMs, blank, height, console, blocked, snapshot?: { mimeType: "image/png", data }, reason? }` | What it found. `console` at most 50 lines of 500 characters; `blocked` at most 20 addresses of 2,048; `reason` 500; the snapshot a PNG of 20 MB at most and 16,384 pixels a side. Answer `{ answered }`: false for a request id this engine did not ask this connection, or one already answered; an answer past a bound is refused with an error and the draw stays waiting |
 
-The tool waits for the answer at most 20 seconds a page (pages of one call are drawn at the same time), then answers with what it has: a page not answered by then is `pending`, drawn when it is answered, as is every page `pending` when an app registers. `present.drawn` stores the snapshot as a blob and the findings in the item, and sends `conversation.presented`.
+The tool waits for the answer at most 20 seconds a page (pages of one call are drawn at the same time; `PI2_PRESENT_DRAW_MS`, a development engine's test switch, sets another), then answers with what it has: a page not answered by then is `pending`, drawn when it is answered, as is every page `pending` when an app registers. `present.drawn` stores the snapshot as a blob and the findings in the item, and sends `conversation.presented`.
 
 ### Events and requests for the app and the phone
 
@@ -235,7 +238,9 @@ The tool waits for the answer at most 20 seconds a page (pages of one call are d
 
 `id` is the conversation as the app shows it (the chat's id for a chat). Every one of these must be named in `answers.ts`'s lists, which is a path waiting for the owner's review ([Roadmap](#roadmap)).
 
-The event **`conversation.presented { id, record: PresentationRecord }`** goes to every connection subscribed to that conversation (as `conversation` events do) whenever a version is added, a snapshot drawn, the network switch changed, or a question ended.
+The event **`conversation.presented { id, record: PresentationRecord }`** goes to every connection subscribed to that conversation (as `conversation` events do) whenever a version is added, a snapshot drawn, the network switch changed, or a question ended. It follows every commit that changes `pi2.presented`, whatever made it, and carries each record that changed, whole.
+
+- **Not to a phone, as built.** A device session is sent only the events `TO_A_DEVICE` names (`remote.ts`, an owner's path), and this is not among them, so the phone's card knows a snapshot drawn later only from a later `presented.picture`; piece 6 decides whether to name it there, or to have the page ask again.
 
 ### The transcript page
 
@@ -298,6 +303,18 @@ The same view (`PresentedPageView`, in `TranscriptKit` beside the transcript's s
 ### For the security read when it is built
 
 The claims to check: that the live view has no message handler; that a page cannot load a `file:` address, its original folder, another presentation's origin, or any network address with the network off (fetch, XHR, `<img>`, CSS `url()`, `@import`, fonts, WebSocket, `EventSource`, `navigator.sendBeacon`, a form, a meta refresh, a link, `window.open`, WebRTC); that DNS prefetching (`<link rel="dns-prefetch">`) sends no query (WebKit's own setting, or the rule list; to be measured); that the scheme handler cannot be made to serve a path outside the manifest (`..`, encoded `%2e%2e`, a symbolic link in the copy, a very long path); that the manifest is made without following a link out of the folder and without reading a file twice (a file changed between the size check and the copy); and that nothing a page does puts up a panel or a permission prompt.
+
+The engine's claims, as piece 2 built them (`engine/src/presented.ts`; `engine/test/presented.ts` checks each):
+
+- **`presented.picture` finds the conversation as `conversation.image` does**: `Engine.conversation`, which is main.ts's own `conversation`, so a chat's id is its version shown, and an unknown id is refused in the same words. Its files are then read under `presented/<chatOf(that conversation)>/` alone.
+- **`presentation`, `version` and `item`** are taken only as `p` and a whole number (`/^p[1-9][0-9]{0,8}$/`), a whole number from 1 and one from 0, and looked up only in that conversation's `pi2.presented` (`Object.hasOwn`, so `__proto__` and `constructor` are no presentations); anything else is refused, and one the record lacks is "This conversation has no such presentation."
+- **A blob's SHA-256 comes from the record**, never from the request's parameters (a `sha256` or `path` sent is not read), must be 64 hex digits, and is read only under `presented/<conversation>/blobs/`, each folder from `presented` down checked with `lstat` to be a folder and not a link, the file opened with `O_NOFOLLOW`, and its bytes hashed again: a file changed on disk is refused, not served.
+- **A page's snapshot not yet drawn** (pending or failed) is refused: "That page has not been drawn yet: pi² draws it while it is open on this Mac. Try again once it has been drawn."
+- **`presented.file` serves only a path its stored manifest has**, by exact string (`Object.hasOwn` on the manifest's `files`), after the manifest itself is read as a blob is (by the item's SHA-256, checked): `..`, `%2e%2e`, an absolute path, a link in the folder (never in a manifest), a path of over 1,024 characters, and one differing in case or Unicode form (NFD for NFC) are refused, "The page has no such file." A path is not decoded: the app decodes its URL once, and what it asks for must be the manifest's own text.
+- **A phone is handed PNG, JPEG, GIF or WebP alone** by `presented.picture`: a page's snapshot is a PNG, a raster picture's first bytes are checked again as it is sent, and an SVG is refused to a device session with "An SVG picture is shown on the Mac only: it is not sent to a phone. Look at it in pi² on the Mac.": not converted. `presented.list` and `presented.file` refuse a device session in their handlers too, behind `answers.ts`'s refusal.
+- **`present.drawn` is bounded and taken once**: its `requestId` must be one this engine sent in a `present.draw` to the very connection answering (a draw is kept with the connection it was sent to), and is dropped once an answer is taken; another connection, an id never asked for and a second answer get `{ answered: false }` and store nothing. The bounds are checked before anything is written: 50 console lines of 500 characters, 20 blocked addresses of 2,048, a reason of 500, a snapshot of 20 MB at most, base64, a PNG by its first bytes, at most 16,384 pixels a side; findings are made one line each. At most 200 draws wait at once (the oldest is forgotten; its page stays pending). A connection that closes takes its draws with it. `present.register` and `present.drawn` are the app's alone (`answers.ts`), so a command on the socket can neither register to be sent pages nor answer for the app.
+- **What the agent can make the engine do with files.** It reads only what `read` could, and the item's own name is never a link; a page's walk follows no link and stops at 500 files, 50 MB and 2,000 folders, and the home folder, what holds it and `~/Library` are refused unread. It writes only into the data folder's `presented/` (new names, renamed into place) and `$PI2_SCRATCH/presented/`, where a snapshot is written to a new name (`wx`, so never through a link the agent put there) and renamed over the old one, and only if that folder is not a link.
+- **What is kept, and how long**: 100 MB a call, 500 MB of distinct files a conversation (what it keeps already is not counted again); removed when the conversation, or the one it is a sub-chat of, is deleted (never on a guess: a conversation the library does not know keeps its folder); cloned to a fork; copied into a backup and back by a restore, links left out.
 
 ## What the owner decides
 

@@ -48,8 +48,9 @@ import { fileURLToPath } from "node:url";
  * only tests change: `PI2_AWAKE_GRACE_MS`, `PI2_AWAKE_POLL_MS` (keepawake.ts),
  * `PI2_COMMAND_TIMEOUT_SECONDS` (commands.ts), `PI2_OUTPUT_WAIT_SECONDS` (background.ts), `PI2_LIMITS_MIN_INTERVAL_MS`
  * (limits.ts), the `PI2_LIMIT_*_MS` (limitwait.ts), `PI2_LOCAL_STALL_MS`, `PI2_LOCAL_RETRY_MS`, `PI2_LOCAL_RETRIES`,
- * `PI2_LOCAL_KEEP_FREE`, `PI2_LOCAL_MEMORY_GB` (localmodels.ts), `PI2_LOCAL_RUN_RETRY_MS` (localrun.ts) and
- * `PI2_WAKES_PER_HOUR` (wakes.ts).
+ * `PI2_LOCAL_KEEP_FREE`, `PI2_LOCAL_MEMORY_GB` (localmodels.ts), `PI2_LOCAL_RUN_RETRY_MS` (localrun.ts),
+ * `PI2_PRESENT_DRAW_MS` (how long `present` waits for the app to draw a page, presented.ts) and `PI2_WAKES_PER_HOUR`
+ * (wakes.ts).
  */
 export const TEST_SWITCHES = [
 	"PI2_APPROVAL_DEPTH_THROWS",
@@ -88,6 +89,7 @@ export const TEST_SWITCHES = [
 	"PI2_LOCAL_STALL_MS",
 	"PI2_OUTPUT_WAIT_SECONDS",
 	"PI2_PAIR_UNATTESTED",
+	"PI2_PRESENT_DRAW_MS",
 	"PI2_REMOTE_STAND_IN",
 	"PI2_RESTORE_COMMIT_GATE",
 	"PI2_TEST_ALLOW_ADDRESS",

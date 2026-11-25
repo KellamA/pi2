@@ -1,14 +1,27 @@
 
-// Backups: a folder holding a consistent copy of the database and the app's settings files. Keys and sign-ins live
-// in the Keychain and are not part of a backup.
+// Backups: a folder holding a consistent copy of the database and the app's settings files, and the files agents
+// presented (`presented/`). Keys and sign-ins live in the Keychain and are not part of a backup.
 
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { constants, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import { testSwitch } from "./testswitches.ts";
 
 const SETTINGS_FILES = ["endpoints.json", "added-models.json", "mcp.json", "settings.json", "credentials.json"];
 const DATABASE = "session.sqlite";
+/**
+ * The files agents presented (presented.ts, #946), which `pi2.presented` in the database names by their content: kept
+ * with it, copied after it, so a backup holds every file its records name (a file added since is one more, unnamed).
+ */
+const PRESENTED = "presented";
+
+/**
+ * Copy a folder of presented files: real folders and files only, a link left out (the engine never makes one there),
+ * as clones where the disk can (APFS: no space until either changes).
+ */
+export function copyPresented(from: string, to: string): void {
+	cpSync(from, to, { recursive: true, mode: constants.COPYFILE_FICLONE, errorOnExist: false, force: false, filter: (path) => !lstatSync(path).isSymbolicLink() });
+}
 
 const stamp = (at = new Date()) =>
 	`${at.getFullYear()}${String(at.getMonth() + 1).padStart(2, "0")}${String(at.getDate()).padStart(2, "0")}-${String(at.getHours()).padStart(2, "0")}${String(at.getMinutes()).padStart(2, "0")}${String(at.getSeconds()).padStart(2, "0")}`;
@@ -99,6 +112,7 @@ export async function createBackup(home: string, directory: string): Promise<str
 			source.close();
 		}
 		for (const name of SETTINGS_FILES) if (existsSync(join(home, name))) cpSync(join(home, name), join(partial, name));
+		if (existsSync(join(home, PRESENTED))) copyPresented(join(home, PRESENTED), join(partial, PRESENTED));
 		writeFileSync(join(partial, "manifest.json"), JSON.stringify({ app: "pi2", format: 1, createdAt: Date.now() }, null, "\t"));
 		rmSync(join(partial, OWNER));
 		renameSync(partial, target);
@@ -224,9 +238,10 @@ export function restoreBackup(home: string, from: string): string {
 	if (manifest.format !== 1) throw new Error("That backup was made by a newer version of pi2");
 	const aside = join(home, `before-restore-${stamp()}`);
 	mkdirSync(aside, { recursive: true });
-	for (const name of [DATABASE, `${DATABASE}-wal`, `${DATABASE}-shm`, ...SETTINGS_FILES]) {
+	for (const name of [DATABASE, `${DATABASE}-wal`, `${DATABASE}-shm`, ...SETTINGS_FILES, PRESENTED]) {
 		if (existsSync(join(home, name))) renameSync(join(home, name), join(aside, name));
 	}
 	for (const name of [DATABASE, ...SETTINGS_FILES]) if (existsSync(join(from, name))) cpSync(join(from, name), join(home, name));
+	if (existsSync(join(from, PRESENTED))) copyPresented(join(from, PRESENTED), join(home, PRESENTED));
 	return aside;
 }

@@ -71,6 +71,7 @@ import { armSchedules, scheduleRequests, schedulesEvent, scheduleTimer, setSched
 import { agents, busyConversations, chatOf, conversationsWithWork, isSubChat, library, refreshBusy, rootOf, setAgents, setLibrary, setVersions, setWorking, versions, working } from "./indexes.ts";
 import { McpServers } from "./mcp.ts";
 import { claim } from "./needs.ts";
+import { presentedStorage } from "./presented.ts";
 import { ComputerHost, hasApps } from "./computer.ts";
 import { plainProviderError } from "./providererror.ts";
 import { DEMO_MODEL, DEMO_PROVIDER, defaultThinking, LOCAL_PROVIDER, Providers } from "./providers.ts";
@@ -282,6 +283,7 @@ const engine: Engine = {
 	log,
 	agents: () => agents,
 	library: () => library,
+	conversation: (id) => conversation(id),
 	chatSettings: () => chatSettings(settings.chat),
 	pictureModel: () => settings.pictureModel ?? null,
 	setPictureModel: (model) => {
@@ -906,7 +908,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	// `backup`: whether the last backup did not finish, for Settings › Storage (backup.ts, #792). A device is told no path of
 	// the Mac's, and nothing of its upkeep (docs/iphone.md 5.7).
 	"engine.info": async (_params, client) =>
-		client.device !== undefined ? { build, pid: process.pid } : { build, main: engineMain, pid: process.pid, backup: backupStatus(home) },
+		client.device !== undefined ? { build, pid: process.pid } : { build, main: engineMain, pid: process.pid, backup: backupStatus(home), presented: presentedStorage(home) },
 	/** Whether this connection may act for the person (#504): the app asks once it has connected. */
 	"connection.mayAnswer": async (_params, client) => {
 		const { allowed, why } = await mayAnswer(client);
@@ -1014,6 +1016,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			},
 			context,
 		);
+		for (const feature of host.features) await feature.forked?.(sourceId, fork.id as unknown as number);
 		// A fork of a conversation in no project goes into its folder's project (9.9), as one made is.
 		for (const feature of host.features) await feature.made?.(fork.id as unknown as number);
 		return { id: fork.id };

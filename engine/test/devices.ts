@@ -31,7 +31,6 @@ import { ANSWER_NOT_SENT, DEVICE_LINE_FAILED, forDevice, MAX_HELPER_LINE, MAX_LI
 import { NOT_LINKED, NOT_OFFERED } from "../src/folders.ts";
 import { offerFolders } from "../src/answers.ts";
 import { SETTINGS_ONLY_IN_THE_APP } from "../src/answers.ts";
-import { PRESENTING_NOT_YET } from "../src/presented.ts";
 import { DatabaseSync } from "node:sqlite";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
@@ -1782,18 +1781,23 @@ try {
 		step("from the phone: the folders offered, a project made from one by its exact text, refused by the device row from any other (a link to one, a parent) and by the handler from one gone since, a linked file shown masked, and logged");
 	}
 
-	// ---- Presenting's requests from the phone (#963): presented.picture passes the device row to the stub; the others
-	// are refused before any handler, with the words every request kept to the Mac gets, and logged as refused.
+	// ---- Presenting's requests from the phone (#963, #946): presented.picture passes the device row to its handler, which
+	// answers as it answers the app (a conversation it does not know); the others are refused before any handler, with the
+	// words every request kept to the Mac gets, and logged as refused. engine/test/presented.ts has what the handlers do.
 	{
-		const picture = { id: 1, presentation: "p", version: 1, item: 0 };
-		assert.equal((await ask("presented.picture", picture)).error, PRESENTING_NOT_YET, "presented.picture reaches its handler");
+		const picture = { id: 99_999, presentation: "p1", version: 1, item: 0 };
+		assert.equal((await ask("presented.picture", picture)).error, "Unknown conversation: 99999", "presented.picture reaches its handler");
 		const macOnly = ["present.register", "present.drawn", "presented.list", "presented.file", "presented.network"];
 		for (const method of macOnly) assert.equal((await ask(method, { ...picture, path: "index.html", allow: true, requestId: "r", ok: true })).error, ONLY_ON_THE_MAC, method);
-		for (const method of ["presented.picture", ...macOnly]) await assert.rejects(app.call(method, picture), new RegExp(PRESENTING_NOT_YET), `${method} from the app reaches the stub`);
+		for (const method of ["presented.picture", "presented.list", "presented.file", "presented.network"]) {
+			await assert.rejects(app.call(method, { ...picture, path: "index.html", allow: true }), /^Error: Unknown conversation: 99999$/, `${method} from the app reaches its handler`);
+		}
+		assert.deepEqual(await app.call("present.drawn", { requestId: "r", ok: true }), { answered: false }, "present.drawn from the app reaches its handler: no draw was asked for");
+		assert.deepEqual(await app.call("present.register"), {}, "and present.register");
 		const logged = (await app.call("devices.log", { device: phone.id })).entries;
 		for (const method of macOnly) assert.ok(logged.some((entry: any) => entry.method === method && entry.outcome === "refused" && entry.why === ONLY_ON_THE_MAC), `${method} logged as refused`);
 		assert.ok(!logged.some((entry: any) => entry.method === "presented.picture"), "presented.picture is reading, and not logged");
-		step("from the phone: presented.picture passes its row to the stub, unlogged; present.register, present.drawn, presented.list, presented.file and presented.network are refused as the Mac's, and logged; the app reaches the stub with all six");
+		step("from the phone: presented.picture passes its row to its handler, unlogged; present.register, present.drawn, presented.list, presented.file and presented.network are refused as the Mac's, and logged; the app reaches all six handlers");
 	}
 
 	// ---- Resume, refusals, suspension (3.4, 3.6, 5.8)
