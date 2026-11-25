@@ -190,6 +190,7 @@ final class TranscriptBridge {
             feed.restart()
             olderOnTheWay = false
             undrawn = true
+            picturesQueued = []
             followPresented()
         } else if following == nil || followedOn != engine.connections {
             // Read again on a new connection: `conversation.presented` sent while the app had none was missed.
@@ -403,9 +404,12 @@ final class TranscriptBridge {
                 return
             }
             guard let found = presentedChecks.item(presentation, version, item) else { return }
-            sendPresentedPicture(presentation: presentation, version: version, item: item, found)
+            askPicture(presentation: presentation, version: version, item: item, found)
         case .expand(let presentation, let version, let item):
             guard presentedChecks.allows(action) else { return }
+            // One Expand a half second at most, however often the page posts it: a window is brought forward once.
+            if let last = lastExpand, Date().timeIntervalSince(last) < Self.expandEvery { return }
+            lastExpand = Date()
             let ref = PresentationRef(conversation: conversationID, presentation: presentation)
             #if PI2_DEVELOPMENT
             engine.note("presenting: the window of \(presentation) of conversation \(conversationID) asked for at version \(version), item \(item)")
@@ -485,10 +489,39 @@ final class TranscriptBridge {
 
     private static let presentedTypes: Set<String> = pictureTypes.union(["image/svg+xml"])
 
+    /// Presented pictures being fetched for the page at once, and waiting their turn: each can be 20 MB, held twice
+    /// while it is encoded for the page, so a page that asks over and over is answered a few at a time, and a picture
+    /// asked for again while it is on its way or waiting is asked for once.
+    static let picturesAtOnce = 4
+    static let picturesWaiting = 64
+    private var picturesInFlight: Set<String> = []
+    private var picturesQueued: [(presentation: String, version: Int, item: Int, found: PresentedItem)] = []
+    /// When Expand was last taken from the page.
+    private var lastExpand: Date?
+    static let expandEvery: TimeInterval = 0.5
+
+    private func askPicture(presentation: String, version: Int, item: Int, _ found: PresentedItem) {
+        let key = "\(presentation)/\(version)/\(item)"
+        guard !picturesInFlight.contains(key), !picturesQueued.contains(where: { "\($0.presentation)/\($0.version)/\($0.item)" == key }) else { return }
+        guard picturesInFlight.count < Self.picturesAtOnce else {
+            if picturesQueued.count < Self.picturesWaiting { picturesQueued.append((presentation, version, item, found)) }
+            return
+        }
+        picturesInFlight.insert(key)
+        sendPresentedPicture(presentation: presentation, version: version, item: item, found) { [weak self] in
+            guard let self else { return }
+            self.picturesInFlight.remove(key)
+            guard !self.picturesQueued.isEmpty else { return }
+            let next = self.picturesQueued.removeFirst()
+            self.askPicture(presentation: next.presentation, version: next.version, item: next.item, next.found)
+        }
+    }
+
     /// Fetches a presented picture, or a page's drawn snapshot, and hands it to the page; or tells the page it failed.
-    private func sendPresentedPicture(presentation: String, version: Int, item: Int, _ found: PresentedItem) {
+    private func sendPresentedPicture(presentation: String, version: Int, item: Int, _ found: PresentedItem, then done: @escaping @MainActor () -> Void) {
         let conversationID = conversationID
         Task { [weak self] in
+            defer { done() }
             guard let self else { return }
             var picture: [String: Any] = ["presented": ["presentation": presentation, "version": version, "item": item]]
             // A page not drawn yet has no picture to ask for: the engine would refuse it.

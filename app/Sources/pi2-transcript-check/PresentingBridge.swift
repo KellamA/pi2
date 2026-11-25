@@ -48,6 +48,7 @@ func presentingBridge(folder: URL) async {
         check("Expand of p2's version 1, its second item", passes(["type": "expand", "presentation": "p2", "version": 1, "item": 1]))
         check("a choice of the open question", action(["type": "choose", "need": "n-open", "choice": "c2"]) == .choose(need: "n-open", choice: "c2") && passes(["type": "choose", "need": "n-open", "choice": "c2"]))
         check("words for the open question", action(["type": "answer", "need": "n-open", "text": "Neither"]) == .answerPresented(need: "n-open", text: "Neither") && passes(["type": "answer", "need": "n-open", "text": "Neither"]))
+        check("words of 20,000 characters", passes(["type": "answer", "need": "n-open", "text": String(repeating: "w", count: 20_000)]))
         check("today's answer to an Inbox question is still read as before", action(["type": "answer", "inbox": "q1", "text": "Yes"]) == .answer(inbox: "q1", text: "Yes"))
     }
 
@@ -72,7 +73,7 @@ func presentingBridge(folder: URL) async {
             ("a choice with a line break", ["type": "choose", "need": "n-open", "choice": "c1\n"]),
             ("a need of over 200 characters", ["type": "choose", "need": String(repeating: "n", count: 201), "choice": "c1"]),
             ("words that are empty", ["type": "answer", "need": "n-open", "text": "  \n"]),
-            ("words past the longest", ["type": "answer", "need": "n-open", "text": String(repeating: "w", count: 100_001)]),
+            ("words past the 20,000 characters the engine takes", ["type": "answer", "need": "n-open", "text": String(repeating: "w", count: 20_001)]),
             ("an answer naming both a need and an Inbox item", ["type": "answer", "need": "n-open", "inbox": "q1", "text": "Yes"]),
         ]
         for (name, body) in shapes { check("refused: \(name)", action(body) == nil, "read as \(String(describing: action(body)))") }

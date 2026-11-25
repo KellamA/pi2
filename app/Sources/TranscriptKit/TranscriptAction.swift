@@ -57,6 +57,8 @@ public enum TranscriptAction: Equatable {
 
     static let copyLimit = 20_000_000
     static let answerLimit = 100_000
+    /// An answer in words to a `present` question: as long as the engine takes one (`MAX_ANSWER` in needs.ts).
+    static let presentedAnswerLimit = 20_000
     /// An edited message: as long as a message can be, within reason.
     static let editLimit = 1_000_000
 
@@ -81,7 +83,7 @@ public enum TranscriptAction: Equatable {
         case "answer" where body["need"] != nil:
             // A `present` question's, by its need: never one that names an Inbox item as well.
             guard body["inbox"] == nil, let need = Self.identifier(body["need"]), let text = body["text"] as? String,
-                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.utf16.count <= Self.answerLimit else { return nil }
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.utf16.count <= Self.presentedAnswerLimit else { return nil }
             self = .answerPresented(need: need, text: text)
         case "answer":
             guard let id = Self.identifier(body["inbox"]), let text = body["text"] as? String,
