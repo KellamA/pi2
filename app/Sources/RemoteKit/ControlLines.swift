@@ -329,6 +329,12 @@ public struct AttachClaim: Sendable {
 		guard Bytes.constantTimeEqual(self.binding, binding) else { throw RemoteKitError(part, "for another channel") }
 	}
 
+	/// Whether `key` made the presence signature over the signed text: pi² Remote's own check against the presence key on
+	/// its list (#891), which it makes once the engine has taken the attach.
+	public func isPresenceSigned(by key: P256.Signing.PublicKey) -> Bool {
+		SignedStatement.verify(presence, over: Data(statement.text.utf8), by: key)
+	}
+
 	/// The whole check the engine makes (3.4), for a test end or a reader in Swift: both signatures, the binding, the
 	/// challenge issued for this channel, and `at` within two minutes of `now`.
 	public func verify(

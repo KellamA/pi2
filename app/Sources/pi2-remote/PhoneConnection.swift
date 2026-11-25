@@ -22,6 +22,10 @@ import RemoteKit
 ///   first handshake message that fails, or any peer on the network could close the window. Anyone who once saw a QR
 ///   code holds the Mac's channel key and the pairing's id, which outlive the window, and so can use up its three
 ///   tries: that blocks pairing until the person opens another window, and is no way in.
+/// - A connection whose phone offers a new presence key in place of `attach` (#891): the offer is checked against the
+///   device key on the list as an attach is, and passed as `remote.presenceKey` with this channel's binding; the
+///   engine's answer is told the phone (`presenceKeyAccepted`, or `refused` `presence` while the key waits), and the
+///   channel ends: an offer opens no session.
 /// - Not attached, or not past its pairing claim, within ten seconds of being accepted: closed.
 /// The fixed words the engine gives beside its own for a phone (#818, #881), read byte for byte; its words are never read.
 package enum EngineWords {
@@ -30,6 +34,20 @@ package enum EngineWords {
 	package static func attachRefusal(_ word: String?) -> Refusal.Reason? {
 		guard let word else { return nil }
 		return [Refusal.Reason.update, .suspended, .presence, .clock].first { $0.rawValue.utf8.elementsEqual(word.utf8) }
+	}
+
+	/// The engine's answer to `remote.presenceKey` (devices.ts, `offerPresenceKey`): exactly `{"waiting":true}` or
+	/// `{"accepted":true}`; anything else is no answer pi² Remote acts on. Never a session.
+	package enum OfferAnswer: Equatable, Sendable {
+		case waiting
+		case accepted
+	}
+
+	package static func offerAnswer(_ value: JSONValue) -> OfferAnswer? {
+		guard case let .object(members) = value, members.count == 1, members[0].1.boolValue == true else { return nil }
+		if members[0].0.utf8.elementsEqual("waiting".utf8) { return .waiting }
+		if members[0].0.utf8.elementsEqual("accepted".utf8) { return .accepted }
+		return nil
 	}
 
 	/// The words the engine's `pairRefused` event may carry for the phone (`reason`).
@@ -50,6 +68,9 @@ final class PhoneConnection: @unchecked Sendable {
 		case connecting(Channel)
 		case awaitingAttach(Channel, challenge: Data)
 		case attaching(Channel)
+		/// The phone offered a new presence key in place of an attach (#891), waiting for the engine's answer; then the
+		/// channel ends.
+		case offering(Channel)
 		case attached(Channel, Session)
 		/// Its session was closed by the engine: nothing more is taken from the phone, and the channel ends shortly,
 		/// after a `revoked` line if the engine revokes the device (it closes the sessions first, then says `revoke`).
@@ -198,7 +219,7 @@ final class PhoneConnection: @unchecked Sendable {
 	private var channel: Channel? {
 		switch phase {
 		case let .pairing(channel, _), let .claiming(channel), let .claimed(channel, _), let .connecting(channel), let .awaitingAttach(channel, _),
-		     let .attaching(channel), let .attached(channel, _), let .closing(channel):
+		     let .attaching(channel), let .offering(channel), let .attached(channel, _), let .closing(channel):
 			channel
 		case .first, .ended:
 			nil
@@ -435,7 +456,11 @@ final class PhoneConnection: @unchecked Sendable {
 	// ---- Attaching (3.4, 5.8)
 
 	private func attach(_ line: Data, channel: Channel, challenge: Data) {
-		guard let pairing = remote.pairing, let device, let listed = remote.listed(device), case let .attach(claim)? = try? ControlLine.parse(line, from: .phone) else { return end() }
+		guard let pairing = remote.pairing, let device, let listed = remote.listed(device), let first = try? ControlLine.parse(line, from: .phone) else { return end() }
+		// The phone's other first line on a connection: the offer of a new presence key, only on this KK channel of a device
+		// on the list (a pairing channel takes `pair` alone, `claim`).
+		if case let .presenceKey(offer) = first { return self.offer(offer, channel: channel, challenge: challenge, pairing: pairing, device: device, listed: listed) }
+		guard case let .attach(claim) = first else { return end() }
 		do {
 			try claim.verifyDevice(deviceKey: listed.deviceKey, pairing: pairing, device: device, binding: channel.handshakeHash)
 		} catch {
@@ -480,9 +505,90 @@ final class PhoneConnection: @unchecked Sendable {
 				}
 				return self.end()
 			}
+			// pi² Remote's own check of the presence signature, against the presence key on its own list (3.4, #891). Made
+			// after the engine's, which counts a refused presence signature towards the device's suspension, so that this
+			// check takes nothing from that count; and before any session opens here. A new key the person accepted on the
+			// Mac is on the list once the engine's `presenceKey` event was taken, which comes before its `sessionClosed`; a
+			// key that only waits never is. The session the engine opened or resumed is ended there.
+			guard let presenceKey = self.remote.listed(device)?.presenceKey, claim.isPresenceSigned(by: presenceKey) else {
+				log("the engine took an attach of device \(device) whose presence signature is not the presence key on pi² Remote's own list; its session is ended and the phone told presence")
+				self.remote.endUnlisted(session: session, device: device)
+				return self.refuse(.presence)
+			}
 			self.passedFirstLines()
 			channel.maxLineLength = Remote.phoneLineLimit
 			guard self.remote.attached(self, device: device, session: session, resumed: resumed, received: claim.received) else { return self.end() }
+		}
+	}
+
+	/// The phone's offer of a new presence key (iphone.md 3.2, #891), on a connection's channel in place of `attach`.
+	/// Checked as an attach is before anything reaches the engine: signed by the device key on pi² Remote's own list,
+	/// for this pairing, device and channel; the challenge this channel was given; a build the engine reads, at or above
+	/// the minimum. The rest (the offered key's own signature, the challenge used once, the time) is the engine's, which
+	/// counts what it refuses. Passed as `remote.presenceKey` with exactly the offer and the binding pi² Remote computed
+	/// for this channel, never one the phone gave. The engine's answer opens no session: `waiting` is told the phone as
+	/// `refused` `presence`, `accepted` as `presenceKeyAccepted`, a refusal by its fixed word or `bye` alone, and the
+	/// channel ends. The offered key never goes on pi² Remote's list here: only the engine's `presenceKey` event, once the
+	/// person accepted it on the Mac, puts it there (`Remote.presenceKeyAccepted`).
+	///
+	/// How many an offer costs the engine: one `remote.attachBegin` and one `remote.presenceKey` for each channel, since a
+	/// channel carries one first line and ends after the answer; and a device has at most six handshakes a minute
+	/// (`Admission.handshakesPerDevicePerMinute`), a first message seen before none, as for attaches.
+	private func offer(_ offer: PresenceKeyOffer, channel: Channel, challenge: Data, pairing: PairingID, device: DeviceID, listed: ListedDevice) {
+		do {
+			try offer.verifyDevice(deviceKey: listed.deviceKey, pairing: pairing, device: device, binding: channel.handshakeHash)
+		} catch {
+			log("an offer of a new Face ID key for device \(device) is not signed for this channel by its device key on pi² Remote's own list; closed")
+			return end()
+		}
+		guard Bytes.constantTimeEqual(offer.challenge, challenge) else {
+			log("an offer of a new Face ID key for device \(device) names another challenge than this channel's; closed")
+			return end()
+		}
+		guard Remote.isBuild(offer.build) else {
+			log("device \(device) runs a build that is not one the engine reads; closed")
+			return end()
+		}
+		guard Remote.buildAtLeast(offer.build, remote.minimumBuild) else {
+			log("device \(device) runs a build below the lowest this Mac attaches (\(remote.minimumBuild)); refused update")
+			return refuse(.update)
+		}
+		phase = .offering(channel)
+		deadline?.cancel()
+		deadline = nil
+		remote.queue.asyncAfter(deadline: .now() + Self.attachWithin) { [weak self] in
+			guard let self, case .offering = self.phase else { return }
+			log("an offer of a new Face ID key had no answer from the engine within \(Int(Self.attachWithin)) seconds; its channel is closed")
+			self.end()
+		}
+		let params = JSONValue.object([
+			("offer", .object([
+				("signed", .string(offer.statement.text)), ("signature", .string(offer.statement.signatureText)), ("presence", .string(Base64URL.encode(offer.presence))),
+			])),
+			("binding", .string(Base64URL.encode(channel.handshakeHash))), ("path", .string(path)),
+		])
+		log("device \(device) offers a new Face ID key; passed to the engine")
+		remote.engine.request("remote.presenceKey", params) { [weak self] result in
+			guard let self, case .offering = self.phase else { return }
+			switch result {
+			case let .success(value):
+				switch EngineWords.offerAnswer(value) {
+				case .waiting?:
+					log("device \(device)'s new Face ID key waits to be accepted on the Mac; the phone is told presence")
+					self.refuse(.presence)
+				case .accepted?:
+					log("device \(device) offered the Face ID key the Mac uses already; the phone is told it is accepted")
+					self.sendLast(try? channel.sealPresenceKeyAccepted())
+				case nil:
+					log("the engine answered an offer of a new Face ID key with what pi² Remote does not read; closed")
+					self.end()
+				}
+			case let .failure(refusal):
+				log("the engine refused an offer of a new Face ID key of device \(device): \(refusal)")
+				// As for an attach: the engine's fixed word, never its words; none is bye alone.
+				if let reason = EngineWords.attachRefusal(refusal.reason) { return self.refuse(reason) }
+				self.end()
+			}
 		}
 	}
 
@@ -515,7 +621,7 @@ final class PhoneConnection: @unchecked Sendable {
 
 	private func tooSlow() {
 		switch phase {
-		case .claiming, .claimed, .attaching, .attached, .closing, .ended: return
+		case .claiming, .claimed, .attaching, .offering, .attached, .closing, .ended: return
 		default:
 			wrongTry("no message from the claimer within ten seconds")
 			refusedClaim("silent")
@@ -559,7 +665,7 @@ final class PhoneConnection: @unchecked Sendable {
 	}
 
 	/// The channel's own lines (remotekit.md), and `refused` (#820) and `pairRefused` (#881), by their one member's name.
-	static let macLines = ["pair", "paired", "pairRefused", "attach", "attached", "revoked", "refused", "homeKey", "mac", "sessionEnd"]
+	static let macLines = ["pair", "paired", "pairRefused", "attach", "attached", "revoked", "refused", "presenceKey", "presenceKeyAccepted", "homeKey", "mac", "sessionEnd"]
 
 	private func sendAck() {
 		guard case let .attached(channel, _) = phase, let ack = try? channel.sealAck(received) else { return }
@@ -616,10 +722,11 @@ final class PhoneConnection: @unchecked Sendable {
 	}
 
 	/// Ends an attach pi² Remote does not take with the `refused` line, then `bye` (remotekit.md, "The refused line"):
-	/// called only once the attach was signed by the device key on pi² Remote's own list, for this channel.
+	/// called only once the attach (or the offer of a new presence key) was signed by the device key on pi² Remote's own
+	/// list, for this channel.
 	private func refuse(_ reason: Refusal.Reason) {
 		switch phase {
-		case let .awaitingAttach(channel, _), let .attaching(channel):
+		case let .awaitingAttach(channel, _), let .attaching(channel), let .offering(channel):
 			sendLast(try? channel.sealRefusal(Refusal(reason)))
 		default:
 			end()

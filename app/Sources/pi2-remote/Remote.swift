@@ -147,6 +147,7 @@ package final class Remote: @unchecked Sendable {
 			relayEnd.claimAnswered()
 		case "revoke":
 			if let text = event["device"]?.stringValue, let device = DeviceID(text) { revoke(device) }
+		case "presenceKey": presenceKeyAccepted(event)
 		case "push": pushes.take(event, pairing: pairing, devices: devices)
 		case "sessionClosed":
 			// The engine says `revoke` before it closes a revoked device's sessions (#776's 25), so the `revoked` line has
@@ -605,6 +606,46 @@ package final class Remote: @unchecked Sendable {
 		relayEnd.removeDevice(device)
 		// The remaining phones attached now are sent the new key at once; the others at their next attach.
 		for connection in connections.values where connection.isAttached { connection.sendHomeKey() }
+	}
+
+	/// The engine's word that the person accepted a device's new presence key on the Mac (iphone.md 3.2, #891), sent
+	/// before it closes that device's sessions, so taken here before their close is: the key goes on pi² Remote's own list
+	/// in place of the old one, and its own check of an attach's presence signature takes the new key from now on and no
+	/// longer the old. This event, and never the engine's answer to an offer, is what changes a presence key on the list.
+	/// A key it cannot read (`PublicKeys.signingKey`, the one form the phone writes) leaves that device with no presence
+	/// key, so that none of its attaches is taken here, and changes nothing of any other device. Kept with the list and
+	/// the home key in one write, as every change of the list is; in memory whether or not that write succeeds.
+	private func presenceKeyAccepted(_ event: JSONValue) {
+		guard let text = event["device"]?.stringValue, let id = DeviceID(text), let index = devices.firstIndex(where: { $0.id == id }) else {
+			log("presenceKey: the engine named no device on pi² Remote's own list; left")
+			return
+		}
+		let key = event["presenceKey"]?.stringValue.flatMap { PublicKeys.signingKey(fromBase64URL: $0) }
+		let old = devices[index]
+		var list = devices
+		list[index] = ListedDevice(id: old.id, deviceKey: old.deviceKey, presenceKey: key, channelKey: old.channelKey, recordKey: old.recordKey, attestKeyId: old.attestKeyId)
+		devices = list
+		if key == nil {
+			log("presenceKey: the engine gave device \(id) a Face ID key pi² Remote cannot read; none of that device's attaches is taken until it has one it can")
+		} else {
+			log("device \(id)'s new Face ID key, accepted on the Mac, is on pi² Remote's own list")
+		}
+		// No home key means an earlier write failed: this write makes one, as a revocation's does, and the phones attached
+		// now are sent it.
+		let makes = homeKey == nil && !list.isEmpty
+		if keep(list, homeKey: makes ? HomeKey.random() : homeKey), makes {
+			for connection in connections.values where connection.isAttached { connection.sendHomeKey() }
+		}
+	}
+
+	/// A session the engine opened or resumed for an attach pi² Remote did not take after all (its presence signature is
+	/// not the key on the list, #891): ended in the engine, and here if pi² Remote holds it.
+	func endUnlisted(session id: SessionID, device: DeviceID) {
+		if let session = sessions[id.text], session.device == device {
+			end(session, why: "its new channel's presence signature is not the key on pi² Remote's own list")
+		} else {
+			engine.request("remote.sessionEnd", .object([("session", .string(id.text))]))
+		}
 	}
 
 	/// Keeps `list` and `key` in one write (`KeptDevices`), and only then takes the key as the home key and advertises
