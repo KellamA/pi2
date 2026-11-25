@@ -209,7 +209,8 @@ struct DemoTests {
 
     /// Draws `view` in a window of a phone's size, and says whether it drew anything: more than one colour.
     private func draws(_ view: some View, session: AppSession) async throws -> Bool {
-        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        // The host app's scene connects as it launches: run first, this test can be there before it.
+        let scene = try #require(try await eventuallyValue { UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first })
         let window = UIWindow(windowScene: scene)
         window.frame = CGRect(x: 0, y: 0, width: 402, height: 874)
         window.rootViewController = UIHostingController(rootView: view.environment(session))
