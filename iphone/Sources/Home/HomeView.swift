@@ -68,17 +68,48 @@ struct HomeView: View {
     /// `PI2_HOME` in a debug build's environment (`HomeDebugLaunch`), once the projects are in.
     private func debugLaunch(_ proxy: ScrollViewProxy) async {
         guard HomeDebugLaunch.value != nil else { return }
-        let end = Date(timeIntervalSinceNow: 20)
-        while session.engine.projects.isEmpty, Date() < end {
+        // Once the Mac's own lists are in: the phone draws its store's copy first, while Face ID and the channel are
+        // still on their way, and a request sent then would be the store's refusal, not the Mac's answer.
+        let end = Date(timeIntervalSinceNow: 30)
+        while !HomeDebugLaunch.acts(session.connection) || session.engine.projects.isEmpty || !session.engine.hasLoadedLibrary, Date() < end {
             try? await Task.sleep(for: .milliseconds(100))
         }
+        try? await Task.sleep(for: .milliseconds(500))
         if let words = HomeDebugLaunch.search { query = words }
         if let section = HomeDebugLaunch.scroll {
-            try? await Task.sleep(for: .milliseconds(300))
-            proxy.scrollTo(section, anchor: .top)
+            // Twice: a lazy list places a section far down by an estimate at first, which the second scroll corrects.
+            for _ in 0..<2 {
+                try? await Task.sleep(for: .milliseconds(400))
+                proxy.scrollTo(section, anchor: .top)
+            }
         }
-        if let name = HomeDebugLaunch.archive, let project = HomeLists.projects(session.engine).first(where: { $0.name == name }) {
+        let projects = HomeLists.projects(session.engine)
+        if let name = HomeDebugLaunch.archive, let project = projects.first(where: { $0.name == name }) {
             archive(project)
+        }
+        if let name = HomeDebugLaunch.stop, let project = projects.first(where: { $0.name == name }) {
+            await actions.stopOrchestrator(of: project, in: session.engine)
+        }
+        if let rename = HomeDebugLaunch.rename, let project = projects.first(where: { $0.name == rename.project }) {
+            if let name = rename.name {
+                await actions.rename(project, to: name, in: session.engine)
+            } else {
+                newName = project.name
+                renaming = project
+            }
+        }
+        let chats = HomeLists.chats(session.engine.conversations)
+        if let title = HomeDebugLaunch.pin, let chat = chats.first(where: { $0.title == title }) {
+            await actions.pin(chat, true, in: session.engine)
+        }
+        if let title = HomeDebugLaunch.unpin, let chat = chats.first(where: { $0.title == title }) {
+            await actions.pin(chat, false, in: session.engine)
+        }
+        if let title = HomeDebugLaunch.archiveChat, let chat = chats.first(where: { $0.title == title }) {
+            await actions.archive(chat, in: session.engine)
+        }
+        if HomeDebugLaunch.newChat {
+            await newChat()
         }
     }
     #endif
@@ -105,7 +136,7 @@ struct HomeView: View {
                     if !engine.needs.isEmpty {
                         Text(engine.needs.count == 1 ? "1 needs you" : "\(engine.needs.count) need you").foregroundStyle(.orange)
                     } else if loaded {
-                        Text(projects.count == 1 ? "1 project" : "\(projects.count) projects")
+                        Text(HomeLists.projectCount(projects.count))
                     }
                 }
             }
@@ -156,8 +187,13 @@ struct HomeView: View {
     @ViewBuilder private func waiting(loaded: Bool) -> some View {
         let mac = session.macName ?? String(localized: "your Mac")
         switch (session.connection, loaded) {
+        case (_, true) where HomeLists.archivedProjects(session.engine.projects) > 0:
+            Button { openRoute(.archive) } label: {
+                Text(HomeLists.noProjects(session.engine.projects)).foregroundStyle(.secondary)
+            }
+            .accessibilityHint("Opens the Archive")
         case (_, true):
-            Text("No projects yet. Make one on your Mac with New Project, from a folder.")
+            Text(HomeLists.noProjects(session.engine.projects))
                 .foregroundStyle(.secondary)
         case (.notPaired, _):
             Text("No Mac paired.").foregroundStyle(.secondary)
@@ -226,9 +262,7 @@ struct HomeView: View {
                 }
             }
             Button {
-                Task {
-                    if let id = await actions.newChat(in: session.engine) { openRoute(.conversation(id)) }
-                }
+                Task { await newChat() }
             } label: {
                 Label("New Chat", systemImage: "square.and.pencil")
             }
@@ -237,6 +271,10 @@ struct HomeView: View {
             header(String(localized: "Chats"), asOf: asOf)
         }
         .id("chats")
+    }
+
+    private func newChat() async {
+        if let id = await actions.newChat(in: session.engine) { openRoute(.conversation(id)) }
     }
 
     private func pin(_ chat: ConversationSummary, _ pinned: Bool) {

@@ -256,7 +256,8 @@ enum Formats {
 	}
 
 	/// The leave text for the Mac, and what the Mac takes as a device having left (#813): only the notice its device key
-	/// signed for this pairing, this device and this Mac, within the window; nothing else the device key signs.
+	/// signed for this pairing, this device and this Mac, dated no more than ten minutes ahead, however old (#929); nothing
+	/// else the device key signs.
 	static func leaveNotice() {
 		let identity = key.publicKey
 		let at: Int64 = 1_800_000_000_000
@@ -277,8 +278,8 @@ enum Formats {
 		let signed = RelayLeft(device: device, at: at, notice: notice)
 		let verified = signed.verified(pairing: pairing, identityKey: identity, deviceKey: phone.publicKey, now: now)
 		Check.that(verified?.device == device && verified?.at == at, "a notice the device key signed for this pairing, device and Mac is a leave")
-		Check.that(taken(signed, now: at + RelayLeaveNotice.longestAge), "61 days on, still")
-		Check.that(!taken(signed, now: at + RelayLeaveNotice.longestAge + 1), "not a moment later")
+		Check.that(taken(signed, now: at + 61 * 86_400_000 + 1) && taken(signed, now: at + 3 * 365 * 86_400_000), "61 days on and more, still: a relay keeps a leave until the Mac's next ready, and a pairing lives while a phone connects (#929)")
+		Check.that(taken(RelayLeft(device: device, at: at, notice: otherForm(notice))), "the same signature in its other form (s or n − s), which ECDSA allows as well: the Mac acts on the device, never on the notice's bytes")
 		Check.that(taken(signed, now: at - RelayLeaveNotice.aheadAtMost), "ten minutes ahead of the Mac's clock")
 		Check.that(!taken(signed, now: at - RelayLeaveNotice.aheadAtMost - 1), "not more")
 		Check.that(!taken(signed, pairing: PairingID.random()), "not for another pairing")
@@ -318,6 +319,25 @@ enum Formats {
 		}
 		// Nor can the identity key's items take the kind: no Mac item is ever of kind `leave`.
 		Check.refuses("a Mac item of kind leave") { _ = try MacItem.make(kind: "leave", body: .object([]), pairing: pairing, device: device, id: item, identity: key) }
+	}
+
+	/// The same ECDSA signature in its other form, r and n − s, which verifies as well (#897's security read): what a relay
+	/// can make of a notice it passes on without any key.
+	static func otherForm(_ signature: Data) -> Data {
+		let order: [UInt8] = [
+			0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+			0xBC, 0xE6, 0xFA, 0xAD, 0xA7, 0x17, 0x9E, 0x84, 0xF3, 0xB9, 0xCA, 0xC2, 0xFC, 0x63, 0x25, 0x51,
+		]
+		let s = [UInt8](signature.suffix(32))
+		var out = [UInt8](repeating: 0, count: 32)
+		var borrow = 0
+		for index in stride(from: 31, through: 0, by: -1) {
+			var digit = Int(order[index]) - Int(s[index]) - borrow
+			borrow = digit < 0 ? 1 : 0
+			if digit < 0 { digit += 256 }
+			out[index] = UInt8(digit)
+		}
+		return signature.prefix(32) + Data(out)
 	}
 
 	static func backoff() {

@@ -74,6 +74,40 @@ struct HomeTests {
         #expect(HomeLists.archivedCount(session.engine) == 1)
     }
 
+    /// Against a copy, archiving the only project left the list saying "No projects yet", as if there were none to
+    /// restore; and the Dashboard's row "0 projects".
+    @Test func withEveryProjectArchivedTheListSendsToTheArchive() async throws {
+        let (session, _) = try await scripted([
+            Lines.library(conversations: [], archived: []),
+            #"{"event":"projects","projects":[\#(Lines.project("p-1", "Gone", archivedAt: 5)),\#(Lines.project("p-2", "Deleted", deletedAt: 6))],"carryOver":null}"#,
+        ])
+        #expect(try await eventually { session.engine.projects.count == 2 })
+        #expect(HomeLists.projects(session.engine).isEmpty)
+        #expect(HomeLists.archivedProjects(session.engine.projects) == 1)
+        #expect(HomeLists.noProjects(session.engine.projects) == "No open projects. The one archived is in the Archive, under More, to restore.")
+        #expect(HomeLists.noProjects([]) == "No projects yet. Make one on your Mac with New Project, from a folder.")
+        #expect(HomeLists.projectCount(0) == "No projects")
+        #expect(HomeLists.projectCount(1) == "1 project")
+        #expect(HomeLists.projectCount(3) == "3 projects")
+    }
+
+    #if DEBUG
+    /// The launch values that do what a tap would, for pictures against a copy: they wait for the Mac's own answer, since
+    /// a request sent while the phone draws its store's copy got the store's refusal ("Your Mac can't be reached").
+    @Test func launchActionsWaitForTheMacAndReadTheirWords() {
+        #expect(HomeDebugLaunch.acts(.connected(.home, relayReachable: false)))
+        #expect(HomeDebugLaunch.acts(.demo))
+        #expect(!HomeDebugLaunch.acts(.connecting))
+        #expect(!HomeDebugLaunch.acts(.outOfReach(lastSeen: nil)))
+        #expect(!HomeDebugLaunch.acts(.notPaired))
+        #expect(HomeDebugLaunch.renaming("Demo project").project == "Demo project")
+        #expect(HomeDebugLaunch.renaming("Demo project").name == nil)
+        let renamed = HomeDebugLaunch.renaming("Demo project=Friday = walkthrough")
+        #expect(renamed.project == "Demo project")
+        #expect(renamed.name == "Friday = walkthrough")
+    }
+    #endif
+
     @Test func chatsArePinnedFirstThenNewest() async throws {
         let (session, _) = try await scripted([
             Lines.library(conversations: [

@@ -262,6 +262,32 @@ struct AppStartTests {
         #expect(phone.link.ended == .unpaired)
     }
 
+    @Test func locksAndUnlocksAddNoWatchOfTheConnection() async throws {
+        let phone = try await Self.livePhone()
+        defer { phone.stop() }
+        // Each Face ID session on the channel, then locked: a watch each session left behind would follow every change.
+        for cycle in 2...4 {
+            phone.keyring.session.end(.lockButton)
+            await Self.settle()
+            await phone.keyring.session.open()
+            #expect(await Wait.until { phone.mac.state.withLock { $0.attachedCount } == cycle }, "session \(cycle) at the Mac")
+            #expect(await Wait.until { phone.session.engine.status == .connected && phone.link.carrier == .live })
+        }
+        await Self.settle()
+        let before = phone.link.followed
+
+        // One change of the connection's state, the stop's: followed once.
+        phone.keyring.session.end(.lockButton)
+        await Self.settle()
+        #expect(phone.link.followed - before == 1)
+        #expect({ if case .outOfReach = phone.session.connection { true } else { false } }(), "\(phone.session.connection)")
+
+        // The watch left is the current one: Face ID again puts the client on the channel.
+        await phone.keyring.session.open()
+        #expect(await Wait.until { phone.mac.state.withLock { $0.attachedCount } == 5 })
+        #expect(await Wait.until { phone.session.engine.status == .connected && phone.link.carrier == .live })
+    }
+
     @Test func theMacsRevocationWipesTheStoreAndTheKeysAndShowsWhatWasNotSent() async throws {
         let phone = try await Self.pairedPhone()
         defer { phone.stop() }
