@@ -690,7 +690,17 @@ function summaryLine(given: string, params: Params): string {
 		suspend: () => "Suspended",
 		leave: () => "Unpaired itself on the phone",
 	};
-	return clip(maskKeys(lines[method]?.() ?? `${method}${inConversation}${inProject}`), MAX_SUMMARY);
+	return clip(maskKeys(unhidden(lines[method]?.() ?? `${method}${inConversation}${inProject}`)), MAX_SUMMARY);
+}
+
+/**
+ * `text` with nothing in it that the log would show other than as it reads (#902): a right-to-left override or another
+ * bidirectional control, which could make a path a phone sent read as another (U+202E then "txt.md" shows "dm.txt"),
+ * a zero-width character or another invisible format character, and half a character are taken out; a control
+ * character (a line break) is a space. Before the masks, so that nothing invisible can split a key out of their sight.
+ */
+export function unhidden(text: string): string {
+	return text.replace(/[\p{Cf}\p{Cs}]/gu, "").replace(/\p{Cc}/gu, " ");
 }
 
 /** A value a device gave, as words: an object or an array as "?", since `String` of one can throw (`{"toString": 1}`). */
@@ -813,7 +823,7 @@ export async function logDevice(entry: Omit<DeviceLogEntry, "at"> & { at?: numbe
 	if (unreadable !== null) return;
 	const at = entry.at ?? Date.now();
 	const method = loggedMethod(entry.method);
-	const why = entry.why === undefined ? undefined : clip(maskKeys(entry.why), MAX_WHY);
+	const why = entry.why === undefined ? undefined : clip(maskKeys(unhidden(entry.why)), MAX_WHY);
 	const made: DeviceLogEntry = { ...entry, at, method, summary: clip(maskKeys(entry.summary), MAX_SUMMARY), ...(why === undefined ? {} : { why }) };
 	const key = JSON.stringify([made.device, made.path, made.method, made.why ?? null]);
 	const known = made.outcome === "refused" ? refusalsMade.get(key) : undefined;

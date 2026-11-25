@@ -764,7 +764,7 @@ Errors every new request can give, besides its own:
 | Request | Answers | Does |
 |---|---|---|
 | `needs.list { projectId? }` | `{ items }` | The `needs` event's items, of one project or all |
-| `needs.answer { id, answer }` | `{}` | Answers an item of any kind with a `NeedAnswer` ([3.9](#39-needs-you-pi2needs-and-the-inbox)), through `claim`. `inbox.decide` and `inbox.answer` keep working for approvals and `ask_user` questions, through the same `claim` |
+| `needs.answer { id, answer }` | `{}`, or `{ held: true, limit }` | Answers an item of any kind with a `NeedAnswer` ([3.9](#39-needs-you-pi2needs-and-the-inbox)), through `claim`. `{ held: true, limit }`: Start Anyway on a limit card found the start past a limit the card did not cover, so nothing started and the card stays with that reading ([8.3](#83-limits-and-the-one-admission-check)). `inbox.decide` and `inbox.answer` keep working for approvals and `ask_user` questions, through the same `claim` |
 
 **Reports**:
 
@@ -1450,7 +1450,7 @@ In order, for a start by an agent:
 
    > Not started: the project's limit stops new agents while a plan window they would run on is 90% used or more, and the Anthropic subscription (Max) has its 5-hour window 93% used, resetting at 15:30 (in 1 h 12 min). Work already running carries on. The person can start it anyway from the card under Needs you, or raise the limit.
 
-4. **The card's Start Anyway** (`{ kind: "limit", start: true }`) runs `admit` again with the card's reading as `confirm`: it starts when what is over is no more than that reading (the same limit; for the plan, the same window or a reading that is lower), and otherwise the card stays, showing the new reading. **Leave It** drops it. Either way the orchestrator hears of it in its catch-up. The card is taken once, through `claim`, so two answers start nothing twice.
+4. **The card's Start Anyway** (`{ kind: "limit", start: true }`) runs `admit` again with the card's reading as `confirm`, and starts the start it holds, that one only, when what is over is the limit the card read (#953): the same limit (the same kind, at the same amount or a looser one) on the same day, or for the plan the same window before it resets, however much more the project has spent or the window has been used since; for the plan, a lower window of the same plan counts too. Otherwise it is a new decision: a limit made tighter since, another limit the card did not name (the plan's share where the card was for daily spend), a new day or a window that reset. Then nothing starts, the card stays, showing the new reading, and `needs.answer` answers `{ held: true, limit }` with that reading rather than `{}`; a second Start Anyway on it starts the start. **Leave It** drops it. Either way the orchestrator hears of it in its catch-up. The card is taken once, through `claim`, so two answers start nothing twice.
 
 For a start by the person (`work.act` `assign`, `conversation.create` with a project agent, a sub-chat started from the board): past a limit, the request is refused with the reading (error "Past the project's limit: …", and the reading as `limit` in the error's data); the app shows it, and the person confirms that one start by sending the request again with `confirmLimit` set to the reading's `id`, checked as Start Anyway is.
 
