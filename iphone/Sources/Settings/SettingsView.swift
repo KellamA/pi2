@@ -37,8 +37,10 @@ struct SettingsView: View {
             }
             #if DEBUG
             .task { await SettingsSamples.scroll(proxy) }
-            .onChange(of: source.awake, initial: true) { _, awake in
-                if let awake, source.connected, SettingsSamples.shouldPress("awake") {
+            // Once the Mac is reached as well as its setting known: drawn first from the phone's last state, a change would
+            // only be refused.
+            .task(id: source.connected && source.awake != nil) {
+                if let awake = source.awake, source.connected, SettingsSamples.shouldPress("awake") {
                     send(.awake(keep: !awake.keep, battery: awake.battery), row: "awake")
                 }
             }
@@ -245,51 +247,6 @@ struct SettingsView: View {
             Text("Only on the Mac")
         } footer: {
             Text("Secrets, sign-ins and the Mac’s own upkeep stay on the Mac, in pi²’s Settings there.")
-        }
-    }
-}
-
-/// This iPhone: what it is paired with and how it reaches it, Face ID, notifications, and unpairing. Face ID and
-/// unpairing come with the phone's keys (#680) and its store (#692), notifications with pushes (#689); until they are
-/// built, each is drawn and says so, and none pretends to work.
-struct SettingsPhoneSection: View {
-    let connection: AppSession.Connection
-    let macName: String?
-
-    var body: some View {
-        Section {
-            LabeledContent("Paired with", value: pairedWith)
-            LabeledContent("Reached", value: reached)
-            LabeledContent("Face ID", value: "Asked to open pi²")
-            LabeledContent("Notifications", value: "Not in this build")
-            Button("Unpair This iPhone", role: .destructive) {}
-                .disabled(true)
-                .accessibilityHint("Not in this build yet")
-        } header: {
-            Text("This iPhone")
-        } footer: {
-            Text("Face ID opens pi² on this iPhone, and nothing is asked after, as you chose. Notifications come with pushes through pi²’s relay, and unpairing with the keys pairing makes; this build has neither yet. A lost iPhone is cut off on the Mac (Settings › Devices › Revoke) or by erasing it with Find My.")
-        }
-    }
-
-    private var pairedWith: String {
-        switch connection {
-        case .notPaired: "No Mac"
-        case .demo: "The demo"
-        default: macName ?? "Your Mac"
-        }
-    }
-
-    private var reached: String {
-        switch connection {
-        case .notPaired: "Not paired"
-        case .demo: "No network: canned data"
-        case .connecting: "Reaching…"
-        case .connected(.home, let relay): relay ? "At home" : "At home · relay unreachable"
-        case .connected(.relay, _): "Through pi²’s relay"
-        case .connected(.direct, _): "Direct"
-        case .outOfReach(let seen?): "Out of reach since \(seen.formatted(date: .omitted, time: .shortened))"
-        case .outOfReach(nil): "Out of reach"
         }
     }
 }
