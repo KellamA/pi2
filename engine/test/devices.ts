@@ -741,7 +741,7 @@ class Phone {
 
 	// A relay that kept a device's genuine items replays them after the person accepted a new Face ID key: each is refused
 	// as too old or taken before, ahead of the presence signature, and none counts towards suspension (#921's security
-	// read). Three refused presence signatures above count already: two more would suspend the device.
+	// read).
 	const threeDaysAgo = Date.now() - 3 * 86_400_000;
 	const keptByRelay = Array.from({ length: 5 }, (_, i) => phone.item(pairing, "submit", { id: 4, text: `kept ${i}` }, { at: threeDaysAgo }));
 	const takenOnce = phone.item(pairing, "abort", { id: 4 });
@@ -761,6 +761,67 @@ class Phone {
 	for (let i = 0; i < 5; i++) await assert.rejects(take(takenOnce), /taken before/, "one genuine item handed over again, under the old key");
 	assert.equal(suspended(), false, "five old items and one item five times, replayed after a new Face ID key, do not suspend the device");
 	step("a relay replaying a device's old or taken items after a new Face ID key cannot get it suspended: age and nonce come before the presence signature");
+
+	// A relay that held back five genuine items, signed under the old key within the day, delivers them once a new Face ID
+	// key was accepted (#921's reader's probe, which suspended the device): each is refused for its presence signature
+	// and logged, and none counts towards suspension, nor does one handed over five times (#891): only live attaches count.
+	const heldBack = Array.from({ length: 5 }, (_, i) => phone.item(pairing, "submit", { id: 4, text: `held back ${i}` }, { at: Date.now() - 3_600_000 }));
+	for (const item of heldBack) await assert.rejects(take(item), /presence signature is not the presence key's/, "a fresh genuine item under the old key");
+	for (let i = 0; i < 5; i++) await assert.rejects(take(heldBack[0]!), /presence signature is not the presence key's/, "one handed over again");
+	assert.equal(suspended(), false, "ten refused presence signatures of sealed items do not suspend the device");
+	await flushDeviceLog();
+	const itemRefusals = (await harness.snapshot(DeviceLog, context))!.entries.filter((entry) => entry.device === phone.id && entry.path === "mailbox" && entry.outcome === "refused");
+	assert.ok(itemRefusals.some((entry) => entry.method === "submit" && entry.why === "The item's presence signature is not the presence key's."), "they are logged as refused");
+	step("five genuine items a relay held back under the old Face ID key, delivered after a new one was accepted, are refused and logged, and do not suspend the device");
+
+	// A live attach refused only because the key that signed its presence waits to be accepted on the Mac is answered
+	// with the `presence` reason, logged, and not counted (#891). Every other refusal counts as before, a key waiting or
+	// not: a presence signature neither key made, a used challenge, another channel, another pairing, a stale time.
+	const mac = { socket: { write: () => true, destroyed: false, destroy: () => {} }, subscriptions: new Map(), shown: new Set() } as unknown as Client;
+	const attachWith = (presence: KeyObject | null, change: { challenge?: string; signedBinding?: Buffer; pairing?: string; at?: number } = {}) => {
+		const binding = randomBytes(32);
+		const fields = { pairing: change.pairing ?? pairing, challenge: change.challenge ?? attachChallenge().challenge, binding: change.signedBinding ?? binding, ...(change.at === undefined ? {} : { at: change.at }) };
+		return checkAttach({ attach: phone.attach(fields, { presence }), binding: b64url(binding), path: "relay" });
+	};
+	const refusedFor = (why: RegExp | string, reason?: string) => (error: Error & { data?: unknown }) => {
+		assert.ok(typeof why === "string" ? error.message === why : why.test(error.message), error.message);
+		assert.deepEqual(error.data, reason === undefined ? undefined : { reason });
+		return true;
+	};
+	// Four of a kind leave the device as it was; the fifth suspends it, and the Mac resumes it, clearing the count.
+	const counts = async (what: string, made: () => Promise<unknown>, why: RegExp | string, reason?: string) => {
+		for (let i = 0; i < 4; i++) await assert.rejects(made(), refusedFor(why, reason), what);
+		assert.equal(suspended(), false, `four do not suspend: ${what}`);
+		await assert.rejects(made(), refusedFor(why, reason), what);
+		assert.equal(suspended(), true, `the fifth suspends: ${what}`);
+		await deviceRequests["devices.resume"]!({ device: phone.id }, mac);
+	};
+	assert.equal((await attachWith(renewed.privateKey)).device.id, phone.id, "the accepted key attaches");
+	const offered = p256();
+	const offerBinding = randomBytes(32);
+	const offerLine = phone.offer({ pairing, challenge: attachChallenge().challenge, binding: offerBinding, presenceKey: spki(offered.publicKey) }, { presence: offered.privateKey });
+	assert.deepEqual(await offerPresenceKey({ offer: offerLine, binding: b64url(offerBinding), path: "relay" }), { waiting: true });
+	for (let i = 0; i < 8; i++) await assert.rejects(attachWith(offered.privateKey), refusedFor(PRESENCE_KEY_WAITS, "presence"), "an attach signed by the waiting key");
+	assert.equal(suspended(), false, "eight attaches refused only because their key waits do not suspend the device");
+	await flushDeviceLog();
+	assert.ok((await harness.snapshot(DeviceLog, context))!.entries.some((entry) => entry.device === phone.id && entry.method === "attach" && entry.outcome === "refused" && entry.why === PRESENCE_KEY_WAITS), "they are logged");
+	await counts("a presence signature neither key made, while one waits", () => attachWith(p256().privateKey), PRESENCE_KEY_WAITS, "presence");
+	await counts("no presence signature, while a key waits", () => attachWith(null), PRESENCE_KEY_WAITS, "presence");
+	const usedChallenge = attachChallenge().challenge;
+	await attachWith(renewed.privateKey, { challenge: usedChallenge });
+	await counts("a used challenge, under the waiting key", () => attachWith(offered.privateKey, { challenge: usedChallenge }), /not one this Mac issued, or was used/);
+	await counts("a challenge the waiting key's refusal used", async () => {
+		const challenge = attachChallenge().challenge;
+		await assert.rejects(attachWith(offered.privateKey, { challenge }), refusedFor(PRESENCE_KEY_WAITS, "presence"));
+		return attachWith(offered.privateKey, { challenge });
+	}, /not one this Mac issued, or was used/);
+	await counts("another channel, under the waiting key", () => attachWith(offered.privateKey, { signedBinding: randomBytes(32) }), /signed for another channel/);
+	await counts("another pairing, under the waiting key", () => attachWith(offered.privateKey, { pairing: b64url(randomBytes(16)) }), /another pairing/);
+	await counts("a stale time, under the waiting key", () => attachWith(offered.privateKey, { at: Date.now() - 3 * 60_000 }), /more than two minutes/, "clock");
+	await deviceRequests["devices.refusePresenceKey"]!({ device: phone.id }, mac);
+	await counts("the refused key, with no key waiting", () => attachWith(offered.privateKey), "The attach's presence signature is not the presence key's.", "presence");
+	await counts("a presence signature by another key, with no key waiting", () => attachWith(p256().privateKey), "The attach's presence signature is not the presence key's.", "presence");
+	step("an attach refused only because its Face ID key waits on the Mac is told so and not counted; a wrong or missing presence signature, a used challenge, another channel or pairing and a stale time still count, a key waiting or not, and five suspend the device");
 
 	// ---- The devices' log (4.4): bounded in what an entry holds, by device, and with repeated refusals made one
 	const other = `dev_${b64url(randomBytes(16))}`;
@@ -799,7 +860,9 @@ class Phone {
 	entries = (await harness.snapshot(DeviceLog, context))!.entries;
 	assert.ok(entries.some((entry) => entry.device === other), "another device's entry stays");
 	assert.ok(entries.some((entry) => entry.device === phone.id && entry.method === "pair"), "and the pairing");
-	assert.equal(entries.filter((entry) => entry.device === phone.id && entry.method !== "pair").length, 2_000, "one device keeps its own newest 2,000");
+	// Beside the pairing, the suspensions and the offer of a Face ID key above, and its refusal, kept as it is.
+	const keptAside = ["pair", "suspend", "presenceKey", "devices.refusePresenceKey"];
+	assert.equal(entries.filter((entry) => entry.device === phone.id && !keptAside.includes(entry.method)).length, 2_000, "one device keeps its own newest 2,000");
 	const stored = async () => (await harness.snapshot(DeviceLog, context))!.entries;
 	commits = 0;
 	for (let i = 0; i < 200; i++) await logDevice({ device: other, path: "relay", method: "submit", summary: `ordinary ${i}`, presence: true, outcome: "done" });
@@ -815,19 +878,19 @@ class Phone {
 	// A suspension and its entry are stored in one write (#881): after no write is the device suspended with no entry.
 	const after: { suspended: boolean; entry: boolean }[] = [];
 	const counting = harness.commit.bind(harness);
+	const suspendEntries = async () => (await stored()).filter((one) => one.device === phone.id && one.method === "suspend").length;
+	const earlier = await suspendEntries(); // the suspensions above, by refused attaches
 	(harness as unknown as { commit: typeof commit }).commit = (async (...given: Parameters<typeof commit>) => {
 		const result = await counting(...given);
 		const device = (await harness.snapshot(Devices, context))!.devices.find((one) => one.id === phone.id)!;
-		after.push({ suspended: device.suspendedAt !== null, entry: (await stored()).some((one) => one.device === phone.id && one.method === "suspend") });
+		after.push({ suspended: device.suspendedAt !== null, entry: (await suspendEntries()) > earlier });
 		return result;
 	}) as typeof commit;
-	for (let i = 0; i < 5 && !suspended(); i++) {
-		await assert.rejects(take(phone.item(pairing, "submit", { id: 4, text: "x" }, { presence: p256().privateKey })), /presence signature|suspended/);
-	}
+	for (let i = 0; i < 5 && !suspended(); i++) await assert.rejects(attachWith(p256().privateKey), /presence signature|suspended/);
 	assert.ok(suspended(), "five refused presence signatures suspend the device");
 	assert.ok(after.some((one) => one.suspended && one.entry), JSON.stringify(after));
 	assert.ok(!after.some((one) => one.suspended && !one.entry), `never suspended without its entry: ${JSON.stringify(after)}`);
-	const suspendEntry = (await stored()).find((one) => one.device === phone.id && one.method === "suspend")!;
+	const suspendEntry = (await stored()).findLast((one) => one.device === phone.id && one.method === "suspend")!;
 	assert.equal(suspendEntry.at, devicesState().devices.find((one) => one.id === phone.id)!.suspendedAt, "the entry has the suspension's time");
 	(harness as unknown as { commit: typeof commit }).commit = commit;
 	await harness.close(context);
@@ -2404,6 +2467,17 @@ try {
 	assert.equal((await remote.inSession(faceSession, "engine.info")).error, OPEN_WITH_FACE_ID, "the old session is over");
 	await assert.rejects(app.call("devices.acceptPresenceKey", { device: phone.id }), /No new Face ID key waits/);
 	assert.match((await attach()).reply.error, /presence signature is not the presence key's/, "the old key signs nothing now");
+	// Five genuine items a relay held back, signed under the old key within the hour, delivered now (#891): each refused,
+	// with its receipt, and the device not suspended, though the attach above counted.
+	for (let i = 0; i < 5; i++) {
+		const held = phone.item(remote.pairing, "submit", { id: 4, text: `held back ${i}` }, { at: Date.now() - 30 * 60_000 });
+		const before = remote.events.length;
+		assert.deepEqual((await remote.call("remote.mailboxIn", { device: phone.id, id: JSON.parse(held.signed).nonce, item: held })).result, { taken: true, outcome: "refused" });
+		const { body } = (await remote.event("mailboxOut", before)).item;
+		assert.deepEqual([body.outcome, body.why], ["refused", "The item's presence signature is not the presence key's."], "its receipt says why");
+	}
+	await app.call("engine.info");
+	assert.equal(recordOf().suspendedAt, null, "five held-back items under the old key do not suspend the device");
 	phone.presence = renewed;
 	const underNew = await attach();
 	assert.equal(underNew.reply.result.resume, false, "the new key opens a session");
