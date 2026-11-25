@@ -2291,6 +2291,24 @@ try {
 		const mailedReceipt = await remote.event("mailboxOut", beforeMailed);
 		assert.deepEqual([mailedReceipt.item.body.method, mailedReceipt.item.body.outcome, mailedReceipt.item.body.why], ["presented.picture", "refused", ONLY_ON_THE_MAC]);
 		step("from the phone: presented.picture passes its row to its handler, unlogged, and is refused by the record; by mailbox, by its row; present.register, present.drawn, presented.list, presented.file and presented.network are refused as the Mac's, and logged; the app reaches all six handlers");
+
+		// A present question's answer in words from the phone goes through needs.answer or inbox.answer, and so through
+		// #924's 1 MB check before any handler; under it, the record's own bound of 20,000 characters still holds.
+		const shot = join(work, "question.png");
+		writeFileSync(shot, Buffer.concat([Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"), Buffer.from([0, 0, 0, 8, 0, 0, 0, 8, 8, 2, 0, 0, 0]), Buffer.alloc(4)]));
+		const { id: asking } = await app.call("conversation.create", { agentId: "forge" });
+		await app.call("conversation.open", { id: asking });
+		void app.call("submit", { id: asking, text: `/tool present ${JSON.stringify({ title: "Pick", items: [{ path: shot }, { path: shot }], question: "Which one?" })}` });
+		const question = await app.until("the present question under Needs you", () => app.events.needs?.items?.find((item: any) => item.kind === "decision" && item.question === "Which one?" && item.presentation !== undefined));
+		const overByte = `${"é".repeat((MAX_TYPED_FROM_A_DEVICE - 2) / 2)}ttt`;
+		assert.equal(Buffer.byteLength(overByte), MAX_TYPED_FROM_A_DEVICE + 1);
+		const tooLong = "An answer from a phone can carry at most 1 MB of typed text; this one has just over 1 MB. Shorten it, or answer on the Mac.";
+		assert.equal((await ask("needs.answer", { id: question.id, answer: { kind: "decision", text: overByte } })).error, tooLong, "needs.answer in words, a byte over 1 MB");
+		assert.equal((await ask("inbox.answer", { id: question.id, text: overByte })).error, tooLong, "inbox.answer, a byte over 1 MB");
+		assert.match((await ask("needs.answer", { id: question.id, answer: { kind: "decision", text: "w".repeat(20_001) } })).error, /An answer can be 20,000 characters at most/, "under it, the record's bound");
+		assert.deepEqual((await ask("needs.answer", { id: question.id, answer: { kind: "decision", text: "The first" } })).result, {}, "and an answer in words within both is taken");
+		await app.until("the question answered", () => app.conversations.get(asking)?.items.some((item: any) => item.kind === "tool" && item.name === "present" && /The person answered: The first$/.test(item.text)));
+		step("from the phone: a present question's answer in words a byte over 1 MB is refused by needs.answer and inbox.answer with #924's sentence; under it, the record's 20,000 characters; within both, taken");
 	}
 
 	// ---- Resume, refusals, suspension (3.4, 3.6, 5.8)
