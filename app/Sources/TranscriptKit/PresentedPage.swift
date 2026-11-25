@@ -50,6 +50,8 @@ public struct PresentedPageFindings: Sendable {
     public var console: [String] = []
     /// Addresses it tried to reach and was refused, the network being off: at most 20.
     public var blocked: [String] = []
+    /// Of those, the ones the app saw refused itself; the rest are the page's own report, which it can make up.
+    public var blockedSeen: [String] = []
     /// Paths it asked for that are not in the copy: at most 20.
     public var notFound: [String] = []
     /// What it asked of the person and was answered without anything shown: an alert, a window, a file, a camera.

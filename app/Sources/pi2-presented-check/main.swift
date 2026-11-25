@@ -204,6 +204,10 @@ func run(pictures: URL?) async {
     await panels(listener: listener, net: net)
     await messageHandlers()
     await processEnds()
+    await spinningPage()
+    await processNumbers()
+    await stuckPlaces()
+    await consoleLevels()
 
     await group("no window or panel came on screen through the whole check") {
         let shown = NSApp.windows.filter(\.isVisible)
