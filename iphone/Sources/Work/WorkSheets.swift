@@ -158,6 +158,9 @@ struct WorkComposer: View {
                 if mode == .new, WorkDebugAct.take("new-send") {
                     title = WorkDebugAct.argument("new") ?? ""
                     submit()
+                } else if mode != .new, WorkDebugAct.take("edit-send") {
+                    title = WorkDebugAct.argument("edit") ?? title
+                    submit()
                 }
             }
             #endif
