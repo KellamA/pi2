@@ -1470,7 +1470,13 @@ function takeChallenge(given: string): boolean {
 	return true;
 }
 
-/** Refused presence signatures and attaches, by device: five in ten minutes suspend it (3.6, 4.5). */
+/**
+ * Refused presence signatures and attaches, by device: five in ten minutes suspend it (3.6, 4.5). Only live ones count
+ * (#891): an attach, a resume or an offer of a new Face ID key, each bound to a challenge this engine issued and to its
+ * channel. A mailbox item whose presence signature fails is logged and not counted, since a relay can hold back a
+ * device's genuine items and deliver them after its Face ID key changed; so is an attach refused only because the key
+ * that signed it waits to be accepted on the Mac (`checkAttach`).
+ */
 const failures = new Map<string, number[]>();
 
 /**
@@ -1482,12 +1488,17 @@ async function refused(device: Device, path: DevicePath, method: string, why: st
 	const now = Date.now();
 	const recent = [...(failures.get(device.id) ?? []), now].filter((at) => now - at < SUSPEND_WITHIN);
 	failures.set(device.id, recent);
+	await refusedUncounted(device, path, method, why, params);
+	if (recent.length >= SUSPEND_AFTER && device.suspendedAt === null) await suspend(device, path);
+}
+
+/** A refusal of something the device key signed, logged and not counted towards the device's suspension. */
+async function refusedUncounted(device: Device, path: DevicePath, method: string, why: string, params: Params = {}): Promise<void> {
 	try {
 		await logDevice({ device: device.id, path, method, summary: summarize(method, params), presence: false, outcome: "refused", why });
 	} catch (error) {
 		log("devices: the log could not be written:", error instanceof Error ? error.message : error);
 	}
-	if (recent.length >= SUSPEND_AFTER && device.suspendedAt === null) await suspend(device, path);
 }
 
 /** What no key of the device's signed: a line in engine.log, at most once a minute for each device, and nothing else. */
@@ -1536,8 +1547,10 @@ const attachRefused = (why: string, reason: AttachRefusal) => new RequestError(w
  * Checks an attach or a resume (`remote.attach`, 3.4) as the engine's own: the device paired, not revoked or suspended,
  * of a build at or above the minimum; both signatures, the device key's and the presence key's, over the same text,
  * against the engine's own record; the challenge one this engine issued, used once; the binding this channel's; `at`
- * within two minutes. Each refusal of a known device counts towards its suspension and is logged. Four refusals carry a
- * reason for the phone beside their words (`AttachRefusal`).
+ * within two minutes. Each refusal of a known device counts towards its suspension and is logged, but one: an attach
+ * whose presence signature is its new Face ID key's, which waits to be accepted on the Mac, and which passed every other
+ * check, is logged and not counted (#891), so that a person who opens pi² on the phone before accepting the key does not
+ * suspend it. Four refusals carry a reason for the phone beside their words (`AttachRefusal`).
  */
 export async function checkAttach(params: Params): Promise<Attached> {
 	if (!remoteOn()) throw new Error("Reach from an iPhone is off on this Mac.");
@@ -1568,9 +1581,18 @@ export async function checkAttach(params: Params): Promise<Attached> {
 		throw new Error("The attach is not signed by the device key.");
 	}
 	const presenceKey = device.presenceKey === null ? null : p256Key(device.presenceKey);
-	if (presenceKey === null) return refuse(PRESENCE_KEY_WAITS, "presence");
-	// A key that waits signs nothing: only the accepted one is tried, and a phone whose new key waits is told so.
-	if (!signedBy(text, attach.presence, presenceKey)) return refuse(device.pendingPresenceKey === null ? "The attach's presence signature is not the presence key's." : PRESENCE_KEY_WAITS, "presence");
+	// A key that waits signs nothing: only the accepted one opens a session, and a phone whose new key waits is told so.
+	// The waiting key is tried only to decide whether the refusal counts: signed by it, the attach goes through every
+	// other check, each counted as ever, and is refused at the end uncounted (#891). A presence signature neither key
+	// made counts, whether a key waits or not, so a waiting key frees from counting only its own holder's attaches.
+	let keyWaits = false;
+	if (presenceKey === null || !signedBy(text, attach.presence, presenceKey)) {
+		const waiting = device.pendingPresenceKey === null ? null : p256Key(device.pendingPresenceKey);
+		if (waiting === null || !signedBy(text, attach.presence, waiting)) {
+			return refuse(presenceKey === null || device.pendingPresenceKey !== null ? PRESENCE_KEY_WAITS : "The attach's presence signature is not the presence key's.", "presence");
+		}
+		keyWaits = true;
+	}
 	if (typeof signed.challenge !== "string" || !takeChallenge(signed.challenge)) return refuse("The attach's challenge is not one this Mac issued, or was used.");
 	if (typeof signed.pairing !== "string" || state.pairing === null || !sameText(signed.pairing, state.pairing)) return refuse("The attach is for another pairing.");
 	if (typeof signed.binding !== "string" || fromBase64url(params.binding, 32) === null || !sameText(signed.binding, params.binding as string)) {
@@ -1580,6 +1602,10 @@ export async function checkAttach(params: Params): Promise<Attached> {
 	if (signed.session !== null && (typeof signed.session !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(signed.session))) return refuse("The attach names no session.");
 	if (!buildText(signed.build)) return refuse("The attach names no build.");
 	if (!buildAtLeast(signed.build, MINIMUM_PHONE_BUILD)) throw attachRefused("This build of pi² for iPhone is too old for this Mac. Update it.", "update");
+	if (keyWaits) {
+		await refusedUncounted(device, path, method, PRESENCE_KEY_WAITS);
+		throw attachRefused(PRESENCE_KEY_WAITS, "presence");
+	}
 	const build = signed.build;
 	await change((doc) => {
 		for (const one of doc.devices) {
@@ -1788,7 +1814,7 @@ export class ItemNotYet extends Error {}
  * device key's signature over the exact `signed` text, before anything is written or counted, since the relay, which
  * the contract does not trust, can hand pi² Remote any item "from" a device; then, logged and not counted, `at` at most
  * a day old and not ahead of the Mac's clock by more than five minutes, and its nonce not taken before (read); then,
- * logged and counted, the presence key's signature; then, logged, that the request is the one signed, for this
+ * logged and not counted (#891), the presence key's signature; then, logged, that the request is the one signed, for this
  * pairing, its row of the device's table allowing the mailbox, `at` at most an hour old for one that widens, and its
  * nonce never taken before, stored before this answers, after a restart too.
  */
@@ -1818,8 +1844,10 @@ export async function checkRequestItem(device: string, item: unknown, approvals:
 		throw new Error(why);
 	};
 	// A relay can hand over again any item it ever held, long after the device's Face ID key changed: an item past the
-	// longest any item waits, or one taken before, is refused before the presence signature, whose failures count
-	// towards suspension, so that replaying a device's own old items cannot suspend it (#921's security read).
+	// longest any item waits, or one taken before, is refused before the presence signature is looked at (#921's
+	// security read), and a presence signature that fails is refused and logged, never counted towards suspension
+	// (#891): only live attaches count, so that items a relay held back and delivered after a Face ID change cannot
+	// suspend the device.
 	const nonce = signed.nonce;
 	if (fromBase64url(nonce, 16) === null) return refuse("The item's nonce is not one.");
 	const at = signed.at;
@@ -1833,10 +1861,7 @@ export async function checkRequestItem(device: string, item: unknown, approvals:
 	}
 	if (seen) return refuse(ITEM_TAKEN_BEFORE);
 	const presenceKey = record.presenceKey === null ? null : p256Key(record.presenceKey);
-	if (presenceKey === null || !signedBy(item.signed as string, item.presence, presenceKey)) {
-		await refused(record, "mailbox", requestLogged(String(request.method)), "The item's presence signature is not the presence key's.", request.params as Params);
-		throw new Error("The item's presence signature is not the presence key's.");
-	}
+	if (presenceKey === null || !signedBy(item.signed as string, item.presence, presenceKey)) return refuse("The item's presence signature is not the presence key's.");
 	if (signed.device !== device || typeof signed.pairing !== "string" || state.pairing === null || !sameText(signed.pairing, state.pairing)) return refuse("The item is for another device or pairing.");
 	if (signed.method !== request.method || JSON.stringify(signed.params) !== JSON.stringify(request.params)) return refuse("The item's request is not the one signed.");
 	const method = request.method;
