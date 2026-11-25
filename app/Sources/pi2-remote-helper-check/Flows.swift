@@ -62,6 +62,7 @@ enum Flows {
 		if let relay { engine.answer(relay.id) }
 		Check.expect(relay?.params["relay"]?["state"]?.stringValue == "unavailable" && relay?.params["relay"]?["why"]?.stringValue?.contains("not registered at this relay") == true,
 		             "then the engine is told the relay path is off for a pairing registered at no relay, and why", relay.map { JSON.text($0.params) } ?? "nothing")
+		Check.expect(relay?.params["relay"]?["reason"]?.stringValue == "unregistered", "with the reason's word, unregistered (#917)", relay.map { JSON.text($0.params) } ?? "nothing")
 		return Mac(pairing: pairing, port: port, identity: identity, channel: channel, record: record)
 	}
 
@@ -268,6 +269,7 @@ enum Flows {
 		let unregistered = engine.request("remote.state")
 		if let unregistered { engine.answer(unregistered.id) }
 		Check.expect(unregistered?.params["relay"]?["why"]?.stringValue?.contains("not registered at this relay") == true, "with its key, the relay path is off only for the pairing it never registered there", unregistered.map { JSON.text($0.params) } ?? "nothing")
+		Check.expect(unregistered?.params["relay"]?["reason"]?.stringValue == "unregistered" && off?.params["relay"]?["reason"]?.stringValue == "key", "each with the reason's word: unregistered, and key for the relay key that could not be made (#917)", "\(unregistered.map { JSON.text($0.params) } ?? "nothing"); \(off.map { JSON.text($0.params) } ?? "nothing")")
 		Check.expect(restored?.params["macKeys"]?["relay"]?.stringValue == firstRelay, "back to a relay whose key it has: that key again")
 
 		Check.section("Find on this network off and on: the engine hears of the new port (#675's security read B, M5)")
