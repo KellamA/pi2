@@ -311,7 +311,7 @@ test("the row folded under the card: what was presented, and how it went", () =>
 	assert.equal(row("done", d({ items: [ITEMS[0], ITEMS[2]] })), "Presented 2 pictures · 424 KB");
 	assert.equal(row("done", d({ items: [page("A", "a.html", "", { state: "pending" }, null)] })), "Presented a page · the page is not drawn yet");
 	assert.equal(row("done", d({ items: [page("A", "a.html", "", undefined, { blank: true, console: [], blocked: [] })] })), "Presented a page · the page looks blank");
-	assert.equal(row("done", d({ items: [page("A", "a.html", "", undefined, { blank: false, console: ["TypeError"], blocked: ["https://cdn.example"] })] })), "Presented a page · the page loaded: 1 console error, 1 address blocked");
+	assert.equal(row("done", d({ items: [page("A", "a.html", "", undefined, { blank: false, console: ["error: TypeError"], errors: 1, blocked: ["https://cdn.example"] })] })), "Presented a page · the page loaded: 1 console error, 1 address blocked");
 	assert.equal(row("done", d({ items: [page("A", "a.html", "", { state: "failed", reason: "x" }, null), ITEMS[1]] })), "Presented 2 pages · a page could not be drawn");
 	// A version it cannot read still names what was presented.
 	assert.equal(row("done", { presentation: "p2", items: [{ kind: "video" }] }), "Presented “Sign-in screen, three layouts”");
@@ -320,6 +320,41 @@ test("the row folded under the card: what was presented, and how it went", () =>
 	const sections = T.detailFor({ callId: "c1", name: "present", arguments: { title: "x", items: [] } }, "done", { text: "Presented \"x\" as p2, version 1.", details: d() }, null);
 	assert.deepEqual(sections.map((s) => [s.kind, s.label, s.text]), [["text", "What the agent was told", 'Presented "x" as p2, version 1.']]);
 	assert.deepEqual(T.detailFor({ callId: "c1", name: "present", arguments: {} }, "done", { text: "", details: d() }, null), [], "no chevron while it waits");
+});
+
+test("a page's console lines are errors only as the engine counted them (drawn.errors)", () => {
+	const LOGS = ["log: ready", "warn: slow font", "log: drawn"];
+	const said = (drawn) => {
+		const details = { presentation: "p2", ...version(1, "c1", { items: [page("A", "a.html", "", undefined, { loadMs: 1, blank: false, blocked: [], ...drawn })] }) };
+		return T.describe({ callId: "c1", name: "present", arguments: {} }, "done", { text: "", details }, null).label.map((piece) => piece.text).join("");
+	};
+	// An engine from before it counted: lines may be logs, so they are said as lines, never errors.
+	assert.equal(said({ console: LOGS }), "Presented a page · the page loaded: 3 console lines");
+	assert.equal(said({ console: ["log: ready"] }), "Presented a page · the page loaded: 1 console line");
+	assert.equal(said({ console: [] }), "Presented a page · the page loaded, no errors", "no lines at all is no errors");
+	// Counted: none is no errors, whatever was logged; the lines are in what the agent was told.
+	assert.equal(said({ console: LOGS, errors: 0 }), "Presented a page · the page loaded, no errors");
+	assert.equal(said({ console: [...LOGS, "error: TypeError: x is null"], errors: 1 }), "Presented a page · the page loaded: 1 console error");
+	assert.equal(said({ console: ["error: a", "error: b", "log: c"], errors: 2 }), "Presented a page · the page loaded: 2 console errors");
+	// A count it cannot trust is read as absent: more than the lines, not whole, not a number.
+	assert.equal(said({ console: LOGS, errors: 4 }), "Presented a page · the page loaded: 3 console lines");
+	assert.equal(said({ console: LOGS, errors: "2" }), "Presented a page · the page loaded: 3 console lines");
+	assert.equal(said({ console: LOGS, errors: 1.5 }), "Presented a page · the page loaded: 3 console lines");
+	assert.equal(said({ console: LOGS, errors: -1 }), "Presented a page · the page loaded: 3 console lines");
+	// Two pages, one counted and one not.
+	const two = { presentation: "p2", ...version(1, "c1", { items: [
+		page("A", "a.html", "", undefined, { blank: false, blocked: [], console: ["error: a"], errors: 1 }),
+		page("B", "b.html", "", undefined, { blank: false, blocked: [], console: ["log: b", "log: c"] }),
+	] }) };
+	assert.equal(T.describe({ callId: "c1", name: "present", arguments: {} }, "done", { text: "", details: two }, null).label.map((p) => p.text).join(""), "Presented 2 pages · the pages loaded: 1 console error, 2 console lines");
+	// The card's reading carries the count only when it can be trusted, and the row reads the same from it.
+	const read = (drawn) => Pr.forCall(new Map(), "c1", { presentation: "p2", ...version(1, "c1", { items: [page("A", "a.html", "", undefined, { blank: false, blocked: [], ...drawn })] }) }).items[0].drawn;
+	assert.equal(read({ console: LOGS, errors: 0 }).errors, 0);
+	assert.equal(read({ console: LOGS, errors: 3 }).errors, 3);
+	for (const bad of [4, "1", 0.5, -1, null]) assert.equal("errors" in read({ console: LOGS, errors: bad }), false, String(bad));
+	assert.equal("errors" in read({ console: LOGS }), false);
+	const view = Pr.forCall(new Map(), "c1", { presentation: "p2", ...version(1, "c1", { items: [page("A", "a.html", "", undefined, { blank: false, blocked: [], console: LOGS, errors: 0 })] }) });
+	assert.equal(T.describe({ callId: "c1", name: "present", arguments: {} }, "done", { text: "", details: Pr.asDetails(view) }, null).label.map((p) => p.text).join(""), "Presented a page · the page loaded, no errors");
 });
 
 test("the page's Content-Security-Policy is unchanged, and nothing frames or writes markup", () => {

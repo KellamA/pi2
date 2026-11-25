@@ -1080,12 +1080,31 @@
 		if (pages.some((page) => isObject(page.snapshot) && page.snapshot.state === "failed")) return one ? "the page could not be drawn" : "a page could not be drawn";
 		if (pages.some((page) => !isObject(page.drawn))) return one ? "the page is not drawn yet" : "not every page is drawn yet";
 		if (pages.some((page) => page.drawn.blank === true)) return one ? "the page looks blank" : "a page looks blank";
-		const errors = pages.reduce((sum, page) => sum + (Array.isArray(page.drawn.console) ? page.drawn.console.length : 0), 0);
+		// A console line may be a log: only the engine's count (`errors`) says how many are errors. Without it, the lines
+		// are said as lines; with it, the other lines are left to what the agent was told, as the row has no room for them.
+		let errors = 0;
+		let lines = 0;
+		for (const page of pages) {
+			const count = consoleErrors(page.drawn);
+			if (count === null) lines += Array.isArray(page.drawn.console) ? page.drawn.console.length : 0;
+			else errors += count;
+		}
 		const blocked = pages.reduce((sum, page) => sum + (Array.isArray(page.drawn.blocked) ? page.drawn.blocked.length : 0), 0);
 		const found = [];
 		if (errors > 0) found.push(errors === 1 ? "1 console error" : `${errors} console errors`);
+		if (lines > 0) found.push(lines === 1 ? "1 console line" : `${lines} console lines`);
 		if (blocked > 0) found.push(blocked === 1 ? "1 address blocked" : `${blocked} addresses blocked`);
 		return found.length > 0 ? `${the} loaded: ${found.join(", ")}` : `${the} loaded, no errors`;
+	}
+
+	/**
+	 * How many of a drawn page's console lines are errors, as the engine counted them (`drawn.errors`): a whole number
+	 * no larger than the lines it has. Null when it is absent (an engine from before it counted) or not one to trust.
+	 */
+	function consoleErrors(drawn) {
+		const lines = isObject(drawn) && Array.isArray(drawn.console) ? drawn.console.length : 0;
+		const count = isObject(drawn) ? drawn.errors : undefined;
+		return Number.isInteger(count) && count >= 0 && count <= lines ? count : null;
 	}
 
 	/** Bytes as Finder shows a file's size. */
@@ -1169,6 +1188,7 @@
 		delegation,
 		formatBytes,
 		presentedSummary,
+		consoleErrors,
 		prettyJSON,
 		shortDuration,
 		commandClock,
