@@ -5,7 +5,7 @@
 #
 #   scripts/iphone-sim create <name> [--type <device type>] [--runtime <runtime>] [--derived-data <folder>]
 #   scripts/iphone-sim build <name> [--release] [--derived-data <folder>] [-- <xcodebuild options>]
-#   scripts/iphone-sim test <name> [--derived-data <folder>] [-- <xcodebuild options>]
+#   scripts/iphone-sim test <name> [--derived-data <folder>] [--repeat N [--until-failure]] [-- <xcodebuild options>]
 #   scripts/iphone-sim run <name> [--release] [--fresh] [--derived-data <folder>] [--env NAME=VALUE]... [-- <launch arguments>]
 #   scripts/iphone-sim face-id <name> enrol|match|no-match
 #   scripts/iphone-sim shot <name> <file.png> [--appearance light|dark] [--text-size <size>]
@@ -41,7 +41,12 @@ pi2-681); every command but create works only on a simulator this checkout's cre
                          test and run put and find the build; default $PI2_SCRATCH/iphone-build, or
                          iphone/build/DerivedData without one; never under ~/Library).
   build <name>           Build the app for it, unsigned, at nice 15. --release for a Release build.
-  test <name>            Run the app's unit tests on it, unsigned, at nice 15.
+  test <name>            Run the app's unit tests on it, unsigned, at nice 15. --repeat N runs each test N times
+                         (up to 1000) in one build, and ends with one line: how many iterations passed and
+                         failed, and each test that failed, with how often. --until-failure stops each test at
+                         its first failure. The whole output stays in <derived data>/Logs/iphone-sim-test-repeat.log.
+                         To repeat one Swift Testing test, give it with () after its name:
+                         -- -only-testing:pi2Tests/PiModelsOnIOSTests/jsonValueKeepsEveryKind()
                          After --, build and test take -only-testing:<id>, -skip-testing:<id>, -quiet and
                          -resultBundlePath <path>, and nothing else.
   run <name>             Boot it, install what build made and launch it. --release for the Release build,
@@ -169,10 +174,14 @@ boot() {
 # What may follow -- for build and test: choosing tests, and where the results go. A destination, an SDK, signing and
 # provisioning are the ones that matter to refuse, and a list of what is allowed refuses them and anything new.
 xcode_options=()
+quiet=
 take_xcode_options() {
 	while (($#)); do
 		case $1 in
-		-only-testing:?* | -skip-testing:?* | -quiet) xcode_options+=("$1") ;;
+		-only-testing:?* | -skip-testing:?*) xcode_options+=("$1") ;;
+		-quiet) xcode_options+=("$1"); quiet=1 ;;
+		-test-iterations | -run-tests-until-failure | -retry-tests-on-failure)
+			refuse "$1 is not taken after --: test --repeat N runs the tests N times, and --until-failure stops each at its first failure" ;;
 		-resultBundlePath)
 			(($# >= 2)) || refuse "-resultBundlePath needs a path"
 			xcode_options+=("$1" "$2")
@@ -184,6 +193,96 @@ take_xcode_options() {
 		esac
 		shift
 	done
+}
+
+# The line test --repeat ends with, from xcodebuild's output: how many iterations there were, how many passed and failed,
+# and each test that failed with how often. Swift Testing repeats each test by itself, saying "started (repetition K)"
+# for each run after the first, names the test in each issue it records but not the repetition, and gives a test's
+# verdict once, after its last run; XCTest says when each run of a test starts and how it ended. So an iteration is a
+# test's run by its number, and it failed when any test recorded an issue in that run. A failing test's name is the
+# one xcodebuild lists under "Failing tests:" (its suite and name), where only one there ends with it.
+repeat_summary() {
+	awk '
+	function seen(name, run) {
+		if (!(name in runs)) order[++tests] = name
+		if (run > runs[name]) runs[name] = run
+		current[name] = run
+		if (run > iterations) iterations = run
+	}
+	function failed(name, run) {
+		if (!(name in runs)) seen(name, run)
+		if ((name, run) in bad) return
+		bad[name, run] = 1
+		fails[name]++
+		if (!(run in badRun)) { badRun[run] = 1; badRuns++ }
+	}
+	function swiftName(line) {
+		sub(/^[^ ]+ Test /, "", line)
+		return line
+	}
+	function xcTestName(line) {
+		sub(/^Test Case \047(-\[)?/, "", line)
+		sub(/\]?\047 .*$/, "", line)
+		sub(/^[^. ]*\./, "", line)
+		sub(/ /, ".", line)
+		return line
+	}
+	function listed(name,   i, found, hit) {
+		for (i = 1; i <= listedCount; i++) {
+			if (failing[i] == name) return name
+			if (length(failing[i]) > length(name) && substr(failing[i], length(failing[i]) - length(name)) == "." name) {
+				found++
+				hit = failing[i]
+			}
+		}
+		return found == 1 ? hit : name
+	}
+	{ sub(/\r$/, "") }
+	/^Failing tests:$/ { inList = 1; next }
+	inList && /^\t/ { line = $0; sub(/^\t+/, "", line); failing[++listedCount] = line; next }
+	{ inList = 0 }
+	/^[^ ]+ Test (run|case passing) / { next }
+	# An issue first: its message, after the name, can hold anything, "started." too.
+	/^[^ ]+ Test .* recorded an issue/ {
+		name = swiftName($0)
+		name = substr(name, 1, index(name, " recorded an issue") - 1)
+		failed(name, name in current ? current[name] : 1)
+		next
+	}
+	/^[^ ]+ Test .* started\.$/ { name = swiftName($0); sub(/ started\.$/, "", name); seen(name, 1); next }
+	/^[^ ]+ Test .* started \(repetition [0-9]+\)\.$/ {
+		name = swiftName($0)
+		run = name
+		sub(/.* started \(repetition /, "", run)
+		sub(/ started \(repetition [0-9]+\)\.$/, "", name)
+		seen(name, run + 0)
+		next
+	}
+	/^[^ ]+ Test .* failed after / {
+		name = swiftName($0)
+		name = substr(name, 1, index(name, " failed after ") - 1)
+		if (!fails[name]) failed(name, name in current ? current[name] : 1)
+		next
+	}
+	/^Test Case \047.*\047 started\.$/ { name = xcTestName($0); seen(name, name in runs ? runs[name] + 1 : 1); next }
+	/^Test Case \047.*\047 failed \(/ { name = xcTestName($0); failed(name, name in current ? current[name] : 1); next }
+	END {
+		if (!tests) {
+			print "iphone-sim: no test ran, so nothing was repeated: check the names after -only-testing (a single Swift Testing test needs () after its name)"
+			exit
+		}
+		line = sprintf("iphone-sim: %d iteration%s of %d test%s: %d passed, %d failed", iterations, iterations == 1 ? "" : "s",
+			tests, tests == 1 ? "" : "s", iterations - badRuns, badRuns)
+		sep = "; failed: "
+		for (i = 1; i <= tests; i++) {
+			name = order[i]
+			if (!fails[name]) continue
+			line = line sep listed(name) " " fails[name] " of " runs[name]
+			sep = ", "
+		}
+		print line
+	}
+	' "$1"
 }
 
 xcodebuild_for() {
@@ -259,6 +358,8 @@ build | test)
 	(($#)) && shift
 	resolve "$name"
 	configuration=Debug
+	repeat=
+	until_failure=
 	while (($#)); do
 		case $1 in
 		--release)
@@ -266,13 +367,45 @@ build | test)
 			configuration=Release
 			;;
 		--derived-data) (($# >= 2)) || refuse "--derived-data needs a folder"; derived_data=$2; shift ;;
+		--repeat | --until-failure)
+			[[ $command == test ]] || refuse "$1 is test's: build builds once"
+			if [[ $1 == --until-failure ]]; then
+				until_failure=1
+			else
+				(($# >= 2)) || refuse "--repeat needs a number of times, from 1 to 1000"
+				[[ $2 =~ ^[1-9][0-9]{0,3}$ ]] && (($2 <= 1000)) ||
+					refuse "--repeat takes a number of times from 1 to 1000, not '$2'"
+				repeat=$2
+				shift
+			fi
+			;;
 		--) shift; take_xcode_options "$@"; break ;;
-		*) refuse "$command takes --release, --derived-data and, after --, xcodebuild's test options, not $1" ;;
+		*)
+			[[ $command == build ]] ||
+				refuse "test takes --derived-data, --repeat N, --until-failure and, after --, xcodebuild's test options, not $1"
+			refuse "build takes --release, --derived-data and, after --, xcodebuild's options, not $1"
+			;;
 		esac
 		shift
 	done
+	[[ -z $until_failure || -n $repeat ]] ||
+		refuse "--until-failure needs --repeat N, the most times each test runs"
+	[[ -z $repeat || -z $quiet ]] ||
+		refuse "--repeat counts the runs from each test's lines in xcodebuild's output, which -quiet leaves out: drop -quiet"
 	derived_data=$(derived_data_folder "$derived_data") || exit
-	xcodebuild_for "$command" "$configuration"
+	if [[ -z $repeat ]]; then
+		xcodebuild_for "$command" "$configuration"
+		exit
+	fi
+	xcode_options+=(-test-iterations "$repeat")
+	[[ -z $until_failure ]] || xcode_options+=(-run-tests-until-failure)
+	# The whole output stays for reading what failed, and is read again for the line that sums it up.
+	mkdir -p -- "$derived_data/Logs" || die "cannot make $derived_data/Logs"
+	log="$derived_data/Logs/iphone-sim-test-repeat.log"
+	xcodebuild_for "$command" "$configuration" 2>&1 | tee "$log"
+	status=${PIPESTATUS[0]}
+	repeat_summary "$log"
+	exit "$status"
 	;;
 
 run)
