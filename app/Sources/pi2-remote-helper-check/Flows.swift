@@ -382,6 +382,10 @@ enum Flows {
 		second2.build = "8"
 		guard let other = pair(engine, mac: mac, keys: second2, claim: "claim_2") else { Check.stop("a second phone paired") }
 		Check.expect(Set(listed(home)) == [device.text, other.text], "both devices are on the list")
+		// A third device, for the stalled line below (#908): its one handshake there is counted against no other case's
+		// six a minute, however fast the check runs.
+		let stallKeys = PhoneKeys()
+		guard let stallDevice = pair(engine, mac: mac, keys: stallKeys, claim: "claim_stall") else { Check.stop("a third phone paired") }
 		guard let (closing, _) = attach(engine, mac: mac, device: other, keys: second2, session: "s_two") else { Check.stop("attached again") }
 		// Back-pressure: the engine (this check) reads nothing while the phone sends; pi² Remote stops reading from the
 		// phone once 8 MB wait for the engine, so the phone is held back and pi² Remote's memory is not (M2).
@@ -466,6 +470,18 @@ enum Flows {
 		} else {
 			Check.expect(false, "the second phone attached for its pairRefused line")
 		}
+		// A phone that sends 4 MiB of a line and stops (#908): its connection is ended once nothing more has come for 30
+		// seconds, here within the resume window's wait below. Of a device of its own, paired above.
+		var stalled: Phone?
+		if let (stalling, _) = attach(engine, mac: mac, device: stallDevice, keys: stallKeys, session: "s_stalled") {
+			let head = Data(#"{"id":"st","method":"submit","params":{"text":""#.utf8)
+			let messages = try! stalling.channel!.seal(line: head + Data(repeating: UInt8(ascii: "s"), count: 4 * 1024 * 1024) + Data(#""}}"#.utf8))
+			for message in messages.dropLast() { stalling.send(message) }
+			Check.expect(stalling.message(within: 0.5) == nil && !stalling.closed, "a phone that sends 4 MiB of a line and stops is not ended at once")
+			stalled = stalling
+		} else {
+			Check.expect(false, "the third phone attached for its stalled line")
+		}
 		if let unansweredAt {
 			usleep(UInt32(max(0, 20 - Date().timeIntervalSince(unansweredAt)) * 1_000_000))
 			Check.expect(unanswered.message(within: 0.2) == nil && !unanswered.closed, "20 s after closeJoin, a claim the engine took and has not answered still waits")
@@ -473,6 +489,12 @@ enum Flows {
 		let lapsed = engine.request("remote.sessionEnd", within: 90)
 		let after = Date().timeIntervalSince(dropped)
 		Check.expect(lapsed?.params["session"]?.stringValue == "s_three" && after >= 59, "a session whose phone does not come back within 60 seconds is ended in the engine (remote.sessionEnd)", String(format: "after %.0f s", after))
+		if let stalled {
+			Check.expect(stalled.event(within: 1) == .bye && stalled.closesWithin(1), "the phone whose line stopped partway is ended within the minute")
+			Check.expect(Flows.logged("nothing more of a line from device \(stallDevice) came for 30 seconds; its connection closed (said at most once a minute)"), "once nothing more of it came for 30 seconds, as remote.log says, by the device and the limit (#908)")
+			// Its session waits for a resume; the engine closes it, so that its lapse is not among the requests that follow.
+			engine.event("sessionClosed", [("session", .string("s_stalled")), ("why", .string("check"))])
+		}
 		if unansweredAt != nil {
 			Check.expect(unanswered.closesWithin(5), "and 30 s after closeJoin with neither paired nor pairRefused, its channel has ended")
 			Check.expect(engine.quiet(for: 0.5), "with no try counted")
@@ -623,7 +645,7 @@ enum Flows {
 			Check.expect(false, "a revoked device is told so")
 		}
 		Check.expect(revoked.event() == .bye, "then its channel ends")
-		Check.expect(listed(home) == [other.text], "and it is dropped from pi² Remote's own list")
+		Check.expect(Set(listed(home)) == [other.text, stallDevice.text], "and it is dropped from pi² Remote's own list")
 		let newKey = staying.readHomeKey()
 		Check.expect(newKey != nil && newKey != oldKey && newKey == storedHomeKey(home), "the phone that remains attached is sent a new home key at once, the one pi² Remote now keeps")
 		if let phone = Phone(port: mac.port) {
