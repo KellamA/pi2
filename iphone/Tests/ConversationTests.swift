@@ -216,6 +216,37 @@ struct ConversationTests {
         #expect(await requests.restore(9) == "Not restored. The recorded session (PI2_TRANSPORT=replay) does not answer conversation.unarchive.")
     }
 
+    /// A message from the phone carries at most 1 MB of typed text (#924), counted in UTF-8 bytes as the engine counts
+    /// it: the composer says so in the engine's words, and a send over it is refused before any request, so the text goes
+    /// back in the field.
+    @Test func aMessageOverOneMegabyteIsHeldBackInTheEnginesWords() async throws {
+        let head = "/work 0 1000 "
+        let exactly = head + String(repeating: "t", count: TypedTextLimit.bytes - head.utf8.count)
+        let overByOne = head + String(repeating: "é", count: (TypedTextLimit.bytes - head.utf8.count - 1) / 2) + "tt"
+        #expect(exactly.utf8.count == 1_048_576 && overByOne.utf8.count == 1_048_577)
+        #expect(overByOne.count < 600_000, "far under the limit counted in characters")
+        #expect(TypedTextLimit.refusal(exactly) == nil)
+        // The engine's sentences, as engine/test/devices.ts holds them.
+        #expect(TypedTextLimit.refusal(overByOne) == "A message from a phone can carry at most 1 MB of typed text; this one has just over 1 MB. Shorten it, or send it from the Mac.")
+        #expect(TypedTextLimit.refusal(String(repeating: "t", count: 1_258_292)) == "A message from a phone can carry at most 1 MB of typed text; this one has 1.2 MB. Shorten it, or send it from the Mac.")
+        #expect(TypedTextLimit.refusal(overByOne, answer: true) == "An answer from a phone can carry at most 1 MB of typed text; this one has just over 1 MB. Shorten it, or answer on the Mac.")
+        #expect(TypedTextLimit.sizeText(66 * 1024 * 1024 + 13) == "66.0 MB")
+        // A half rounds up, as JavaScript's toFixed(1) does: 1.25 and 1.75 MB.
+        #expect(TypedTextLimit.sizeText(1_310_720) == "1.3 MB" && TypedTextLimit.sizeText(1_835_008) == "1.8 MB")
+
+        let transport = RecordingTransport()
+        let session = AppSession()
+        session.start(transport, as: .connected(.home))
+        #expect(try await eventually { session.engine.status == .connected })
+        let requests = ConversationRequests(engine: session.engine, conversationID: 9)
+        let outcome = await requests.send(overByOne, pictures: [], steer: false)
+        #expect(outcome == .refused("Not sent. A message from a phone can carry at most 1 MB of typed text; this one has just over 1 MB. Shorten it, or send it from the Mac."))
+        #expect(transport.params(of: "submit") == nil, "no request is made")
+        #expect(session.engine.outgoing[9] == nil)
+        _ = await requests.send(exactly, pictures: [], steer: false)
+        #expect(transport.params(of: "submit")?["text"] as? String == exactly, "exactly 1 MB goes")
+    }
+
     @Test func sendingAPicturePutsItInTheRequest() async throws {
         let transport = RecordingTransport()
         let session = AppSession()
@@ -248,6 +279,17 @@ struct ConversationTests {
         #expect(params["index"] as? Int == 1)
     }
 
+    // MARK: The launch value that presses the screen's controls (debug builds)
+
+    @Test func debugActsAreReadInOrder() {
+        #expect(ConversationDebugAct.parse("send:Hello: there|queue:Later|steer:Now|take-back|stop|continue|restore|older|open-picture") == [
+            .send("Hello: there"), .queue("Later"), .steer("Now"), .takeBack, .stop, .carryOn, .restore, .older, .openPicture,
+        ])
+        #expect(ConversationDebugAct.parse("pictures:2:Two of them|pictures:1") == [.pictures(count: 2, text: "Two of them"), .pictures(count: 1, text: "")])
+        // What it cannot do is left out, rather than guessed at.
+        #expect(ConversationDebugAct.parse("pictures:11|pictures:0|send:|jump|") == [])
+    }
+
     // MARK: Pictures
 
     @Test func aLargePhotoIsMadeSmallEnough() throws {
@@ -273,6 +315,39 @@ struct ConversationTests {
     }
 
     // MARK: The page (docs/iphone.md section 8)
+
+    /// Against a copy (#687), a conversation at rest kept the screen's loading line under its page: the page was ready
+    /// before the conversation's state came, that state changed nothing the page draws, so the bridge said the page was
+    /// shown from inside `show`, which SwiftUI calls while it updates the view and where it drops a change to the
+    /// screen's state. It says so after `show` has returned.
+    @Test func thePageIsSaidToBeShownOutsideTheViewsUpdate() async throws {
+        let folder = try #require(TranscriptPage.folder)
+        let items = try decode([Item].self, #"[{"id":1,"kind":"user","text":"Hello"},{"id":2,"kind":"assistant","text":"At rest."}]"#)
+        let names = TranscriptFeed.Names(conversationId: 9, agentName: "Orchestrator", mcp: [:], agents: [], apps: [:])
+        let bridge = ConversationPageBridge()
+        var shown = false
+        bridge.onShown = { shown = true }
+        let view = bridge.makeView(folder: folder)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 852))
+        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene { window.windowScene = scene }
+        view.frame = window.bounds
+        window.addSubview(view)
+        window.isHidden = false
+        defer {
+            view.close()
+            window.isHidden = true
+        }
+        // The entries come first, with no state yet; the page gets them once it is ready.
+        bridge.show(ConversationPageContent(conversationID: 9, items: items, earlier: 0, state: nil, names: names))
+        try #require(try await eventually(Self.patience) { view.isReady }, "the page never said it was ready")
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(!shown, "no state yet")
+        // Then the state, at rest: nothing new for the page.
+        bridge.show(ConversationPageContent(conversationID: 9, items: items, earlier: 0, state: try state(""), names: names))
+        #expect(!shown, "said during show")
+        #expect(try await eventually { shown })
+        #expect(view.alpha == 1)
+    }
 
     /// The page is in this build's bundle, and once it has drawn a conversation holding addresses, pictures and markup
     /// that point at the network, it has loaded nothing but its own files: no picture, no fetch, no navigation. A

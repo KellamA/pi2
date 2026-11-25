@@ -136,7 +136,8 @@ func presentedPicture(_ label: String, _ name: String, _ caption: String, kind: 
     if kind == "page" {
         item["mimeType"] = "text/html"
         item["snapshot"] = ["state": "drawn", "sha256": String(repeating: "b", count: 64)]
-        item["drawn"] = ["loadMs": 412, "blank": false, "console": [], "blocked": []]
+        // Lines it logged, none of them an error, as the engine counts them (`errors`): the row says "no errors".
+        item["drawn"] = ["loadMs": 412, "blank": false, "console": ["log: signin-b ready", "warn: a font fell back to the system's"], "errors": 0, "blocked": []]
     } else {
         item["mimeType"] = name.hasSuffix(".svg") ? "image/svg+xml" : "image/png"
         item["snapshot"] = NSNull()

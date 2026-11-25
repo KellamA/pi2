@@ -31,6 +31,7 @@ Pictures are drawn afresh before they are sent, so what a photo's file says abou
 - At most 10 attachments in a message.
 - A picture at most 5 MB once prepared. The app scales and compresses to stay under that.
 - An attached text at most 400,000 characters, and 1,500,000 across one message.
+- From a paired iPhone, the typed text at most 1 MB ([iphone.md 4.2](iphone.md#42-what-a-device-may-send)). A message typed on the Mac has no such limit.
 
 Attached text counts towards the model's context like anything else in the conversation. A long PDF can fill a small model's context on its own.
 

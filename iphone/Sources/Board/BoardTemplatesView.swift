@@ -50,6 +50,9 @@ struct BoardTemplatesView: View {
                     }
                 }
                 .listStyle(.insetGrouped)
+                #if DEBUG
+                .task { await BoardDebugAct.templates(self, data) }
+                #endif
             }
         }
         .navigationTitle("Templates")
@@ -74,4 +77,9 @@ struct BoardTemplatesView: View {
             adding = false
         }
     }
+
+    #if DEBUG
+    /// For `BoardDebugAct`: what a tap would do.
+    func debugNew(_ data: BoardData) { newTemplate(data) }
+    #endif
 }
