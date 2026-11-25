@@ -766,9 +766,9 @@ let droppedSaid = 0;
 /**
  * A line as a device may be sent it, or null for none (5.7). The line is read whole: an event on the list, or an answer
  * (`id` with `result` or `error`), and nothing else; endpoints by name only; then every string in it, the keys of its
- * objects too, masked of key shapes before it is written again, and what is nested too deep replaced by a marker
- * (devices.ts, `maskValue`), so that one deep call does not keep a whole list from the phone. Anything that still goes
- * wrong drops the line, but an answer, which is answered with an error, so that no request goes unanswered: a line is
+ * objects too, masked of key shapes and of the values of the secrets the engine knows (secrets.ts) before it is
+ * written again, and what is nested too deep replaced by a marker (devices.ts, `maskValue`), so that one deep call
+ * does not keep a whole list from the phone. Anything that still goes wrong drops the line, but an answer, which is answered with an error, so that no request goes unanswered: a line is
  * never sent unmasked, and never throws into what wrote it.
  */
 export function forDevice(line: string): string | null {

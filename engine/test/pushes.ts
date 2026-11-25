@@ -8,11 +8,13 @@ import assert from "node:assert/strict";
 import { forDevice } from "../src/remote.ts";
 import { APPROVAL_DEPTH, hidesSomething, KEY_HIDDEN, PART_HIDDEN, TOO_DEEP } from "../src/devices.ts";
 import type { NeedItem } from "../src/needs.ts";
+import { forgetSecrets, knowSecrets, SECRET_HIDDEN } from "../src/secrets.ts";
 import {
 	ACTIVITY_EVERY_MS,
 	type AlertBody,
 	FOLLOW_KEPT_MS,
 	GONE_TOGETHER_MS,
+	highEntropy,
 	HOURLY,
 	IDLE_FOR_MS,
 	MAX_BODY,
@@ -37,7 +39,7 @@ const key = "sk-ant-api03-aKeyShapedStringInACommand0123456789";
 type Device = { id: string; suspendedAt: number | null; lastSeenAt: number | null };
 
 /** A choice with stand-ins: the clock, the devices, pi² Remote (what it is sent), and the wake-ups asked for. */
-function world(options: { devices?: string[] } = {}) {
+function world(options: { devices?: string[]; log?: (text: string) => void } = {}) {
 	const state = {
 		clock: 1_000_000,
 		devices: (options.devices ?? ["dev_a"]).map((id): Device => ({ id, suspendedAt: null, lastSeenAt: 0 })),
@@ -61,6 +63,7 @@ function world(options: { devices?: string[] } = {}) {
 		approvalHidden: (id) => state.gated.has(id),
 		conversation: (id) => state.conversations.get(id),
 		orchestrator: (id) => state.orchestrators.get(id),
+		...(options.log === undefined ? {} : { log: options.log }),
 	};
 	const pushes = new Pushes(parts, {});
 	return {
@@ -311,6 +314,64 @@ const alerts = (pushes: Push[]) => pushes.filter((push): push is Extract<Push, {
 	step("an alert's text is masked as a device's copy is (a key wherever it stands, cut after masking), marked partHidden as the channel and the gate mark it at every depth of the sweep, and whole only when it is");
 }
 
+{
+	// A value of a secret the engine knows, with no shape of a key's (#894): in an approval's call, a question, a rule, the
+	// agent's name, the project's: masked in the push as on the channel, and the push marked partHidden, never whole.
+	const value = "correct-horse-battery-894";
+	knowSecrets("variables/forge", [value]);
+	const places: [Record<string, unknown>, string | undefined][] = [
+		[{ arguments: { command: `DEPLOY_TOKEN=${value} ./deploy` } }, undefined],
+		[{ arguments: { command: `line one\n${value}` } }, undefined],
+		[{ kind: "question", question: `Is ${value} the one to use?` }, undefined],
+		[{ kind: "rule", text: `Always pass ${value}` }, undefined],
+		[{ agentName: `Forge ${value}` }, undefined],
+		[{}, `Project ${value}`],
+	];
+	for (const [fields, project] of places) {
+		const item = need(fields);
+		const body = needAlert(item, false, project, 5);
+		const channel = JSON.parse(forDevice(JSON.stringify({ event: "needs", items: [item] }))!).items[0];
+		assert.ok(!JSON.stringify(body).includes(value) && JSON.stringify(body).includes(SECRET_HIDDEN), JSON.stringify(body));
+		assert.deepEqual([body.partHidden, body.whole], [true, false], JSON.stringify(fields));
+		assert.ok(!JSON.stringify(channel).includes(value), "nor on the channel");
+		if (item.kind === "approval" && project === undefined && fields.agentName === undefined) assert.equal(channel[PART_HIDDEN], true, "whose copy is marked alike");
+	}
+	assert.equal(needAlert(need({ arguments: { command: `DEPLOY_TOKEN=${value} ./deploy` } }), false, undefined, 5).body, `bash: DEPLOY_TOKEN=${SECRET_HIDDEN} ./deploy`);
+	// It changes: the new value is masked from then on.
+	const rotated = "rotated-horse-battery-894";
+	knowSecrets("variables/forge", [rotated]);
+	const after = needAlert(need({ arguments: { command: `echo ${rotated}` } }), false, undefined, 5);
+	assert.deepEqual([after.body, after.partHidden, after.whole], [`bash: echo ${SECRET_HIDDEN}`, true, false]);
+	forgetSecrets("variables/forge");
+	assert.equal(needAlert(need({ arguments: { command: `echo ${rotated}` } }), false, undefined, 5).whole, true, "one no longer known is a call like any other");
+	step("a value of a secret the engine knows is masked in an alert as on the channel, wherever it stands, and the alert marked partHidden; a new value from the moment it is known");
+}
+
+{
+	// A run that reads as a token, with no known prefix: hidden in the notification alone, which is then not whole, but
+	// not partHidden: the channel's copy shows it, so the person can see it in the app and allow it there.
+	const token = "Zq8vN3kLx2Rb7TfW9mYp4Hc6Jd1Gs5Ae0Uo";
+	assert.ok(highEntropy(token));
+	const item = need({ arguments: { command: `deploy --token ${token}` } });
+	const body = needAlert(item, false, undefined, 5);
+	assert.deepEqual([body.body, body.whole, body.partHidden], [`bash: deploy --token ${SECRET_HIDDEN}`, false, undefined]);
+	const channel = JSON.parse(forDevice(JSON.stringify({ event: "needs", items: [item] }))!).items[0];
+	assert.deepEqual([channel.arguments.command, channel[PART_HIDDEN]], [`deploy --token ${token}`, undefined], "the channel's copy is whole");
+	// What agents run every day stays as it is: a commit's hash, a UUID, a device's id, a path, base64 of a few bytes.
+	for (const command of [
+		"git reset --hard 218ebeb7c4f1a2d3e5b6a7c8d9e0f1a2b3c4d5e6",
+		"scripts/test-copy answer test-7 3f2a9c1e-5b7d-4e8f-9a0b-1c2d3e4f5a6b allow",
+		"git push origin pi2/894-914-known-secrets-masked-in-pushes-a",
+		"open app/Sources/pi2-remote-helper-check/main.swift",
+		"echo aGVsbG8gd29ybGQ= | base64 -d",
+		"ls /tmp/pi2-501/scratch-fd0bd995/258259",
+	]) {
+		const plain = needAlert(need({ arguments: { command } }), false, undefined, 5);
+		assert.deepEqual([plain.body, plain.whole], [`bash: ${command}`, true], command);
+	}
+	step("a run that reads as a token is hidden in the notification alone, which is then not whole but not partHidden; hashes, UUIDs, paths and short base64 are left as they are");
+}
+
 // ---- Whole: the same facts as the Mac's card, nothing changed
 
 {
@@ -489,6 +550,35 @@ const alerts = (pushes: Push[]) => pushes.filter((push): push is Extract<Push, {
 	later(30_000);
 	assert.equal(sentOf("alert").length, 9);
 	step("the relay's refusals: later a minute, no token until the phone attaches, no push key an hour; what still waits goes after; nothing while pi² Remote is not running");
+}
+
+{
+	// pi² Remote's own too-large and malformed (#914): that one push is dropped, said in the log by its id, and nothing
+	// else is held back; it is not asked for again a minute later.
+	const logged: string[] = [];
+	const { state, pushes: dropping } = world({ log: (text) => logged.push(text) });
+	dropping.needs([]);
+	for (const why of ["too-large", "malformed"]) {
+		const before = state.sent.length;
+		const first = need();
+		dropping.needs([first]);
+		const asked = state.sent.at(-1)!;
+		assert.equal(state.sent.length, before + 1);
+		assert.equal(dropping.refused(asked.id, why), true);
+		assert.ok(logged.at(-1)!.includes(asked.id) && logged.at(-1)!.includes(why) && !logged.at(-1)!.includes(first.id), logged.at(-1)!);
+		const second = need();
+		dropping.needs([first, second]);
+		assert.equal((state.sent.at(-1) as Extract<Push, { kind: "alert" }>).body.need, second.id, `the next goes at once after ${why}`);
+		state.clock += 2 * MINUTE;
+		dropping.flush();
+		assert.equal(state.sent.length, before + 2, `the dropped one is not asked for again after ${why}`);
+		dropping.needs([]);
+		state.clock += GONE_TOGETHER_MS;
+		dropping.flush();
+		const gone = state.sent.at(-1) as Extract<Push, { kind: "background" }>;
+		assert.deepEqual(gone.body.needs, [second.id], "and the item it was about, never told, is not named as gone");
+	}
+	step("a push pi² Remote refuses as too-large or malformed is dropped alone, logged by its id, and not asked for again");
 }
 
 {

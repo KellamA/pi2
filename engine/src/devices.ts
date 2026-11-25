@@ -9,9 +9,9 @@
 // The shapes are RemoteKit's (docs/remotekit.md, #674): bytes in text are base64url without padding, written one way;
 // P-256 keys are SPKI DER; signatures are ECDSA P-256 over SHA-256 of the exact `signed` text, 64 raw bytes (r then s);
 // `signed` is compact JSON read strictly, every field present in order and none unknown. Every comparison of a secret,
-// a binding, a challenge or the digits takes a time that depends on the length alone. Nothing key-shaped goes into the
-// devices' log (`maskKeys`), and the pairing's secret `s` goes only into the answer to `devices.pairStart`, on the
-// app's own connection, and to pi² Remote, never into an event or a log (3.1).
+// a binding, a challenge or the digits takes a time that depends on the length alone. Nothing key-shaped, and no value
+// of a secret the engine knows (secrets.ts), goes into the devices' log (`maskKeys`), and the pairing's secret `s`
+// goes only into the answer to `devices.pairStart`, on the app's own connection, and to pi² Remote, never into an event or a log (3.1).
 
 import { createHash, createHmac, createPublicKey, type KeyObject, randomBytes, timingSafeEqual, verify } from "node:crypto";
 import { homedir, hostname } from "node:os";
@@ -21,6 +21,7 @@ import { type DevicePath, deviceMay, type DeviceSession, devicePlacement, ONLY_O
 import { AppAttestError, type AppAttestEnvironment, type AppAttestResult, verifyAttestation } from "./appattest.ts";
 import type { Client } from "./clients.ts";
 import { RequestError } from "./requesterror.ts";
+import { SECRET_HIDDEN, secretSpans } from "./secrets.ts";
 import { releaseEngine, testCopySuffix, testSwitch } from "./testswitches.ts";
 
 // ---- The records (3.2, 4.3, 4.4)
@@ -475,16 +476,20 @@ const PEM_BEGIN = /-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----/g;
 const PEM_END = /-----END [A-Z ]{0,40}PRIVATE KEY-----/y;
 export const KEY_HIDDEN = "[key hidden]";
 
-/** `text` with every key-shaped string in it replaced by KEY_HIDDEN. */
+/**
+ * `text` with every key-shaped string in it replaced by KEY_HIDDEN, and every value of a secret the engine knows
+ * (secrets.ts: agents' and MCP servers' variables, providers' keys and tokens) by SECRET_HIDDEN. Where the two overlap,
+ * the run they cover together is replaced once, by the mark of the one that starts first.
+ */
 export function maskKeys(text: string): string {
-	const spans: [number, number][] = [];
+	const spans: [number, number, string][] = [];
 	for (const { start, run, least, keep } of KEY_SHAPES) {
 		start.lastIndex = 0;
 		for (let found = start.exec(text); found !== null; found = start.exec(text)) {
 			const after = found.index + found[0].length;
 			let end = after;
 			while (end < text.length && run(text.charCodeAt(end))) end++;
-			if (end - after >= least) spans.push([keep === true ? after : found.index, end]);
+			if (end - after >= least) spans.push([keep === true ? after : found.index, end, KEY_HIDDEN]);
 			start.lastIndex = Math.max(end, found.index + 1);
 		}
 	}
@@ -509,16 +514,18 @@ export function maskKeys(text: string): string {
 			if (to - from < 16) break;
 			end = to;
 		}
-		spans.push([found.index, end]);
+		spans.push([found.index, end, KEY_HIDDEN]);
 		PEM_BEGIN.lastIndex = end;
 	}
+	for (const [from, to] of secretSpans(text)) spans.push([from, to, SECRET_HIDDEN]);
 	if (spans.length === 0) return text;
+	// By where each starts; a key's shape before a known value at the same place (`sort` keeps the order of equals).
 	spans.sort((a, b) => a[0] - b[0]);
 	let out = "";
 	let at = 0;
-	for (const [from, to] of spans) {
+	for (const [from, to, mark] of spans) {
 		if (to <= at) continue;
-		if (from >= at) out += text.slice(at, from) + KEY_HIDDEN;
+		if (from >= at) out += text.slice(at, from) + mark;
 		at = to;
 	}
 	return out + text.slice(at);

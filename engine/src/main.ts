@@ -46,6 +46,7 @@ import { codemodeExtension } from "./codemode.ts";
 import { automaticCompactionReady, compactionCheckpoint, earlyCompaction, RETENTION_INSTRUCTIONS, SUMMARY_TOKENS, summaryThinking } from "./compaction.ts";
 import { holdingPlaces } from "./sections.ts";
 import { credentialStore } from "./credentials.ts";
+import { knowStoredSecrets, watchingSecrets } from "./secrets.ts";
 import { type Host, pi2Extension } from "./extensions.ts";
 import { type Engine, FEATURES } from "./features.ts";
 import { carriedProjectFor } from "./carryover.ts";
@@ -202,7 +203,9 @@ tidyBackups(home, log); // copies an engine on this data folder stopped while ma
 
 // ---- Models, tools, harness
 
-const credentials = credentialStore(home);
+// Learning the secrets it reads, to mask them in what a phone is sent (secrets.ts); each stored one is read once now.
+const credentials = watchingSecrets(credentialStore(home));
+void knowStoredSecrets(credentials);
 const providers = new Providers(home, credentials, () => deviceId(), { log });
 const mcp = new McpServers(home, credentials);
 mcp.log = log;
