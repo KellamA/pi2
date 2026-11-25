@@ -82,13 +82,13 @@ enum Recorded {
 // MARK: Stand-ins
 
 /// Opens a sealed push as docs/remotekit.md says the bytes are, worked out apart from RemoteKit with CryptoKit: the item,
-/// then its 16-byte id; HPKE's authenticated mode with `info` = "pi2-item-v2", 0, the pairing, 0, the reader, 0, the
+/// then its 16-byte id; HPKE's authenticated mode with `info` = "pi2-push-v1", 0, the pairing, 0, the reader, 0, the
 /// item's id; then `{"v":2,"signed":…,"signature":…}`, the identity key's signature over the exact `signed` text,
 /// `signed`'s pairing, device and nonce, and its body `{"body":…,"pad":"000…"}`. Only the checks the bytes need;
 /// RemoteKit's own strict reading is RemoteKit's checks'.
 struct CheckOpener: PushOpening {
     func open(_ push: SealedPush, keys: PushKeys) throws -> OpenedPush {
-        var info = Data("pi2-item-v2".utf8)
+        var info = Data("pi2-push-v1".utf8)
         for part in [keys.pairing, keys.device, push.idText] {
             info.append(0)
             info.append(Data(part.utf8))

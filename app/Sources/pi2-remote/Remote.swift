@@ -244,6 +244,8 @@ package final class Remote: @unchecked Sendable {
 			relayEnd.reconsider()
 		} else {
 			log("the relay's address changed: its own relay key is told to the engine")
+			// The old relay's client, and pushes with it, stop now, not once the engine answers the hello (#937).
+			relayEnd.addressChanged()
 			hello()
 		}
 	}
