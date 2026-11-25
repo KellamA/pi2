@@ -23,8 +23,10 @@ import RemoteKit
 // - **A Live Activity's numbers** pass unsealed, as the system reads them, held again to exactly their four members, each
 //   in range, and the activity's id to its shape (`ActivityNumbers`, `RelayOutgoing.validate`): one that is not would
 //   close the relay's socket as `malformed`.
-// - **No queue of its own.** While there is no relay to ask (not connected, or none yet), a push is answered
-//   `push-later` at once and the engine asks again when it sees fit; so is one past `maxInFlight` waiting on the relay.
+// - **No queue of its own.** While there is no relay to ask, a push is answered `push-later` at once, said in the log
+//   by its id, and the engine asks again when it sees fit; so is one past `maxInFlight` waiting on the relay. There is
+//   one to ask only from the relay's `ready` for this pairing's Mac until that socket goes or the client stops
+//   (`RelayEnd.heard`, `stopClient`; #935).
 //   Pushes go to the relay in the order they came, each once.
 // - **The relay's refusal, as it is.** For a push the relay refused, `remote.pushRefused { id, why }`, once, with the
 //   relay's word (`no-token`, `token-dead`, `unknown-device`, `push-limit`, `push-later`, `unavailable`, `clock`, or a
@@ -107,7 +109,8 @@ package final class PushHandOver: @unchecked Sendable {
 	private let queue: DispatchQueue
 	private let keys: MacKeys
 	private let answer: (_ id: String, _ why: String) -> Void
-	/// The relay's client, once there is one connected to send through (#678); none, and every push is `push-later`.
+	/// The relay's client while it is connected as this pairing's Mac: set by `RelayEnd` at the relay's `ready` and taken
+	/// away when its socket goes or it stops (#935). None, and every push is `push-later`.
 	package var relay: (any PushRelay)?
 	private var inFlight = 0
 	private var tail: Task<Void, Never>?
@@ -198,7 +201,11 @@ package final class PushHandOver: @unchecked Sendable {
 			log("push \(asked.id): for a device not on pi² Remote's own list; dropped")
 			return
 		}
-		guard let relay, let pairing else { return answer(asked.id, Self.later) }
+		guard let relay, let pairing else {
+			// Said for each push, as the relay's refusals are: the engine asks again no sooner than its hold ends.
+			log("push \(asked.id): no relay connected as this Mac; push-later, not handed to any relay client")
+			return answer(asked.id, Self.later)
+		}
 		guard inFlight < Self.maxInFlight else {
 			Seldom.shared.say("pushes-waiting", "\(Self.maxInFlight) pushes wait on the relay already: the next are answered push-later")
 			return answer(asked.id, Self.later)

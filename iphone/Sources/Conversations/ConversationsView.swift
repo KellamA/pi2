@@ -71,8 +71,8 @@ struct ConversationsView: View {
         #if DEBUG
         .task(id: engine.hasLoadedLibrary) {
             guard engine.hasLoadedLibrary else { return }
-            if await ConversationsSample.take("archive"), let row = listing.sections.first?.rows.first { archive(row) }
-            if await ConversationsSample.take("new-chat") { newChat() }
+            if await ConversationsSample.take("archive", in: session), let row = listing.sections.first?.rows.first { archive(row) }
+            if await ConversationsSample.take("new-chat", in: session) { newChat() }
         }
         #endif
         .toolbar {

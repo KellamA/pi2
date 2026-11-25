@@ -31,7 +31,9 @@
 //   back to the listed controls only where the hit test found nothing in the window; and that the action acts on what
 //   its approval card named, or is refused once that no longer holds (#770); that a listed control a card named
 //   holds only while it is among the window's controls read again, since a SwiftUI button on a tab switched away
-//   still answers its old frame and its press, and is then worked through accessibility alone (#955);
+//   still answers its old frame and its press, and is then worked through accessibility alone (#955); and that a
+//   control named by number, or at a point with no card, is worked only while one walk of the window, which stops
+//   once it has found what it seeks, finds it again (#969);
 // - the size and direction of the wheel event (as AppKit decodes it, without posting it), and how actual movement
 //   is reported;
 // - that a window is pictured alone, without the windows attached to it, at its own frame's size, so that a sheet's
@@ -215,6 +217,24 @@ struct SwitchedBoard: View {
         }
         .frame(width: 360, height: 300)
     }
+}
+
+/// The walk `ComputerController.stillListed` makes, over the check's own elements: in the listing's order, bounded at
+/// `limit` elements as a look's is at 4000, stopping once every control sought is found.
+@MainActor
+func seek(_ wanted: [NSObject], in stage: Stage, limit: Int = 4000) -> (outcome: Seeking<NSObject>.Outcome, visited: Int) {
+    var seeking = Seeking(wanted)
+    var visited = 0
+    var truncated = false
+    func walk(_ element: Local) {
+        if seeking.done || truncated { return }
+        visited += 1
+        if visited > limit { truncated = true; return }
+        seeking.saw(element.object)
+        for kid in element.accessibleChildren { walk(kid) }
+    }
+    walk(Local(object: stage.window))
+    return (seeking.outcome(truncated: truncated), visited)
 }
 
 /// A window of many controls, for the cost of reading it again.
@@ -414,6 +434,56 @@ Task { @MainActor in
         check("a control hidden from accessibility is no longer among the window's elements either", hidden)
         check("and is refused with look again",
               kept.settle(shown.object, hit: nil, for: "click@1", at: point, frameNow: { _ in frame }, present: listedNow) == .changed)
+        check("with no card, the hidden one is refused too (#969)",
+              kept.settle(shown.object, hit: nil, for: "click@1", at: point, frameNow: { _ in frame }, present: listedNow) == .stale)
+    }
+
+    await group("a control named by number, or with no card, is worked only while it is among the window's controls (#969)") {
+        // `control(_:in:)` and a click at a point with no card ask `stillListed`: one walk of the window, as a look's,
+        // stopping once each control sought is found (`Seeking`). Here the walk goes over the check's own SwiftUI board.
+        let board = Board()
+        let stage = Stage(SwitchedBoard(board: board))
+        defer { stage.window.close() }
+        _ = await stage.until { list in list.contains { $0.accessibleRole == "AXButton" } }
+        guard let beacon = stage.first("AXButton", "Beacon"), let text = stage.first("AXStaticText", "Now tab"), let frame = beacon.frame else {
+            return check("the Beacon button and the Now tab's text are there", false, "roles: \(stage.elements.map(\.accessibleRole))")
+        }
+        let point = CGPoint(x: frame.midX, y: frame.midY)
+        check("a control still there is found", seek([beacon.object], in: stage).outcome == .found)
+        let both = seek([beacon.object, text.object], in: stage)
+        check("one walk finds two controls an action names", both.outcome == .found && both.visited <= stage.elements.count,
+              "visited \(both.visited) of \(stage.elements.count)")
+        check("a walk that runs out before finding it cannot say, and is not taken for found",
+              seek([text.object], in: stage, limit: 1).outcome == .unsure)
+        board.tab = "Work"
+        _ = await stage.until { list in !list.contains { $0.object === beacon.object } }
+        check("a removed control is not found, though it still answers its role and old frame",
+              seek([beacon.object], in: stage).outcome == .gone && beacon.accessibleRole == "AXButton" && beacon.frame == frame)
+        check("nor is a pair one of which was removed", seek([beacon.object, text.object], in: stage).outcome == .gone)
+        var kept = AtPoint.Kept<NSObject>()
+        check("with no card, a click at the point of the removed control is refused with look again",
+              kept.settle(beacon.object, hit: nil, for: "click@1", at: point, frameNow: { _ in frame },
+                          present: { seek([$0], in: stage).outcome == .found }) == .stale)
+
+        // The cost: one walk per action that names a listed control, stopping where it is found. Timed in-process,
+        // as a floor: another app answers each element in a message of its own.
+        let many = Stage(ManyButtons(count: 1500))
+        defer { many.window.close() }
+        _ = await many.until { list in list.filter { $0.accessibleRole == "AXButton" }.count >= 1500 }
+        let buttons = many.elements.filter { $0.accessibleRole == "AXButton" }
+        guard let first = buttons.first, let last = buttons.last else { return check("the many buttons are there", false) }
+        _ = seek([first.object], in: many) // warms the in-process reads, which the first call pays for
+        var start = Date()
+        let early = seek([first.object], in: many)
+        let earlyTook = Date().timeIntervalSince(start)
+        start = Date()
+        let late = seek([last.object], in: many)
+        let lateTook = Date().timeIntervalSince(start)
+        check("a control early in a window of many is found without reading the rest", early.outcome == .found && early.visited < 10,
+              "visited \(early.visited)")
+        check("and the last is found by reading the window up to it", late.outcome == .found && late.visited >= buttons.count,
+              "visited \(late.visited) of \(many.elements.count)")
+        print("note  finding a control again in a window of \(many.elements.count) elements: \(early.visited) read, \(Int(earlyTook * 1_000_000)) µs, for the first; \(late.visited) read, \(Int(lateTook * 1000)) ms, for the last, in-process")
     }
 
     await group("reading the window's controls again, for a card's listed control, costs one walk of the window (#955)") {
@@ -692,13 +762,30 @@ Task { @MainActor in
         kept.keep("button", for: "click@1")
         check("a listed control that is the hit test's own find is acted on as any hit is, a real click allowed",
               kept.settle("button", hit: "button", for: "click@1", at: point, frameNow: here, present: listedNow) == .act("button"))
+        // With no card (Ask before each action off, or the app allowed), a listed control from the last look is held
+        // to the same test, and refused without one (#969).
         reads = 0
-        check("with nothing kept, a listed control at the point is acted on as before, the window not read again",
-              kept.settle("button", hit: nil, for: "click@1", at: point, frameNow: here, present: listedNow) == .act("button") && reads == 0)
+        check("with nothing kept, a listed control still there and at the point is acted on, after one read of the window",
+              kept.settle("button", hit: nil, for: "click@1", at: point, frameNow: here, present: listedNow) == .act("button") && reads == 1,
+              "read \(reads) times")
+        check("with nothing kept, one no longer among the window's controls is refused, though it answers its old frame (#969)",
+              kept.settle("button", hit: nil, for: "click@1", at: point, frameNow: here, present: { _ in false }) == .stale)
+        check("and so is one that is gone, or moved off the point",
+              kept.settle("button", hit: nil, for: "click@1", at: point, frameNow: { _ in nil }, present: listedNow) == .stale
+                  && kept.settle("button", hit: nil, for: "click@1", at: point, frameNow: { _ in button.offsetBy(dx: 0, dy: 200) }, present: listedNow) == .stale)
+        reads = 0
+        check("with nothing kept, the hit test's own find, or nothing, is acted on as before, the window not read",
+              kept.settle("Send", hit: "Send", for: "click@1", at: point, frameNow: here, present: listedNow) == .act("Send")
+                  && kept.settle(nil, hit: nil, for: "click@1", at: point, frameNow: here, present: listedNow) == .act(nil) && reads == 0,
+              "read \(reads) times")
         kept.keep("Send", for: "click@1")
         check("a card's choice is kept for its own action and point only",
               kept.settle("Cancel", hit: "Cancel", for: "context_menu@1", at: point, frameNow: here, present: listedNow) == .act("Cancel")
                   && kept.settle("Send", hit: "Send", for: "click@1", at: point, frameNow: here, present: listedNow) == .act("Send"))
+        let stale = AtPoint.stale("no menu was opened", x: 120, y: 80)
+        check("with no card, the refusal says the window changed since the last look, names no approval, and says to look again",
+              stale.contains("changed since the last look") && !stale.contains("approval") && stale.contains("(120, 80)")
+                  && stale.contains("so no menu was opened") && stale.contains("Take a screenshot"), stale)
         let refused = AtPoint.changed("nothing was clicked", x: 120, y: 80)
         check("the refusal says the window changed and to look again",
               refused.contains("window changed since the last look, or while this waited") && refused.contains("(120, 80)") && refused.contains("Take a screenshot"))

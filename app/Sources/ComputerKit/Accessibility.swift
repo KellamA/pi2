@@ -108,6 +108,14 @@ struct Control {
 
     var isText: Bool { role == "AXTextField" || role == "AXTextArea" || role == "AXComboBox" }
 
+    /// The same control where it is now, for a real click at its centre after it moved.
+    func at(_ frame: CGRect) -> Control {
+        var moved = Control(element: element, role: role, kind: kind, label: label, value: value, frame: frame, enabled: enabled,
+                            focused: focused, selected: selected)
+        moved.statusItem = statusItem
+        return moved
+    }
+
     /// "the “Send” button", for sentences.
     var phrase: String {
         if let label { return "the “\(label.clipped(60))” \(kind)" }
@@ -137,6 +145,9 @@ struct WindowReader {
     ]
 
     let windowFrame: CGRect
+    /// Set to read the window only until these controls are found again (`ComputerController.stillListed`, #955,
+    /// #969): the walk goes as a look's does, in its order and within its bounds, and stops once all are found.
+    var seeking: Seeking<AXUIElement>?
     var controls: [Control] = []
     var text: [String] = []
     private(set) var truncated = false
@@ -151,6 +162,7 @@ struct WindowReader {
     /// Walk the window. Returns the text found under `element`, which is how rows and unlabelled buttons get a name.
     @discardableResult
     mutating func read(_ element: AXUIElement, depth: Int = 0, parentRole: String = "") -> [String] {
+        if seeking?.done == true { return [] }
         visited += 1
         if visited > 4000 || depth > 40 || Date() > deadline {
             truncated = true
@@ -230,6 +242,8 @@ struct WindowReader {
         if listed, role == "AXRow", controls[index].label == nil { controls.remove(at: index) }
         // So is a menu item with no name: a separator.
         else if listed, isMenuItem, controls[index].label == nil { controls.remove(at: index) }
+        // Found again only as the listing keeps it, named.
+        else if listed { seeking?.saw(element) }
         // A control's own name stands for the text inside it.
         if let title = AX.string(got[2]), inner.isEmpty { return [title] }
         return inner

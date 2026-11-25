@@ -64,15 +64,20 @@ async function readings(tx: Tx, project: Project, model: ModelRef | null | undef
 	return result;
 }
 
-/** Match each current breach to a different reading the person actually saw. A tighter limit is a new decision. */
-function uncovered(current: Breach[], confirmed: readonly LimitReading[]): Breach | undefined {
+/**
+ * Match each current breach to a different reading the person confirmed for this one start. A reading covers its own
+ * limit at whatever it reads now (#953): the same kind, provider, window and reset (for spend, the same day), at no
+ * tighter a limit, however much more was spent or used since. A tighter limit, a limit or window it did not name (but
+ * for a lower window of the same plan), or a new day or window is a new decision.
+ */
+export function uncovered(current: readonly Breach[], confirmed: readonly LimitReading[]): Breach | undefined {
 	const remaining = [...confirmed];
 	for (const limit of current) {
-		const covers = (reading: LimitReading) => reading.limit === limit.limit && reading.provider === limit.provider && reading.max <= limit.max && reading.used >= limit.used;
-		let index = remaining.findIndex((reading) => covers(reading) && reading.window === limit.window && reading.resetsAt === limit.resetsAt);
+		const same = (reading: LimitReading) => reading.limit === limit.limit && reading.provider === limit.provider && reading.max <= limit.max;
+		let index = remaining.findIndex((reading) => same(reading) && reading.window === limit.window && reading.resetsAt === limit.resetsAt);
 		if (index === -1 && limit.limit === "planShare") {
 			// A different window can count only when it is lower, and the reading is not needed for its own window.
-			index = remaining.findIndex((reading) => covers(reading) && reading.window !== limit.window && reading.used > limit.used && !current.some((each) => each.provider === reading.provider && each.window === reading.window));
+			index = remaining.findIndex((reading) => same(reading) && reading.window !== limit.window && reading.used > limit.used && !current.some((each) => each.provider === reading.provider && each.window === reading.window));
 		}
 		if (index === -1) return limit;
 		remaining.splice(index, 1);

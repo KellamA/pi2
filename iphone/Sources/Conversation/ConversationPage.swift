@@ -26,6 +26,8 @@ struct ConversationPage: UIViewRepresentable {
     var onLink: (URL) -> Void = { _ in }
     /// A hand-off's sub-chat to show on its own screen.
     var onOpenConversation: (Int) -> Void = { _ in }
+    /// A file link's target, to show the file on its own screen.
+    var onFile: (String) -> Void = { _ in }
     /// The two reads the page may ask for (`ConversationPagePolicy`): the entries before those the client has, and one
     /// of an entry's pictures, as the engine answers it (nil when it could not be had).
     var loadOlder: () -> Void = {}
@@ -44,6 +46,7 @@ struct ConversationPage: UIViewRepresentable {
         bridge.onShown = onShown
         bridge.onLink = onLink
         bridge.onOpenConversation = onOpenConversation
+        bridge.onFile = onFile
         bridge.loadOlder = loadOlder
         bridge.fetchPicture = fetchPicture
         bridge.show(content)
@@ -70,6 +73,7 @@ final class ConversationPageBridge {
     var onShown: () -> Void = {}
     var onLink: (URL) -> Void = { _ in }
     var onOpenConversation: (Int) -> Void = { _ in }
+    var onFile: (String) -> Void = { _ in }
     var loadOlder: () -> Void = {}
     var fetchPicture: (_ entry: Int, _ index: Int) async -> (data: String, mimeType: String)? = { _, _ in nil }
 
@@ -178,6 +182,8 @@ final class ConversationPageBridge {
             onLink(url)
         case .openConversation(let id):
             onOpenConversation(id)
+        case .previewFile(let target):
+            onFile(target)
         case .loadOlder:
             // Not while the page still has older entries of the client's to come; the client asks the engine only when
             // it said there is more, one part at a time (`EngineSession.loadOlder`).
