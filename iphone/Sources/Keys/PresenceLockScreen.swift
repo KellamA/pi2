@@ -164,7 +164,7 @@ struct PresenceLockWords: Equatable {
             case .faceIDSetUpAgain:
                 symbol = "person.badge.key.fill"
                 title = "Face ID was set up again"
-                text = "So pi² made a new Face ID key for this iPhone. Your Mac uses it once you accept it there, in pi² › Settings › Devices. Accept it only if you set up Face ID yourself."
+                text = "So pi² made a new Face ID key for this iPhone. Open pi² with Face ID to send it to your Mac, then accept it there, in pi² › Settings › Devices. Accept it only if you set up Face ID yourself."
                 button = "Open with Face ID"
             case .keysGone:
                 symbol = "key.slash.fill"
