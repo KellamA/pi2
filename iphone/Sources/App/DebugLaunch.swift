@@ -17,7 +17,7 @@ import PiModels
 ///   known. `face-id-check` opens the Face ID check from the first screen (`FirstScreen`). And the next screens':
 ///   `work:<project>[#<number>]`, `pull-request:<project>#<number>[:<file>]`, `board:<project>[#agents|rules|notes|branches]`,
 ///   `agent:<id>` (a template) or `agent:<project>#<id>`, `templates`, `project-settings:<project>`, `settings`,
-///   `schedules`, `usage`, `conversations[:<project>]`, `archive`, `background-commands[:<id>]`, `new-project`, `outbox`.
+///   `schedules`, `usage`, `conversations[:<project>]`, `archive`, `background-commands[:<id>]`, `new-project`, `outbox`, `file:<conversation>:<a link's target>`.
 struct DebugLaunch {
     var transport: String?
     var connection: String?
@@ -129,6 +129,12 @@ struct DebugLaunch {
         case "usage" where argument == nil: return .usage
         case "archive" where argument == nil: return .archive
         case "new-project" where argument == nil: return .newProject
+        case "file":
+            // `file:<conversation>:<the link's target>`.
+            guard let argument else { return nil }
+            let named = argument.split(separator: ":", maxSplits: 1).map(String.init)
+            guard named.count == 2, let id = Int(named[0]), !named[1].isEmpty else { return nil }
+            return .filePreview(conversation: id, path: named[1])
         case "outbox" where argument == nil: return .outbox
         default:
             return nil
