@@ -38,6 +38,7 @@ const AIZA_RUN = `${"AIza"}SyD3noiseNoiseNoise0123456789abcdefg`;
 const pad = (text: string) => text + "A".repeat((4 - (text.length % 4)) % 4);
 import { offerFolders } from "../src/answers.ts";
 import { SETTINGS_ONLY_IN_THE_APP } from "../src/answers.ts";
+import { MAX_OTHER_FROM_A_DEVICE } from "../src/answers.ts";
 import { PRESENTING_NOT_YET } from "../src/presented.ts";
 import { DatabaseSync } from "node:sqlite";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
@@ -1945,9 +1946,12 @@ try {
 		assert.equal(typedRefusal("submit", { text: overByOne }), overMessage("just over 1 MB"), "rounded, a byte over would read as 1.0 MB");
 		assert.equal(typedRefusal("submit", { text: "t".repeat(1_258_292) }), overMessage("1.2 MB"));
 		assert.equal(typedRefusal("needs.answer", { answer: { kind: "question", text: overByOne } }), overAnswer("just over 1 MB"));
-		for (const params of [{ answer: null }, { answer: overByOne }, { answer: [overByOne] }, {}]) assert.equal(typedRefusal("needs.answer", params), null, JSON.stringify(params).slice(0, 40));
-		assert.equal(typedRefusal("submit", { text: [overByOne] }), null, "what is not text is the handler's to refuse");
-		assert.equal(typedRefusal("memory.add", { text: overByOne }), null, "a note is not a message");
+		for (const params of [{ answer: null }, {}]) assert.equal(typedRefusal("needs.answer", params), null, JSON.stringify(params).slice(0, 40));
+		// Since #940, what is not the typed text is held to the rest's count, and the typed text is text or nothing.
+		const overTheRest = "A request from a phone can carry at most 65,536 characters beside its message or its longer texts; this one carries more. Shorten what it holds, or do this on the Mac.";
+		for (const params of [{ answer: overByOne }, { answer: [overByOne] }]) assert.equal(typedRefusal("needs.answer", params), overTheRest, JSON.stringify(params).slice(0, 40));
+		assert.equal(typedRefusal("submit", { text: [overByOne] }), "A message from a phone must be text.", "what is not text is refused before its handler");
+		assert.equal(typedRefusal("memory.add", { text: overByOne }), overTheRest, "a note is not a message");
 		assert.equal(typedRefusal("variables.set", { value: overByOne }), null, "nor is what only the Mac may send");
 
 		const { id: typedIn } = (await ask("conversation.create", { model: { provider: "demo", modelId: "demo-1" } })).result;
@@ -2042,6 +2046,161 @@ try {
 		assert.ok(!remote.sessionLines.get(session)!.slice(hugeFrom).some((line) => JSON.stringify(line).includes("qqqqqqqqqqqqqqqq")), "and is sent nothing of the text");
 		step(
 			`a phone's typed text: exactly 1 MB taken; a byte over refused, as a message, a steer, an edit, a message handed to an agent and an answer, with what to do, and by mailbox the item's 16 KB refuses either first; the same from the Mac's app taken; 66 MiB refused in ${Math.round(sized.took)} ms (the table's refusal of the same line, ${Math.round(table.took)} ms)`,
+		);
+	}
+
+	// ---- The other texts a phone sends (#940): each one its row names at most its own bound and text, or left out; the
+	// rest of a request at most MAX_OTHER_FROM_A_DEVICE in all; measured before anything copies them. The Mac's own app
+	// is not held to them.
+	{
+		const over = (what: string, max: number, has: number) => `${what} from a phone can be at most ${max.toLocaleString("en-US")} characters; this one has ${has.toLocaleString("en-US")}. Shorten it, or do this on the Mac.`;
+		const notText = (what: string) => `${what} from a phone must be text.`;
+		const overTheRest = "A request from a phone can carry at most 65,536 characters beside its message or its longer texts; this one carries more. Shorten what it holds, or do this on the Mac.";
+		// What every refused text is made of, looked for afterwards in the devices' log, engine.log and the engine's files.
+		const refused = (length: number) => "ŧ".repeat(length);
+		const logFrom = engineLog.length;
+		const answerOf = (call: Promise<any>): Promise<any> => call.then((result) => ({ result }), (error: Error) => ({ error: error.message }));
+		const demo = { provider: "demo", modelId: "demo-1" };
+		const conversationFor = async () => (await app.call("conversation.create", { model: demo })).id as number;
+		const daily = { kind: "daily", hour: 3, minute: 0 };
+		const noRepository = /GitHub|repository/;
+		let named = 0;
+		// The project's agent every assignment goes to, made by the case of projects.addAgent below.
+		let helper = { id: "", name: "" };
+		type Round = "phone" | "mac";
+		type Case = { method: string; what: string; max: number; params: (text: unknown, round: Round) => Promise<Record<string, unknown>>; taken?: (reply: any) => boolean; mac?: RegExp; mailbox?: true };
+		const cases: Case[] = [
+			{
+				method: "projects.addAgent",
+				what: "An agent's instructions",
+				max: 20_000,
+				params: async (instructions) => ({ projectId: made.id, agent: { name: `Bounded ${++named}`, access: "none", model: demo, instructions } }),
+			},
+			{ method: "agents.save", what: "An agent's instructions", max: 20_000, params: async (instructions) => ({ agent: { id: helper.id, name: helper.name, instructions } }) },
+			{
+				method: "work.act",
+				what: "A task",
+				max: 20_000,
+				params: async (task) => ({ projectId: made.id, id: (await app.call("work.create", { projectId: made.id, title: `Bounded ${++named}` })).id, action: "assign", agentId: helper.id, task }),
+			},
+			{
+				method: "work.act",
+				what: "Work's text",
+				max: 20_000,
+				params: async (text) => ({ projectId: made.id, id: (await app.call("work.create", { projectId: made.id, title: `Bounded ${++named}` })).id, action: "edit", text }),
+				mac: /text must be at most 20,000 characters/,
+			},
+			{ method: "work.create", what: "Work's text", max: 20_000, params: async (text) => ({ projectId: made.id, title: `Bounded ${++named}`, text }), mac: /text must be at most 20,000 characters/ },
+			// The project has no repository: what passes the check is answered by sendBack itself, from either side.
+			{ method: "github.sendBack", what: "A reason for sending back", max: 20_000, params: async (reason) => ({ projectId: made.id, number: 1, reason }), taken: (reply) => noRepository.test(reply.error ?? ""), mac: noRepository },
+			{ method: "conversation.compact", what: "Instructions for compacting", max: 20_000, params: async (instructions) => ({ id: await conversationFor(), instructions }) },
+			{ method: "conversation.reset", what: "A note for starting afresh", max: 20_000, params: async (note) => ({ id: await conversationFor(), note }) },
+			{ method: "chat.set", what: "Chat instructions", max: 20_000, params: async (instructions) => ({ instructions }), mac: /chat instructions can be 20,000 characters at most/ },
+			{ method: "schedules.save", what: "A schedule's prompt", max: 20_000, params: async (prompt) => ({ schedule: { title: `Bounded ${++named}`, prompt, agentId: "forge", repeat: daily, enabled: false } }) },
+			{ method: "schedules.save", what: "A schedule's title", max: 200, params: async (title) => ({ schedule: { title, prompt: "Look around", agentId: "forge", repeat: daily, enabled: false } }) },
+			{ method: "submit", what: "A message's request id", max: 200, params: async (requestId) => ({ id: await conversationFor(), text: "/work 0 1 bounded", requestId }), mailbox: true },
+		];
+		const leave = async (item: ReturnType<Phone["item"]>) => {
+			const before = remote.events.length;
+			const reply = await remote.call("remote.mailboxIn", { device: phone.id, id: JSON.parse(item.signed).nonce, item });
+			return { reply: reply.result, receipt: (await remote.event("mailboxOut", before)).item.body };
+		};
+		for (const one of cases) {
+			const name = `${one.method}, ${one.what}`;
+			const atTheLimit = await ask(one.method, await one.params("l".repeat(one.max), "phone"));
+			assert.ok((one.taken ?? ((reply) => reply.result !== undefined))(atTheLimit), `${name}: exactly ${one.max} characters from a phone are taken: ${JSON.stringify(atTheLimit).slice(0, 300)}`);
+			if (one.method === "projects.addAgent") helper = { id: atTheLimit.result.id, name: `Bounded ${named}` };
+			assert.equal((await ask(one.method, await one.params(refused(one.max + 1), "phone"))).error, over(one.what, one.max, one.max + 1), `${name}: a character over is refused`);
+			for (const wrong of [[refused(8)], { text: refused(8) }, 8, true]) assert.equal((await ask(one.method, await one.params(wrong, "phone"))).error, notText(one.what), `${name}: ${JSON.stringify(wrong).slice(0, 20)} is not text`);
+			const fromMac = await answerOf(app.call(one.method, await one.params("m".repeat(one.max + 1), "mac")));
+			if (one.mac === undefined) assert.ok(fromMac.result !== undefined, `${name}: a character over from the Mac's app is taken: ${JSON.stringify(fromMac).slice(0, 300)}`);
+			else assert.match(fromMac.error ?? "", one.mac, `${name}: from the Mac's app, its handler's own answer`);
+			if (one.mailbox) {
+				const mailed = await leave(phone.item(remote.pairing, one.method, await one.params("l".repeat(one.max), "phone")));
+				assert.deepEqual(mailed.reply, { taken: true, outcome: "done" }, `${name}: exactly ${one.max} by mailbox`);
+				const mailedOver = await leave(phone.item(remote.pairing, one.method, await one.params(refused(one.max + 1), "phone")));
+				assert.deepEqual([mailedOver.reply, mailedOver.receipt.why], [{ taken: true, outcome: "refused" }, over(one.what, one.max, one.max + 1)], `${name}: a character over by mailbox`);
+				const mailedWrong = await leave(phone.item(remote.pairing, one.method, await one.params([refused(8)], "phone")));
+				assert.deepEqual([mailedWrong.reply, mailedWrong.receipt.why], [{ taken: true, outcome: "refused" }, notText(one.what)], `${name}: a list by mailbox`);
+			}
+		}
+		await app.call("chat.set", { instructions: "" });
+
+		// The rest of a request, counted: each value one, a string its length besides, a key its length. A note of 65,530
+		// characters is at the count exactly (the parameters 1, `text` 4, its value 1); the handler's own 400 refuses it.
+		assert.equal(MAX_OTHER_FROM_A_DEVICE, 65_536);
+		assert.equal(typedRefusal("memory.add", { text: "n".repeat(65_530) }), null);
+		assert.equal(typedRefusal("memory.add", { text: "n".repeat(65_531) }), overTheRest);
+		assert.equal(typedRefusal("agents.save", { agent: { id: "forge", ["k".repeat(65_536)]: 1 } }), overTheRest, "a key counts");
+		assert.equal(typedRefusal("variables.set", { value: "n".repeat(65_531) }), null, "what no device list holds is the table's to refuse");
+		for (const [method, params] of [
+			["memory.add", { text: refused(65_531) }],
+			["conversation.archive", { id: Array.from({ length: 70_000 }, () => 1) }],
+			["agents.delete", { id: [refused(40_000), refused(40_000)] }],
+			["needs.answer", { id: "no-such", answer: { kind: "decision", choice: refused(70_000) } }],
+		] as const) {
+			assert.equal((await ask(method, params)).error, overTheRest, `${method}: past the rest's count`);
+		}
+		// A refusal that repeats what a phone sent cuts it (#940), however it came.
+		assert.equal((await ask("inbox.decide", { id: "no-such", decision: `${"d".repeat(60)}${refused(8)}` })).error, ONLY_ON_THE_MAC, "an unknown decision is the table's");
+		assert.equal((await answerOf(app.call("inbox.decide", { id: "no-such", decision: `${"d".repeat(60)}${refused(8)}` }))).error, `Unknown decision: ${"d".repeat(59)}…`, "and the Mac's app is told it cut");
+		assert.equal((await ask("conversation.pin", { id: `${"c".repeat(60)}${refused(8)}`, pinned: true })).error, `Unknown conversation: ${"c".repeat(59)}…`);
+		assert.equal((await ask("needs.answer", { id: "no-such", answer: { kind: `${"k".repeat(60)}${refused(8)}` } })).error, ONLY_ON_THE_MAC, "an unknown kind is the table's");
+		assert.match((await answerOf(app.call("needs.answer", { id: "no-such", answer: { kind: `${"k".repeat(60)}${refused(8)}` } }))).error ?? "", new RegExp(`^Unknown kind of answer: k{59}…$`), "from the Mac's app too");
+
+		// A task of 66 MiB, as #924 measured its message: refused for what it costs to carry the line in, no more. The same
+		// line refused by the table (variables.set) is the measure.
+		const huge = refused(66 * 1024 * 1024);
+		const rssOf = async () => Number((await execFileAsync("/bin/ps", ["-o", "rss=", "-p", String(engine.pid)])).stdout.trim()) * 1024;
+		const cost = async (id: string, method: string, params: Record<string, unknown>) => {
+			const line = `${JSON.stringify({ session, message: { id, method, params } })}\n`;
+			const before = await rssOf();
+			let peak = before;
+			let answered = false;
+			const sampled = (async () => {
+				while (!answered) peak = Math.max(peak, await rssOf());
+			})();
+			const sent = performance.now();
+			remote.socket.write(line);
+			const reply = await until(`the answer to ${id}`, () => remote.sessionLines.get(session)?.find((message) => message.id === id), { over: () => (remote.closed ? "pi² Remote's connection closed" : undefined) });
+			const took = performance.now() - sent;
+			answered = true;
+			await sampled;
+			return { reply, took, before, peak };
+		};
+		const table = await cost("huge-task-table", "variables.set", { agentId: "forge", name: "HUGE", value: huge });
+		assert.equal(table.reply.error, ONLY_ON_THE_MAC);
+		const hugeItem = (await app.call("work.create", { projectId: made.id, title: "Huge" })).id;
+		const sized = await cost("huge-task", "work.act", { projectId: made.id, id: hugeItem, action: "assign", agentId: helper.id, task: huge });
+		assert.equal(sized.reply.error, over("A task", 20_000, huge.length), "a task of 66 MiB is refused");
+		const mb = (bytes: number) => Math.round(bytes / 1e6);
+		console.log(`    66 MiB task: refused by the table in ${Math.round(table.took)} ms (${mb(table.before)} MB, at most ${mb(table.peak)} MB), for its size in ${Math.round(sized.took)} ms (${mb(sized.before)} MB, at most ${mb(sized.peak)} MB)`);
+		assert.ok(sized.took <= 3 * table.took + 2_000, `in ${Math.round(sized.took)} ms, where the same line refused by the table took ${Math.round(table.took)} ms`);
+		const grew = (one: { before: number; peak: number }) => one.peak - one.before;
+		assert.ok(grew(sized) <= grew(table) + 2 * huge.length, `with the engine grown by ${mb(grew(sized))} MB, where the table's refusal grew it by ${mb(grew(table))} MB`);
+		const hugeParams = { projectId: made.id, id: hugeItem, action: "assign", agentId: helper.id, task: huge };
+		const heapBefore = process.memoryUsage().heapUsed;
+		const checkedIn = performance.now();
+		assert.equal(typedRefusal("work.act", hugeParams), over("A task", 20_000, huge.length));
+		const checking = performance.now() - checkedIn;
+		assert.ok(checking < 50 && process.memoryUsage().heapUsed - heapBefore < 1024 * 1024, `the check itself took ${checking.toFixed(2)} ms`);
+		assert.ok((await ask("engine.info")).result !== undefined, "the session goes on");
+
+		// Nothing of a refused text anywhere: the devices' log keeps the sentence, engine.log and the engine's files nothing.
+		const mark = refused(8);
+		const logged = (await app.call("devices.log", { device: phone.id })).entries;
+		assert.ok(logged.some((entry: any) => entry.method === "work.act" && entry.outcome === "refused" && entry.why === over("A task", 20_000, 20_001)), "refused in the devices' log, with its sentence");
+		assert.ok(!JSON.stringify(logged).includes(mark), "the devices' log holds nothing of a refused text");
+		assert.ok(!engineLog.slice(logFrom).includes(mark), "nor engine.log");
+		const keptIn = (text: string) =>
+			execFileAsync("/usr/bin/grep", ["-rlF", "-D", "skip", text, home], { env: { ...process.env, LC_ALL: "C" } }).then(
+				({ stdout }) => stdout,
+				(error: { code?: number; stdout?: string }) => (error.code === 1 ? "" : `grep failed: ${error.code} ${error.stdout}`),
+			);
+		assert.notEqual(await keptIn("l".repeat(200)), "", "where what was taken is found");
+		assert.equal(await keptIn(mark), "", "nor any file the engine keeps");
+		step(
+			`a phone's other texts: ${cases.length} bounded fields, each exactly at its bound taken, a character over refused with what to do, a list, an object, a number and true refused as not text, a request id by mailbox too; the same over from the Mac's app taken (or its handler's own answer); the rest of a request at most ${MAX_OTHER_FROM_A_DEVICE.toLocaleString("en-US")} characters; a repeated value cut; a 66 MiB task refused in ${Math.round(sized.took)} ms (the table's refusal, ${Math.round(table.took)} ms); nothing of a refused text in the devices' log, engine.log or a file`,
 		);
 	}
 

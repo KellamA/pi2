@@ -13,6 +13,14 @@ export const text = (params: Params, key: string): string => {
 	return value;
 };
 
+/**
+ * A value a request gave, as a refusal repeats it (#940): text cut to 60 characters, as the devices' log cuts a phone's
+ * folder name, an object or a list as "?", so that a sentence never carries a phone's string whole, nor a list turned
+ * into text.
+ */
+export const repeated = (value: unknown): string =>
+	typeof value === "string" ? (value.length <= 60 ? value : `${value.slice(0, 59)}…`) : typeof value === "object" && value !== null ? "?" : String(value);
+
 export function startConfirmation(params: Params): string | undefined {
 	return confirmLimit(params.confirmLimit);
 }
