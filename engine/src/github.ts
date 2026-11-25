@@ -397,6 +397,27 @@ function standing(comments: Parsed[]): Parsed[] {
  */
 const IN_FLIGHT_MS = 10 * 60_000;
 
+/**
+ * Whether `take` gives way to `earlier`, a take of another holder that stands: it does when it had not seen it, or when
+ * the earlier one was posted less than IN_FLIGHT_MS before it. Then `take` lets go of its claim, and until its
+ * "Released" is posted, the earlier one holds all the same (#928).
+ */
+function givesWay(take: Parsed, earlier: Parsed): boolean {
+	const seen = take.intent?.args.seen as string[] | undefined;
+	return (seen !== undefined && !seen.includes(earlier.url)) || take.at - earlier.at < IN_FLIGHT_MS;
+}
+
+/**
+ * Who holds, of the takes that stand (oldest first): the last that did not give way to the one holding before it. One
+ * rule for the race check of a take and for every read of the issue, so that what a take is told, and what the listing
+ * shows, do not depend on whether the loser of two takes at once has let go yet.
+ */
+function holding(takes: Parsed[]): Parsed | undefined {
+	let held: Parsed | undefined;
+	for (const take of takes) if (held === undefined || sameHolder(held.holder, take.holder) || !givesWay(take, held)) held = take;
+	return held;
+}
+
 const holderOf = (take: Parsed | undefined): WorkItem["takenBy"] => {
 	if (take?.holder === undefined) return null;
 	// An assignment's sub-chat is known once it starts; until then, the conversation that assigned it.
@@ -412,7 +433,7 @@ const BOOKKEEPING = new Set(["take", "release", "resume", "done", "dropped"]);
  * cannot tell a merge from a close by hand on GitHub; either way the holder may still post its summary.
  */
 function heldAtClose(comments: Parsed[]): WorkItem["takenBy"] {
-	const take = standing(comments).at(-1);
+	const take = holding(standing(comments));
 	if (take === undefined) return null;
 	const after = comments.slice(comments.indexOf(take) + 1);
 	if (after.some((comment) => comment.text.startsWith("**Done.**"))) return null;
@@ -439,7 +460,7 @@ export function issueItem(issue: GhIssue, intents: Record<string, Intent>): Work
 		text: plain(issue.body ?? ""),
 		state,
 		class: labels.includes("local model") ? "local" : labels.includes("cloud model") ? "cloud" : null,
-		takenBy: held ? holderOf(standing(comments).at(-1)) : null,
+		takenBy: held ? holderOf(holding(standing(comments))) : null,
 		notes: comments
 			.filter((comment) => !BOOKKEEPING.has(comment.role ?? "") && !(comment.role === undefined && comment.text.startsWith("**Done.**")))
 			.map((comment) => ({ at: comment.at, by: comment.by, text: comment.role === "wait" || comment.role === "block" ? comment.text.replace(/^\*\*(Waiting|Blocked):\*\*\s*/, "") : comment.text })),
@@ -1109,9 +1130,10 @@ async function applyOnGithub(given: Project, action: WorkAction, id: number | nu
 			const fresh = await viewIssue(project, number!);
 			const comments = (fresh.comments ?? []).map((one) => parseComment(one, intentsOf(project)));
 			const mine = comments.findIndex((one) => one.intent?.id === claimKey);
-			const rival = standing(comments.slice(0, mine === -1 ? comments.length : mine)).find(
-				(one) => (!seen.includes(one.url) || Date.now() - one.at < IN_FLIGHT_MS) && !sameHolder(one.holder, claim!.args.holder as Parsed["holder"]),
-			);
+			// Read back before GitHub lists its own comment, the claim counts as made now.
+			const upTo = mine === -1 ? [...comments, { at: Date.now(), url: "", by, role: "take", text: "", holder: claim.args.holder as Parsed["holder"], intent: claim }] : comments.slice(0, mine + 1);
+			const held = holding(standing(upTo));
+			const rival = held !== undefined && !sameHolder(held.holder, claim.args.holder as Parsed["holder"]) ? held : undefined;
 			if (rival !== undefined) {
 				await comment("lost", "release", `Released: ${names(holder.agentId)} did not take it after all.`, { holder: claim.args.holder });
 				readSoon(project);
@@ -1198,6 +1220,16 @@ async function applyOnGithub(given: Project, action: WorkAction, id: number | nu
 	const item = issueItem(issue, intentsOf(project));
 	before = before ?? null;
 	keepInListing(project, item);
+	// A take is told it took the issue only when the issue, read back, says it holds it (#928): anything else is a refusal.
+	if (action === "take" && by.kind === "agent" && (item.takenBy?.agentId !== by.agentId || item.takenBy.conversationId !== by.conversationId)) {
+		const refused =
+			item.takenBy === null
+				? `#${item.id} is held by nobody now: it changed on GitHub while you took it. Show it to see where it stands.`
+				: `#${item.id} is taken by ${names(item.takenBy.agentId)}, in sub-chat ${item.takenBy.conversationId}`;
+		if (call !== undefined) await commit((tx) => workReceipt(tx, call, { item: null, refused }), call);
+		readSoon(project);
+		throw new Error(refused);
+	}
 	const main = action === "file" ? step("create") : action === "take" || action === "assign" ? step("claim") : step(action);
 	await commit(async (tx) => {
 		const change = await recordGithub(tx, project, by, call, main, action, `${WORK_DONE[action]} #${item.id} “${short(item.title)}” on GitHub`);

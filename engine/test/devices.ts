@@ -30,6 +30,8 @@ import { personOnly } from "../src/answers.ts";
 import { ANSWER_NOT_SENT, DEVICE_LINE_FAILED, forDevice, MAX_HELPER_LINE, MAX_LINE_TO_HELPER, MAX_PHONE_LINE, restartWait, RUN_THAT_LASTED, SESSION_OVER, sessionLine } from "../src/remote.ts";
 import { NOT_LINKED, NOT_OFFERED } from "../src/folders.ts";
 import { offerFolders } from "../src/answers.ts";
+import { SETTINGS_ONLY_IN_THE_APP } from "../src/answers.ts";
+import { PRESENTING_NOT_YET } from "../src/presented.ts";
 import { DatabaseSync } from "node:sqlite";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
@@ -212,6 +214,26 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	for (const method of ["devices.acceptPresenceKey", "devices.refusePresenceKey"]) assert.ok(personOnly(method, { device: "dev_x" }) !== undefined, `${method} on the socket is the app's alone`);
 	assert.equal(deviceMay("remote.presenceKey", {}, relay), "no");
 	step("a new Face ID key is accepted or refused on the Mac alone, by any path, and offered through pi² Remote alone");
+
+	// Presenting's requests (#963, design/presenting.md): a phone reads presented.picture alone, as conversation.image,
+	// with a channel and unlogged; the app's host role, the network switch, the window's list and a page's files are
+	// the Mac's by every path. On the socket, the host role and the switch are the app's alone, the three reads open.
+	const picture = { id: 1, presentation: "p", version: 1, item: 0 };
+	assert.deepEqual(devicePlacement("presented.picture"), { list: "FROM_A_DEVICE", why: "reading: a picture an agent presented, or a page's snapshot, as conversation.image is (#946)" });
+	for (const path of ["relay", "home", "direct"] as const) assert.equal(deviceMay("presented.picture", picture, { ...relay, path }), "yes", `presented.picture by ${path}`);
+	assert.equal(deviceMay("presented.picture", picture, { ...relay, path: "mailbox" }), "no", "reading needs a channel");
+	assert.equal(deviceLogged("presented.picture", picture), false, "reading is not logged");
+	assert.equal(personOnly("presented.picture", picture), undefined);
+	const presentingMacOnly = { "present.register": "the app's host role", "present.drawn": "the app's host role", "presented.list": "presenting's window, the Mac's for now", "presented.file": "a presented page's files, the Mac's for now", "presented.network": "a presented page's network switch, the person's setting at the Mac" };
+	for (const [method, why] of Object.entries(presentingMacOnly)) {
+		assert.deepEqual(devicePlacement(method), { list: "MAC_ONLY", why }, method);
+		for (const path of ["relay", "home", "direct", "mailbox"] as const) {
+			for (const params of [{}, { ...picture, path: "index.html", allow: true, ok: true, requestId: "r" }]) assert.equal(deviceMay(method, params, { ...relay, path }), "no", `${method} by ${path}`);
+		}
+	}
+	for (const method of ["present.register", "present.drawn", "presented.network"]) assert.equal(personOnly(method, { ...picture, allow: false }), SETTINGS_ONLY_IN_THE_APP, `${method} on the socket is the app's alone`);
+	for (const method of ["presented.list", "presented.file"]) assert.equal(personOnly(method, picture), undefined, `${method} on the socket is open to any, as reading`);
+	step("presenting's requests: a phone may send presented.picture alone, with a channel, as reading; the other five are the Mac's by every path, and three the app's alone on the socket");
 }
 
 // ---- Readers, masking, what a device is sent
@@ -939,6 +961,17 @@ console.log(JSON.stringify(outcome));
 	});
 	assert.equal(summarize("pushes.set", throwing), "pushes.set");
 	step("a log line is made of whatever a device sends (null, an object for a string) and never throws: at worst it is the method's name");
+}
+
+// ---- A log line shows what a device sent as it reads (#902): nothing invisible, nothing turned around
+
+{
+	assert.equal(summarize("files.preview", { path: "notes\u202Etxt.md" }), "Showed the file “notestxt.md”", "a right-to-left override");
+	assert.equal(summarize("files.preview", { path: "a\u2066b\u2069\u200Bc\u200D\uFEFF\u061C\u2060.md" }), "Showed the file “abc.md”", "isolates, zero-width characters, marks");
+	assert.equal(summarize("conversation.rename", { title: "one\ntwo\u0000\uD800" }), "Renamed a conversation to “one two ”", "a line break, a NUL, half a character");
+	const split = "sk-ant-api03-aKeyShapedString\u200BSplitByAZeroWidthSpace0123456789";
+	assert.equal(summarize("conversation.rename", { title: split }), `Renamed a conversation to “${KEY_HIDDEN}”`, "nothing invisible splits a key out of the masks' sight");
+	step("a log line has right-to-left overrides, other direction controls, zero-width characters and half characters taken out, before the masks");
 }
 
 // ---- A revocation reaches pi² Remote and the device's sessions whatever its watchers do (#895)
@@ -1752,12 +1785,29 @@ try {
 		const shown = (await ask("files.preview", { id: linking, path: "notes.md" })).result;
 		assert.equal(shown.text, `notes, and ${KEY_HIDDEN}\n`, "masked, as everything sent to a phone is");
 		assert.equal((await ask("files.preview", { id: linking, path: "other.md" })).error, NOT_LINKED);
+		assert.equal((await ask("files.preview", { id: linking, path: "evil\u202Etxt.md" })).error, NOT_LINKED);
 		const logged = (await app.call("devices.log", { device: phone.id })).entries;
+		assert.ok(logged.some((entry: any) => entry.method === "files.preview" && entry.summary.startsWith("Showed the file “evilt")), "a path with a right-to-left override is logged without it (#902)");
+		assert.ok(!JSON.stringify(logged).includes("\\u202e") && !logged.some((entry: any) => /[\u202A-\u202E]/.test(entry.summary)), "anywhere in the log");
 		assert.ok(logged.some((entry: any) => entry.method === "files.preview" && entry.outcome === "done" && entry.summary.startsWith("Showed the file “notes.md”")), "a file shown is logged, by its path from the folder");
 		assert.ok(logged.some((entry: any) => entry.method === "projects.create" && entry.outcome === "refused" && entry.why === ONLY_ON_THE_MAC), "a folder refused by the table");
 		assert.ok(logged.some((entry: any) => entry.method === "projects.create" && entry.outcome === "failed" && entry.why === NOT_OFFERED), "and one refused as it was made");
 		assert.ok(!logged.some((entry: any) => entry.method === "projects.folders"), "asking for the folders is reading");
 		step("from the phone: the folders offered, a project made from one by its exact text, refused by the device row from any other (a link to one, a parent) and by the handler from one gone since, a linked file shown masked, and logged");
+	}
+
+	// ---- Presenting's requests from the phone (#963): presented.picture passes the device row to the stub; the others
+	// are refused before any handler, with the words every request kept to the Mac gets, and logged as refused.
+	{
+		const picture = { id: 1, presentation: "p", version: 1, item: 0 };
+		assert.equal((await ask("presented.picture", picture)).error, PRESENTING_NOT_YET, "presented.picture reaches its handler");
+		const macOnly = ["present.register", "present.drawn", "presented.list", "presented.file", "presented.network"];
+		for (const method of macOnly) assert.equal((await ask(method, { ...picture, path: "index.html", allow: true, requestId: "r", ok: true })).error, ONLY_ON_THE_MAC, method);
+		for (const method of ["presented.picture", ...macOnly]) await assert.rejects(app.call(method, picture), new RegExp(PRESENTING_NOT_YET), `${method} from the app reaches the stub`);
+		const logged = (await app.call("devices.log", { device: phone.id })).entries;
+		for (const method of macOnly) assert.ok(logged.some((entry: any) => entry.method === method && entry.outcome === "refused" && entry.why === ONLY_ON_THE_MAC), `${method} logged as refused`);
+		assert.ok(!logged.some((entry: any) => entry.method === "presented.picture"), "presented.picture is reading, and not logged");
+		step("from the phone: presented.picture passes its row to the stub, unlogged; present.register, present.drawn, presented.list, presented.file and presented.network are refused as the Mac's, and logged; the app reaches the stub with all six");
 	}
 
 	// ---- Resume, refusals, suspension (3.4, 3.6, 5.8)

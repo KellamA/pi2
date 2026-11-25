@@ -257,6 +257,20 @@ struct UsageTests {
         #expect(await UsageRequests.setBudget(engine, daily: 7.5) == nil)
         #expect(await UsageRequests.refreshLimits(engine, provider: "openai") == nil)
     }
+
+    /// Against a copy (#697), a phone launched paired draws Usage from what it kept before the channel attaches, and Set
+    /// Budget pressed then was refused with "Your Mac can't be reached". The controls wait for a live channel, as
+    /// Settings' do; the demo and a connected Mac send at once.
+    @Test func changesWaitForALiveChannel() {
+        #expect(!UsagePage.canSend(.outOfReach(lastSeen: nil), engineConnected: true), "the phone's last state refuses every change")
+        #expect(!UsagePage.canSend(.outOfReach(lastSeen: .now), engineConnected: true))
+        #expect(!UsagePage.canSend(.connecting, engineConnected: true))
+        #expect(!UsagePage.canSend(.notPaired, engineConnected: false))
+        #expect(!UsagePage.canSend(.connected(.home), engineConnected: false), "the client not yet greeted")
+        #expect(UsagePage.canSend(.connected(.direct, relayReachable: false), engineConnected: true))
+        #expect(UsagePage.canSend(.connected(.relay), engineConnected: true))
+        #expect(UsagePage.canSend(.demo, engineConnected: true))
+    }
 }
 
 /// A stand-in for a Mac that sends nothing, keeps every request a screen sends it, and answers each with `refusal` as the

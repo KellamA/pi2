@@ -114,6 +114,20 @@ enum ConversationsRequests {
         }
     }
 
+    /// A text file conversation `conversation` links to, by the link's target as the answer wrote it (`files.preview`,
+    /// docs/iphone.md 4.2 and 5.7), where the Mac shows the file in Finder (`TranscriptBridge.showFile`). The engine makes
+    /// the path whole and decides whether it may be shown; a refusal is its own words.
+    static func preview(_ engine: Engine, conversation: Int, path: String) async -> Result<FilePreview, ConversationsProblem> {
+        do {
+            let result = try await engine.call("files.preview", ["id": conversation, "path": path])
+            return .success(try JSONDecoder().decode(FilePreview.self, from: JSONEncoder().encode(result)))
+        } catch let error as DecodingError {
+            return .failure(ConversationsProblem("Your Mac's answer could not be read (\(error.localizedDescription))."))
+        } catch {
+            return .failure(ConversationsProblem(error.localizedDescription))
+        }
+    }
+
     /// Makes a project, with its orchestrator and an empty conversation with it, as the Mac's New Project does
     /// (`AppModel.newProject`: `projects.create`): in a folder the Mac offered, or none; named, or after its folder; its
     /// orchestrator a copy of a template, or of pi²'s default orchestrator. Answers the new project's id.
