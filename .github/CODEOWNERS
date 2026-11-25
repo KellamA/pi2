@@ -20,6 +20,9 @@
 /scripts/test-auto-merge @KellamA
 /scripts/ci-changes @KellamA
 /scripts/test-ci-changes @KellamA
+# The trusted CI controller that requests re-runs with Actions write access, and its policy fixtures (#993).
+/scripts/rerun-if-no-runner @KellamA
+/scripts/test-rerun-if-no-runner.mjs @KellamA
 # What CI runs on the owner's own runner, a machine of the owner's, to clean it between jobs, and its test (#990).
 /scripts/ci-runner-clean @KellamA
 /scripts/test-ci-runner-clean @KellamA

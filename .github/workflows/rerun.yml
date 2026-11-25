@@ -3,7 +3,8 @@ name: Rerun jobs no runner took
 # GitHub cancels a job that no runner picked up in time ("The job was not acquired by Runner of type hosted even after
 # multiple attempts"), which happens to the macOS jobs when GitHub is short of macOS runners. The check then counts as
 # failed, and a pull request waiting to merge waits until someone runs it again. This runs those jobs again by
-# themselves, a few times at most, and nothing else: scripts/rerun-if-no-runner says exactly when (#245).
+# themselves, a few times at most (#245). It also gives eligible App and Engine checks that finish with a mini runner
+# error one hosted retry (#993). scripts/rerun-if-no-runner says exactly when.
 #
 # A workflow_run workflow runs as the default branch has it, with a token that can write, whoever's pull request the
 # finished run tested. Nothing of that pull request reaches the shell: the script is the default branch's, and it takes
@@ -25,12 +26,18 @@ jobs:
     if: github.event.workflow_run.conclusion == 'failure' || github.event.workflow_run.conclusion == 'cancelled'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    concurrency:
+      group: rerun-no-runner-${{ github.event.workflow_run.id }}
+      queue: max
+      cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ github.sha }} # workflow_run SHA is on the default branch, not the triggering run's head_sha
           persist-credentials: false
       - env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RUN_ID: ${{ github.event.workflow_run.id }}
+          EXPECTED_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
         run: scripts/rerun-if-no-runner "$RUN_ID"

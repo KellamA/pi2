@@ -13,7 +13,8 @@ permissions:
 # would not build it again (#871). The macOS jobs that run on every push to main cancel their own runs still going on
 # main, as before, by a concurrency group each.
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  # An owner PR retry must not cancel a newer commit pushed between the controller's last read and its re-run request.
+  group: ci-${{ github.event_name == 'pull_request' && (github.run_attempt != '1' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && format('retry-{0}', github.run_id) || github.ref) || github.sha }}
   cancel-in-progress: true
 
 jobs:
@@ -41,6 +42,8 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
       - id: files
+        # The completion controller looks for this name in attempt 1 before retrying onto GitHub's runners.
+        name: Decide which jobs to run (App and Engine retries are hosted)
         env:
           EVENT: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}
@@ -52,7 +55,7 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' }}
     concurrency:
-      group: ci-engine-${{ github.ref }}
+      group: ci-engine-${{ github.event_name == 'pull_request' && github.run_id || github.ref }}
       cancel-in-progress: true
     # The owner's runner when the repository variable CI_MAC_RUNNER names it (its label, pi2-mini), for a pull request
     # opened by the repository's owner from a branch of this repository; GitHub's macos-26 for everything else: the
@@ -62,7 +65,8 @@ jobs:
     # the owner's pull request stays off it (a re-run keeps the first run's actor). This is routing, not
     # a lock: a pull request runs its own copy of this file and can change it. The lock for outsiders is GitHub's setting
     # that has the owner approve their runs; for a collaborator who can push, there is none but trust.
-    runs-on: "${{ vars.CI_MAC_RUNNER != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && vars.CI_MAC_RUNNER || 'macos-26' }}"
+    # The mini is for attempt 1 only. GitHub re-runs the original ref and SHA, using macos-26 for the same check.
+    runs-on: "${{ github.run_attempt == '1' && vars.CI_MAC_RUNNER != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && vars.CI_MAC_RUNNER || 'macos-26' }}"
     timeout-minutes: 20
     defaults:
       run:
@@ -149,6 +153,7 @@ jobs:
       - run: scripts/test-check-protected-targets
       - run: scripts/test-iphone-sim
       - run: scripts/test-ci-changes
+      - run: node --test scripts/test-rerun-if-no-runner.mjs
       # What scripts/ci-runner-clean removes and keeps on the owner's runner, in a stand-in of it with stand-in tools (#990).
       - run: scripts/test-ci-runner-clean
 
@@ -246,10 +251,10 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' }}
     concurrency:
-      group: ci-app-${{ github.ref }}
+      group: ci-app-${{ github.event_name == 'pull_request' && github.run_id || github.ref }}
       cancel-in-progress: true
-    # As the engine's job, by the same variable, CI_MAC_RUNNER (docs/ci-runner.md).
-    runs-on: "${{ vars.CI_MAC_RUNNER != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && vars.CI_MAC_RUNNER || 'macos-26' }}"
+    # As the engine's job, by CI_MAC_RUNNER on attempt 1 only (docs/ci-runner.md).
+    runs-on: "${{ github.run_attempt == '1' && vars.CI_MAC_RUNNER != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && vars.CI_MAC_RUNNER || 'macos-26' }}"
     # Five more than before pi² Remote's check (#675), which runs an engine and waits out a session's resume window.
     timeout-minutes: 25
     steps:
