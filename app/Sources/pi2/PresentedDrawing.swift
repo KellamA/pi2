@@ -68,7 +68,9 @@ final class PresentedDrawing {
             let (request, asked) = waiting.removeFirst()
             let started = ContinuousClock.now
             // A drawing holds its place until it really ends, even once it has been answered as given up: its own
-            // limits (PresentedPageDrawing) end it, and no more than `atOnce` pages are ever being drawn.
+            // limits (PresentedPageDrawing) end it, and it returns only once the page's web content process has gone
+            // (`PresentedProcesses`, which bounds the processes of drawings and windows together). So no more than
+            // `atOnce` pages are ever being drawn, and none leaves a process behind.
             drawing += 1
             let work = Task { @MainActor in
                 let answer = Answer(params: await self.draw(request, engine: engine))
