@@ -546,11 +546,14 @@ enum Relayed {
 	}
 
 	/// A relay that floods (#921's security read, M2 and S2): `LyingRelay` on 127.0.0.1 registers pi² Remote, takes it as
-	/// the pairing's Mac, lists 16 devices pi² Remote does not have and refuses each `removeDevice`, then sends 3,000 each
+	/// the pairing's Mac, lists 14 devices pi² Remote does not have beside its two (16, the most a `ready` lists) and refuses
+	/// each `removeDevice`, then sends 3,000 each
 	/// of `anotherMac`, `left`, `joined` and `held` notices and hands over 3,000 items that are not genuine, a `mail` after
-	/// every `took`. What that may cost: one `remote.state` (and so one `devices` event to the app) for the `anotherMac`
-	/// notices in a minute, one log line for each kind of the relay's word, of its refusals or of the items in a minute,
-	/// and a take every five seconds at most; the engine is handed none of the items.
+	/// every `took`, and 3,000 more `left` naming the two devices on pi² Remote's own list with notices no key signed. What
+	/// that may cost: one `remote.state` (and so one `devices` event to the app) for the `anotherMac` notices in a minute,
+	/// one log line for each kind of the relay's word, of its refusals or of the items in a minute, and a take every five
+	/// seconds at most; the engine is handed none of the items, and no leave. Then the leaves it could make of what it
+	/// holds (#929): only the notice the device key on the list signed for this pairing and this Mac reaches the engine.
 	static func flood(helper: URL, home: URL) {
 		Check.section("a relay that floods (#921): bounded in what it costs the engine, the log and the takes")
 		// The day pi² Remote keeps a phone's item is the engine's own bound (RelayEnd.itemOldest, devices.ts's DAY).
@@ -563,12 +566,23 @@ enum Relayed {
 		defer { relay.stop() }
 		// pi² Remote anew on the same data folder: no pairing, and its devices and keys as the run before left them.
 		for file in ["remote-devices.json", "remote-keys.json"] { try? FileManager.default.removeItem(at: home.appendingPathComponent(file)) }
+		// Two devices on pi² Remote's own list, as a pairing would leave them, which the lying relay lists too: Kit's, which
+		// leaves, and Robin's, which stays.
+		let (kit, robin) = (PhoneKeys(), PhoneKeys())
+		let (kitID, robinID) = (DeviceID.random(), DeviceID.random())
+		let listed = [kit.paired(id: kitID), robin.paired(id: robinID)].compactMap(ListedDevice.init(json:))
+		guard listed.count == 2,
+		      (try? PrivateFile.write(home.appendingPathComponent("remote-devices.json"), KeptDevices(devices: listed, homeKey: HomeKey.random()).data)) != nil
+		else { return Check.expect(false, "two devices kept on pi² Remote's own list") }
+		relay.alsoListed = [kitID, robinID]
 		let (child, engine) = Starts.start(helper: helper, home: home)
 		defer { child.stop() }
 		engine.answersStates = true
-		engine.event("start", [("relay", .string(relay.url.absoluteString)), ("switches", Flows.switches), ("pairing", .null), ("devices", .array([])), ("minimumBuild", .string("1"))])
+		let named = JSONValue.array([kitID, robinID].map { .object([("id", .string($0.text))]) })
+		engine.event("start", [("relay", .string(relay.url.absoluteString)), ("switches", Flows.switches), ("pairing", .null), ("devices", named), ("minimumBuild", .string("1"))])
 		guard let hello = engine.request("remote.hello") else { return Check.expect(false, "pi² Remote said hello") }
 		engine.answer(hello.id)
+		guard let identity = hello.params["macKeys"]?["identity"]?.stringValue.flatMap(PublicKeys.signingKey) else { return Check.expect(false, "remote.hello gave the Mac's identity key") }
 		engine.event("register")
 		guard engine.state(where: { $0["pairing"]?.stringValue == relay.pairing.text }) != nil, engine.relayState("ready") != nil else {
 			return Check.expect(false, "pi² Remote registered at the lying relay and is ready there", JSON.text(.array(engine.states)))
@@ -578,7 +592,7 @@ enum Relayed {
 		let statesBefore = engine.states.count
 		let linesBefore = logLines().count
 		let began = Date()
-		relay.flood(notices: 3_000, items: 3_000)
+		relay.flood(notices: 3_000, items: 3_000, leftFor: [kitID, robinID])
 		// Read the engine's end while the relay floods: pi² Remote waits for no answer it is not given.
 		while relay.acknowledged < 3_000, Date().timeIntervalSince(began) < 150 { _ = engine.state(from: Int.max, within: 1) { _ in false } }
 		_ = engine.state(from: Int.max, within: 2) { _ in false }
@@ -586,19 +600,82 @@ enum Relayed {
 		let states = engine.states.dropFirst(statesBefore)
 		let lines = logLines().dropFirst(linesBefore)
 		Check.expect(relay.acknowledged == 3_000, "the 3,000 items that are not genuine are taken and acknowledged (took)", "\(relay.acknowledged) in \(relay.takes.count) takes")
-		Check.expect(engine.quiet(for: 1), "and none is handed to the engine")
+		Check.expect(engine.quiet(for: 1), "and none is handed to the engine, nor any of the 6,000 left, 3,000 of them naming a device on pi² Remote's own list (remote.left)")
 		let told = states.filter { $0["relay"]?["anotherMacAt"] != nil }.count
 		Check.expect(told >= 1 && states.count <= minutes, "3,000 anotherMac notices: the engine is told at most once a minute (\(states.count) remote.state in \(minutes) minute(s) begun), so the app at most one devices event", JSON.text(.array(Array(states))))
-		// relay anotherMac, relay left, relay items not genuine, relay ready, relay take, relay joined, relay held, relay listed,
-		// relay request removeDevice
-		let kinds = 9
+		// relay anotherMac, relay left, relay left not verified, relay items not genuine, relay ready, relay take, relay joined,
+		// relay held, relay listed, relay request removeDevice
+		let kinds = 10
+		let leftLines = lines.filter { $0.contains("left it") }.count
+		Check.expect(leftLines >= 2 && leftLines <= 2 * minutes, "6,000 left, 3,000 naming a device on the list: each kind in the log at most once a minute, the notice never", "\(leftLines) lines in \(minutes) minute(s) begun")
 		let joinedLines = lines.filter { $0.contains("a phone joined the pairing window") }.count, heldLines = lines.filter { $0.contains("it held device") }.count
 		Check.expect(joinedLines >= 1 && joinedLines <= minutes && heldLines >= 1 && heldLines <= minutes, "3,000 joined and 3,000 held notices: each in the log at most once a minute", "\(joinedLines) and \(heldLines) lines in \(minutes) minute(s) begun")
 		let refusedLines = logLines().filter { $0.contains("the relay's removeDevice") }.count
-		Check.expect(relay.refused == 16 && refusedLines == 1, "16 removeDevice requests the relay refused, all within the minute: one line in the log", "\(relay.refused) refused, \(refusedLines) lines")
+		Check.expect(relay.refused == 14 && refusedLines == 1, "14 removeDevice requests the relay refused, all within the minute: one line in the log", "\(relay.refused) refused, \(refusedLines) lines")
 		Check.expect(lines.count <= kinds * minutes, "3,000 notices and 3,000 items: \(lines.count) lines in pi² Remote's log, at most one for each of the relay's \(kinds) kinds a minute", lines.joined(separator: "\n"))
 		let gaps = zip(relay.takes.dropFirst(), relay.takes).map { $0.timeIntervalSince($1) }
 		Check.expect(relay.takes.count >= 15 && gaps.allSatisfy { $0 >= 4.5 }, "a take at most every five seconds, a mail after every took notwithstanding", gaps.map { String(format: "%.1f", $0) }.joined(separator: " "))
+
+		leaves(engine, relay: relay, home: home, identity: identity, kit: (kitID, kit), robin: (robinID, robin))
+	}
+
+	/// A phone's leave as the lying relay can pass it on (#929): the notice is checked against the device key on pi²
+	/// Remote's own list, for this pairing and this Mac's identity key, at most ten minutes ahead; only a leave that
+	/// verifies reaches the engine, as `remote.left`, once for its device whatever form its signature takes.
+	static func leaves(_ engine: FakeEngine, relay: LyingRelay, home: URL, identity: P256.Signing.PublicKey, kit: (DeviceID, PhoneKeys), robin: (DeviceID, PhoneKeys)) {
+		Check.section("a phone's leave from that relay (#929): only the notice signed by the device key on pi² Remote's own list")
+		let now = Int64(Date().timeIntervalSince1970 * 1000)
+		func notice(_ signer: P256.Signing.PrivateKey, for device: DeviceID, pairing: PairingID? = nil, mac: P256.Signing.PublicKey? = nil, at: Int64) -> Data {
+			(try? signer.sign(RelayLeaveNotice.text(pairing: pairing ?? relay.pairing, device: device, identityKey: mac ?? identity, at: at))) ?? Data()
+		}
+		let named = P256.Signing.PrivateKey()
+		relay.notify("joined", [("device", .string(kit.0.text)), ("deviceKey", .string(PublicKeys.text(named.publicKey))), ("keyId", .string(AttestKeyID(bytes: Bytes.random(32))!.text))])
+		let forged: [(DeviceID, Int64, Data, String)] = [
+			(robin.0, now, notice(kit.1.device, for: robin.0, at: now), "Robin's leave signed by Kit's device key"),
+			(kit.0, now, notice(named, for: kit.0, at: now), "Kit's leave signed by a key the relay named for Kit (joined)"),
+			(kit.0, now, notice(kit.1.device, for: kit.0, mac: P256.Signing.PrivateKey().publicKey, at: now), "Kit's leave for another Mac"),
+			(kit.0, now, notice(kit.1.device, for: kit.0, pairing: PairingID.random(), at: now), "Kit's leave for another pairing"),
+			(kit.0, now + 11 * 60_000, notice(kit.1.device, for: kit.0, at: now + 11 * 60_000), "Kit's leave dated eleven minutes ahead"),
+			(kit.0, now - 1, notice(kit.1.device, for: kit.0, at: now), "Kit's leave given with another time than it was signed for"),
+		]
+		for (device, at, signed, _) in forged { relay.left(device, at: at, notice: signed) }
+		Check.expect(engine.quiet(for: 3), "none reaches the engine: \(forged.map(\.3).joined(separator: "; "))")
+		// The genuine leave, a hundred days old, in the other form of its signature first, then as signed, then again.
+		let at = now - 100 * 86_400_000
+		let genuine = notice(kit.1.device, for: kit.0, at: at)
+		relay.left(kit.0, at: at, notice: otherForm(genuine))
+		relay.left(kit.0, at: at, notice: genuine)
+		guard let told = engine.request("remote.left") else { return Check.expect(false, "Kit's own leave reaches the engine (remote.left)") }
+		let expected = JSONValue.object([("device", .string(kit.0.text)), ("at", .integer(at)), ("notice", .string(Base64URL.encode(otherForm(genuine))))])
+		Check.expect(told.params == expected, "Kit's own leave, a hundred days old, reaches the engine as the relay passed it on: remote.left { device, at, notice }, for the engine to check again", JSON.text(told.params))
+		Check.expect(engine.quiet(for: 2), "the same leave in its other form, while the engine has the first, is not sent again")
+		engine.answer(told.id, .object([("revoked", .bool(true))]))
+		engine.event("revoke", [("device", .string(kit.0.text))])
+		usleep(500_000)
+		relay.left(kit.0, at: at, notice: genuine)
+		Check.expect(engine.quiet(for: 2), "once the engine revoked Kit's device, the same leave again is the relay's word about a device no longer on the list")
+		Check.expect(kept(home)?.devices.map(\.id) == [robin.0], "Kit's device is dropped from pi² Remote's own list by the engine's revoke, and Robin's stays")
+		let log = (try? String(contentsOf: home.appendingPathComponent("remote.log"), encoding: .utf8)) ?? ""
+		Check.expect(log.components(separatedBy: "unpaired itself on the phone").count - 1 == 1 && !log.contains(Base64URL.encode(genuine)), "pi² Remote's log says once that Kit's leave verified, and holds no notice")
+	}
+
+	/// The same ECDSA signature in its other form, r and n − s, which verifies as well (#897's security read): what a relay
+	/// can make of a notice it passes on without any key.
+	static func otherForm(_ signature: Data) -> Data {
+		let order: [UInt8] = [
+			0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+			0xBC, 0xE6, 0xFA, 0xAD, 0xA7, 0x17, 0x9E, 0x84, 0xF3, 0xB9, 0xCA, 0xC2, 0xFC, 0x63, 0x25, 0x51,
+		]
+		let s = [UInt8](signature.suffix(32))
+		var out = [UInt8](repeating: 0, count: 32)
+		var borrow = 0
+		for index in stride(from: 31, through: 0, by: -1) {
+			var digit = Int(order[index]) - Int(s[index]) - borrow
+			borrow = digit < 0 ? 1 : 0
+			if digit < 0 { digit += 256 }
+			out[index] = UInt8(digit)
+		}
+		return signature.prefix(32) + Data(out)
 	}
 }
 
@@ -614,6 +691,9 @@ final class LyingRelay: @unchecked Sendable {
 	var acknowledged: Int { state.get().acknowledged }
 	var refused: Int { state.get().refused }
 	var takes: [Date] { state.get().takes }
+	/// Devices it lists in `ready` besides its own making, 16 in all: the ones on pi² Remote's own list, set before it
+	/// connects.
+	var alsoListed: [DeviceID] = []
 
 	init?() {
 		let options = NWProtocolWebSocket.Options()
@@ -639,8 +719,9 @@ final class LyingRelay: @unchecked Sendable {
 		state.get().mac?.cancel()
 	}
 
-	/// `notices` each of `anotherMac`, `left`, `joined` and `held` to the Mac, then `items` that are not genuine, 200 a take.
-	func flood(notices: Int, items: Int) {
+	/// `notices` each of `anotherMac`, `left`, `joined` and `held` to the Mac, as many `left` more naming each of
+	/// `leftFor` in turn with a notice no key signed, then `items` that are not genuine, 200 a take.
+	func flood(notices: Int, items: Int, leftFor: [DeviceID] = []) {
 		queue.async { [self] in
 			guard let mac = state.get().mac else { return }
 			let deviceKey = Base64URL.encode(P256.Signing.PrivateKey().publicKey.derRepresentation)
@@ -652,12 +733,28 @@ final class LyingRelay: @unchecked Sendable {
 				let at = Int64(Date().timeIntervalSince1970 * 1000)
 				send(mac, "left", [("device", .string(DeviceID.random().text)), ("at", .integer(at)), ("notice", .string(Base64URL.encode(Bytes.random(64))))])
 			}
+			for index in leftFor.isEmpty ? 0 ..< 0 : 0 ..< notices {
+				let at = Int64(Date().timeIntervalSince1970 * 1000)
+				send(mac, "left", [("device", .string(leftFor[index % leftFor.count].text)), ("at", .integer(at)), ("notice", .string(Base64URL.encode(Bytes.random(64))))])
+			}
 			let made: [JSONValue] = (0 ..< items).map { _ in
 				.object([("from", .string(DeviceID.random().text)), ("id", .string(ItemID.random().text)), ("item", .string(Base64URL.encode(Data([4]) + Bytes.random(100)))), ("presence", .bool(true))])
 			}
 			state.update { $0.items += made }
 			send(mac, "mail", [])
 		}
+	}
+
+	/// One notice to the Mac, in order with what it was sent before.
+	func notify(_ name: String, _ body: [(String, JSONValue)]) {
+		queue.async { [self] in
+			if let mac = state.get().mac { send(mac, name, body) }
+		}
+	}
+
+	/// `left { device, at, notice }`, as the relay passes a phone's leave on.
+	func left(_ device: DeviceID, at: Int64, notice: Data) {
+		notify("left", [("device", .string(device.text)), ("at", .integer(at)), ("notice", .string(Base64URL.encode(notice)))])
 	}
 
 	private func send(_ connection: NWConnection, _ name: String, _ body: [(String, JSONValue)]) {
@@ -688,8 +785,9 @@ final class LyingRelay: @unchecked Sendable {
 				send(connection, "registered", [("pairing", .string(pairing.text))])
 			case "proof":
 				state.update { $0.mac = connection }
-				// 16 devices pi² Remote's list does not have: it asks to remove each, and is refused.
-				let listed: [JSONValue] = (0 ..< 16).map { _ in .object([("device", .string(DeviceID.random().text)), ("online", .bool(false))]) }
+				// 16 devices in all, the most a `ready` lists; those pi² Remote's list does not have it asks to remove, and is refused.
+				let listed: [JSONValue] = (0 ..< 16 - alsoListed.count).map { _ in .object([("device", .string(DeviceID.random().text)), ("online", .bool(false))]) }
+					+ alsoListed.map { .object([("device", .string($0.text)), ("online", .bool(false))]) }
 				send(connection, "ready", [("devices", .array(listed)), ("left", .array([])), ("pending", .bool(false)), ("mail", .integer(0))])
 			case "removeDevice":
 				state.update { $0.refused += 1 }
