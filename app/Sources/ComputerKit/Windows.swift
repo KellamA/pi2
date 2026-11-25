@@ -76,6 +76,36 @@ package struct ServerWindow {
     }
 }
 
+/// Which of the controls an action names, from the last look, a read of the window finds again (#955, #969). A control
+/// the app has removed can go on answering its role, its old frame and its press (a SwiftUI view on a tab switched
+/// away does), so only being among the window's controls read now says it is still there. The read is a look's own
+/// walk (`WindowReader`), which stops once every one is found, so one read serves an action naming several.
+package struct Seeking<E: Equatable> {
+    private var missing: [E]
+
+    package init(_ wanted: [E]) { missing = wanted }
+
+    /// Whether every control sought has been found.
+    package var done: Bool { missing.isEmpty }
+
+    /// A control the walk lists, in the listing's terms (`CFEqual` for an AXUIElement).
+    package mutating func saw(_ element: E) { missing.removeAll { $0 == element } }
+
+    package enum Outcome: Equatable {
+        /// Every one is among the window's controls now.
+        case found
+        /// The walk read the whole window, within its bounds, and some are not in it: the window changed.
+        case gone
+        /// The walk ran out (its bounds, as a look's: elements, depth, time) before finding them all, so it cannot say.
+        case unsure
+    }
+
+    /// What the walk found, once it is over; `truncated` is whether it ran out before reading the whole window.
+    package func outcome(truncated: Bool) -> Outcome {
+        done ? .found : truncated ? .unsure : .gone
+    }
+}
+
 package enum WindowChoice {
     /// A focused element can outlive its window, or lack a frame. Try the next candidate rather than losing the app.
     package static func first<E>(in candidates: [E], minimized: (E) -> Bool, frame: (E) -> CGRect?) -> (E, CGRect)? {
@@ -168,7 +198,12 @@ package enum AtPoint {
         /// used once, and `present` is asked only for a card's listed control (see `holds`).
         package mutating func settle(_ now: E?, hit: E?, for key: String, at point: CGPoint, frameNow: (E) -> CGRect?,
                                      present: (E) -> Bool) -> Settled<E> {
-            guard let card = chosen.removeValue(forKey: key) else { return .act(now) }
+            guard let card = chosen.removeValue(forKey: key) else {
+                // No card: a listed control from the last look, not the hit test's own find, is acted on only while it
+                // is still there and at the point, as a card's is (#969). The hit test's find, or nothing, as before.
+                if let now, now != hit, !AtPoint.holds(now, now: now, hit: hit, at: point, frameNow: frameNow, present: present) { return .stale }
+                return .act(now)
+            }
             guard AtPoint.holds(card, now: now, hit: hit, at: point, frameNow: frameNow, present: present) else { return .changed }
             if let card, card != hit { return .only(card) }
             return .act(card)
@@ -184,6 +219,15 @@ package enum AtPoint {
         case only(E)
         /// What the card named is gone, no longer in the window, or no longer at the point: refuse, and say to look again.
         case changed
+        /// No card was shown, and the listed control from the last look at the point is gone, no longer in the window,
+        /// or no longer at the point: refuse, and say to look again (#969).
+        case stale
+    }
+
+    /// What the agent is told when no card was shown and the listed control its last look had at the point is no
+    /// longer there, so the action was not taken (#969).
+    package static func stale(_ undone: String, x: Double, y: Double) -> String {
+        "The window changed since the last look: the control it had at (\(Int(x)), \(Int(y))) is no longer there, so \(undone). Take a screenshot to look again, then try again."
     }
 
     /// What the agent is told when the window changed after its last look, before the card or while it waited, so
