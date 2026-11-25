@@ -20,6 +20,8 @@ import RemoteKit
 //   Remote's own list's, the engine's verified claim's.
 // - The list of devices kept in step: at each `ready`, a device the relay lists that pi² Remote's own list does not is
 //   removed there; one the list has and the relay does not is a hint, logged. A revocation removes the device's slot.
+// - A phone's leave (#929): a `left` is the relay's word until the phone's notice verifies against the device key on pi²
+//   Remote's own list; only then is the engine told (`remote.left`), which checks it again and revokes the device.
 // - The mailbox both ways: what phones left is taken, opened and verified with the device's keys on pi² Remote's own
 //   list, and handed to the engine (`remote.mailboxIn`), which checks it again; the relay is told `took` only for what
 //   the engine kept or certainly refused, and for what certainly is not genuine (#806, #876). What the engine leaves
@@ -271,8 +273,7 @@ final class RelayEnd: @unchecked Sendable {
 		case .phoneJoined:
 			Seldom.shared.say("relay joined", "the relay says a phone joined the pairing window (its word: the channel and the engine decide)")
 		case let .left(left):
-			// The device alone: never the phone's notice, which only a check against its key may read (#813).
-			Seldom.shared.say("relay left", "the relay says device \(left.device) left it: its word alone, so nothing is revoked or forgotten (a signed leave is #897's)")
+			heardLeft(left)
 		case .anotherMac:
 			// Told to the engine at most once a minute, with the first time in that minute: each report is a `remote.state`, and
 			// a `devices` event to the app.
@@ -545,7 +546,44 @@ final class RelayEnd: @unchecked Sendable {
 		let theirs = Set(info.devices.map(\.device))
 		let missing = remote.devices.filter { !theirs.contains($0.id) && pendingAdds[$0.id] == nil }.count
 		if missing > 0 { Seldom.shared.say("relay unlisted", "\(missing) device(s) on pi² Remote's own list are not listed at the relay, it says: they reach this Mac by home and direct until they pair again") }
-		if !info.left.isEmpty { Seldom.shared.say("relay left", "the relay says \(info.left.count) device(s) left it: its word alone, nothing is revoked") }
+		// The relay's client reads at most a few of these (relay/README.md: the record holds five), each checked as one `left`.
+		for left in info.left { heardLeft(left) }
+	}
+
+	// ---- A phone's leave (3.6; #813, #929)
+
+	/// Devices whose verified leave is with the engine, not yet answered: the same leave again meanwhile, in whatever form
+	/// of its signature, is neither checked nor sent again.
+	private var leaving: Set<DeviceID> = []
+
+	/// A device the relay says left, now or while the Mac was away. The relay's word alone, until the phone's own notice
+	/// verifies (`RelayLeft.verified`) against this pairing's id, the Mac's identity key and **the device key on pi²
+	/// Remote's own list**, the engine's verified claim's, never a key the relay named (`joined`) nor the device id taken
+	/// on trust: a device not on the list is a hint, with no check. Only a `RelayVerifiedLeave` goes to the engine, as
+	/// `remote.left { device, at, notice }`, which checks the notice again against its own record and revokes the device
+	/// as unpaired on the phone; the engine's `revoke` then drops it here, as any revocation does.
+	///
+	/// What a relay can make of it: at most one signature check for each `left` it sends that names a device on the list,
+	/// none for any other; a line in the log for each kind of what it said, at most once a minute (a hint, a notice that
+	/// does not verify, the engine's refusal), and one for each device on the list whose leave verified; nothing to the
+	/// engine, and so no `devices` event to the app, but a leave that verified (remotekit.md, "The leave notice").
+	private func heardLeft(_ left: RelayLeft) {
+		guard let listed = remote.listed(left.device), let pairing = remote.pairing else {
+			// The device's id alone: never the notice, which only a check against its key may read.
+			return Seldom.shared.say("relay left", "the relay says device \(left.device) left it, a device not on pi² Remote's own list: its word alone, so nothing is revoked or forgotten")
+		}
+		guard !leaving.contains(listed.id) else { return }
+		guard let leave = left.verified(pairing: pairing, identityKey: remote.keys.identity.publicKey, deviceKey: listed.deviceKey, now: now) else {
+			return Seldom.shared.say("relay left not verified", "the relay says device \(left.device) left it, with a notice its device key did not sign for this pairing and this Mac, or dated ahead of this Mac's clock: its word alone, so nothing is revoked")
+		}
+		leaving.insert(leave.device)
+		// At most once a minute for each device on the list: a relay that repeats a genuine leave cannot wash the log.
+		Seldom.shared.say("relay left verified \(leave.device)", "device \(leave.device) unpaired itself on the phone: its leave, signed by its device key on pi² Remote's own list for this Mac, verified; the engine is told (remote.left)")
+		let params = JSONValue.object([("device", .string(leave.device.text)), ("at", .integer(leave.at)), ("notice", .string(Base64URL.encode(leave.notice)))])
+		remote.engine.request("remote.left", params) { [unowned self] result in
+			self.leaving.remove(leave.device)
+			if case let .failure(why) = result { Seldom.shared.say("relay left refused", "the engine did not take device \(leave.device)'s leave: \(why)") }
+		}
 	}
 
 	// ---- Channels on the relay path: the same `PhoneConnection` as on TCP

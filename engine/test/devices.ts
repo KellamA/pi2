@@ -23,7 +23,7 @@ import { createModels } from "@earendil-works/pi-ai";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { allowsHiddenApproval, checkDeviceLists, deviceLogged, HIDDEN_FROM_THE_PHONE, deviceMay, devicePlacement, type DeviceSession, ONLY_FROM_THE_HELPER, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID, PERSON_REQUESTS } from "../src/answers.ts";
-import { APPROVAL_DEPTH, checkRequestItem, type Device, deviceRequests, DeviceLog, Devices, devicesState, flushDeviceLog, fromBase64url, helperWanted, hidesSomething, logDevice, macNameNow, maskValue, NOT_KEPT, pairClaim, PART_HIDDEN, remoteHooks, revokedWatchers, shownName, summarize, TOO_DEEP, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
+import { APPROVAL_DEPTH, checkRequestItem, type Device, deviceRequests, DeviceLog, Devices, devicesState, flushDeviceLog, fromBase64url, helperWanted, hidesSomething, LEAVE_NOT_SIGNED, logDevice, macNameNow, maskValue, NOT_A_LEAVE, NOT_KEPT, pairClaim, PART_HIDDEN, remoteHooks, revokedWatchers, shownName, summarize, TOO_DEEP, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
 import type { Client } from "../src/clients.ts";
 import { attachChallenge, checkAttach, offerPresenceKey, PRESENCE_KEY_ALREADY_WAITS, PRESENCE_KEY_CHANGED, PRESENCE_KEY_WAITS } from "../src/devices.ts";
 import { personOnly } from "../src/answers.ts";
@@ -1166,7 +1166,7 @@ try {
 	await assert.rejects(app.call("devices.pairStart"), /Turn on Reach from an iPhone first/);
 	await app.call("devices.set", { on: true });
 	await assert.rejects(app.call("devices.pairStart"), /Turn on Reach from an iPhone first/, "remote access on, the preview off");
-	for (const method of ["remote.attach", "remote.attachBegin", "remote.pairClaim", "remote.pairRefused", "remote.pairUnkept", "remote.hello", "remote.sessionEnd", "remote.pushRefused"]) {
+	for (const method of ["remote.attach", "remote.attachBegin", "remote.pairClaim", "remote.pairRefused", "remote.pairUnkept", "remote.hello", "remote.sessionEnd", "remote.pushRefused", "remote.left"]) {
 		await assert.rejects(app.call(method, {}), (error: Error) => error.message === ONLY_FROM_THE_HELPER, `${method} on the socket, from a process PeerKit takes for the app`);
 	}
 	assert.ok(!childrenOf(engine.pid!).some((command) => command.includes(standIn)), "no pi² Remote, and no socket pair, was made");
@@ -2008,6 +2008,64 @@ try {
 	assert.match((await third3.call("remote.pairUnkept", { device: phone2.id })).error ?? "", /may take back only the device it was last sent paired for/, "after pi² Remote restarted");
 	assert.ok(app.devicesEvents.at(-1).devices.some((one: any) => one.id === phone2.id && one.revokedAt === null), "and the device is kept");
 	step("a revoked device's key cannot pair again; a claim whose pi² Remote stopped closes the window, and nothing is saved; a pi² Remote started since takes back no pairing");
+
+	// ---- A phone's leave, passed on by the relay (3.6, #929): the device revoked on its own device key's notice alone
+	// Kit pairs, then unpairs on the phone; Robin's stays paired. The engine takes the identity key the running pi² Remote
+	// said hello with.
+	const leaver = new Phone("Kit's iPhone");
+	const kitClaim = await claimIn(leaver, {}, () => {}, third3);
+	({ device: leaver.id } = await app.call("devices.pairConfirm", { digits: kitClaim.digits }));
+	await app.until("the identity key of pi² Remote number 3", () => app.devicesEvents.at(-1)?.macKeys?.identity === third3.macKeys.identity);
+	const leaveText = (fields: { pairing?: string; device?: string; mac?: string; at?: number } = {}) =>
+		JSON.stringify({ v: 2, kind: "leave", pairing: fields.pairing ?? remote.pairing, device: fields.device ?? leaver.id, mac: fields.mac ?? third3.macKeys.identity, at: fields.at ?? Date.now() });
+	const leave = (text: string, key: KeyObject = leaver.device.privateKey, extra: Record<string, unknown> = {}) =>
+		third3.call("remote.left", { device: JSON.parse(text).device, at: JSON.parse(text).at, notice: signText(text, key), ...extra });
+	const leaverPaired = () => app.devicesEvents.at(-1).devices.some((one: any) => one.id === leaver.id && one.revokedAt === null);
+	const beforeLeave = third3.events.length;
+	const refusedLeaves: [any, RegExp, string][] = [
+		[await third3.call("remote.left", {}), new RegExp(NOT_A_LEAVE.replace(/[().]/g, "\\$&")), "nothing"],
+		[await leave(leaveText(), leaver.device.privateKey, { deviceKey: spki(p256().publicKey) }), /takes a device, its time and its notice/, "a key named beside it, as a relay could"],
+		[await third3.call("remote.left", { device: leaver.id, at: Date.now(), notice: b64url(randomBytes(63)) }), /takes a device/, "a notice of 63 bytes"],
+		[await third3.call("remote.left", { device: leaver.id, at: String(Date.now()), notice: b64url(randomBytes(64)) }), /takes a device/, "a time that is text"],
+		[await third3.call("remote.left", { device: leaver.id, at: 0, notice: b64url(randomBytes(64)) }), /takes a device/, "no time"],
+		[await leave(leaveText({ device: "dev_none" })), /No such device is paired/, "a device never paired"],
+		[await leave(leaveText(), p256().privateKey), new RegExp(LEAVE_NOT_SIGNED), "a stranger's key"],
+		[await leave(leaveText(), phone2.device.privateKey), new RegExp(LEAVE_NOT_SIGNED), "another paired device's key, Robin's"],
+		[await leave(leaveText({ device: phone2.id }), leaver.device.privateKey), new RegExp(LEAVE_NOT_SIGNED), "Robin's leave signed by Kit's key"],
+		[await leave(leaveText(), phone.device.privateKey), new RegExp(LEAVE_NOT_SIGNED), "a revoked device's key, Alex's"],
+		[await leave(leaveText({ mac: remote.macKeys.identity })), new RegExp(LEAVE_NOT_SIGNED), "a leave for another Mac"],
+		[await leave(leaveText({ pairing: b64url(randomBytes(16)) })), new RegExp(LEAVE_NOT_SIGNED), "another pairing"],
+		[await leave(leaveText({ at: Date.now() + 11 * 60_000 })), /more than ten minutes ahead/, "eleven minutes ahead of the Mac's clock"],
+	];
+	for (const [reply, expected, what] of refusedLeaves) assert.match(reply.error ?? JSON.stringify(reply), expected, what);
+	// What is signed must be what is checked: a notice over one time, given with another.
+	const signedAt = leaveText({ at: Date.now() - 1_000 });
+	assert.match((await third3.call("remote.left", { device: leaver.id, at: Date.now(), notice: signText(signedAt, leaver.device.privateKey) })).error, new RegExp(LEAVE_NOT_SIGNED), "another time");
+	assert.ok(leaverPaired() && app.devicesEvents.at(-1).devices.some((one: any) => one.id === phone2.id && one.revokedAt === null), "none of these revokes a device");
+	assert.ok(!third3.events.slice(beforeLeave).some((event) => event.kind === "revoke"), "nor tells pi² Remote to");
+	assert.ok(!(await app.call("devices.log", { device: leaver.id })).entries.some((entry: any) => entry.method === "leave"), "nor logs a leave");
+	// The genuine leave, a hundred days old (a relay keeps it for a Mac that is away), given at once in both forms of its
+	// ECDSA signature, s and n − s, which verify alike: the device is revoked once.
+	const genuine = leaveText({ at: Date.now() - 100 * 86_400_000 });
+	const low = Buffer.from(signText(genuine, leaver.device.privateKey), "base64url");
+	const order = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
+	const high = Buffer.concat([low.subarray(0, 32), Buffer.from((order - BigInt(`0x${low.subarray(32).toString("hex")}`)).toString(16).padStart(64, "0"), "hex")]);
+	const beforeGenuine = app.devicesEvents.length;
+	const both = await Promise.all([high, low].map((notice) => third3.call("remote.left", { device: leaver.id, at: JSON.parse(genuine).at, notice: b64url(notice) })));
+	assert.deepEqual(both.map((reply) => reply.result?.revoked).sort(), [false, true], `the leave in both forms at once: revoked once, the other answered as a repeat (${JSON.stringify(both)})`);
+	assert.deepEqual((await third3.call("remote.left", { device: leaver.id, at: JSON.parse(genuine).at, notice: b64url(low) })).result, { revoked: false }, "and again, a repeat the relay may send, harmlessly");
+	const leftRecord = app.devicesEvents.at(-1).devices.find((one: any) => one.id === leaver.id);
+	assert.ok(leftRecord.revokedAt !== null && leftRecord.deviceKey === "" && leftRecord.channelKey === "", "the device is revoked, its keys forgotten, and the Devices page told (devices)");
+	assert.ok(app.devicesEvents.length > beforeGenuine, "by a devices event");
+	assert.equal(third3.events.slice(beforeLeave).filter((event) => event.kind === "revoke" && event.device === leaver.id).length, 1, "pi² Remote is told to revoke it, once");
+	const leftLog = (await app.call("devices.log", { device: leaver.id })).entries.filter((entry: any) => entry.method === "leave");
+	assert.deepEqual(
+		leftLog.map((entry: any) => [entry.path, entry.summary, entry.outcome]),
+		[["relay", "Unpaired itself on the phone", "done"]],
+		"the log says once that the phone unpaired itself, by the relay",
+	);
+	assert.ok(onDisk((entry) => entry.method === "leave" && entry.device === leaver.id), "stored at once");
+	step("a phone's leave revokes its device only with its own device key's notice for this pairing and this Mac, at most ten minutes ahead and however old; refused with another device's key, a stranger's, a key named beside it, another Mac's or pairing, or another time; once, whichever form of the signature, and a repeat harmlessly; logged as unpaired on the phone");
 
 	// ---- Turning remote access off stops pi² Remote; the devices event went to the app alone
 	await app.call("devices.set", { on: false });
