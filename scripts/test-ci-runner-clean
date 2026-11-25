@@ -1,0 +1,321 @@
+#!/bin/bash
+# Checks scripts/ci-runner-clean (#990) in a temporary folder made to look like the owner's runner: a work folder with
+# the runner's .runner beside it, a checkout that is a git repository, a home folder of its own, and stand-ins for
+# security, defaults and xcrun (CI_RUNNER_CLEAN_TEST), so that nothing of this computer's Keychain, preferences,
+# simulators or /tmp is read or changed. The processes it stops are stand-ins this test starts, perl programs in the
+# test's own folder (one ignores SIGTERM); two more, outside the work folder, must be left running. (A copy of sleep
+# would not do: macOS kills a copied system program as it starts.)
+# It checks what the script refuses before it changes anything, what it removes and keeps, that a second run finds
+# nothing, and that a simulator it cannot delete fails the run.
+#
+#   scripts/test-ci-runner-clean
+#
+# Runs on Linux too (Scripts (tests)), where none of the macOS tools is there to be reached.
+
+set -uo pipefail
+export LC_ALL=C
+
+root="$(cd -P -- "$(dirname -- "$0")/.." && pwd -P)"
+T=$(mktemp -d "${TMPDIR:-/tmp}/test-ci-runner-clean.XXXXXX") || exit 1
+T=$(cd -P -- "$T" && pwd -P)
+started=()
+
+cleanup() {
+	local pid
+	for pid in ${started[@]+"${started[@]}"}; do
+		# Only what this test started, while it is still that process.
+		[[ $(ps -ww -o command= -p "$pid" 2>/dev/null) == *"$T/"* ]] && kill -KILL "$pid" 2>/dev/null
+	done
+	rm -rf -- "$T"
+}
+trap cleanup EXIT
+
+failures=0
+pass() { echo "ok: $*"; }
+bad() {
+	echo "FAIL: $*" >&2
+	failures=$((failures + 1))
+}
+expect() { # expect <description> <command...>
+	local what=$1
+	shift
+	if "$@"; then pass "$what"; else bad "$what"; fi
+}
+
+runner="$T/runner"
+work="$runner/_work"
+workspace="$work/pi2"
+checkout="$workspace/pi2"
+temp="$work/_temp"
+home="$T/home"
+library="$home/Library"
+log="$T/log"
+mkdir -p "$runner" "$temp" "$checkout" "$library" "$log" "$T/bin" "$T/tmp" "$T/keychain" "$T/outside" "$runner/_work-other"
+printf '{}\n' >"$runner/.runner"
+
+# ---- Stand-ins for the macOS tools, which log what they are asked.
+
+cat >"$T/bin/security" <<'EOF'
+#!/bin/bash
+# Items are files in keychain/, one a service, holding how many items it has.
+dir="$(cd -- "$(dirname -- "$0")/.." && pwd)"
+printf '%s\n' "$*" >>"$dir/log/security"
+case $1 in
+dump-keychain)
+	for file in "$dir/keychain"/*; do
+		[[ -f $file ]] || continue
+		for ((i = 0; i < $(cat "$file"); i++)); do
+			printf 'keychain: "%s/login.keychain-db"\nclass: "genp"\nattributes:\n    "acct"<blob>="x"\n    "svce"<blob>="%s"\n' "$dir" "$(basename -- "$file")"
+		done
+	done
+	;;
+delete-generic-password)
+	[[ $2 == -s ]] || exit 2
+	file="$dir/keychain/$3"
+	[[ -f $file && $(cat "$file") -gt 0 ]] || { echo "security: The specified item could not be found in the keychain." >&2; exit 44; }
+	echo $(($(cat "$file") - 1)) >"$file"
+	;;
+*) exit 2 ;;
+esac
+EOF
+cat >"$T/bin/defaults" <<'EOF'
+#!/bin/bash
+dir="$(cd -- "$(dirname -- "$0")/.." && pwd)"
+printf '%s\n' "$*" >>"$dir/log/defaults"
+EOF
+cat >"$T/bin/xcrun" <<'EOF'
+#!/bin/bash
+# `simctl list devices` lists the ids in simulators-left, one a line.
+dir="$(cd -- "$(dirname -- "$0")/.." && pwd)"
+printf '%s\n' "$*" >>"$dir/log/xcrun"
+[[ $* == "simctl list devices" ]] && cat "$dir/simulators-left" 2>/dev/null
+exit 0
+EOF
+chmod +x "$T/bin/security" "$T/bin/defaults" "$T/bin/xcrun"
+
+# ---- The checkout, with the script itself in it, as on the runner.
+
+git -C "$checkout" init -q
+printf 'node_modules/\napp/.build/\napp/build/\niphone/build/\n' >"$checkout/.gitignore"
+mkdir -p "$checkout/scripts" "$checkout/src"
+cp "$root/scripts/ci-runner-clean" "$checkout/scripts/ci-runner-clean"
+echo tracked >"$checkout/src/tracked"
+git -C "$checkout" add .gitignore scripts src
+git -C "$checkout" -c user.name=test -c user.email=test@example.invalid commit -qm test
+script="$checkout/scripts/ci-runner-clean"
+
+# What a job leaves: run() fills it again before each run that removes it.
+UDID=0A1B2C3D-0000-4000-8000-00000000C1C1
+leave() {
+	mkdir -p "$checkout/node_modules/x" "$checkout/app/build/pi².app" "$checkout/app/.build/debug" \
+		"$checkout/iphone/build/DerivedData/Build" "$checkout/iphone/build/simulators/ci" "$checkout/iphone/build/simulators/odd"
+	echo leftover >"$checkout/untracked"
+	echo o >"$checkout/app/.build/debug/kept.o"
+	echo d >"$checkout/iphone/build/DerivedData/Build/kept"
+	echo "$UDID" >"$checkout/iphone/build/simulators/ci/udid"
+	echo "not an id" >"$checkout/iphone/build/simulators/odd/udid"
+	echo changed >"$checkout/src/tracked"
+
+	echo 1 >"$T/keychain/dev.pi2.credentials"
+	echo 2 >"$T/keychain/dev.pi2.credentials.test-addedmodels-77"
+	echo 1 >"$T/keychain/dev.pi2.credentials.release-check-9"
+	echo 1 >"$T/keychain/dev.pi2.credentialsx"
+	echo 1 >"$T/keychain/com.example.other"
+
+	mkdir -p "$library/Preferences" "$library/Caches/dev.pi2.app" "$library/Caches/dev.pi2.app.test-7" \
+		"$library/Caches/com.example" "$library/HTTPStorages" "$library/WebKit/dev.pi2.app.test-7" \
+		"$library/Saved Application State/dev.pi2.app.savedState" "$library/Application Support/pi2-test-7" \
+		"$library/Application Support/pi2-dev" "$library/Application Support/other"
+	for name in dev.pi2.app dev.pi2.app.test-7 dev.pi2.apps com.example; do echo p >"$library/Preferences/$name.plist"; done
+	echo c >"$library/HTTPStorages/dev.pi2.app.binarycookies"
+
+	mkdir -p "$T/tmp/pi2-501/scratch-1" "$T/tmp/pi2-check-app-abc" "$T/tmp/pi2"
+	echo keep >"$T/tmp/keep-me"
+	mkdir -p "$temp/tmp/left"
+}
+
+# A process started in the background of a subshell, so that it is not this test's child and is reaped once stopped.
+start() { # start <pidfile> <command...>
+	local file=$1
+	shift
+	("$@" >/dev/null 2>&1 &
+		echo $! >"$file")
+	started+=("$(cat "$file")")
+}
+alive() {
+	kill -0 "$1" 2>/dev/null && [[ $(ps -o stat= -p "$1" 2>/dev/null) != Z* ]]
+}
+
+env_for() { # the environment of a job's step on the runner
+	env -i PATH=/usr/bin:/bin HOME="$home" RUNNER_ENVIRONMENT=self-hosted RUNNER_WORKSPACE="$workspace" \
+		RUNNER_TEMP="$temp" GITHUB_WORKSPACE="$checkout" GITHUB_ENV="$T/github-env" CI_RUNNER_CLEAN_TEST="$T" "$@"
+}
+
+# A program at <path> that sleeps for ten minutes, or until stopped; with a second argument, it ignores SIGTERM.
+perl=$(command -v perl) || { echo "test-ci-runner-clean: needs perl" >&2; exit 1; }
+stand_in() {
+	local ignore=
+	[[ -z ${2:-} ]] || ignore='$SIG{TERM} = "IGNORE"; '
+	mkdir -p "$(dirname -- "$1")"
+	printf '#!%s\n%ssleep 600;\n' "$perl" "$ignore" >"$1"
+	chmod +x "$1"
+}
+
+# ---- Stand-ins that must be left running whatever happens.
+
+stand_in "$T/outside/sleep"
+stand_in "$runner/_work-other/sleep"
+start "$T/outside.pid" "$T/outside/sleep"
+start "$T/other.pid" "$runner/_work-other/sleep"
+outside=$(cat "$T/outside.pid")
+other=$(cat "$T/other.pid")
+
+# ---- Refusals, each before anything is changed.
+
+leave
+stand_in "$checkout/app/.build/debug/standin-engine"
+start "$T/engine.pid" "$checkout/app/.build/debug/standin-engine"
+engine=$(cat "$T/engine.pid")
+
+refused() { # refused <description> <env assignments...>
+	local what=$1 out code
+	shift
+	out=$(env_for "$@" bash "$script" start 2>&1)
+	code=$?
+	if [[ $code == 2 && $out == *refused* ]] && alive "$engine" && [[ -f $checkout/untracked && ! -s $log/security && ! -s $log/defaults && ! -s $log/xcrun ]]; then
+		pass "refuses $what"
+	else
+		bad "refuses $what (exit $code): $out"
+	fi
+}
+refused "with no RUNNER_ENVIRONMENT" RUNNER_ENVIRONMENT=
+refused "on GitHub's runners" RUNNER_ENVIRONMENT=github-hosted
+refused "a RUNNER_TEMP outside the work folder" RUNNER_TEMP="$T/tmp"
+refused "a GITHUB_WORKSPACE outside RUNNER_WORKSPACE" GITHUB_WORKSPACE="$T/outside"
+refused "a relative RUNNER_WORKSPACE" RUNNER_WORKSPACE=_work/pi2
+refused "a work folder not called _work" RUNNER_WORKSPACE="$T/outside" GITHUB_WORKSPACE="$T/outside"
+refused "a test whose HOME is outside its folder" HOME=/
+mv "$runner/.runner" "$runner/.runner-moved"
+refused "a work folder with no .runner beside it"
+mv "$runner/.runner-moved" "$runner/.runner"
+mkdir -p "$library/Application Support/pi2"
+refused "a home with pi²'s data folder"
+rmdir "$library/Application Support/pi2"
+mkdir -p "$library/LaunchAgents" && echo x >"$library/LaunchAgents/dev.pi2.engine.plist"
+refused "a home with pi²'s login item"
+rm -rf "$library/LaunchAgents"
+out=$(env_for bash "$script" 2>&1)
+expect "refuses no argument" test $? = 2
+out=$(env_for bash "$script" middle 2>&1)
+expect "refuses an argument it does not know" test $? = 2
+
+# ---- A run at a job's start.
+
+stand_in "$temp/tmp/standin-remote"
+start "$T/remote.pid" "$temp/tmp/standin-remote"
+remote=$(cat "$T/remote.pid")
+stand_in "$T/stubborn" ignore-term
+start "$T/stubborn.pid" "$T/stubborn" "$checkout/relay/node_modules/standin-workerd"
+stubborn=$(cat "$T/stubborn.pid")
+# Started with nothing of the folder in its arguments, as app/'s checks are (by a relative path): only its environment
+# names it. macOS shows the environment of a program that is not Apple's own (perl is): node, where there is one.
+node=$(command -v node || true)
+if [[ $(uname -s) == Darwin && -n $node ]]; then
+	start "$T/check.pid" env GITHUB_WORKSPACE="$checkout" "$node" -e 'setTimeout(() => {}, 600000)'
+	check=$(cat "$T/check.pid")
+else
+	echo "skipped: a process named only by its environment (macOS with node only)"
+fi
+sleep 0.5
+: >"$T/github-env"
+
+out=$(env_for bash "$script" start 2>&1)
+code=$?
+echo "$out" | sed 's/^/  | /'
+expect "a run at the start exits 0" test "$code" = 0
+expect "stops a process run from the checkout" bash -c "! kill -0 $engine 2>/dev/null"
+expect "stops a process run from the job's temporary folder" bash -c "! kill -0 $remote 2>/dev/null"
+expect "kills a process that ignores SIGTERM" bash -c "! kill -0 $stubborn 2>/dev/null"
+if [[ -n ${check:-} ]]; then
+	expect "stops a process started by a relative path, by its environment" bash -c "! kill -0 $check 2>/dev/null"
+fi
+expect "leaves a process outside the work folder" alive "$outside"
+expect "leaves a process in a folder whose name only begins like the work folder's" alive "$other"
+
+expect "deletes the recorded simulator by its id" grep -qx "simctl delete $UDID" "$log/xcrun"
+expect "shuts it down first" grep -qx "simctl shutdown $UDID" "$log/xcrun"
+expect "deletes nothing else in simctl" test "$(grep -c '^simctl delete' "$log/xcrun")" = 1
+expect "forgets the simulators' records" test ! -e "$checkout/iphone/build/simulators"
+
+expect "removes an untracked file" test ! -e "$checkout/untracked"
+expect "removes ignored node_modules" test ! -e "$checkout/node_modules"
+expect "removes app/build" test ! -e "$checkout/app/build"
+expect "keeps app/.build" test -f "$checkout/app/.build/debug/kept.o"
+expect "keeps iphone/build/DerivedData" test -f "$checkout/iphone/build/DerivedData/Build/kept"
+expect "keeps the script itself" test -f "$script"
+expect "leaves tracked files to the checkout" test "$(cat "$checkout/src/tracked")" = changed
+
+expect "removes both items of a test's service" test "$(cat "$T/keychain/dev.pi2.credentials.test-addedmodels-77")" = 0
+expect "removes the release check's item" test "$(cat "$T/keychain/dev.pi2.credentials.release-check-9")" = 0
+expect "never deletes under dev.pi2.credentials itself" bash -c "! grep -q -- '-s dev.pi2.credentials\$' '$log/security'"
+expect "keeps dev.pi2.credentials's item" test "$(cat "$T/keychain/dev.pi2.credentials")" = 1
+expect "keeps a service that only begins like it" test "$(cat "$T/keychain/dev.pi2.credentialsx")" = 1
+expect "keeps another app's item" test "$(cat "$T/keychain/com.example.other")" = 1
+
+expect "deletes dev.pi2.app's preferences" grep -qx "delete dev.pi2.app" "$log/defaults"
+expect "deletes a copy's preferences" grep -qx "delete dev.pi2.app.test-7" "$log/defaults"
+expect "deletes no other domain" test "$(wc -l <"$log/defaults" | tr -d ' ')" = 2
+for gone in Preferences/dev.pi2.app.plist Preferences/dev.pi2.app.test-7.plist Caches/dev.pi2.app Caches/dev.pi2.app.test-7 \
+	HTTPStorages/dev.pi2.app.binarycookies WebKit/dev.pi2.app.test-7 "Saved Application State/dev.pi2.app.savedState" \
+	"Application Support/pi2-test-7" "Application Support/pi2-dev"; do
+	expect "removes ~/Library/$gone" test ! -e "$library/$gone"
+done
+for kept in Preferences/dev.pi2.apps.plist Preferences/com.example.plist Caches/com.example "Application Support/other"; do
+	expect "keeps ~/Library/$kept" test -e "$library/$kept"
+done
+
+expect "removes /tmp/pi2-<uid>" test ! -e "$T/tmp/pi2-501"
+expect "removes /tmp/pi2-check-app-…" test ! -e "$T/tmp/pi2-check-app-abc"
+expect "keeps /tmp/pi2, which is not pi2-<anything>" test -d "$T/tmp/pi2"
+expect "keeps /tmp's other files" test -f "$T/tmp/keep-me"
+expect "empties the job's temporary folder" test -d "$temp/tmp" -a ! -e "$temp/tmp/left"
+expect "points TMPDIR at it for the job's next steps" grep -qx "TMPDIR=$temp/tmp/" "$T/github-env"
+expect "leaves no list of its own in RUNNER_TEMP" bash -c "! ls '$temp' | grep -q ci-runner-clean"
+
+# ---- At the end, and again, with nothing left: nothing to do, and no TMPDIR written again.
+
+: >"$log/security"
+: >"$log/defaults"
+: >"$log/xcrun"
+before=$(cat "$T/github-env")
+out=$(env_for bash "$script" end 2>&1)
+expect "a run at the end with nothing left exits 0" test $? = 0
+expect "says it stopped nothing" bash -c "! grep -q stopping <<<\"\$1\"" _ "$out"
+expect "the end leaves GITHUB_ENV as it was" test "$(cat "$T/github-env")" = "$before"
+expect "calls no simctl with no records" test ! -s "$log/xcrun"
+expect "deletes no preferences when there are none" test ! -s "$log/defaults"
+out=$(env_for bash "$script" end 2>&1)
+expect "runs twice" test $? = 0
+expect "still keeps app/.build" test -f "$checkout/app/.build/debug/kept.o"
+expect "still leaves the processes outside" alive "$outside"
+
+# ---- With no checkout yet (a job whose checkout failed): nothing to clean there, and no failure.
+
+rm -rf "$checkout/.git"
+out=$(env_for bash "$script" end 2>&1)
+expect "a checkout that is not a repository is left alone" test $? = 0 -a -f "$checkout/src/tracked"
+
+# ---- A simulator that will not go fails the run, and its record is kept.
+
+mkdir -p "$checkout/iphone/build/simulators/ci"
+echo "$UDID" >"$checkout/iphone/build/simulators/ci/udid"
+echo "    ci ($UDID) (Booted)" >"$T/simulators-left"
+out=$(env_for bash "$script" end 2>&1)
+expect "a simulator it could not delete exits 1" test $? = 1
+expect "and keeps its record" test -f "$checkout/iphone/build/simulators/ci/udid"
+
+if ((failures)); then
+	echo "test-ci-runner-clean: $failures check(s) failed" >&2
+	exit 1
+fi
+echo "test-ci-runner-clean: every check passed."

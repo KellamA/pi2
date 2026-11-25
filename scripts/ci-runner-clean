@@ -1,0 +1,307 @@
+#!/bin/bash
+# Puts the owner's own CI runner, the Mac mini (docs/ci-runner.md, #990), back as a job expects to find it: GitHub's
+# runners are new at each job, and the mini is not. ci.yml runs it after the checkout and, whatever happened, at the end
+# of each macOS job that runs there, and only there (runner.environment == 'self-hosted').
+#
+#   scripts/ci-runner-clean start | end
+#
+# It removes what the macOS jobs leave behind, and nothing else, as the runner's own standard user, never with sudo:
+#   - every process of this user whose command line names the runner's work folder (the checkout, its builds, the Node
+#     the jobs fetch, the temporary folder below), except this script and the runner processes it runs under: engines,
+#     pi² Remote, the app the release check opens, the relay and Wrangler, stand-ins left by a test;
+#   - the simulators scripts/iphone-sim made in this checkout (by their ids, as it recorded them), and its records;
+#   - whatever git does not track in the checkout, except the build folders kept on purpose, app/.build (Swift's) and
+#     iphone/build/DerivedData (Xcode's): a warm build is most of what the runner is for;
+#   - Keychain items under a test's service, dev.pi2.credentials.<anything>, never dev.pi2.credentials itself;
+#   - the preferences of dev.pi2.app and of dev.pi2.app.<anything> (the release check opens a release build, test
+#     copies have ids of their own), with their caches, cookies, WebKit data and saved window state in ~/Library;
+#   - the data folders of development builds and test copies, ~/Library/Application Support/pi2-<anything>;
+#   - this user's pi2-<anything> in /tmp (the engines' sockets and scratch folders, the checks' folders);
+#   - the job's temporary folder: start points TMPDIR at an empty folder inside the runner's own temporary folder, which
+#     the runner empties after every job, for the job's later steps (through GITHUB_ENV), and end empties it.
+# Safe to run twice, and where nothing is left. It prints what it removed, the system, Xcode and Swift in use, and the
+# disk's free space.
+#
+# It refuses, before it changes anything, unless it is on that runner: RUNNER_ENVIRONMENT=self-hosted, the runner's work
+# folder (_work, with the runner's own settings file .runner beside it) holding RUNNER_WORKSPACE, RUNNER_TEMP and
+# GITHUB_WORKSPACE, not as root, and no sign of an installed pi² (its data folder or its login item in the account's
+# home, /Applications/pi².app). A Mac where pi² is in use is never cleaned.
+#
+# CI_RUNNER_CLEAN_TEST=<folder> is for scripts/test-ci-runner-clean alone: security, defaults and xcrun are then the
+# stand-ins in <folder>/bin and nothing else, /tmp is <folder>/tmp, and HOME must be inside <folder>, so a test on a
+# Mac in use reaches none of its Keychain, preferences, simulators or /tmp.
+#
+# Exits 0 once everything is removed, 1 if something could not be, 2 when it refuses.
+
+set -uo pipefail
+export LC_ALL=C
+
+refuse() {
+	echo "ci-runner-clean: refused: $*" >&2
+	exit 2
+}
+
+usage() {
+	echo "usage: scripts/ci-runner-clean start | end" >&2
+	exit 2
+}
+
+(($# == 1)) || usage
+phase=$1
+case $phase in start | end) ;; *) usage ;; esac
+
+# ---- Where it is, checked before anything is touched.
+
+[[ ${RUNNER_ENVIRONMENT:-} == self-hosted ]] ||
+	refuse "this is not a self-hosted runner (RUNNER_ENVIRONMENT is '${RUNNER_ENVIRONMENT:-}'): it cleans the owner's CI runner only"
+me=$(id -u)
+((me != 0)) || refuse "run as root: the runner's user is a standard one, and nothing here needs more"
+
+# A folder as it really is, or nothing if it is not there.
+real() {
+	(cd -P -- "$1" 2>/dev/null && pwd -P)
+}
+
+for name in RUNNER_WORKSPACE RUNNER_TEMP GITHUB_WORKSPACE HOME; do
+	value=${!name:-}
+	[[ $value == /* ]] || refuse "$name is not an absolute path: '$value'"
+	real "$value" >/dev/null || refuse "$name is not a folder: $value"
+done
+workspace=$(real "$RUNNER_WORKSPACE")
+work=$(dirname -- "$workspace")
+[[ $(basename -- "$work") == _work ]] || refuse "the runner's work folder is not called _work: $work"
+[[ -f $(dirname -- "$work")/.runner ]] || refuse "no .runner, the runner's own settings, beside its work folder $work"
+[[ $(real "$RUNNER_TEMP") == "$work/_temp" ]] || refuse "RUNNER_TEMP is not the work folder's _temp: $RUNNER_TEMP"
+checkout=$(real "$GITHUB_WORKSPACE")
+[[ $checkout == "$workspace"/* ]] || refuse "GITHUB_WORKSPACE is not inside RUNNER_WORKSPACE: $GITHUB_WORKSPACE"
+temp="$work/_temp"
+
+if [[ -n ${CI_RUNNER_CLEAN_TEST:-} ]]; then
+	test_folder=$(real "$CI_RUNNER_CLEAN_TEST") || refuse "CI_RUNNER_CLEAN_TEST is not a folder"
+	[[ $(real "$HOME") == "$test_folder"/* ]] || refuse "in a test, HOME is inside the test's folder"
+	security="$test_folder/bin/security"
+	defaults="$test_folder/bin/defaults"
+	xcrun="$test_folder/bin/xcrun"
+	shared_tmp="$test_folder/tmp"
+	homes=("$HOME")
+else
+	security=/usr/bin/security
+	defaults=/usr/bin/defaults
+	xcrun=/usr/bin/xcrun
+	shared_tmp=/tmp
+	# HOME and the account's own home folder, which differ if a caller set HOME.
+	homes=("$HOME")
+	account=$(eval "printf '%s' ~$(id -un)" 2>/dev/null) && [[ -n $account && $account != "$HOME" ]] && homes+=("$account")
+	[[ ! -e "/Applications/pi².app" ]] || refuse "pi² is installed in /Applications: this is a Mac in use, not the runner"
+fi
+for home in "${homes[@]}"; do
+	[[ ! -e "$home/Library/Application Support/pi2" ]] ||
+		refuse "$home has pi²'s data folder: this is a Mac in use, not the runner"
+	[[ ! -e "$home/Library/LaunchAgents/dev.pi2.engine.plist" ]] ||
+		refuse "$home has pi²'s login item: this is a Mac in use, not the runner"
+	[[ ! -e "$home/Applications/pi².app" ]] || refuse "pi² is installed in $home/Applications: this is a Mac in use, not the runner"
+done
+
+failed=0
+fail() {
+	echo "ci-runner-clean: $*" >&2
+	failed=1
+}
+said() {
+	echo "ci-runner-clean: $*"
+}
+
+# ---- Processes. Listed into files, never through $(...): a subshell of this script has its command line, and Bash 3.2
+# has no BASHPID to leave it out by.
+
+list=$(mktemp "$temp/ci-runner-clean.XXXXXX") || refuse "cannot write in $temp"
+found="$list.found"
+trap 'rm -f -- "$list" "$found"' EXIT
+
+# This script and what it runs under (the step's shell, the runner's worker and listener) are never stopped.
+ancestors=" "
+pid=$$
+while [[ $pid =~ ^[0-9]+$ ]] && ((pid > 1)); do
+	ancestors+="$pid "
+	pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+done
+
+# On macOS, ps -E adds each of this user's processes' environment to its command line: a program started by a relative
+# path (.build/debug/pi2-remote-helper-check, from app/) names no folder in its arguments, but every process a job starts
+# inherits GITHUB_WORKSPACE and RUNNER_TEMP. (A test on Linux has its folder in the arguments.)
+ps_flags=(-ww)
+[[ $(uname -s) == Darwin ]] && ps_flags=(-E -ww)
+
+# The processes left, into $found: pid and command, one a line, tab between. Fails if there are none.
+left() {
+	: >"$found"
+	ps -A "${ps_flags[@]}" -o pid= -o uid= -o command= >"$list" 2>/dev/null || { fail "could not list processes"; return 1; }
+	local pid uid command
+	while read -r pid uid command; do
+		[[ $pid =~ ^[0-9]+$ && $uid == "$me" && $ancestors != *" $pid "* ]] || continue
+		[[ $command == *"$work/"* ]] || continue
+		printf '%s\t%s\n' "$pid" "$command" >>"$found"
+	done <"$list"
+	[[ -s $found ]]
+}
+
+# Waits up to ten seconds for every one of them to be gone.
+gone() {
+	local tries=0
+	while ((tries < 20)); do
+		left || return 0
+		sleep 0.5
+		tries=$((tries + 1))
+	done
+	return 1
+}
+
+# A process's name for the log: its program, without its arguments and environment, which may hold what a log should not.
+name_of() {
+	ps -o comm= -p "$1" 2>/dev/null || echo "(gone)"
+}
+
+# Signals a pid only while it is still the process listed (same command), not one that has since taken its number.
+signal() {
+	local signal=$1 pid=$2 command=$3 now
+	now=$(ps "${ps_flags[@]}" -o command= -p "$pid" 2>/dev/null) || return 0
+	read -r now <<<"$now"
+	[[ $now == "$command" ]] || return 0
+	kill "-$signal" "$pid" 2>/dev/null || true
+}
+
+stop_processes() {
+	local pid command stopped=0
+	left || return 0
+	while IFS=$'\t' read -r pid command; do
+		said "stopping $pid, $(name_of "$pid")"
+		signal TERM "$pid" "$command"
+		stopped=$((stopped + 1))
+	done <"$found"
+	if ! gone; then
+		while IFS=$'\t' read -r pid command; do
+			said "killing $pid, $(name_of "$pid"), which did not stop"
+			signal KILL "$pid" "$command"
+		done <"$found"
+		if ! gone; then
+			fail "still running after SIGKILL: $(cut -f 1 "$found" | tr '\n' ' ')"
+			return
+		fi
+	fi
+	said "stopped $stopped process(es)"
+}
+
+# ---- Simulators, by the ids scripts/iphone-sim recorded in this checkout.
+
+delete_simulators() {
+	local records="$checkout/iphone/build/simulators" record udid
+	[[ -d $records ]] || return 0
+	for record in "$records"/*/; do
+		[[ -d $record ]] || continue
+		udid=$(cat "$record/udid" 2>/dev/null) || udid=
+		if [[ $udid =~ ^[0-9A-Fa-f-]{36}$ ]]; then
+			"$xcrun" simctl shutdown "$udid" >/dev/null 2>&1 || true
+			"$xcrun" simctl delete "$udid" >/dev/null 2>&1 || true
+			if "$xcrun" simctl list devices 2>/dev/null | grep -qF -- "$udid"; then
+				fail "could not delete the simulator $udid ($(basename -- "$record"))"
+				continue
+			fi
+			said "deleted the simulator $(basename -- "$record") ($udid)"
+		fi
+		rm -rf -- "$record"
+	done
+}
+
+# ---- The checkout: what git does not track, but the build folders.
+
+clean_checkout() {
+	[[ -d $checkout/.git ]] || return 0
+	local top
+	top=$(git -C "$checkout" rev-parse --show-toplevel 2>/dev/null) || return 0
+	[[ $(real "$top") == "$checkout" ]] || return 0
+	git -C "$checkout" clean -ffdxq -e /app/.build/ -e /iphone/build/DerivedData/ || fail "git clean failed in $checkout"
+}
+
+# ---- Keychain items under a test's service.
+
+delete_keychain_items() {
+	local services service count tries
+	services=$("$security" dump-keychain 2>/dev/null |
+		sed -n 's/^[[:space:]]*"svce"<blob>="\(dev\.pi2\.credentials\.[^"][^"]*\)"[[:space:]]*$/\1/p' | sort -u)
+	[[ -n $services ]] || return 0
+	while IFS= read -r service; do
+		[[ $service == dev.pi2.credentials.?* ]] || continue
+		count=0
+		tries=0
+		while ((tries < 1000)) && "$security" delete-generic-password -s "$service" >/dev/null 2>&1; do
+			count=$((count + 1))
+			tries=$((tries + 1))
+		done
+		said "removed $count Keychain item(s) of $service"
+	done <<<"$services"
+}
+
+# ---- What macOS keeps for dev.pi2.app and dev.pi2.app.<anything>, and the data folders of builds and copies.
+
+remove_library() {
+	local library="$HOME/Library" file domain folder path
+	for file in "$library/Preferences/dev.pi2.app.plist" "$library/Preferences/"dev.pi2.app.?*.plist; do
+		[[ -e $file || -L $file ]] || continue
+		domain=$(basename -- "$file" .plist)
+		"$defaults" delete "$domain" >/dev/null 2>&1 || true
+		rm -f -- "$file"
+		said "removed the preferences of $domain"
+	done
+	for folder in Caches HTTPStorages WebKit "Saved Application State"; do
+		for path in "$library/$folder/dev.pi2.app" "$library/$folder/"dev.pi2.app.?*; do
+			[[ -e $path || -L $path ]] || continue
+			rm -rf -- "$path" && said "removed $folder/$(basename -- "$path")" || fail "could not remove $path"
+		done
+	done
+	for path in "$library/Application Support/"pi2-?*; do
+		[[ -e $path || -L $path ]] || continue
+		rm -rf -- "$path" && said "removed Application Support/$(basename -- "$path")" || fail "could not remove $path"
+	done
+}
+
+# ---- This user's pi2-<anything> in /tmp, and the job's own temporary folder.
+
+remove_temporary() {
+	local path
+	while IFS= read -r -d '' path; do
+		rm -rf -- "$path" && said "removed $path" || fail "could not remove $path"
+	done < <(find "$shared_tmp/" -mindepth 1 -maxdepth 1 -name 'pi2-?*' -user "$me" -print0 2>/dev/null)
+	rm -rf -- "$temp/tmp" || fail "could not empty $temp/tmp"
+	mkdir -p -- "$temp/tmp" || fail "could not make $temp/tmp"
+	if [[ $phase == start && -n ${GITHUB_ENV:-} ]]; then
+		printf 'TMPDIR=%s\n' "$temp/tmp/" >>"$GITHUB_ENV" || fail "could not set TMPDIR for the job"
+	fi
+}
+
+said "$phase: cleaning $work as $(id -un)"
+stop_processes
+delete_simulators
+clean_checkout
+delete_keychain_items
+remove_library
+remove_temporary
+
+# What the job runs on, which differs from GitHub's image (docs/ci-runner.md).
+if [[ $phase == start && -z ${CI_RUNNER_CLEAN_TEST:-} ]]; then
+	said "macOS $(sw_vers -productVersion 2>/dev/null), $(xcode-select -p 2>/dev/null), $(xcodebuild -version 2>/dev/null | tr '\n' ' ')"
+	said "$(swift --version 2>/dev/null | head -n 1)"
+fi
+for kept in app/.build iphone/build/DerivedData; do
+	[[ -d $checkout/$kept ]] && said "kept $kept: $(du -sh -- "$checkout/$kept" 2>/dev/null | cut -f 1)"
+done
+free=$(df -Pk -- "$work" 2>/dev/null | awk 'NR == 2 { print int($4 / 1048576) }')
+if [[ -n $free ]]; then
+	said "${free} GB free on the runner's disk"
+	((free >= 20)) || echo "::warning title=Runner disk::Only ${free} GB free on the owner's runner (docs/ci-runner.md, Upkeep)"
+fi
+
+if ((failed)); then
+	echo "ci-runner-clean: $phase: something was left (above)" >&2
+	exit 1
+fi
+said "$phase: done"

@@ -20,10 +20,14 @@
 /scripts/test-auto-merge @KellamA
 /scripts/ci-changes @KellamA
 /scripts/test-ci-changes @KellamA
+# What CI runs on the owner's own runner, a machine of the owner's, to clean it between jobs, and its test (#990).
+/scripts/ci-runner-clean @KellamA
+/scripts/test-ci-runner-clean @KellamA
 
 # The owner's own instructions for the settings that guard all this: an edit cannot change a setting, but it can mislead
 # the person following them.
 /docs/relay.md @KellamA
+/docs/ci-runner.md @KellamA
 
 # What decides who is the person: the relay, the channel and sealing, the helper, the devices in the engine, the
 # device lists (in answers.ts) and App Attest's verifier, with the test and the fixtures that hold it to Apple's samples

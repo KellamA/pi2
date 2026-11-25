@@ -54,13 +54,25 @@ jobs:
     concurrency:
       group: ci-engine-${{ github.ref }}
       cancel-in-progress: true
-    runs-on: macos-26
+    # The owner's runner when the repository variable CI_MAC_RUNNER names it (its label, pi2-mini), for a pull request
+    # from a branch of this repository; GitHub's macos-26 otherwise: with the variable unset or empty, for a push to main,
+    # and for a fork's pull request (docs/ci-runner.md, #990). That last is not the boundary, since a fork's pull request
+    # can change this file: the boundary is the setting that has a person approve an outside contributor's run.
+    runs-on: "${{ vars.CI_MAC_RUNNER != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.CI_MAC_RUNNER || 'macos-26' }}"
     timeout-minutes: 20
     defaults:
       run:
         working-directory: engine
     steps:
       - uses: actions/checkout@v7
+        with:
+          # On the owner's runner the build folders stay, and the next step cleans the rest; GitHub's clean everything.
+          clean: ${{ runner.environment != 'self-hosted' }}
+      # Only on the owner's runner, which is not new at each job: what earlier jobs left (scripts/ci-runner-clean).
+      - name: Clean the owner's runner
+        if: runner.environment == 'self-hosted'
+        working-directory: ${{ github.workspace }}
+        run: scripts/ci-runner-clean start
       - uses: actions/setup-node@v7
         with:
           node-version: 26
@@ -69,6 +81,11 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm run test:macos
+      - name: Clean the owner's runner after the job
+        if: always() && runner.environment == 'self-hosted'
+        continue-on-error: true
+        working-directory: ${{ github.workspace }}
+        run: scripts/ci-runner-clean end
 
   engine-linux:
     name: Engine (Linux tests)
@@ -128,6 +145,8 @@ jobs:
       - run: scripts/test-check-protected-targets
       - run: scripts/test-iphone-sim
       - run: scripts/test-ci-changes
+      # What scripts/ci-runner-clean removes and keeps on the owner's runner, in a stand-in of it with stand-in tools (#990).
+      - run: scripts/test-ci-runner-clean
 
   relay:
     name: Relay (tests)
@@ -169,7 +188,8 @@ jobs:
     concurrency:
       group: ci-relay-protocol-${{ github.ref }}
       cancel-in-progress: true
-    runs-on: macos-26
+    # As the engine's job, by a second variable, CI_MAC_RUNNER_MORE (docs/ci-runner.md).
+    runs-on: "${{ vars.CI_MAC_RUNNER_MORE != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.CI_MAC_RUNNER_MORE || 'macos-26' }}"
     # Ten more than before pi² Remote's relay end ran here (#678), which builds the helper and waits out two minutes.
     timeout-minutes: 30
     steps:
@@ -177,6 +197,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          clean: ${{ runner.environment != 'self-hosted' }}
+      - name: Clean the owner's runner
+        if: runner.environment == 'self-hosted'
+        run: scripts/ci-runner-clean start
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 26
@@ -208,6 +232,10 @@ jobs:
       - name: Run pi² Remote's relay end against the relay
         if: ${{ !cancelled() }}
         run: scripts/relay-protocol-test --remote --engine engine/src/main.ts
+      - name: Clean the owner's runner after the job
+        if: always() && runner.environment == 'self-hosted'
+        continue-on-error: true
+        run: scripts/ci-runner-clean end
 
   app:
     name: App (build)
@@ -216,11 +244,17 @@ jobs:
     concurrency:
       group: ci-app-${{ github.ref }}
       cancel-in-progress: true
-    runs-on: macos-26
+    # As the engine's job, by the same variable, CI_MAC_RUNNER (docs/ci-runner.md).
+    runs-on: "${{ vars.CI_MAC_RUNNER != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.CI_MAC_RUNNER || 'macos-26' }}"
     # Five more than before pi² Remote's check (#675), which runs an engine and waits out a session's resume window.
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
+        with:
+          clean: ${{ runner.environment != 'self-hosted' }}
+      - name: Clean the owner's runner
+        if: runner.environment == 'self-hosted'
+        run: scripts/ci-runner-clean start
       # What scripts/test-copy refuses, in a stand-in checkout: it launches nothing. Here and not on Linux because both
       # it and its test read and write the bundle's Info.plist with PlistBuddy, which only macOS has (#235).
       - name: Check what scripts/test-copy refuses
@@ -307,6 +341,10 @@ jobs:
       - name: Build RemoteKit for iOS
         working-directory: app
         run: swift build --target RemoteKit --triple arm64-apple-ios18.0 --sdk "$(xcrun --sdk iphoneos --show-sdk-path)" --scratch-path .build/ios
+      - name: Clean the owner's runner after the job
+        if: always() && runner.environment == 'self-hosted'
+        continue-on-error: true
+        run: scripts/ci-runner-clean end
 
   iphone:
     name: iPhone app (tests and Release build)
@@ -327,7 +365,9 @@ jobs:
       queue: max
     # The xcode-27 image (macOS 27) carries Xcode 27.0 to 27.2 and their iOS 27 simulators; macos-26 has only Xcode 26
     # and iOS 26. The project was made with Xcode 27.2 (LastUpgradeVersion 2720), and its deployment target is iOS 18.
-    runs-on: xcode-27
+    # Or the owner's runner, by CI_MAC_RUNNER_MORE, as the relay's protocol test (docs/ci-runner.md): it has Xcode 27.2
+    # at the same path.
+    runs-on: "${{ vars.CI_MAC_RUNNER_MORE != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.CI_MAC_RUNNER_MORE || 'xcode-27' }}"
     timeout-minutes: 30
     env:
       # Named, not the image's default (27.1 when this was written), so that the image moving on changes nothing here.
@@ -336,6 +376,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          clean: ${{ runner.environment != 'self-hosted' }}
+      - name: Clean the owner's runner
+        if: runner.environment == 'self-hosted'
+        run: scripts/ci-runner-clean start
       - name: Xcode and its iOS simulators
         run: |
           xcodebuild -version
@@ -349,3 +393,7 @@ jobs:
       # What has none of the #if DEBUG code, as TestFlight's builds will be (unsigned here).
       - name: Release build
         run: scripts/iphone-sim build ci --release
+      - name: Clean the owner's runner after the job
+        if: always() && runner.environment == 'self-hosted'
+        continue-on-error: true
+        run: scripts/ci-runner-clean end

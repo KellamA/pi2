@@ -225,6 +225,7 @@ That is a development build, "pi² dev": it runs the engine from the `engine` fo
 - [Development](docs/development.md): building, testing, throwaway copies, and the layout of the code.
 - [Working as a worker agent](docs/agents.md) and [issue classes](docs/issue-classes.md): for agents handed issues in this repository.
 - [Releasing](docs/releasing.md): signed downloads, updates, and what to set up before the first release.
+- [The owner's CI runner](docs/ci-runner.md): the Mac mini that can run CI's macOS jobs, its setup and its switch.
 - [Retaking the README's pictures](scripts/readme-pictures/README.md).
 - [Changelog](CHANGELOG.md).
 
