@@ -15,9 +15,12 @@
 //
 // A value is looked for once it has LEAST_SECRET characters or more, without the white space around it, and is not one
 // character repeated (or nearly: four different characters at least); a value of several lines is looked for whole and
-// line by line, and in the form JSON writes it inside a string. A text that ends with a value's first 8 characters or
-// more has them hidden too: an answer or an output still coming is sent whole so far each time it grows, so a value
-// written out shows at most its first 7 characters while it comes. A shorter value (a PIN, a port, "prod") is not looked
+// line by line, and in the form JSON writes it inside a string. A text that ends with a value's first 8 characters and
+// fewer characters after them than the rest of the value has, whatever they are, has that end hidden too: an answer or
+// an output still coming is sent whole so far each time it grows, so a value written out shows at most its first 7
+// characters while it comes. Whatever follows those 8 is not compared with the value: a phone that sends text and
+// reads it back masked or not could otherwise find a value one character at a time; this way it learns only whether a
+// text of its own is a whole value, or starts like one for 8 characters. A shorter value (a PIN, a port, "prod") is not looked
 // for: it would be found inside ordinary words and numbers, hiding them and making every approval that holds them
 // one a phone may only deny. A value of 8 characters or more is still hidden wherever it appears, ordinary or not: a
 // variable that holds a host or a word ("localhost", "production") is hidden in what a phone is sent too.
@@ -110,8 +113,9 @@ function search(): Search | null {
 
 /**
  * Where in `text` a value the engine knows stands, as [from, to) spans, in no order, overlapping as the values do; and
- * where it ends with the first LEAST_SECRET characters or more of one, as a transcript's answer or output still coming
- * does, sent again whole as it grows: of a value written out, at most its first LEAST_SECRET - 1 characters are shown.
+ * where it ends with the first LEAST_SECRET characters of one and less than its rest, as a transcript's answer or
+ * output still coming does, sent again whole as it grows: of a value written out, at most its first LEAST_SECRET - 1
+ * characters are shown.
  */
 export function secretSpans(text: string): [number, number][] {
 	const spans: [number, number][] = [];
@@ -130,8 +134,9 @@ export function secretSpans(text: string): [number, number][] {
 			const from = probe - offset;
 			if (from < 0) continue;
 			if (text.startsWith(value, from)) spans.push([from, from + value.length]);
-			// The text ends with the value's start: an answer or an output still coming, sent whole so far each time.
-			else if (text.length - from >= LEAST_SECRET && text.length - from < value.length && value.startsWith(text.slice(from))) spans.push([from, text.length]);
+			// The text ends with the value's first characters and less than its rest: an answer or an output still coming,
+			// sent whole so far each time. Only the first LEAST_SECRET are compared (the top of this file says why).
+			else if (text.length - from < value.length && text.startsWith(value.slice(0, LEAST_SECRET), from)) spans.push([from, text.length]);
 		}
 	}
 	return spans;

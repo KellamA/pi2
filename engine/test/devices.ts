@@ -355,6 +355,10 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	// An answer still coming, sent whole so far each time: the value's start it ends with is hidden once it is 8 long.
 	assert.deepEqual([maskKeys(`token: ${value.slice(0, 7)}`), maskKeys(`token: ${value.slice(0, 8)}`), maskKeys(`token: ${value.slice(0, 20)}`)], [`token: ${value.slice(0, 7)}`, `token: ${SECRET_HIDDEN}`, `token: ${SECRET_HIDDEN}`]);
 	assert.equal(maskKeys(`${value.slice(0, 20)} and on`), `${value.slice(0, 20)} and on`, "only at the end");
+	// What follows the first 8 is never compared: a phone that reads back text of its own masked or not cannot find the
+	// value one character at a time, only whether 8 characters start it.
+	for (const rest of [value.slice(8, 15), "?".repeat(value.length - 9), ""]) assert.equal(maskKeys(`x ${value.slice(0, 8)}${rest}`), `x ${SECRET_HIDDEN}`, JSON.stringify(rest));
+	assert.equal(maskKeys(`x ${value.slice(0, 8)}${"?".repeat(value.length - 8)}`), `x ${value.slice(0, 8)}${"?".repeat(value.length - 8)}`, "as long as the value: no longer what is still coming");
 	// An approval with one in its call is marked shown in part, as for a key's shape, by the channel and the gate alike.
 	const inbox = JSON.parse(sentOf({ event: "inbox", items: [{ id: "a", kind: "approval", tool: "bash", arguments: { command: "ls" } }, { id: "b", kind: "approval", tool: "bash", arguments: { command: `curl -u me:${value} https://x.invalid` } }] }));
 	assert.deepEqual(inbox.items.map((item: any) => item[PART_HIDDEN] === true), [false, true]);
@@ -365,7 +369,8 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	knowSecrets("credential:anthropic", [key]);
 	assert.equal(maskKeys(`x ${key} y`), `x ${KEY_HIDDEN} y`);
 	assert.equal(maskKeys(`x ${key}:${value} y`), `x ${KEY_HIDDEN}:${SECRET_HIDDEN} y`, "side by side, each its own");
-	assert.equal(maskKeys(`x ${key.slice(0, 20)}${value} y`), `x ${KEY_HIDDEN} y`, "a key's run that goes on into a value hides both, once");
+	assert.equal(maskKeys(`x ${key.slice(0, 20)}${value}`), `x ${KEY_HIDDEN}`, "a key's run that goes on into a value hides both, once");
+	assert.equal(maskKeys(`x ${key.slice(0, 20)} y`), `x ${SECRET_HIDDEN}`, "a text that ends less than a value's length after its first 8 characters is hidden to its end");
 	// A value of several lines: whole, and line by line; and as JSON writes it inside a string.
 	knowSecrets("mcp-variables/server-a", ["first-line-of-it-894\nsecond-line-of-it-894", 'pass"word\\894-x']);
 	assert.equal(maskKeys("cat: second-line-of-it-894"), `cat: ${SECRET_HIDDEN}`);
@@ -400,14 +405,15 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 		const hidden = new Uint8Array(text.length);
 		for (const one of values) {
 			for (let at = text.indexOf(one); at !== -1; at = text.indexOf(one, at + 1)) hidden.fill(1, at, at + one.length);
-			// And a value's start the text ends with, LEAST_SECRET characters or more of it: what is still coming.
-			for (let length = LEAST_SECRET; length < one.length; length++) if (text.endsWith(one.slice(0, length))) hidden.fill(1, text.length - length);
+			// And an end that starts with its first LEAST_SECRET characters, shorter than it: what is still coming.
+			const head = one.slice(0, LEAST_SECRET);
+			for (let at = text.indexOf(head); at !== -1; at = text.indexOf(head, at + 1)) if (text.length - at < one.length) hidden.fill(1, at);
 		}
 		const spans = secretSpans(text);
 		const found = new Uint8Array(text.length);
 		for (const [from, to] of spans) found.fill(1, from, to);
 		assert.deepEqual(found, hidden, `round ${round}: ${values.length} values`);
-		assert.ok(spans.every(([from, to]) => values.some((one) => one === text.slice(from, to) || (to === text.length && to - from >= LEAST_SECRET && one.startsWith(text.slice(from))))), "each span is a value, whole, or the start of one the text ends with");
+		assert.ok(spans.every(([from, to]) => values.some((one) => one === text.slice(from, to) || (to === text.length && to - from < one.length && text.startsWith(one.slice(0, LEAST_SECRET), from)))), "each span is a value, whole, or an end that starts like one");
 	}
 	forgetSecrets("round");
 	// What it costs: a line of 8 MiB, with none, 10 and 200 values (the pull request of #894 has 1 MB and 64 MiB too).
