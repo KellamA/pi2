@@ -509,7 +509,7 @@ pi² does the rest: the relay's code and its configuration in `relay/`; a workfl
 ### 6.5 When the relay is down, or the person wants none
 
 - **At home it still works**, directly: the whole of pi² over the `home` path, with the same channel.
-- **The Mac says which**: pi² Remote tells the engine whether the relay path is off as the person chose, cannot run and why, is down and when it tries again, or stopped on the relay's word (`remote.state`'s `relay`), and the engine gives it to the Devices page (the `devices` event's `helper.relay`; shown there with #916); nothing on the home path waits on the relay.
+- **The Mac says which**: pi² Remote tells the engine whether the relay path is off as the person chose, cannot run and why, is down and when it tries again, or stopped on the relay's word (`remote.state`'s `relay`), and the engine gives it to the Devices page (the `devices` event's `helper.relay`, which the page puts in plain words under **Reach through pi²'s relay**, #916); nothing on the home path waits on the relay.
 - **Away, over a private network** the person has (Tailscale and the like), it works directly too, at the Mac's addresses.
 - **Otherwise, away**: the phone shows "pi²'s relay can't be reached", with its last state dated, and keeps what is written in the Outbox until a path returns.
 - **No pushes** while the relay is down. When it returns, the Mac sends pushes only for what still waits, not the ones it missed.

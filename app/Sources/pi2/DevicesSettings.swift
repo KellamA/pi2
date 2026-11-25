@@ -54,6 +54,54 @@ struct DevicesEvent: Decodable, Equatable {
     struct Helper: Decodable, Equatable {
         let running: Bool
         let stoppedInLastHour: Int
+        /// What pi² Remote last said of the relay path, or nil before it said anything (or while it does not run).
+        var relay: RelayPath?
+
+        private enum CodingKeys: String, CodingKey { case running, stoppedInLastHour, relay }
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            running = try container.decode(Bool.self, forKey: .running)
+            stoppedInLastHour = try container.decode(Int.self, forKey: .stoppedInLastHour)
+            // Read by itself: a relay state the app cannot read loses that line, never the event.
+            relay = (try? container.decodeIfPresent(RelayPath.self, forKey: .relay)) ?? nil
+        }
+    }
+    /// What pi² Remote says of the relay path (`remote.state`'s `relay`, which the engine passes on as `helper.relay`;
+    /// docs/iphone.md 6.5, #916). Each member is read by itself, and a state this version does not know is `unknown`, so
+    /// that a newer pi² Remote draws a plain line rather than nothing.
+    struct RelayPath: Decodable, Equatable {
+        enum State: Equatable { case off, unavailable, connecting, ready, down, stopped, unknown }
+        var state: State
+        /// pi² Remote's words for why it is off, unavailable, down or stopped; the relay's own word is in them.
+        var why: String?
+        /// When pi² Remote connects again, while it is down (ms since 1970).
+        var retryAt: Double?
+        /// The relay's word that another copy of pi² Remote tried to connect as this Mac, and when (3.4).
+        var anotherMacAt: Double?
+
+        private enum CodingKeys: String, CodingKey { case available, state, why, retryAt, anotherMacAt }
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            let available = (try? container.decodeIfPresent(Bool.self, forKey: .available)) ?? nil
+            let word = (try? container.decodeIfPresent(String.self, forKey: .state)) ?? nil
+            state = switch word {
+            case "off": .off
+            case "unavailable": .unavailable
+            case "connecting": .connecting
+            case "ready": .ready
+            case "down": .down
+            case "stopped": .stopped
+            // As the engine reads one with no state: `available` alone.
+            case nil where available == true: .ready
+            case nil where available == false: .unavailable
+            default: .unknown
+            }
+            why = ((try? container.decodeIfPresent(String.self, forKey: .why)) ?? nil).flatMap { $0.isEmpty ? nil : $0 }
+            retryAt = (try? container.decodeIfPresent(Double.self, forKey: .retryAt)) ?? nil
+            anotherMacAt = (try? container.decodeIfPresent(Double.self, forKey: .anotherMacAt)) ?? nil
+        }
     }
     /// A device attached now, by the path its channel came over.
     struct Session: Decodable, Equatable {
@@ -140,6 +188,120 @@ enum DevicePathWords {
 
 /// Time from the engine, in milliseconds since 1970.
 private func engineDate(_ ms: Double) -> Date { Date(timeIntervalSince1970: ms / 1000) }
+
+/// The words for what pi² Remote says of the relay path (docs/iphone.md 6.5, #916): plain sentences, with pi² Remote's
+/// own reason in them, and none of the names it sends them by.
+enum RelayPathWords {
+    /// The status line under **Reach through pi²’s relay**, and its dot. `paired` says whether any device is paired:
+    /// before one is, a relay that cannot be used yet is nothing to worry about.
+    static func line(_ path: DevicesEvent.RelayPath, paired: Bool, now: Date) -> (dot: Color, words: String) {
+        let why = path.why.map(sentence)
+        switch path.state {
+        case .off:
+            return (Theme.tx3, "Off, as you chose: pi² Remote does not connect to the relay.")
+        case .unavailable:
+            return (paired ? Theme.warn : Theme.tx3, join("pi² Remote cannot use the relay.", why, "An iPhone at home or on a private network still reaches this Mac."))
+        case .connecting:
+            return (Theme.warn, "Connecting to the relay…")
+        case .ready:
+            return (Theme.ok, "Connected to the relay: a paired iPhone can reach this Mac from any network.")
+        case .down:
+            let again: String
+            if let retryAt = path.retryAt, engineDate(retryAt) > now {
+                again = "pi² Remote tries again at \(time(engineDate(retryAt), seconds: true))."
+            } else {
+                again = "pi² Remote is trying again now."
+            }
+            return (Theme.bad, join("The relay can’t be reached.", why, again, "An iPhone at home or on a private network still reaches this Mac."))
+        case .stopped:
+            return (Theme.bad, join(
+                "pi² Remote stopped connecting to the relay.", why,
+                "It tries again in an hour or when pi² next starts, or now if you turn Reach through pi²’s relay off and on."))
+        case .unknown:
+            return (Theme.tx3, join("pi² Remote says something of the relay that this version of pi² does not know.", why))
+        }
+    }
+
+    /// The relay's word that another copy of pi² Remote tried to connect as this Mac (3.4): what it means, and what to do.
+    static func anotherMac(at: Double) -> String {
+        "pi²’s relay says another copy of pi² Remote tried to connect as this Mac, \(when(engineDate(at))). That is the relay’s word, which this Mac cannot check; the relay kept this Mac connected and turned the other away. If pi² also runs on another Mac set up from this one, or a second copy runs here on this Mac’s data, turn off Reach from an iPhone in that copy. If neither, turn off Reach through pi²’s relay until you know more: an iPhone then reaches this Mac only at home or over a private network."
+    }
+
+    /// pi² Remote's reason as a sentence of its own, with the relay's refusal said in words and a time in place of the
+    /// milliseconds a limit ends at.
+    static func sentence(_ why: String) -> String {
+        var text = why.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The line says that in words of its own.
+        text = text.replacing(/[;,]?\s*(the relay path is off, )?home and direct carry on\.?$/, with: "")
+        text = text.replacing(/until (\d{12,14})/) { match in
+            guard let ms = Double(match.output.1) else { return String(match.output.0) }
+            return "until \(time(engineDate(ms), seconds: false))"
+        }
+        text = text.replacing(/saying ([a-z][a-z-]*)/) { match in "saying \(refusal(String(match.output.1)))" }
+        guard let first = text.first else { return text }
+        text = first.uppercased() + text.dropFirst()
+        return text.hasSuffix(".") ? text : text + "."
+    }
+
+    /// A refusal's fixed word (`RelayWhy`), quoted as words, with what it means for this Mac where that is known.
+    static func refusal(_ word: String) -> String {
+        let quoted = "“\(word.replacingOccurrences(of: "-", with: " "))”"
+        let meaning: String? = switch word {
+        case "update-required": "it takes only a newer version of pi²"
+        case "unknown-pairing": "it does not know this Mac’s pairing"
+        case "deleted": "this Mac’s pairing was deleted there"
+        case "signature": "it did not accept this Mac’s key"
+        case "another-mac": "another copy of pi² Remote is connected as this Mac"
+        case "unavailable": "it is not taking connections now"
+        case "limits", "busy", "too-many": "this Mac is past its limits there"
+        default: nil
+        }
+        return meaning.map { "\(quoted) (\($0))" } ?? quoted
+    }
+
+    private static func join(_ parts: String?...) -> String { parts.compactMap { $0 }.joined(separator: " ") }
+
+    private static func time(_ date: Date, seconds: Bool) -> String {
+        let clock = date.formatted(date: .omitted, time: seconds ? .standard : .shortened)
+        return Calendar.current.isDateInToday(date) ? clock : "\(date.formatted(date: .abbreviated, time: .omitted)), \(clock)"
+    }
+
+    private static func when(_ date: Date) -> String {
+        Calendar.current.isDateInToday(date) ? "at \(time(date, seconds: false))" : "on \(time(date, seconds: false))"
+    }
+}
+
+/// A stand-in for what pi² Remote says of the relay path, so that a picture can show each state: a copy's pi² Remote
+/// has no relay to connect to. The copy's own preference names it, set before launch (or before `reopen`), so nothing of
+/// the person's sets it, and only a development build has this file at all:
+///
+///     defaults write dev.pi2.app.test-7 relay-sample -string 'down'
+///
+/// `off`, `unavailable`, `connecting`, `ready`, `down`, `busy` (down past a limit), `stopped`, `another` (ready, and the
+/// relay's word of another Mac) and `unknown` (a state this version does not know, with a member it cannot read). Each
+/// is JSON as pi² Remote sends it, read by the same decoder as the engine's. See docs/development.md, "Choosing what a
+/// copy shows".
+@MainActor
+enum RelaySample {
+    static let asked: DevicesEvent.RelayPath? = {
+        guard let name = UserDefaults.standard.string(forKey: "relay-sample") else { return nil }
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let json: String? = switch name {
+        case "off": #"{"available":false,"state":"off","why":"Reach through pi²'s relay is off: home and private networks only."}"#
+        case "unavailable": #"{"available":false,"state":"unavailable","why":"the relay key for this address could not be read or made; the relay path is off, home and direct carry on"}"#
+        case "connecting": #"{"available":false,"state":"connecting"}"#
+        case "ready": #"{"available":true,"state":"ready"}"#
+        case "down": #"{"available":false,"state":"down","why":"the connection to the relay was lost","retryAt":"# + "\(now + 40_000)}"
+        case "busy": #"{"available":false,"state":"down","why":"the relay says this Mac is past a limit, until "# + "\(now + 1_800_000)\",\"retryAt\":\(now + 1_800_000)}"
+        case "stopped": #"{"available":false,"state":"stopped","why":"the relay refused, saying update-required"}"#
+        case "another": #"{"available":true,"state":"ready","anotherMacAt":"# + "\(now - 180_000)}"
+        case "unknown": #"{"available":false,"state":"resting","why":"the relay asked this Mac to rest","retryAt":"soon"}"#
+        default: nil
+        }
+        guard let data = json?.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(DevicesEvent.RelayPath.self, from: data)
+    }()
+}
 
 // MARK: - The store
 
@@ -358,7 +520,7 @@ struct DevicesSettings: View {
                     ? "From any network, with notifications while pi² is closed on the iPhone. Encrypted end to end: the relay cannot read what it passes."
                     : "Off: home and private networks only, and no notifications while pi² is closed on the iPhone.")
                     .font(.caption).foregroundStyle(Theme.tx2)
-                if switches.relay { relayState }
+                if switches.relay || (switches.on && relayPath != nil) { relayState }
             }
             if switches.relay {
                 HStack(spacing: 8) {
@@ -397,30 +559,47 @@ struct DevicesSettings: View {
         .id(SettingsSection.reach)
     }
 
+    private func relayLine(now: Date) -> (Color, String) {
+        let address = state?.relay ?? ""
+        let host = URL(string: address)?.host() ?? address
+        let running = state?.helper?.running == true
+        if address.isEmpty && switches.relay { return (Theme.tx3, "No relay’s address yet: an iPhone cannot pair through one.") }
+        if !switches.on { return (Theme.tx3, "Not connected while Reach from an iPhone is off · \(host)") }
+        if let relayPath {
+            let line = RelayPathWords.line(relayPath, paired: !store.active.isEmpty, now: now)
+            return (line.dot, relayPath.state == .off || host.isEmpty ? line.words : "\(line.words) · \(host)")
+        }
+        if running && state?.pairing != nil { return (Theme.ok, "Registered at the relay · \(host)") }
+        if running { return (Theme.warn, "Registering at the relay… · \(host)") }
+        if store.active.isEmpty { return (Theme.tx3, "Connects once an iPhone is paired · \(host)") }
+        return (Theme.warn, "pi² Remote is not running, so the relay cannot reach this Mac · \(host)")
+    }
+
     private var reachLine: String {
         let count = store.active.count
         let paired = count == 0 ? "No device paired." : count == 1 ? "1 device paired." : "\(count) devices paired."
         return switches.on ? "\(paired) Reachable while pi² runs on this Mac." : "\(paired) Off: paired devices stay paired and can do nothing until it is on again."
     }
 
-    /// Whether this Mac is registered at the relay, as far as the engine knows: it is told the pairing pi² Remote has
-    /// there, and whether pi² Remote runs. It is not told whether the relay can be reached now (#679's report).
+    /// What pi² Remote last said of the relay path (6.5, #916), or a development build's stand-in for it (`RelaySample`).
+    private var relayPath: DevicesEvent.RelayPath? {
+        if let sample = RelaySample.asked { return sample }
+        guard state?.helper?.running == true else { return nil }
+        return state?.helper?.relay
+    }
+
+    /// What the relay path does: pi² Remote's own word once it has said it (6.5, #916); before that, whether this Mac is
+    /// registered at the relay, from the pairing pi² Remote has there and whether it runs.
     private var relayState: some View {
-        let address = state?.relay ?? ""
-        let host = URL(string: address)?.host() ?? address
-        let running = state?.helper?.running == true
-        let (dot, words): (Color, String) =
-            if address.isEmpty { (Theme.tx3, "No relay’s address yet: an iPhone cannot pair through one.") }
-            else if !switches.on { (Theme.tx3, "Not connected while Reach from an iPhone is off · \(host)") }
-            else if running && state?.pairing != nil { (Theme.ok, "Registered at the relay · \(host)") }
-            else if running { (Theme.warn, "Registering at the relay… · \(host)") }
-            else if store.active.isEmpty { (Theme.tx3, "Connects once an iPhone is paired · \(host)") }
-            else { (Theme.warn, "pi² Remote is not running, so the relay cannot reach this Mac · \(host)") }
-        return HStack(spacing: 6) {
-            Dot(color: dot)
-            Text(words).font(.caption).foregroundStyle(Theme.tx2).lineLimit(2)
+        // Down, it says when it tries again, and that time passing changes the line.
+        TimelineView(.periodic(from: .now, by: relayPath?.state == .down ? 1 : 3600)) { context in
+            let (dot, words) = relayLine(now: context.date)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Dot(color: dot).alignmentGuide(.firstTextBaseline) { $0[.bottom] }
+                Text(words).font(.caption).foregroundStyle(Theme.tx2).fixedSize(horizontal: false, vertical: true)
+            }
+            .accessibilityElement(children: .combine)
         }
-        .accessibilityElement(children: .combine)
     }
 
     // MARK: What needs saying
@@ -435,6 +614,14 @@ struct DevicesSettings: View {
             Label {
                 Text("pi² Remote stopped unexpectedly \(stops) times in the last hour. pi² starts it again each time, waiting longer after each stop, and no iPhone can reach this Mac while it is stopped. Something on this Mac may be stopping it.")
                     .font(.callout)
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warn)
+            }
+        }
+        // 3.4: the relay's word, said as such, with what to do about it.
+        if store.remoteOn, let at = relayPath?.anotherMacAt {
+            Label {
+                Text(RelayPathWords.anotherMac(at: at)).font(.callout)
             } icon: {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warn)
             }
