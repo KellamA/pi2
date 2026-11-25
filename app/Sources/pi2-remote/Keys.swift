@@ -74,7 +74,10 @@ package struct MacKeys: Sendable {
 /// One paired device, as pi² Remote keeps it in its own list: added only when the engine says it paired the device
 /// (`paired`), never from what `start` lists (3.4, 5.5), and never on a relay's word: the device key and the App Attest
 /// key id the relay's `addDevice` is given (#678) are these, the engine's verified claim's, never what a relay's
-/// `joined` says. Nothing but the engine's `paired`, `revoke` and `start` changes the list.
+/// `joined` says. Nothing but the engine's `paired`, `revoke`, `start` and `presenceKey` changes the list: `paired` adds a
+/// device, `revoke` drops one, `start` drops those it does not name and gives those it names their presence key, and
+/// `presenceKey` gives one device the key the person accepted on the Mac (#891). The device, channel and record keys never
+/// change once the device is added; a presence key comes from the engine alone, never from a phone's offer.
 package struct ListedDevice: Sendable {
 	package let id: DeviceID
 	package let deviceKey: P256.Signing.PublicKey
@@ -91,6 +94,11 @@ package struct ListedDevice: Sendable {
 		self.channelKey = channelKey
 		self.recordKey = recordKey
 		self.attestKeyId = attestKeyId
+	}
+
+	/// The same device with another presence key, or none (#891).
+	func withPresenceKey(_ key: P256.Signing.PublicKey?) -> ListedDevice {
+		ListedDevice(id: id, deviceKey: deviceKey, presenceKey: key, channelKey: channelKey, recordKey: recordKey, attestKeyId: attestKeyId)
 	}
 
 	/// From the engine's `paired` event's `device`, whose keys are written as RemoteKit writes them.

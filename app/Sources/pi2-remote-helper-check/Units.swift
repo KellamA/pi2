@@ -187,6 +187,16 @@ enum Units {
 		for (word, expected) in pairing {
 			Check.expect(EngineWords.pairRefusal(word) == expected, "pairRefused's reason \(word.map { "\"\($0)\"" } ?? "none") is \(expected?.rawValue ?? "no word for the phone")")
 		}
+		// The engine's answer to an offer of a new Face ID key (#891): exactly one of its two, never a session.
+		let answers: [(String, EngineWords.OfferAnswer?)] = [
+			(#"{"waiting":true}"#, .waiting), (#"{"accepted":true}"#, .accepted), (#"{"waiting":false}"#, nil), (#"{"waiting":1}"#, nil),
+			(#"{"waiting":true,"session":"s1"}"#, nil), (#"{"session":"s1","resume":false}"#, nil), (#"{"Waiting":true}"#, nil), ("{}", nil), ("true", nil),
+			(#"{"accepted":true,"waiting":true}"#, nil),
+		]
+		for (text, expected) in answers {
+			let read = (try? JSON.parse(Data(text.utf8))).flatMap(EngineWords.offerAnswer)
+			Check.expect(read == expected, "remote.presenceKey's answer \(text) is \(expected.map { "\($0)" } ?? "no answer pi² Remote acts on")")
+		}
 	}
 
 	static func homeTag() {

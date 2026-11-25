@@ -265,9 +265,43 @@ final class PhoneKeys: PresenceKeyHolding {
         try keychain.read(.presenceKeyWaiting, context: nil) != nil
     }
 
-    /// The Mac accepted the new presence key (it answered an attach signed with it).
+    /// The Mac accepted the new presence key: it answered the phone's offer of it `presenceKeyAccepted` (#891).
     func presenceKeyAccepted() throws {
         try keychain.delete(.presenceKeyWaiting)
+    }
+
+    /// Keeps the hash of the faces enrolled now beside a presence key that still signs: Face ID's hash changed without
+    /// the key being invalidated, so no new key is made for it.
+    func keepFaceIDState(_ state: Data?) throws {
+        if let state {
+            try keychain.write(state, as: .presenceFaceIDState)
+        } else {
+            try keychain.delete(.presenceFaceIDState)
+        }
+    }
+
+    /// The text the presence key signs to find out whether it still can: not JSON, so that it can never pass for a
+    /// signed statement, and never sent anywhere.
+    static let presenceProbe = Data("pi2 presence key probe".utf8)
+
+    /// Whether Face ID's new enrolment invalidated the presence key (`biometryCurrentSet`, 3.2), asked under `context`,
+    /// the one Face ID evaluated just now (#891): the key does not sign under it, and the cache key, a Keychain item under
+    /// `biometryCurrentSet` made with it, is gone (the Keychain answers `errSecItemNotFound`). A key that still signs is
+    /// not invalidated, whatever the hash of the faces says, so that a hash that changes on its own never makes the
+    /// person accept a new key on the Mac. A context that would have to show Face ID again tells nothing: it throws.
+    /// In the simulator, whose keys are in software, the key always signs, so it never answers true.
+    func presenceKeyInvalidated(context: LAContext?) throws -> Bool {
+        do {
+            _ = try signPresence(Self.presenceProbe, context: context)
+            return false
+        } catch KeysError.needsFaceIDAgain {
+            throw KeysError.needsFaceIDAgain
+        } catch KeysError.sessionNotOpen {
+            throw KeysError.sessionNotOpen
+        } catch {
+            // It did not sign: invalidated only if the Keychain also says its Face ID item went with the old enrolment.
+        }
+        return try cacheKey(context: context) == nil
     }
 
     /// The presence key's signature over `data`, 64 raw bytes, under `context`, the one Face ID evaluated for the session
