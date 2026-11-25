@@ -1852,8 +1852,9 @@ try {
 		const wanted = [
 			/^pushes\.set done Notifications: limits off, quieted “.+”$/,
 			/^pushes\.follow done Followed \(.+\) in a Live Activity$/,
-			// The four failures within a minute, one entry with the first one's summary and their count (#997).
-			/^pushes\.set failed Notifications: quieted a project ×4$/,
+			/^pushes\.set failed Notifications: quieted a project$/,
+			// The three alike within a minute (the same request about the same thing, in other words): one entry (#997).
+			/^pushes\.set failed Notifications: unquieted a project ×3$/,
 			/^pushes\.set done Notifications: limits on, unquieted “.+”$/,
 			/^pushes\.follow done Stopped following \(.+\) in a Live Activity$/,
 		];
@@ -2345,13 +2346,14 @@ try {
 		const base = Date.now() - 130_000;
 		for (let i = 0; i < 5; i++) await logDevice({ device, path: "relay", method: "files.preview", summary: `Showed the file “notes-${i}.md”`, presence: true, outcome: "done", at: base + i });
 		const flooding = [
-			(i: number) => ({ path: "relay" as const, method: "submit", outcome: "refused" as const, why: `A message from a phone can carry at most 1 MB of typed text; this one has ${i % 2 === 0 ? "just over 1 MB" : `${(1.1 + i / 1e4).toFixed(1)} MB`}. Shorten it, or send it from the Mac.` }),
-			(i: number) => ({ path: "relay" as const, method: "work.act", outcome: "refused" as const, why: `A task from a phone can be at most 20,000 characters; this one has ${(20_001 + i).toLocaleString("en-US")}. Shorten it, or do this on the Mac.` }),
-			(i: number) => ({ path: "relay" as const, method: "files.preview", outcome: "failed" as const, why: i % 3 === 2 ? TOO_MANY_PREVIEWS : `Unknown conversation: ${i}` }),
-			(_: number) => ({ path: "mailbox" as const, method: "submit", outcome: "refused" as const, why: "The item's presence signature is not the presence key's." }),
+			// Each as deviceRequest and checkRequestItem summarize it: the same request about the same thing, again and again.
+			(i: number) => ({ path: "relay" as const, method: "submit", summary: "submit: refused for the text it carries", outcome: "refused" as const, why: `A message from a phone can carry at most 1 MB of typed text; this one has ${i % 2 === 0 ? "just over 1 MB" : `${(1.1 + i / 1e4).toFixed(1)} MB`}. Shorten it, or send it from the Mac.` }),
+			(i: number) => ({ path: "relay" as const, method: "work.act", summary: "work.act: refused for the text it carries", outcome: "refused" as const, why: `A task from a phone can be at most 20,000 characters; this one has ${(20_001 + i).toLocaleString("en-US")}. Shorten it, or do this on the Mac.` }),
+			(i: number) => ({ path: "relay" as const, method: "files.preview", summary: "Showed the file “flood.md”", outcome: "failed" as const, why: i % 3 === 2 ? TOO_MANY_PREVIEWS : `Unknown conversation: ${i}` }),
+			(_: number) => ({ path: "mailbox" as const, method: "submit", summary: "Sent a message in “Plans”", outcome: "refused" as const, why: "The item's presence signature is not the presence key's." }),
 		];
 		const flood = 2_000;
-		for (let i = 0; i < flood; i++) await logDevice({ device, summary: `Showed the file “flood-${i}.md”`, presence: false, at: base + 10 + i * 60, ...flooding[i % flooding.length]!(i) });
+		for (let i = 0; i < flood; i++) await logDevice({ device, presence: false, at: base + 10 + i * 60, ...flooding[i % flooding.length]!(i) });
 		let mine = (await stored()).filter((entry) => entry.device === device);
 		const floodEntries = mine.filter((entry) => entry.outcome !== "done");
 		assert.deepEqual(mine.filter((entry) => entry.outcome === "done").map((entry) => entry.summary), [0, 1, 2, 3, 4].map((i) => `Showed the file “notes-${i}.md”`), "the device's own files shown all stay");
@@ -2360,6 +2362,25 @@ try {
 		assert.ok(floodEntries.every((entry) => entry.count === undefined || (entry.lastAt! > entry.at && entry.lastAt! <= base + 10 + flood * 60)), "each with the last time");
 		for (const kind of flooding) assert.ok(floodEntries.some((entry) => entry.method === kind(0).method && entry.path === kind(0).path && entry.outcome === kind(0).outcome && (entry.count ?? 1) > 100), `merged: ${JSON.stringify(kind(0)).slice(0, 80)}`);
 		assert.equal(floodEntries.find((entry) => entry.method === "files.preview")?.why, TOO_MANY_PREVIEWS, "a merged entry keeps the first one's words");
+		// Only the same request about the same thing merges (#1015's security read): five files a phone failed to be shown
+		// are five entries, each its own, never one that reads as five tries of the first; the same file five times is one
+		// of five; so are refusals that name different things (two titles).
+		const asked = `dev_${b64url(randomBytes(16))}`;
+		const paths = ["notes.md", "evil\u202Etxt.md", "../../.ssh/id_ed25519", "~/.aws/credentials", ".env"];
+		for (const path of paths) await logDevice({ device: asked, path: "relay", method: "files.preview", summary: summarize("files.preview", { path }), presence: true, outcome: "failed", why: NOT_LINKED });
+		for (let i = 0; i < 5; i++) await logDevice({ device: asked, path: "relay", method: "files.preview", summary: summarize("files.preview", { path: "same.md" }), presence: true, outcome: "failed", why: NOT_LINKED });
+		for (const title of ["First title", "Second title"]) await logDevice({ device: asked, path: "mailbox", method: "conversation.rename", summary: summarize("conversation.rename", { title }), presence: false, outcome: "refused", why: ONLY_ON_THE_MAC });
+		const askedEntries = (await stored()).filter((entry) => entry.device === asked).map((entry) => `${entry.summary}${entry.count === undefined ? "" : ` ×${entry.count}`}`);
+		assert.deepEqual(
+			askedEntries,
+			[
+				...["notes.md", "eviltxt.md", "../../.ssh/id_ed25519", "~/.aws/credentials", ".env"].map((path) => `Showed the file “${path}”`),
+				"Showed the file “same.md” ×5",
+				"Renamed a conversation to “First title”",
+				"Renamed a conversation to “Second title”",
+			],
+			"each thing asked for its own entry; the same thing again, one",
+		);
 
 		// Refusals in 2,500 words of their own, which nothing merges: they push out only one another, past half the share.
 		const words = (i: number) => [...i.toString(26)].map((digit) => String.fromCharCode(97 + Number.parseInt(digit, 26))).join("");
@@ -2398,9 +2419,25 @@ try {
 		assert.equal(hidesSomething({ kind: "approval", id: "a-997", call: { name: "bash", arguments: { command: `curl ${hook}` } } }), true, "and an approval with it is still the Mac's to allow");
 		assert.equal(maskKeys("see example.com/hook/abc"), `see ${SECRET_HIDDEN}`, "its head after the scheme still counts anywhere");
 		forgetEverySecret();
-		// A value that is only a common beginning, or too short after one, is a short value: not looked for, as one of 7.
-		knowSecrets("variables/short", ["https://", "https://www.", "https://www.a1b2.io", "postgres://a1b2c3d", "www.a1b2c3d"]);
-		assert.equal(secretCount(), 0, "nothing too short after a common beginning is looked for");
+		// A value that is nothing but a common beginning holds nothing to hide: not looked for.
+		knowSecrets("variables/short", ["https://", "https://www."]);
+		assert.equal(secretCount(), 0, "nothing but a common beginning is not looked for");
+		// One with fewer than 8 after it is hidden where it stands whole, as before (#1015's read); other links show.
+		const shortOnes = ["redis://:p4ss@h", "https://www.a1b2.io", "postgres://a1b2c3d", "www.a1b2c3d"];
+		knowSecrets("variables/short", shortOnes);
+		for (const value of shortOnes) {
+			assert.equal(maskKeys(`connect ${value} now`), `connect ${SECRET_HIDDEN} now`, `${value}, whole, is hidden`);
+			assert.equal(maskKeys(`before${value}`), `before${SECRET_HIDDEN}`, `${value}, whole at a text's end`);
+		}
+		const others = "see https://www.a1b2.org, redis://:p4ss@other and https://github.com";
+		assert.equal(maskKeys(others), others, "while other links of their schemes show");
+		forgetEverySecret();
+		// The cost of skipping a common beginning, as the docs say: a cut before the head shows the beginning and up to 7
+		// characters after it.
+		knowSecrets("variables/database", ["postgres://u:s3cr3tPw@db.internal:5432/app"]);
+		assert.equal(maskKeys("postgres://u:s3cr3"), "postgres://u:s3cr3", "7 characters after the scheme show at a cut");
+		assert.equal(maskKeys("postgres://u:s3cr3t"), `postgres://${SECRET_HIDDEN}`, "and no more");
+		forgetEverySecret();
 		knowSecrets("variables/short", ["https://www.a1b2c3d4"]);
 		assert.equal(maskKeys("open https://www.a1b2c3d4 now, and https://www.other.io"), `open ${SECRET_HIDDEN} now, and https://www.other.io`, "eight after it are");
 		forgetEverySecret();
@@ -2414,6 +2451,16 @@ try {
 		assert.equal(maskKeys("ask the desk-"), "ask the desk-", "but not a word's end");
 		assert.equal(maskKeys("posted to https://hooks.slack.com/services/T0"), `posted to https://hooks.slack.com/services/${KEY_HIDDEN}`, "a webhook's address keeps its prefix");
 		assert.equal(maskKeys("see https://hooks.slack.com/services/"), "see https://hooks.slack.com/services/", "and with nothing after it, hides nothing");
+		// Only a prefix that starts a word (#1015's read): the end of `risk_test_` or `taxai-` is a word's, not a key's.
+		for (const word of ["the risk_test_", "a taxai-", "snake_ghp_abc", "x9ghp_abc"]) assert.equal(maskKeys(word), word, `${word}: a word's end`);
+		for (const [text, shown] of [
+			[`\u001b[32m${ghp.slice(0, 12)}`, `\u001b[32m${KEY_HIDDEN}`],
+			[`GH_TOKEN=${ghp.slice(0, 12)}`, `GH_TOKEN=${KEY_HIDDEN}`],
+			[`(${ghp.slice(0, 12)}`, `(${KEY_HIDDEN}`],
+			[ghp.slice(0, 12), KEY_HIDDEN],
+		]) {
+			assert.equal(maskKeys(text), shown, `${JSON.stringify(text)}: a key's start`);
+		}
 		step(
 			"the devices' log: the push's cleaner (variation selectors, U+034F, Hangul fillers out; separators spaces), in every summary; 2,000 refusals and failures in two minutes made a handful of entries with counts, the device's files shown kept, and refusals in words of their own pushing out only one another; a URL in a variable hides no other link; a text ending partway into a key hides it",
 		);
@@ -2488,10 +2535,11 @@ try {
 		assert.deepEqual(sized.reply, { id: null, error: NOT_AN_ID }, "an id of 66 MiB is refused");
 		const mb = (bytes: number) => Math.round(bytes / 1e6);
 		console.log(`    66 MiB id: refused in ${Math.round(sized.took)} ms, grown ${mb(sized.grew)} MB (the table's refusal of the same line: ${Math.round(table.took)} ms, ${mb(table.grew)} MB)`);
-		assert.ok(sized.took <= 2 * table.took + 1_000, `in ${Math.round(sized.took)} ms, where the same line refused by the table took ${Math.round(table.took)} ms`);
-		// The line's own parse holds the id once, two bytes a character, which the table's refusal before it may have found
-		// room for in what earlier lines left; answering the id, as before, serialized, parsed and masked copies of it.
-		assert.ok(sized.grew <= table.grew + 4 * huge.length, `with the engine grown by ${mb(sized.grew)} MB, where the table's refusal grew it by ${mb(table.grew)} MB`);
+		assert.ok(sized.took <= 3 * table.took + 2_000, `in ${Math.round(sized.took)} ms, where the same line refused by the table took ${Math.round(table.took)} ms`);
+		// What is done with the id, rather than the memory, which depends on what earlier lines left on the heap (#1015's
+		// read): it is never echoed (before, each reply serialized, parsed and masked it, and pi² Remote got no answer at
+		// all, the line too long to send), and nothing of it is logged, below.
+		assert.ok(JSON.stringify(sized.reply).length < 200, `the answer is ${JSON.stringify(sized.reply).length} characters`);
 		const mark = "ı".repeat(16);
 		assert.ok(!JSON.stringify(await logged()).includes(mark), "nothing of it in the devices' log");
 		assert.ok(!engineLog.slice(logFrom).includes(mark), "nor in engine.log");
@@ -2682,10 +2730,8 @@ try {
 		assert.equal((await ask("projects.create", { folder: goneSince })).error, NOT_OFFERED, "checked again as the project is made");
 		const shown = (await ask("files.preview", { id: linking, path: "notes.md" })).result;
 		assert.equal(shown.text, `notes, and ${KEY_HIDDEN}\n`, "masked, as everything sent to a phone is");
-		// The right-to-left override first: failures of one request within a minute are one entry, with the first one's words
-		// and summary (#997).
-		assert.equal((await ask("files.preview", { id: linking, path: "evil\u202Etxt.md" })).error, NOT_LINKED);
 		assert.equal((await ask("files.preview", { id: linking, path: "other.md" })).error, NOT_LINKED);
+		assert.equal((await ask("files.preview", { id: linking, path: "evil\u202Etxt.md" })).error, NOT_LINKED);
 		const logged = (await app.call("devices.log", { device: phone.id })).entries;
 		assert.ok(logged.some((entry: any) => entry.method === "files.preview" && entry.summary.startsWith("Showed the file “evilt")), "a path with a right-to-left override is logged without it (#902)");
 		assert.ok(!JSON.stringify(logged).includes("\\u202e") && !logged.some((entry: any) => /[\u202A-\u202E]/.test(entry.summary)), "anywhere in the log");

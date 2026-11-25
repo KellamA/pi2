@@ -53,7 +53,10 @@ export const LEAST_SECRET = 8;
  * begins with one of these schemes, and then with `www.`, or with `www.` alone, has its head taken from the 8
  * characters after them, so that a URL held in a variable does not hide every link of that scheme on a phone. This
  * list and `www.` are the whole of the rule: a value beginning with any other word or host still has its first 8
- * characters for a head, and its foot is always its last 8. Each ends in "://", so no one of them begins another.
+ * characters for a head, and its foot is always its last 8. A value with fewer than 8 characters after a beginning is
+ * compared whole; one that is nothing but a beginning is not looked for. The cost: a value cut before its head shows
+ * its beginning and up to 7 characters after it (`postgres://u:s3cr3` of `postgres://u:s3cr3tPw@…`), where its
+ * first 7 alone showed before. Each ends in "://", so no one of them begins another.
  */
 export const COMMON_BEGINNINGS: readonly string[] = [
 	"https://",
@@ -114,9 +117,9 @@ const plain = (text: string) => new Set(text).size < 4;
 function forms(value: string, into: Set<string>): void {
 	for (const one of [value, ...value.split(/\r\n|\r|\n/)]) {
 		const trimmed = one.trim();
-		// What follows a common beginning is what is secret in it: a value with fewer than LEAST_SECRET characters after
-		// one ("https://" alone, "https://www.a.io") is a short value, not looked for (#997).
-		if (trimmed.length - commonBeginning(trimmed) < LEAST_SECRET || plain(trimmed)) continue;
+		// What follows a common beginning is what is secret in it: a value that is nothing but one ("https://",
+		// "https://www.") holds nothing to hide, and is not looked for (#997).
+		if (trimmed.length < LEAST_SECRET || trimmed.length === commonBeginning(trimmed) || plain(trimmed)) continue;
 		into.add(trimmed);
 		const escaped = JSON.stringify(trimmed).slice(1, -1);
 		if (escaped !== trimmed) into.add(escaped);
@@ -179,6 +182,13 @@ function search(): Search | null {
 	for (const value of values) {
 		// A head after a common beginning hides the rest of the value from it; the beginning, which is no secret, shows.
 		const after = commonBeginning(value);
+		// Fewer than LEAST_SECRET after it ("redis://:p4ss@h"): no head can be taken after the beginning, and one taken
+		// from it would hide every link of that scheme; such a value is compared whole, hidden where it stands whole, as
+		// it was before (#1015's security read). A cut of it shows.
+		if (value.length - after < LEAST_SECRET) {
+			add("whole", value, value.length);
+			continue;
+		}
 		const head = value.slice(after, after + LEAST_SECRET);
 		const foot = value.slice(-LEAST_SECRET);
 		if (!plain(head)) add("head", head, value.length - after);

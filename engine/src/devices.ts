@@ -446,6 +446,11 @@ const ALNUM: Run = (c) => upper(c) || digit(c) || (c >= 97 && c <= 122);
 const TOKEN: Run = (c) => ALNUM(c) || c === 95 || c === 45;
 /** At the start of a word, or after a colour code: for prefixes some word could end with. */
 const WORD_START = String.raw`(?:(?<![A-Za-z0-9_-])|(?<=\u001b\[[0-9;]{0,16}m))`;
+/**
+ * Where a key's prefix at a text's very end counts (#997): at the text's start, after a character that is no letter,
+ * digit or underscore, or after a colour code.
+ */
+const END_WORD_START = /(?:(?<![A-Za-z0-9_])|(?<=\u001b\[[0-9;]{0,16}m))/y;
 /** `keep`: the prefix is shown, and only the run after it hidden (a webhook's address, whose secret is its path). */
 const KEY_SHAPES: { start: RegExp; run: Run; least: number; keep?: true }[] = [
 	// Prefixes no word has: wherever they stand, after a letter, a colour code or anything else.
@@ -501,8 +506,10 @@ export function maskKeysFrom(text: string, from: number): string {
 			while (end < text.length && run(text.charCodeAt(end))) end++;
 			// A text that ends partway into a key, its prefix and fewer characters than make one (#997): hidden to its end too,
 			// so that an answer or an output still coming shows no part of a key before the rest arrives (#965's read: 29 of a
-			// `ghp_` key's 36). Only at the text's very end; a text that ends in a prefix alone ("sk-") shows the mark for it.
-			const cutShort = end === text.length && (keep !== true || end > after);
+			// `ghp_` key's 36). Only at the text's very end, and only for a prefix that starts a word (`risk_test_` is a word's
+			// end, not a key); a text that ends in a prefix alone ("sk-") shows the mark for it.
+			END_WORD_START.lastIndex = found.index;
+			const cutShort = end === text.length && (keep !== true || end > after) && END_WORD_START.test(text);
 			if (end - after >= least || cutShort) spans.push([keep === true ? after : found.index, end, KEY_HIDDEN]);
 			start.lastIndex = Math.max(end, found.index + 1);
 		}
@@ -791,16 +798,19 @@ const MAX_PER_DEVICE = MAX_LOG / MAX_DEVICES;
 const COALESCE_MS = 60_000;
 
 /**
- * What makes a refusal or a failure one with another, for the log's merging (#997): the device, the path, the method
- * and the outcome, and for a refusal the words of its why before the first number in them. A refusal's words are the
- * engine's own sentences, and one that carries a size (#924, #940: "this one has 1.2 MB", "… 20,001 characters") is
- * the same refusal whatever the size; a failure's are its handler's, which can repeat what the phone sent, so the
- * failures of one request are alike whatever they say. What was done is never merged.
+ * What makes a refusal or a failure one with another, for the log's merging (#997): the device, the path, the method,
+ * the outcome and the summary as stored (cleaned and masked), so that only the same request about the same thing (the
+ * same file, the same title, the same conversation) merges and a merged entry never reads as tries of something the
+ * phone did not ask for (#1015's security read); and for a refusal the words of its why before the first number in
+ * them. A refusal's words are the engine's own sentences, and one that carries a size (#924, #940: "this one has
+ * 1.2 MB", "… 20,001 characters") is the same refusal whatever the size; a failure's are its handler's, which can
+ * repeat what the phone sent, so the failures of one request about one thing are alike whatever they say. What was done
+ * is never merged. Requests about other things are not merged: the split of a device's share bounds them.
  */
 function mergedBy(entry: DeviceLogEntry): string | undefined {
 	if (entry.outcome === "done") return undefined;
 	const kind = entry.outcome === "failed" ? null : (entry.why ?? "").replace(/[0-9][\s\S]*$/, "");
-	return JSON.stringify([entry.device, entry.path, entry.method, entry.outcome, kind]);
+	return JSON.stringify([entry.device, entry.path, entry.method, entry.outcome, entry.summary, kind]);
 }
 
 /** How long new entries wait in memory before they are written together. */
@@ -837,7 +847,7 @@ async function writePending(alongside?: (doc: DevicesState) => void): Promise<vo
 		if (alongside !== undefined) alongside(await tx.doc(Devices));
 		const doc = await tx.doc(DeviceLog);
 		for (const { entry, more, lastAt } of counts) {
-			const stored = doc.entries.findLast((one) => one.at === entry.at && one.device === entry.device && one.path === entry.path && one.method === entry.method && one.why === entry.why && one.outcome === entry.outcome);
+			const stored = doc.entries.findLast((one) => one.at === entry.at && one.device === entry.device && one.path === entry.path && one.method === entry.method && one.summary === entry.summary && one.why === entry.why && one.outcome === entry.outcome);
 			if (stored === undefined) continue;
 			stored.count = (stored.count ?? 1) + more;
 			stored.lastAt = lastAt;
@@ -887,8 +897,8 @@ export function requestLogged(method: string): string {
  * does, so entries wait in memory and are written together at most two seconds after the first. `urgent` writes them
  * at once, and resolves once they are stored: for what must outlive a crash (a pairing, a suspension and the refusal
  * that made it, a request that widens). A clean stop writes what waits (`flushDeviceLog`). A refusal or a failure like
- * one of the device's from the last minute (`mergedBy`) adds to that entry's `count` and `lastAt` instead of making one;
- * the entry keeps the first one's words.
+ * one of the device's from the last minute, about the same thing (`mergedBy`), adds to that entry's `count` and `lastAt`
+ * instead of making one; the entry keeps the first one's words.
  */
 export async function logDevice(entry: Omit<DeviceLogEntry, "at"> & { at?: number }, urgent = false): Promise<void> {
 	if (unreadable !== null) return;
@@ -925,7 +935,7 @@ async function logEntries(device: string | null, before: number | undefined, cou
 	const stored = ((await harness.snapshot(DeviceLog, context))?.entries ?? []).map((entry) => ({ ...entry }));
 	for (const one of refusalsMade.values()) {
 		if (one.more === 0) continue;
-		const entry = stored.findLast((e) => e.at === one.entry.at && e.device === one.entry.device && e.path === one.entry.path && e.method === one.entry.method && e.why === one.entry.why && e.outcome === one.entry.outcome);
+		const entry = stored.findLast((e) => e.at === one.entry.at && e.device === one.entry.device && e.path === one.entry.path && e.method === one.entry.method && e.summary === one.entry.summary && e.why === one.entry.why && e.outcome === one.entry.outcome);
 		if (entry === undefined) continue;
 		entry.count = (entry.count ?? 1) + one.more;
 		entry.lastAt = one.lastAt;
