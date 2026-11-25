@@ -32,7 +32,7 @@ struct HomeProjectRow: View {
                     Text(project.lastWords ?? String(localized: "Nothing said yet"))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .lineLimit(typeSize.isAccessibilitySize ? 5 : 2)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if let at = project.lastWordsAt, !typeSize.isAccessibilitySize {
                         Text(HomeTime.short(at)).font(.footnote).foregroundStyle(.secondary)
@@ -125,21 +125,27 @@ struct HomeMark: View {
 /// A chat's row: its title, pinned or answering, and when it was last used.
 struct HomeChatRow: View {
     let chat: ConversationSummary
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
-        HStack(spacing: 10) {
+        // At the largest sizes the time goes under the title: beside it, both were cut ("Trip", "4:35 P").
+        let large = typeSize.isAccessibilitySize
+        HStack(alignment: large ? .firstTextBaseline : .center, spacing: 10) {
             Image(systemName: chat.isPinned ? "pin.fill" : "bubble.left.and.bubble.right")
                 .foregroundStyle(.secondary)
                 .frame(minWidth: 22)
                 .accessibilityHidden(true)
-            Text(chat.title.isEmpty ? String(localized: "New chat") : chat.title)
-                .lineLimit(2)
-                .foregroundStyle(chat.title.isEmpty ? .secondary : .primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            if chat.busy {
-                ProgressView().controlSize(.small).accessibilityLabel("Answering")
-            } else {
-                Text(HomeTime.short(HomeTime.date(chat.updatedAt))).font(.footnote).foregroundStyle(.secondary)
+            let stack = large ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4)) : AnyLayout(HStackLayout(spacing: 10))
+            stack {
+                Text(chat.title.isEmpty ? String(localized: "New chat") : chat.title)
+                    .lineLimit(large ? 4 : 2)
+                    .foregroundStyle(chat.title.isEmpty ? .secondary : .primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if chat.busy {
+                    ProgressView().controlSize(.small).accessibilityLabel("Answering")
+                } else {
+                    Text(HomeTime.short(HomeTime.date(chat.updatedAt))).font(.footnote).foregroundStyle(.secondary)
+                }
             }
         }
         .accessibilityElement(children: .combine)

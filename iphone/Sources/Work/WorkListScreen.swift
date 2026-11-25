@@ -241,6 +241,11 @@ struct WorkListScreen: View {
         try? await Task.sleep(for: .seconds(1))
         if let filter = WorkDebugAct.filter { self.filter = filter }
         if WorkDebugAct.take("new") { filing = true }
+        if listing.onGitHub, WorkDebugAct.take("refresh") { await refresh() }
+        if WorkDebugAct.take("pull"), let number = WorkDebugAct.argument("pull").flatMap(Int.init),
+           listing.pulls.contains(where: { $0.number == number }) {
+            openRoute(.pullRequest(project: project.id, number: number))
+        }
         if WorkDebugAct.take("give"), let item = listing.items.first(where: { $0.givable }) {
             if let name = WorkDebugAct.argument("give"), let agent = agents.first(where: { $0.name == name }) {
                 await desk.assign(session.engine, project: project.id, item: item, to: agent)

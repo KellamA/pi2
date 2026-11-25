@@ -711,11 +711,17 @@ export class AppCheck {
 	verdict(socket: Socket): Promise<Verdict> {
 		const known = this.#verdicts.get(socket);
 		if (known !== undefined) return known;
-		const asked = this.#ask(socket).then(({ verdict, lasting }) => {
-			if (!lasting) this.#verdicts.delete(socket);
-			this.#log("answers:", verdict.why, verdict.app ? "(may answer for the person)" : "(may not answer for the person)");
-			return verdict;
-		});
+		// Nothing in a check is meant to throw; should something (#932), the connection is not the app's, and is asked again.
+		const asked = this.#ask(socket)
+			.catch((error: unknown) => ({
+				verdict: { app: false, why: `the connection could not be checked: ${error instanceof Error ? error.message : String(error)}` },
+				lasting: false,
+			}))
+			.then(({ verdict, lasting }) => {
+				if (!lasting) this.#verdicts.delete(socket);
+				this.#log("answers:", verdict.why, verdict.app ? "(may answer for the person)" : "(may not answer for the person)");
+				return verdict;
+			});
 		this.#verdicts.set(socket, asked);
 		return asked;
 	}
@@ -752,26 +758,40 @@ export class AppCheck {
 				unchecked(error instanceof Error ? error.message : String(error));
 				return;
 			} finally {
-				// On macOS libuv starts the helper with posix_spawn, and first clears O_NONBLOCK on each descriptor it hands over,
-				// in this process: on the open file description the connection is, so this end of it too (#927). Left so, the
-				// next write to an app that is not reading would hold the engine's one thread until it read. It is set back
-				// before spawn's caller goes on: nothing else of the engine's runs in between, so nothing can write to it
-				// blocking. A duplicate would share the flag, and the helper only asks the socket about its other end.
+				// libuv (1.53, Node 26's) starts the helper with posix_spawn, on macOS and, where it can, on Linux, and first clears
+				// O_NONBLOCK on each descriptor it hands over, in this process: on the open file description the connection is,
+				// so this end of it too (#927). Left so, the next write to an app that is not reading would hold the engine's one
+				// thread until it read. It is set back before spawn's caller goes on: nothing else of the engine's runs in
+				// between, so nothing can write to it blocking. But for a synchronous subscriber to Node's
+				// `tracing:child_process.spawn:end` or `:error` diagnostics channel, which runs inside spawn after libuv: one
+				// that wrote to a connection would do so blocking. The engine subscribes only to `:start` (processes.ts), which
+				// runs before. A duplicate would share the flag, and the helper only asks the socket about its other end.
 				// Should that fail, the connection is closed rather than kept blocking; the app connects again.
 				if ((socket as unknown as { _handle?: { setBlocking?: (blocking: boolean) => number } })._handle?.setBlocking?.(false) !== 0) {
 					this.#log("answers: a connection could not be made non-blocking again after its check, so it is closed");
 					socket.destroy();
 				}
 			}
-			const timer = setTimeout(() => {
-				child.kill("SIGKILL");
-				unchecked(`${helper} did not answer within ${this.#patienceMs / 1000} seconds`, true);
-			}, this.#patienceMs);
-			child.stdout!.setEncoding("utf8").on("data", (text: string) => (output += text));
+			// Out of descriptors, Node's spawn returns a child with no stdout, and emits `error` on the next tick (#932). It is
+			// listened to before anything else, so that nothing can leave it to end the engine as an uncaught exception.
+			let timer: ReturnType<typeof setTimeout> | undefined;
 			child.once("error", (error) => {
 				clearTimeout(timer);
 				unchecked(error.message);
 			});
+			try {
+				timer = setTimeout(() => {
+					child.kill("SIGKILL");
+					unchecked(`${helper} did not answer within ${this.#patienceMs / 1000} seconds`, true);
+				}, this.#patienceMs);
+				// No stdout: the `error` above says why, and the timer stands in should it not come.
+				child.stdout?.setEncoding("utf8").on("data", (text: string) => (output += text));
+			} catch (error) {
+				clearTimeout(timer);
+				unchecked(error instanceof Error ? error.message : String(error));
+				child.kill("SIGKILL");
+				return;
+			}
 			child.once("close", (code) => {
 				clearTimeout(timer);
 				try {
