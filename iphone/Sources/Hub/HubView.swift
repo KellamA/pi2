@@ -32,6 +32,17 @@ struct HubView: View {
                             HubTitle(project: project)
                         }
                     }
+                    #if DEBUG
+                    .task {
+                        // Another tab, a moment after the Mac is reached, as a tap on the tab bar would choose it.
+                        guard HubDebugAct.act?.hasPrefix("tab:") == true else { return }
+                        await HubDebugAct.whenLive(session)
+                        try? await Task.sleep(for: .seconds(2))
+                        if HubDebugAct.take("tab"), let tab = HubDebugAct.argument("tab").flatMap(HubTab.init(rawValue:)) {
+                            selection = tab
+                        }
+                    }
+                    #endif
             } else {
                 HubMissing(waiting: engine.status != .connected || !engine.hasLoadedLibrary)
             }

@@ -68,6 +68,8 @@ struct DashboardField: View {
         .onChange(of: text) { _, _ in if !sending { problem = nil } }
         #if DEBUG
         .task {
+            guard HubDebugAct.act != nil else { return }
+            await HubDebugAct.whenLive(session)
             if HubDebugAct.take("send"), let words = HubDebugAct.argument("send") {
                 text = words
                 send()

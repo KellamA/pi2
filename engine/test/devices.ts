@@ -12,17 +12,18 @@
 // suspension, the end of a session, revocation, and the preview switch, with which off no socket pair is made.
 
 import assert from "node:assert/strict";
-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { type ChildProcess, execFile, execFileSync, spawn } from "node:child_process";
 import { createHash, createHmac, generateKeyPairSync, type KeyObject, randomBytes, sign } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { allowsHiddenApproval, checkDeviceLists, deviceLogged, HIDDEN_FROM_THE_PHONE, deviceMay, devicePlacement, type DeviceSession, ONLY_FROM_THE_HELPER, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID, PERSON_REQUESTS } from "../src/answers.ts";
+import { allowsHiddenApproval, checkDeviceLists, deviceLogged, HIDDEN_FROM_THE_PHONE, deviceMay, devicePlacement, type DeviceSession, MAX_TYPED_FROM_A_DEVICE, ONLY_FROM_THE_HELPER, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID, PERSON_REQUESTS, typedRefusal } from "../src/answers.ts";
 import { APPROVAL_DEPTH, checkRequestItem, type Device, deviceRequests, DeviceLog, Devices, devicesState, flushDeviceLog, fromBase64url, helperWanted, hidesSomething, LEAVE_NOT_SIGNED, logDevice, macNameNow, maskValue, NOT_A_LEAVE, NOT_KEPT, pairClaim, PART_HIDDEN, remoteHooks, revokedWatchers, shownName, summarize, TOO_DEEP, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, maskKeysFrom, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
 import type { Client } from "../src/clients.ts";
 import { attachChallenge, checkAttach, offerPresenceKey, PRESENCE_KEY_ALREADY_WAITS, PRESENCE_KEY_CHANGED, PRESENCE_KEY_WAITS } from "../src/devices.ts";
@@ -46,6 +47,7 @@ process.env.PI2_LOGIN_SHELL ??= "off";
 const work = realpathSync(mkdtempSync(join(tmpdir(), "pi2-dev-")));
 const KEYCHAIN_SERVICE = `dev.pi2.credentials.test-devices-${process.pid}`;
 const engines: ChildProcess[] = [];
+const execFileAsync = promisify(execFile);
 // Stopped from outside, it still cleans up: the exit handler below runs.
 process.on("SIGTERM", () => process.exit(143));
 process.on("SIGINT", () => process.exit(130));
@@ -1927,6 +1929,122 @@ try {
 	assert.ok(longestBack < 1024 * 1024, `what the device is sent back names the pictures, without them: its longest line is ${longestBack} characters`);
 	step(`a phone's message of ten pictures of 5 MiB (${(tenLine.length / 1024 / 1024).toFixed(1)} MiB) is taken from pi² Remote in ${tenTook} ms, and what goes back to the device names them without carrying them`);
 
+	// ---- A phone's typed text (#924): at most 1 MB of UTF-8 in a message or an answer, counted in bytes; the Mac's own
+	// app is not held to it
+	{
+		const overMessage = (size: string) => `A message from a phone can carry at most 1 MB of typed text; this one has ${size}. Shorten it, or send it from the Mac.`;
+		const overAnswer = (size: string) => `An answer from a phone can carry at most 1 MB of typed text; this one has ${size}. Shorten it, or answer on the Mac.`;
+		// The demo model answers `/work 0` with a line of its own, without quoting the text.
+		const head = "/work 0 1000 ";
+		const exactly = head + "t".repeat(MAX_TYPED_FROM_A_DEVICE - head.length);
+		// A byte over, in two-byte characters: some 524,000 characters, half the limit counted in characters.
+		const overByOne = `${head}${"é".repeat((MAX_TYPED_FROM_A_DEVICE - head.length - 1) / 2)}tt`;
+		assert.equal(Buffer.byteLength(exactly), MAX_TYPED_FROM_A_DEVICE);
+		assert.ok(Buffer.byteLength(overByOne) === MAX_TYPED_FROM_A_DEVICE + 1 && overByOne.length < MAX_TYPED_FROM_A_DEVICE / 1.9);
+		assert.equal(typedRefusal("submit", { text: exactly }), null);
+		assert.equal(typedRefusal("submit", { text: overByOne }), overMessage("just over 1 MB"), "rounded, a byte over would read as 1.0 MB");
+		assert.equal(typedRefusal("submit", { text: "t".repeat(1_258_292) }), overMessage("1.2 MB"));
+		assert.equal(typedRefusal("needs.answer", { answer: { kind: "question", text: overByOne } }), overAnswer("just over 1 MB"));
+		for (const params of [{ answer: null }, { answer: overByOne }, { answer: [overByOne] }, {}]) assert.equal(typedRefusal("needs.answer", params), null, JSON.stringify(params).slice(0, 40));
+		assert.equal(typedRefusal("submit", { text: [overByOne] }), null, "what is not text is the handler's to refuse");
+		assert.equal(typedRefusal("memory.add", { text: overByOne }), null, "a note is not a message");
+		assert.equal(typedRefusal("variables.set", { value: overByOne }), null, "nor is what only the Mac may send");
+
+		const { id: typedIn } = (await ask("conversation.create", { model: { provider: "demo", modelId: "demo-1" } })).result;
+		await ask("conversation.open", { id: typedIn, newestFirst: true });
+		const from = remote.sessionLines.get(session)!.length;
+		const taken = await ask("submit", { id: typedIn, text: exactly });
+		assert.ok(taken.result?.submissionId !== undefined, `exactly 1 MB from a phone is taken: ${JSON.stringify(taken).slice(0, 300)}`);
+		const echo = await until("its echo", () =>
+			remote.sessionLines.get(session)!.slice(from).find((line) => line.event === "conversation" && line.id === typedIn && line.items.some((item: any) => item.kind === "user")),
+		);
+		assert.equal(echo.items.find((item: any) => item.kind === "user").text, exactly, "and comes back whole");
+		assert.equal((await ask("submit", { id: typedIn, text: overByOne })).error, overMessage("just over 1 MB"), "a byte over is refused");
+		assert.equal((await ask("submit", { id: typedIn, text: overByOne, mode: "steer" })).error, overMessage("just over 1 MB"), "to steer too");
+		assert.equal((await ask("conversation.edit", { id: typedIn, entryId: 1, text: overByOne })).error, overMessage("just over 1 MB"), "an edit of a message");
+		assert.equal((await ask("chat.continueWithAgent", { id: typedIn, text: overByOne })).error, overMessage("just over 1 MB"), "a message handed to an agent");
+		assert.equal((await ask("inbox.answer", { id: "no-such", text: overByOne })).error, overAnswer("just over 1 MB"), "an answer to a question");
+		assert.equal((await ask("needs.answer", { id: "no-such", answer: { kind: "decision", text: overByOne } })).error, overAnswer("just over 1 MB"), "an answer under Needs you");
+		const fromMac = await app.call("submit", { id: typedIn, text: overByOne });
+		assert.ok(fromMac.submissionId !== undefined, "the same message from the Mac's own app is taken");
+		const logged = (await app.call("devices.log", { device: phone.id })).entries.filter((entry: any) => entry.why === overMessage("just over 1 MB"));
+		assert.ok(logged.some((entry: any) => entry.method === "submit" && entry.outcome === "refused" && entry.summary.startsWith("Sent a message")), "refused in the devices' log, by its summary");
+		assert.ok(!JSON.stringify(logged).includes("éééé"), "with nothing of the text");
+
+		// By mailbox: the item's signed text, which holds the request whole, is at most 16 KB (`readSigned`, as pi² Remote's
+		// `Sealing.maxLength` and the relay's items), read by its length before it is parsed, so no text near 1 MB reaches
+		// `deviceRequest`, whose check the mailbox path shares. Exactly 1 MB is refused there as a byte over is.
+		const leave = async (item: ReturnType<Phone["item"]>) => {
+			const before = remote.events.length;
+			const reply = await remote.call("remote.mailboxIn", { device: phone.id, id: JSON.parse(item.signed).nonce, item });
+			return { reply, receipt: (await remote.event("mailboxOut", before)).item.body };
+		};
+		for (const [method, params] of [
+			["inbox.answer", { id: "no-such", text: overByOne }],
+			["inbox.answer", { id: "no-such", text: exactly }],
+			["needs.answer", { id: "no-such", answer: { kind: "question", text: overByOne } }],
+			["submit", { id: typedIn, text: overByOne }],
+		] as const) {
+			const mailed = await leave(phone.item(remote.pairing, method, params));
+			assert.deepEqual([mailed.reply.result, mailed.receipt.why], [{ taken: true, outcome: "refused" }, "The item's signed text is not a request."], `${method} of ${Buffer.byteLength(JSON.stringify(params))} bytes by mailbox`);
+		}
+		const mailedShort = await leave(phone.item(remote.pairing, "submit", { id: typedIn, text: "é".repeat(4_000) }));
+		assert.deepEqual(mailedShort.reply.result, { taken: true, outcome: "done" }, "while a message of 4,000 characters (8,000 bytes) is taken");
+
+		// A text of 66 MiB, as #919's security read sent: refused for what it costs to carry the line in, no more. The measure
+		// is the same line for a request the table refuses (variables.set), which reads nothing of it; the engine's time and
+		// memory for each are taken from outside it, its memory by `ps` as it works.
+		const huge = head + "q".repeat(66 * 1024 * 1024);
+		const rssOf = async () => Number((await execFileAsync("/bin/ps", ["-o", "rss=", "-p", String(engine.pid)])).stdout.trim()) * 1024;
+		const cost = async (id: string, method: string, params: Record<string, unknown>) => {
+			const line = `${JSON.stringify({ session, message: { id, method, params } })}\n`;
+			const before = await rssOf();
+			let peak = before;
+			let answered = false;
+			const sampled = (async () => {
+				while (!answered) peak = Math.max(peak, await rssOf());
+			})();
+			const sent = performance.now();
+			remote.socket.write(line);
+			const reply = await until(`the answer to ${id}`, () => remote.sessionLines.get(session)?.find((message) => message.id === id), { over: () => (remote.closed ? "pi² Remote's connection closed" : undefined) });
+			const took = performance.now() - sent;
+			answered = true;
+			await sampled;
+			return { reply, took, before, peak };
+		};
+		const table = await cost("huge-table", "variables.set", { agentId: "forge", name: "HUGE", value: huge });
+		assert.equal(table.reply.error, ONLY_ON_THE_MAC);
+		const hugeFrom = remote.sessionLines.get(session)!.length;
+		// In a conversation with no title yet, as the devices' log's summary is read below ("Sent a message").
+		const { id: untitled } = (await ask("conversation.create", { model: { provider: "demo", modelId: "demo-1" } })).result;
+		const sized = await cost("huge-typed", "submit", { id: untitled, text: huge });
+		assert.equal(sized.reply.error, overMessage("66.0 MB"), "a phone's text of 66 MiB is refused");
+		const mb = (bytes: number) => Math.round(bytes / 1e6);
+		console.log(`    66 MiB: refused by the table in ${Math.round(table.took)} ms (${mb(table.before)} MB, at most ${mb(table.peak)} MB), for its size in ${Math.round(sized.took)} ms (${mb(sized.before)} MB, at most ${mb(sized.peak)} MB)`);
+		assert.ok(sized.took <= 3 * table.took + 2_000, `in ${Math.round(sized.took)} ms, where the same line refused by the table took ${Math.round(table.took)} ms`);
+		// What each grew the engine by from where it stood, since what one leaves the next may reuse, or the collector free:
+		// about twice the line's size either way, so the bound is that again. Taking the text, as before #924, grew it by
+		// some 480 MB.
+		const grew = (one: { before: number; peak: number }) => one.peak - one.before;
+		assert.ok(grew(sized) <= grew(table) + 2 * huge.length, `with the engine grown by ${mb(grew(sized))} MB, where the table's refusal grew it by ${mb(grew(table))} MB`);
+		// The check itself, here in this process: it reads the string in place, faster than the line's JSON is parsed.
+		const hugeParams = { id: untitled, text: huge };
+		const parsedIn = performance.now();
+		JSON.parse(JSON.stringify(hugeParams));
+		const parsing = performance.now() - parsedIn;
+		const heapBefore = process.memoryUsage().heapUsed;
+		const checkedIn = performance.now();
+		assert.equal(typedRefusal("submit", hugeParams), overMessage("66.0 MB"));
+		const checking = performance.now() - checkedIn;
+		const heapGrew = process.memoryUsage().heapUsed - heapBefore;
+		assert.ok(checking <= parsing && heapGrew < 1024 * 1024, `the check took ${checking.toFixed(1)} ms (parsing the line, ${parsing.toFixed(1)} ms) and ${heapGrew} bytes of heap`);
+		assert.ok((await ask("engine.info")).result !== undefined, "the session goes on");
+		assert.ok(!remote.sessionLines.get(session)!.slice(hugeFrom).some((line) => JSON.stringify(line).includes("qqqqqqqqqqqqqqqq")), "and is sent nothing of the text");
+		step(
+			`a phone's typed text: exactly 1 MB taken; a byte over refused, as a message, a steer, an edit, a message handed to an agent and an answer, with what to do, and by mailbox the item's 16 KB refuses either first; the same from the Mac's app taken; 66 MiB refused in ${Math.round(sized.took)} ms (the table's refusal of the same line, ${Math.round(table.took)} ms)`,
+		);
+	}
+
 	// ---- A picture whose base64 holds a key-shaped run comes back to the phone byte for byte (#956)
 	{
 		// Noise, as a photo's base64 is, around `AIza` and 35 letters and digits (3 bytes to 4 characters: no padding).
@@ -1980,7 +2098,8 @@ try {
 		step("a presented picture whose base64 holds a key-shaped run comes to the phone byte for byte from presented.picture, as to the Mac's app; its caption's run is masked");
 	}
 
-	// ---- A phone's typed text over 64 MiB (#919): taken, its echo never written to pi² Remote, which takes 64 MiB at most
+	// ---- A typed text over 64 MiB (#919), which since #924 only the Mac's own app may send: taken, and its echo to a
+	// phone's session that has the conversation open never written to pi² Remote, which takes 64 MiB at most
 	{
 		// Another device's session beside it, which must not notice.
 		const other = new Phone("Jo's iPhone");
@@ -2004,24 +2123,25 @@ try {
 		// but for 4 KiB.
 		const under = await opened();
 		const shortFrom = remote.sessionLines.get(session)!.length;
+		// The short one from the phone, as a phone may send it; the long ones from the Mac.
 		await ask("submit", { id: under, text: typed("", 1) });
 		const shortEcho = await until("the short message's echo", () => echoOf(under, shortFrom));
 		await until("the short message's answer", () => remote.sessionLines.get(session)!.slice(shortFrom).some((line) => line.event === "conversation" && JSON.stringify(line).includes("Done: I ran it 0 times")));
 		const wrapping = Buffer.byteLength(JSON.stringify({ session, message: shortEcho })) - typed("", 1).length;
 		const underText = typed("under ", MAX_LINE_TO_HELPER - wrapping - 4096 - typed("under ", 0).length);
 		const underFrom = remote.sessionLines.get(session)!.length;
-		assert.ok((await ask("submit", { id: under, text: underText })).result !== undefined, "a text just under is taken");
+		assert.ok((await app.call("submit", { id: under, text: underText })).submissionId !== undefined, "a text just under is taken from the Mac");
 		const underEcho = await until("the echo of a text just under 64 MiB", () => echoOf(under, underFrom));
 		assert.equal(underEcho.items.find((item: any) => item.kind === "user").text, underText, "and comes back to the phone whole");
 		assert.ok(remote.longest > MAX_LINE_TO_HELPER - 8192 && remote.longest <= MAX_LINE_TO_HELPER, `in a line of ${remote.longest} bytes`);
 
-		// Over: taken, as the engine does not yet limit a phone's typed text, and its echo not written.
+		// Over: taken from the Mac, and its echo not written.
 		const over = await opened();
 		const overText = typed("over ", 65 * 1024 * 1024);
 		const overFrom = remote.sessionLines.get(session)!.length;
 		const logFrom = engineLog.length;
-		const overAnswer = await ask("submit", { id: over, text: overText });
-		assert.ok(overAnswer.result !== undefined, `a text of 65 MiB from a phone is taken: ${JSON.stringify(overAnswer).slice(0, 300)}`);
+		const overAnswer = await app.call("submit", { id: over, text: overText });
+		assert.ok(overAnswer.submissionId !== undefined, `a text of 65 MiB from the Mac is taken: ${JSON.stringify(overAnswer).slice(0, 300)}`);
 		const said = await until("the echo not written, in engine.log", () => engineLog.slice(logFrom).match(/remote: a device's conversation event of (\d+) bytes was not written to pi² Remote, which takes lines of at most (\d+)/) ?? undefined, {
 			over: () => (remote.longest > MAX_LINE_TO_HELPER ? `pi² Remote was written a line of ${remote.longest} bytes` : undefined),
 		});
@@ -2043,7 +2163,7 @@ try {
 		await ask("engine.info");
 		assert.ok(!remote.sessionLines.get(session)!.slice(againFrom).some((line) => String(line.event).startsWith("conversation") && line.id === over), "and sent nothing of its list");
 		await app.call("devices.revoke", { device: other.id });
-		step(`a phone's typed text of 65 MiB is taken and its echo (${said[1]} bytes) is not written to pi² Remote, which takes ${MAX_LINE_TO_HELPER}: the session and another device's go on; one just under comes back whole`);
+		step(`a typed text of 65 MiB from the Mac is taken and its echo to a phone (${said[1]} bytes) is not written to pi² Remote, which takes ${MAX_LINE_TO_HELPER}: the session and another device's go on; one just under comes back whole`);
 	}
 
 	// ---- The mailbox (5.3, 4.3; #678): a request a phone left, opened by pi² Remote, checked again and handled here
@@ -2171,6 +2291,24 @@ try {
 		const mailedReceipt = await remote.event("mailboxOut", beforeMailed);
 		assert.deepEqual([mailedReceipt.item.body.method, mailedReceipt.item.body.outcome, mailedReceipt.item.body.why], ["presented.picture", "refused", ONLY_ON_THE_MAC]);
 		step("from the phone: presented.picture passes its row to its handler, unlogged, and is refused by the record; by mailbox, by its row; present.register, present.drawn, presented.list, presented.file and presented.network are refused as the Mac's, and logged; the app reaches all six handlers");
+
+		// A present question's answer in words from the phone goes through needs.answer or inbox.answer, and so through
+		// #924's 1 MB check before any handler; under it, the record's own bound of 20,000 characters still holds.
+		const shot = join(work, "question.png");
+		writeFileSync(shot, Buffer.concat([Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"), Buffer.from([0, 0, 0, 8, 0, 0, 0, 8, 8, 2, 0, 0, 0]), Buffer.alloc(4)]));
+		const { id: asking } = await app.call("conversation.create", { agentId: "forge" });
+		await app.call("conversation.open", { id: asking });
+		void app.call("submit", { id: asking, text: `/tool present ${JSON.stringify({ title: "Pick", items: [{ path: shot }, { path: shot }], question: "Which one?" })}` });
+		const question = await app.until("the present question under Needs you", () => app.events.needs?.items?.find((item: any) => item.kind === "decision" && item.question === "Which one?" && item.presentation !== undefined));
+		const overByte = `${"é".repeat((MAX_TYPED_FROM_A_DEVICE - 2) / 2)}ttt`;
+		assert.equal(Buffer.byteLength(overByte), MAX_TYPED_FROM_A_DEVICE + 1);
+		const tooLong = "An answer from a phone can carry at most 1 MB of typed text; this one has just over 1 MB. Shorten it, or answer on the Mac.";
+		assert.equal((await ask("needs.answer", { id: question.id, answer: { kind: "decision", text: overByte } })).error, tooLong, "needs.answer in words, a byte over 1 MB");
+		assert.equal((await ask("inbox.answer", { id: question.id, text: overByte })).error, tooLong, "inbox.answer, a byte over 1 MB");
+		assert.match((await ask("needs.answer", { id: question.id, answer: { kind: "decision", text: "w".repeat(20_001) } })).error, /An answer can be 20,000 characters at most/, "under it, the record's bound");
+		assert.deepEqual((await ask("needs.answer", { id: question.id, answer: { kind: "decision", text: "The first" } })).result, {}, "and an answer in words within both is taken");
+		await app.until("the question answered", () => app.conversations.get(asking)?.items.some((item: any) => item.kind === "tool" && item.name === "present" && /The person answered: The first$/.test(item.text)));
+		step("from the phone: a present question's answer in words a byte over 1 MB is refused by needs.answer and inbox.answer with #924's sentence; under it, the record's 20,000 characters; within both, taken");
 	}
 
 	// ---- Resume, refusals, suspension (3.4, 3.6, 5.8)
