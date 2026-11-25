@@ -13,6 +13,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EngineClient, standInApp, stop } from "./patience.ts";
 
+if (process.platform !== "darwin") {
+	console.log("ok  skipped: macOS only, for its lsof");
+	process.exit(0);
+}
+
 process.env.PI2_APP_BUNDLE = standInApp();
 process.env.PI2_LOGIN_SHELL ??= "off";
 const home = mkdtempSync(join(tmpdir(), "pi2-appstall-"));
