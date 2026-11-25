@@ -25,10 +25,15 @@ final class SoftwarePresenceKey: PresenceSigning, Sendable {
     let signed = Mutex<[Data]>([])
     /// Whether the key waits to be accepted on the Mac, as one made after Face ID was set up again does (#891).
     let waiting = Mutex(false)
+    /// Whether that mark cannot be read, as when the Keychain refuses.
+    let waitingUnreadable = Mutex(false)
     var publicKey: P256.Signing.PublicKey { key.publicKey }
 
     func presencePublicKeyDER() throws -> Data? { key.publicKey.derRepresentation }
-    func presenceKeyWaits() throws -> Bool { waiting.withLock { $0 } }
+    func presenceKeyWaits() throws -> Bool {
+        if waitingUnreadable.withLock({ $0 }) { throw KeysError.keychain(-25308, "read the Face ID key") }
+        return waiting.withLock { $0 }
+    }
     func presenceKeyWasAccepted() throws { waiting.withLock { $0 = false } }
 
     func signPresence(_ data: Data) async throws -> Data {

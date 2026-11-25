@@ -543,6 +543,23 @@ struct PresenceSessionTests {
         #expect(keys.madeFor == Data("faces-2".utf8), "the new hash is kept beside the key, so that the next session asks nothing")
     }
 
+    @Test func onceANewKeyIsMadeEveryPresenceSignatureIsItsOwn() throws {
+        // The new key is written in place of the old one, so that any attach the phone makes while it waits (or after it
+        // was accepted) carries the waiting key's signature, the one the engine leaves uncounted (#891), and none can be
+        // signed by the old key.
+        let keys = PhoneKeys(keychain: MemoryKeychain(), secureEnclave: false)
+        _ = try keys.makeDeviceKey()
+        let old = try keys.makePairingKeys(faceIDState: Data("faces-1".utf8)).presence
+        let new = try keys.replacePresenceKey(faceIDState: Data("faces-2".utf8))
+        let current = try keys.presencePublicKey()
+        let waits = try keys.presenceKeyIsWaiting()
+        #expect(new != old && current == new && waits)
+        let text = Data(#"{"v":2,"kind":"attach"}"#.utf8)
+        let signature = try keys.signPresence(text, context: nil)
+        #expect(try verifies(signature, text, new), "signed by the waiting key")
+        #expect(try !verifies(signature, text, old), "and not by the old one")
+    }
+
     @Test func aKeyInSoftwareIsNeverInvalidated() throws {
         // The simulator's keys are in software and always sign: no new key is ever made for a changed enrolment there.
         let keys = PhoneKeys(keychain: MemoryKeychain(), secureEnclave: false)

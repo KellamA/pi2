@@ -429,6 +429,27 @@ struct ConnectionTests {
         #expect(await Wait.until { Self.isConnected(connection) })
         #expect(paired.mac.state.withLock { ($0.offers.count, $0.attaches.count) } == (3, 1))
         #expect(try software.softwarePresence.presenceKeyWaits() == false, "the key no longer waits")
+        // The attach after the offer carries the offered key's signature: the engine leaves uncounted only an attach the
+        // waiting key signed, and here the one key the phone holds is the one it offered.
+        let (lastOffer, attach) = try #require(paired.mac.state.withLock { state in state.offers.last.flatMap { offer in state.attaches.first.map { (offer, $0) } } })
+        #expect(attach.isPresenceSigned(by: lastOffer.presenceKey), "the attach is signed by the key the phone offered")
+    }
+
+    @Test func aWaitingMarkThatCannotBeReadIsOfferedFirst() async throws {
+        // The phone cannot tell whether its key waits: it offers before it attaches, which costs nothing if the Mac uses
+        // the key already (`presenceKeyAccepted`), and attaches under that same key.
+        let paired = try await Self.paired(TestMac.Rules(offers: .accepted))
+        defer { paired.mac.stop() }
+        let software = try #require(paired.keys.software)
+        software.softwarePresence.waitingUnreadable.withLock { $0 = true }
+        let connection = try Self.connection(paired)
+        connection.start()
+        defer { connection.stop() }
+        #expect(await Wait.until { Self.isConnected(connection) })
+        let (offers, attaches) = paired.mac.state.withLock { ($0.offers, $0.attaches) }
+        #expect(offers.count == 1 && attaches.count == 1, "one offer, then one attach: \(offers.count) offers, \(attaches.count) attaches")
+        let offer = try #require(offers.first), attach = try #require(attaches.first)
+        #expect(attach.isPresenceSigned(by: offer.presenceKey) && offer.presenceKey.derRepresentation == software.softwarePresence.publicKey.derRepresentation)
     }
 
     @Test func anOfferEndedWithNoWordStopsTrying() async throws {

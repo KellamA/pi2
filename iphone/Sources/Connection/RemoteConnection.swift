@@ -172,8 +172,12 @@ final class RemoteConnection {
                 // session to end on it.
                 let proved = try await Race.first(attempts(), closing: { $0.channel.drop() })
                 // A new presence key that waits to be accepted on the Mac signs no attach there: it is offered instead, and
-                // the phone never attaches while it waits (#891).
-                if !offerAccepted, (try? keys.presence.presenceKeyWaits()) == true {
+                // the phone never attaches while it waits (#891). A mark that cannot be read is taken as waiting: an offer
+                // of the key in use is answered `presenceKeyAccepted` and counted nothing, so it costs the attach no more
+                // than a channel. Every presence signature, the offer's and the attach after it, is the one key the phone
+                // holds, which is the waiting key once one was made (`PhoneKeys.replacePresenceKey` writes it in place of
+                // the old one).
+                if !offerAccepted, (try? keys.presence.presenceKeyWaits()) != false {
                     let answer = try await Attach.offer(proved, mac: mac, keys: keys, build: build, now: now)
                     guard !Task.isCancelled else { return }
                     switch answer {
