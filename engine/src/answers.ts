@@ -166,6 +166,7 @@ const FOR_THE_PERSON_SETTINGS: Record<string, (params: Record<string, unknown>) 
 	"devices.log": () => true, // what each device did
 	"devices.acceptPresenceKey": () => true, // a phone's new Face ID key, which then opens sessions (3.2)
 	"devices.refusePresenceKey": () => true, // drops it
+	"devices.startAgain": () => true, // unpairs every device and forgets the pairing, to register anew (#917)
 };
 
 export function settingsForThePerson(method: string, params: Record<string, unknown>): boolean {
@@ -638,6 +639,7 @@ const MAC_ONLY: Record<string, string> = {
 	"devices.log": "devices.*",
 	"devices.acceptPresenceKey": "devices.*", // a phone never accepts its own new Face ID key, nor another's (3.2)
 	"devices.refusePresenceKey": "devices.*",
+	"devices.startAgain": "devices.*", // unpairs every device: the person's, at the Mac (#917)
 	// The handlers the table does not name, listed for the owner in #673's pull request.
 	"github.show": NOT_NAMED,
 	"settings.setAgentDefault": NOT_NAMED,

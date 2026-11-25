@@ -296,7 +296,8 @@ async function change(edit: (doc: DevicesState) => void): Promise<void> {
 /** What pi² Remote reported of itself (`remote.hello`, `remote.state`). */
 export async function helperReported(given: { macKeys?: MacKeys; pairing?: string | null }): Promise<void> {
 	const keys = given.macKeys;
-	const pairing = given.pairing ?? null;
+	// A pairing the person started again from is never taken back: a hello or a state in flight may still name it (#917).
+	const pairing = given.pairing != null && forgottenPairings.has(given.pairing) ? null : (given.pairing ?? null);
 	if (pairing !== null && state.pairing !== null && pairing !== state.pairing) {
 		throw new Error("pi² Remote names another pairing than this Mac's.");
 	}
@@ -1393,6 +1394,60 @@ async function revoke(id: string): Promise<void> {
 	remoteHooks.closeSessions(id, "revoked");
 }
 
+// ---- Starting again at the relay now set (#917)
+
+/**
+ * What pi² Remote says of the relay path (`remote.state`'s `relay.reason`) when this Mac's pairing cannot use the relay
+ * now set, and only a new pairing can: it was registered at another relay, whose pairing's id pi² Remote never shows to
+ * this one (#678's security read), or at none (made with the relay switch off, for the home path alone).
+ */
+export const START_AGAIN_REASONS: readonly string[] = ["another-relay", "unregistered"];
+/** Pairings forgotten by starting again, this run: pi² Remote's word naming one is not taken back (`helperReported`). */
+const forgottenPairings = new Set<string>();
+
+/**
+ * `devices.startAgain`, the person's word on the Mac (FOR_THE_PERSON_SETTINGS, MAC_ONLY): every device revoked as Revoke
+ * revokes each, and the pairing forgotten, in one commit; then pi² Remote is told each revocation (the phones attached
+ * are sent the signed `revoked` line) and `forgetPairing`. It registers nothing: the next `devices.pairStart` finds no
+ * pairing and has pi² Remote register one at the relay now set, as a first pairing does, with the window it opens. Only
+ * while pi² Remote says the pairing cannot use this relay, so that it never unpairs the phones of a pairing that can.
+ * The old relay is not contacted: pi² Remote asks a relay to remove a device only while connected there as this
+ * pairing's Mac, which it is not at another relay's address (nor ever, for a pairing made with the relay off).
+ */
+async function startAgain(): Promise<{ revoked: string[] }> {
+	if (!remoteOn()) throw new Error("Turn on Reach from an iPhone first.");
+	if (!state.remote.relay || state.relay === "") throw new Error("Turn on Reach through pi²'s relay, with its address, first.");
+	const reason = remoteHooks.helper().relay?.reason;
+	const forgotten = state.pairing;
+	if (forgotten === null || typeof reason !== "string" || !START_AGAIN_REASONS.includes(reason)) {
+		throw new Error("pi² Remote does not say this Mac's pairing belongs to another relay or to none, so there is nothing to start again.");
+	}
+	closeWindow(null);
+	const revoked = activeDevices().map((device) => device.id);
+	const now = Date.now();
+	await change((doc) => {
+		for (const one of doc.devices) if (revoked.includes(one.id)) forget(one, now);
+		doc.pairing = null;
+	});
+	forgottenPairings.add(forgotten);
+	for (const id of revoked) {
+		failures.delete(id);
+		for (const watch of revokedWatchers) {
+			try {
+				watch(id);
+			} catch (error) {
+				log("devices: a watcher of revocations failed:", error instanceof Error ? error.message : error);
+			}
+		}
+		// As `revoke`: the phone's signed `revoked` line first, then its sessions.
+		remoteHooks.toHelper({ kind: "revoke", device: id });
+		remoteHooks.closeSessions(id, "revoked");
+	}
+	remoteHooks.toHelper({ kind: "forgetPairing", pairing: forgotten });
+	log(`devices: started again at the relay now set, as the person asked: ${revoked.length} device(s) revoked and the pairing forgotten (${reason})`);
+	return { revoked };
+}
+
 // ---- A phone's leave, passed on by the relay (3.6; #813, #929)
 
 /** How far ahead of the Mac's clock a leave may be dated: RemoteKit's `RelayLeaveNotice.aheadAtMost`. */
@@ -1945,6 +2000,10 @@ export const deviceRequests: Record<string, (params: Params, client: Client) => 
 	"devices.refusePresenceKey": async (params) => {
 		await refusePresenceKey(deviceId(params));
 		return {};
+	},
+	"devices.startAgain": async (params) => {
+		if (Object.keys(params).length > 0) throw new Error("devices.startAgain takes nothing.");
+		return startAgain();
 	},
 	"devices.resume": async (params) => {
 		const id = deviceId(params);

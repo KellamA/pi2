@@ -33,7 +33,8 @@
 // the path `mailbox`), and `remote.left` (#929: a phone's leave the relay passed on, its notice checked again with
 // `deviceLeft` in devices.ts, which revokes the device). `remote.state` also carries what pi² Remote can do with the relay (`relay`, 6.5), which the
 // Devices page is told (`helper.relay`). The event's `mailboxOut` asks pi² Remote to leave a sealed item for a phone (a
-// receipt, 5.3).
+// receipt, 5.3). Its `forgetPairing` (#917), after a `revoke` for every device, has it forget the pairing the person
+// started again from (`devices.startAgain`), whose `relay.reason` said it belongs to another relay or to none.
 //
 // A device session is a `Client` of its own (clients.ts) with `device` set, so it has its own subscriptions and
 // greeting, and is sent the broadcasts every app is. What it is sent passes `forDevice`: never the events of 5.7,
@@ -579,20 +580,27 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 
 /** What pi² Remote may say of the relay path (6.5): none wanted, why it cannot run, or how it runs. */
 const RELAY_STATES = ["off", "unavailable", "connecting", "ready", "down", "stopped"];
+/**
+ * Why it cannot run, as a fixed word beside the sentence (#917), which the Devices page acts on and the sentence never:
+ * the relay's address, its key, no pairing yet, a pairing registered at no relay or at another, its client, registering.
+ */
+const RELAY_REASONS = ["address", "key", "no-pairing", "unregistered", "another-relay", "client", "register-failed"];
 
 /** `remote.state`'s `relay` as the Devices page is told it, or null for one pi² Remote does not send. */
 function relayState(value: unknown): Record<string, unknown> | null {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
 	const given = value as Record<string, unknown>;
-	if (Object.keys(given).some((key) => !["available", "state", "why", "retryAt", "anotherMacAt"].includes(key))) return null;
+	if (Object.keys(given).some((key) => !["available", "state", "why", "reason", "retryAt", "anotherMacAt"].includes(key))) return null;
 	if (typeof given.available !== "boolean") return null;
 	if (given.state !== undefined && !RELAY_STATES.includes(given.state as string)) return null;
+	if (given.reason !== undefined && (given.state !== "unavailable" || !RELAY_REASONS.includes(given.reason as string))) return null;
 	if (given.why !== undefined && typeof given.why !== "string") return null;
 	for (const time of [given.retryAt, given.anotherMacAt]) if (time !== undefined && !Number.isSafeInteger(time)) return null;
 	return {
 		available: given.available,
 		state: given.state ?? (given.available ? "ready" : "unavailable"),
 		...(given.why === undefined ? {} : { why: maskKeys((given.why as string).slice(0, 500)) }),
+		...(given.reason === undefined ? {} : { reason: given.reason }),
 		...(given.retryAt === undefined ? {} : { retryAt: given.retryAt }),
 		...(given.anotherMacAt === undefined ? {} : { anotherMacAt: given.anotherMacAt }),
 	};

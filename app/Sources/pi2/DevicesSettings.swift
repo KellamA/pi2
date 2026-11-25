@@ -75,12 +75,18 @@ struct DevicesEvent: Decodable, Equatable {
         var state: State
         /// pi² Remote's words for why it is off, unavailable, down or stopped; the relay's own word is in them.
         var why: String?
+        /// Why it is unavailable, as a fixed word beside the words (#917): what the page acts on, never the words.
+        var reason: String?
         /// When pi² Remote connects again, while it is down (ms since 1970).
         var retryAt: Double?
         /// The relay's word that another copy of pi² Remote tried to connect as this Mac, and when (3.4).
         var anotherMacAt: Double?
 
-        private enum CodingKeys: String, CodingKey { case available, state, why, retryAt, anotherMacAt }
+        /// This Mac's pairing cannot use the relay now set, and only a new one can (#917): it belongs to another relay,
+        /// or to none (made with the relay off). The page offers to start again.
+        var pairingElsewhere: Bool { state == .unavailable && (reason == "another-relay" || reason == "unregistered") }
+
+        private enum CodingKeys: String, CodingKey { case available, state, why, reason, retryAt, anotherMacAt }
 
         init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -99,6 +105,7 @@ struct DevicesEvent: Decodable, Equatable {
             default: .unknown
             }
             why = ((try? container.decodeIfPresent(String.self, forKey: .why)) ?? nil).flatMap { $0.isEmpty ? nil : $0 }
+            reason = (try? container.decodeIfPresent(String.self, forKey: .reason)) ?? nil
             retryAt = (try? container.decodeIfPresent(Double.self, forKey: .retryAt)) ?? nil
             anotherMacAt = (try? container.decodeIfPresent(Double.self, forKey: .anotherMacAt)) ?? nil
         }
@@ -199,6 +206,10 @@ enum RelayPathWords {
         switch path.state {
         case .off:
             return (Theme.tx3, "Off, as you chose: pi² Remote does not connect to the relay.")
+        case .unavailable where path.reason == "another-relay":
+            return (Theme.warn, "Not connected: this Mac’s pairing belongs to another relay.")
+        case .unavailable where path.reason == "unregistered":
+            return (Theme.warn, "Not connected: this Mac’s pairing was made with the relay off.")
         case .unavailable:
             return (paired ? Theme.warn : Theme.tx3, join("pi² Remote cannot use the relay.", why, "An iPhone at home or on a private network still reaches this Mac."))
         case .connecting:
@@ -259,6 +270,33 @@ enum RelayPathWords {
         return meaning.map { "\(quoted) (\($0))" } ?? quoted
     }
 
+    /// What the page says beside **Start Again at This Relay…** (#917), from pi² Remote's reason, and what starting again
+    /// does. Nil for any other state.
+    static func elsewhere(_ path: DevicesEvent.RelayPath, paired: Int) -> String? {
+        guard path.pairingElsewhere else { return nil }
+        let what = path.reason == "another-relay"
+            ? "This Mac’s pairing was made at another relay, and pi² shows a pairing to no relay but its own, so this relay cannot carry it."
+            : "This Mac’s pairing was made with the relay off, for home and private networks alone, so no relay knows it."
+        let reach = paired == 0 ? nil : "A paired iPhone reaches this Mac only at home or over a private network."
+        return join(what, reach, "To use this relay, start again: this Mac makes a new pairing here, and each iPhone pairs again.")
+    }
+
+    /// The confirmation's message: exactly what starting again costs, by name.
+    static func startAgainCost(_ devices: [PairedDevice], host: String) -> String {
+        let relay = host.isEmpty ? "the relay now set" : host
+        let unpaired: String
+        switch devices.count {
+        case 0: unpaired = "No iPhone is paired, so none is unpaired."
+        case 1: unpaired = "\(devices[0].name) is unpaired at once, as Revoke does: its keys are forgotten and its connection closed. It must scan a new code to pair again."
+        default:
+            let names = devices.map(\.name)
+            let list = names.dropLast().joined(separator: ", ") + " and " + names.last!
+            unpaired = "All \(devices.count) paired iPhones are unpaired at once, as Revoke does: \(list). Their keys are forgotten and their connections closed. Each must scan a new code to pair again."
+        }
+        let told = devices.isEmpty ? nil : "An iPhone connected at home now is told at once; any other is told when it next reaches this Mac, and wipes what it kept. Their logs stay here for 90 days."
+        return join(unpaired, told, "This Mac then forgets its pairing, and the pairing code it shows next registers a new one at \(relay). The old relay is not told: it forgets the old pairing by itself.")
+    }
+
     private static func join(_ parts: String?...) -> String { parts.compactMap { $0 }.joined(separator: " ") }
 
     private static func time(_ date: Date, seconds: Bool) -> String {
@@ -277,8 +315,9 @@ enum RelayPathWords {
 ///
 ///     defaults write dev.pi2.app.test-7 relay-sample -string 'down'
 ///
-/// `off`, `unavailable`, `connecting`, `ready`, `down`, `busy` (down past a limit), `stopped`, `another` (ready, and the
-/// relay's word of another Mac) and `unknown` (a state this version does not know, with a member it cannot read). Each
+/// `off`, `unavailable`, `another-relay` and `unregistered` (a pairing only starting again mends, #917), `no-pairing`,
+/// `connecting`, `ready`, `down`, `busy` (down past a limit), `stopped`, `another` (ready, and the relay's word of
+/// another Mac) and `unknown` (a state this version does not know, with a member it cannot read). Each
 /// is JSON as pi² Remote sends it, read by the same decoder as the engine's. See docs/development.md, "Choosing what a
 /// copy shows".
 @MainActor
@@ -288,7 +327,10 @@ enum RelaySample {
         let now = Int64(Date().timeIntervalSince1970 * 1000)
         let json: String? = switch name {
         case "off": #"{"available":false,"state":"off","why":"Reach through pi²'s relay is off: home and private networks only."}"#
-        case "unavailable": #"{"available":false,"state":"unavailable","why":"the relay key for this address could not be read or made; the relay path is off, home and direct carry on"}"#
+        case "unavailable": #"{"available":false,"state":"unavailable","why":"the relay key for this address could not be read or made; the relay path is off, home and direct carry on","reason":"key"}"#
+        case "another-relay": #"{"available":false,"state":"unavailable","why":"this Mac's pairing belongs to another relay: it was not registered at this relay by pi² Remote, and is shown to no other relay; home and direct carry on","reason":"another-relay"}"#
+        case "unregistered": #"{"available":false,"state":"unavailable","why":"this Mac's pairing is registered at no relay (it was made for the home path alone), and was not registered at this relay by pi² Remote; home and direct carry on","reason":"unregistered"}"#
+        case "no-pairing": #"{"available":false,"state":"unavailable","why":"no pairing yet: one is registered at the relay when the first iPhone pairs","reason":"no-pairing"}"#
         case "connecting": #"{"available":false,"state":"connecting"}"#
         case "ready": #"{"available":true,"state":"ready"}"#
         case "down": #"{"available":false,"state":"down","why":"the connection to the relay was lost","retryAt":"# + "\(now + 40_000)}"
@@ -426,6 +468,8 @@ struct DevicesSettings: View {
     @State private var renaming: PairedDevice?
     @State private var newName = ""
     @State private var revoking: PairedDevice?
+    /// The confirmation of **Start Again at This Relay…** is up (#917).
+    @State private var startingAgain = false
     @State private var relayDraft = ""
     /// Why the engine refused the relay's address typed, in its words.
     @State private var relayProblem: String?
@@ -481,6 +525,15 @@ struct DevicesSettings: View {
         } message: {
             Text("It can no longer reach this Mac, at once: its keys are forgotten, its connection is closed, and pi²’s relay forgets it, its mailbox and its notifications. The iPhone is told when it next reaches this Mac, and wipes what it kept. Its log stays here for 90 days.")
         }
+        .confirmationDialog(
+            store.active.isEmpty ? "Start again at this relay?" : "Unpair every iPhone and start again at this relay?",
+            isPresented: $startingAgain
+        ) {
+            Button(store.active.isEmpty ? "Start Again" : store.active.count == 1 ? "Unpair 1 iPhone and Start Again" : "Unpair \(store.active.count) iPhones and Start Again", role: .destructive) { startAgain() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(RelayPathWords.startAgainCost(store.active, host: relayHost))
+        }
         .onAppear { relayDraft = state?.relay ?? "" }
         .onChange(of: state?.relay) { _, relay in
             relayDraft = relay ?? ""
@@ -535,6 +588,17 @@ struct DevicesSettings: View {
                 if let relayProblem {
                     Text(relayProblem).font(.callout).foregroundStyle(Theme.bad)
                 }
+                if switches.on, let relayPath, let words = RelayPathWords.elsewhere(relayPath, paired: store.active.count) {
+                    // #917: only pi² Remote's reason offers it, and only the person's word in the confirmation does it.
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label {
+                            Text(words).font(.callout).fixedSize(horizontal: false, vertical: true)
+                        } icon: {
+                            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warn)
+                        }
+                        Button("Start Again at This Relay…") { startingAgain = true }
+                    }
+                }
             }
             VStack(alignment: .leading, spacing: 3) {
                 Toggle("Find on this network", isOn: binding(\.home, "home"))
@@ -557,6 +621,12 @@ struct DevicesSettings: View {
             Text("A paired iPhone can do what you do here, but what needs this Mac’s hands or a secret, once Face ID has opened pi² on it. Pairing, revoking and these switches are this Mac’s alone.").formFooter()
         }
         .id(SettingsSection.reach)
+    }
+
+    /// The relay's host, as the page names it.
+    private var relayHost: String {
+        let address = state?.relay ?? ""
+        return URL(string: address)?.host() ?? address
     }
 
     private func relayLine(now: Date) -> (Color, String) {
@@ -779,6 +849,21 @@ struct DevicesSettings: View {
             do {
                 try await engine.call("devices.rename", ["device": device.id, "name": name])
                 problem = nil
+            } catch {
+                problem = error.localizedDescription
+            }
+        }
+    }
+
+    /// Every device revoked and the pairing forgotten (`devices.startAgain`, #917); then the pairing sheet, whose code
+    /// registers a new pairing at the relay now set. A registration that fails is said there, and the button to pair
+    /// tries again: the Mac is left with no pairing and no device, as the confirmation said.
+    private func startAgain() {
+        Task {
+            do {
+                try await engine.call("devices.startAgain")
+                problem = nil
+                pairing = true
             } catch {
                 problem = error.localizedDescription
             }

@@ -38,6 +38,9 @@ const AIZA_RUN = `${"AIza"}SyD3noiseNoiseNoise0123456789abcdefg`;
 const pad = (text: string) => text + "A".repeat((4 - (text.length % 4)) % 4);
 import { offerFolders } from "../src/answers.ts";
 import { SETTINGS_ONLY_IN_THE_APP } from "../src/answers.ts";
+import { forTheHelper } from "../src/answers.ts";
+import { helperReported } from "../src/devices.ts";
+import { helperRequests } from "../src/remote.ts";
 import { PRESENTING_NOT_YET } from "../src/presented.ts";
 import { DatabaseSync } from "node:sqlite";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
@@ -1100,6 +1103,125 @@ console.log(JSON.stringify(outcome));
 	writeFileSync(join(engine, "BUILD"), "test-release\n");
 	assert.equal(claimIn(), "The claim has no App Attest attestation.", "with a BUILD file beside src, the same claim is refused as on main");
 	step("a release-laid-out engine refuses the claim with no attestation, with both switches set and the copy's folders there; the same engine without BUILD takes it");
+}
+
+// ---- Starting again at the relay now set (#917): the person's word on the Mac, and only for a pairing elsewhere
+
+{
+	// Who may ask: the app alone, at the Mac. Never a device by any path, never an agent's command on the socket (which
+	// PeerKit does not take for the app), never pi² Remote on its own connection.
+	assert.deepEqual(devicePlacement("devices.startAgain"), { list: "MAC_ONLY", why: "devices.*" });
+	for (const path of ["relay", "home", "direct", "mailbox"] as const) {
+		assert.equal(deviceMay("devices.startAgain", {}, { path, approvalSwitch: () => null, approvalHidden: () => false }), "no", `from a device by ${path}`);
+	}
+	assert.equal(personOnly("devices.startAgain", {}), SETTINGS_ONLY_IN_THE_APP, "from any connection but the app's: an agent's command among them");
+	assert.ok(!forTheHelper("devices.startAgain") && !Object.hasOwn(helperRequests, "devices.startAgain"), "nor taken on pi² Remote's connection");
+	step("devices.startAgain is the person's, at the Mac: refused from a device by every path, from any connection but the app's, and on pi² Remote's");
+
+	const harness = await Harness.open(await openNodeSqliteStorage(join(mkdtempSync(join(work, "again-")), "session.sqlite")), { registry: createRegistry(), models: createModels() }, context);
+	const old = b64url(randomBytes(16));
+	const made = (name: string, revokedAt: number | null = null): Device => ({
+		id: `dev_${b64url(randomBytes(16))}`, name, model: "iPhone 17 Pro", system: "iOS 27.1", deviceKey: revokedAt === null ? spki(p256().publicKey) : "", presenceKey: spki(p256().publicKey), pendingPresenceKey: null,
+		channelKey: b64url(randomBytes(32)), recordKey: spki(p256().publicKey), attestKeyId: "", build: "7", suspendedAt: null, pairedAt: Date.now() - 60_000, lastSeenAt: null, lastPath: "home", revokedAt,
+	});
+	const [alex, sam, gone] = [made("Alex's iPhone"), made("Sam's iPhone"), made("Old iPhone", Date.now() - 86_400_000)];
+	await harness.commit(async (tx) => {
+		const doc = await tx.doc(Devices);
+		Object.assign(doc, { pairing: old, relay: "ws://127.0.0.1:9/v1", devices: [alex, sam, gone], macKeys: { identity: spki(p256().publicKey), channel: b64url(randomBytes(32)), record: spki(p256().publicKey), relay: spki(p256().publicKey), secureEnclave: false } });
+		doc.remote = { ...doc.remote, preview: true, on: true, relay: true };
+	}, context);
+	await wireDevices({ harness, context, log: () => {}, release: false, names: { conversation: () => undefined, project: () => undefined } });
+	const saved = { ...remoteHooks };
+	const told: any[] = [];
+	const closed: string[] = [];
+	let relay: Record<string, unknown> | null = { available: true, state: "ready" };
+	const fresh = b64url(randomBytes(16));
+	Object.assign(remoteHooks, {
+		toHelper: (event: any) => {
+			told.push(event);
+			// As pi² Remote does once it has forgotten the old pairing: the relay now set gives a new one.
+			if (event.kind === "register") setTimeout(() => void helperReported({ pairing: fresh }), 10);
+		},
+		ready: async () => ({ addresses: [] }),
+		addresses: () => [],
+		changed: () => {},
+		closeSessions: (device: string) => closed.push(device),
+		helper: () => ({ running: true, stoppedInLastHour: 0, relay }),
+	});
+	const client = { socket: { write: () => true, destroyed: false, destroy: () => {} }, subscriptions: new Map(), shown: new Set() } as unknown as Client;
+	const again = () => deviceRequests["devices.startAgain"]!({}, client);
+	const untouched = () => devicesState().pairing === old && devicesState().devices.filter((one) => one.revokedAt === null).length === 2 && told.length === 0;
+	// Nothing to start again while pi² Remote says the pairing can use the relay, or says nothing, or says another reason.
+	for (const [what, said] of [
+		["ready at this relay", { available: true, state: "ready" }],
+		["down", { available: false, state: "down", why: "lost", retryAt: Date.now() }],
+		["no reason", { available: false, state: "unavailable", why: "this Mac's pairing belongs to another relay" }],
+		["no pairing", { available: false, state: "unavailable", why: "no pairing yet", reason: "no-pairing" }],
+		["no relay key", { available: false, state: "unavailable", why: "no key", reason: "key" }],
+		["nothing said", null],
+	] as const) {
+		relay = said as Record<string, unknown> | null;
+		await assert.rejects(again(), /nothing to start again/, what);
+		assert.ok(untouched(), `and nothing changed: ${what}`);
+	}
+	relay = { available: false, state: "unavailable", why: "this Mac's pairing belongs to another relay", reason: "another-relay" };
+	await assert.rejects(deviceRequests["devices.startAgain"]!({ device: alex.id }, client), /takes nothing/, "a parameter");
+	await harness.commit(async (tx) => void ((await tx.doc(Devices)).remote.relay = false), context);
+	await wireDevices({ harness, context, log: () => {}, release: false, names: { conversation: () => undefined, project: () => undefined } });
+	await assert.rejects(again(), /Turn on Reach through pi²'s relay/, "the relay switch off");
+	await harness.commit(async (tx) => {
+		const doc = await tx.doc(Devices);
+		doc.remote = { ...doc.remote, relay: true, on: false };
+	}, context);
+	await wireDevices({ harness, context, log: () => {}, release: false, names: { conversation: () => undefined, project: () => undefined } });
+	await assert.rejects(again(), /Turn on Reach from an iPhone first/, "remote access off");
+	await harness.commit(async (tx) => void ((await tx.doc(Devices)).remote.on = true), context);
+	await wireDevices({ harness, context, log: () => {}, release: false, names: { conversation: () => undefined, project: () => undefined } });
+	assert.ok(untouched(), "none of these changed anything");
+	step("devices.startAgain refuses while pi² Remote says the pairing can use this relay, says nothing, or names no pairing or another reason; with a parameter; with the relay switch or remote access off");
+
+	// For a pairing at another relay, and with a window open: the window closed, every device revoked and the pairing
+	// forgotten in one commit, pi² Remote told each revocation before the pairing is forgotten, and nothing registered.
+	const opened = (await deviceRequests["devices.pairStart"]!({}, client)) as { payload: string };
+	assert.equal(new URL(opened.payload).searchParams.get("p"), old);
+	told.length = 0;
+	const seen: string[] = [];
+	const commit = harness.commit.bind(harness);
+	(harness as unknown as { commit: typeof commit }).commit = (async (...given: Parameters<typeof commit>) => {
+		seen.push("commit");
+		return commit(...given);
+	}) as typeof commit;
+	const answer = (await again()) as { revoked: string[] };
+	(harness as unknown as { commit: typeof commit }).commit = commit;
+	assert.deepEqual(answer.revoked.sort(), [alex.id, sam.id].sort(), "the active devices, not one revoked before");
+	assert.equal(seen.length, 1, "in one commit");
+	const after = devicesState();
+	assert.equal(after.pairing, null, "the pairing is forgotten");
+	for (const one of [alex, sam]) {
+		const record = after.devices.find((device) => device.id === one.id)!;
+		assert.ok(record.revokedAt !== null && record.deviceKey === "" && record.channelKey === "" && record.recordKey === "" && record.presenceKey === null && record.deviceKeyHash !== undefined, `${one.name} is revoked as Revoke revokes, its keys forgotten`);
+	}
+	assert.equal(after.devices.find((device) => device.id === gone.id)!.revokedAt, gone.revokedAt, "a device revoked before keeps its time");
+	assert.deepEqual(told.map((event) => event.kind), ["closeJoin", "revoke", "revoke", "forgetPairing"], "the window closed, each revocation told, then the pairing forgotten");
+	assert.deepEqual(told.at(-1), { kind: "forgetPairing", pairing: old });
+	assert.deepEqual(closed.sort(), [alex.id, sam.id].sort(), "their sessions closed");
+	assert.ok(!told.some((event) => event.kind === "register"), "and nothing is registered by itself");
+	await assert.rejects(again(), /nothing to start again/, "again, with no pairing: nothing to start again");
+	// A hello or a state in flight that still names the old pairing is not taken back.
+	await helperReported({ pairing: old });
+	assert.equal(devicesState().pairing, null, "the forgotten pairing is not taken back from pi² Remote");
+	// The next pairing registers anew, as a first pairing does, at the relay now set.
+	relay = { available: false, state: "unavailable", why: "no pairing yet", reason: "no-pairing" };
+	told.length = 0;
+	const next = (await deviceRequests["devices.pairStart"]!({}, client)) as { payload: string };
+	assert.equal(told[0]?.kind === "closeJoin" ? told[1]?.kind : told[0]?.kind, "register", `pairStart has pi² Remote register: ${told.map((event) => event.kind).join(" ")}`);
+	assert.equal(new URL(next.payload).searchParams.get("p"), fresh, "and its code names the new pairing, never the old");
+	await helperReported({ pairing: old });
+	assert.equal(devicesState().pairing, fresh, "nor put in place of the new one");
+	await deviceRequests["devices.pairCancel"]!({}, client);
+	Object.assign(remoteHooks, saved);
+	await harness.close(context);
+	step("devices.startAgain, for a pairing at another relay: the window closed, every active device revoked and the pairing forgotten in one commit, pi² Remote told each revocation and then forgetPairing, nothing registered by itself; the old pairing never taken back; the next pairing registers anew");
 }
 
 // ---- A new Face ID key against a real store (#786): the log's kept share, and the races of a save under way
