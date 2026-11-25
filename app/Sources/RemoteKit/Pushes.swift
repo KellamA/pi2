@@ -6,9 +6,10 @@ import Foundation
 // custom key, `sealed`, and what the phone's notification service extension opens. The relay and Apple see its size,
 // one of three, and nothing else of it.
 //
-// The bytes are a sealed item exactly as `SealedItem` seals one for the mailbox (HPKE's encapsulated key first, as the
-// relay checks: `sealed[0] == 0x04`), then the item's 16-byte id, which HPKE's `info` binds it to and which the push has
-// nowhere else to carry. Inside, a Mac item (`MacItem`, signed by the Mac's identity key, for this pairing, device and
+// The bytes are a sealed item as `SealedItem` seals one for the mailbox (HPKE's encapsulated key first, as the relay
+// checks: `sealed[0] == 0x04`), but under the push's own label, `info` beginning "pi2-push-v1" where a mailbox item's
+// begins "pi2-item-v2" (#937), so that a push opens as no mailbox item and no mailbox item as a push; then the item's
+// 16-byte id, which HPKE's `info` binds it to and which the push has nowhere else to carry. Inside, a Mac item (`MacItem`, signed by the Mac's identity key, for this pairing, device and
 // id) of kind `push` for an alert or `pushGone` for a background push, whose body is
 // `{"body":<the engine's body, as it wrote it>,"pad":"000…"}`: the padding inside the signature, so that nothing
 // outside it can be changed unseen, and the engine's own body untouched beside it. The whole is exactly 696, 1,464 or
@@ -76,7 +77,8 @@ public enum PushSealing {
 		guard let size = sizes.first(where: { bare + overhead <= $0 && $0 >= kind.smallest }) else { throw tooLarge }
 		let plaintext = try item(pad: size - overhead - bare).plaintext
 		guard plaintext.count == size - overhead else { throw RemoteKitError("sealed push", "could not be padded") }
-		let sealed = try SealedItem.seal(plaintext, to: ItemAddress(pairing: pairing, reader: .device(device), id: id), readerKey: deviceRecordKey, writerKey: recordKey)
+		let sealed = try SealedItem.seal(
+			plaintext, to: ItemAddress(pairing: pairing, reader: .device(device), id: id), label: .push, readerKey: deviceRecordKey, writerKey: recordKey)
 		guard let idBytes = Base64URL.decode(id.text, count: idLength) else { throw RemoteKitError("sealed push", "not an item's id") }
 		let whole = sealed + idBytes
 		guard whole.count == size else { throw RemoteKitError("sealed push", "not of a push's size") }
@@ -95,8 +97,8 @@ public enum PushSealing {
 	}
 
 	/// Opens a sealed push as the phone does, and gives nothing back unless all of it holds: one of `sizes`, sealed for
-	/// this device of this pairing and this id by the Mac's record key, signed by its identity key, a push's kind, and its
-	/// body exactly `{"body":…,"pad":"000…"}`.
+	/// this device of this pairing and this id by the Mac's record key under the push's label, signed by its identity key,
+	/// a push's kind, and its body exactly `{"body":…,"pad":"000…"}`.
 	public static func open<Key: HPKEDiffieHellmanPrivateKey>(
 		_ sealed: Data, pairing: PairingID, device: DeviceID, recordKey: Key, macRecordKey: P256.KeyAgreement.PublicKey, identityKey: P256.Signing.PublicKey
 	) throws -> Opened where Key.PublicKey == P256.KeyAgreement.PublicKey {
@@ -105,7 +107,7 @@ public enum PushSealing {
 		let split = sealed.endIndex - idLength
 		guard let id = ItemID(Base64URL.encode(sealed[split...])) else { throw RemoteKitError(part, "not an item's id") }
 		let item = try SealedItem.openMacItem(
-			Data(sealed[sealed.startIndex..<split]), at: ItemAddress(pairing: pairing, reader: .device(device), id: id),
+			Data(sealed[sealed.startIndex..<split]), at: ItemAddress(pairing: pairing, reader: .device(device), id: id), label: .push,
 			readerKey: recordKey, writerRecordKey: macRecordKey, identityKey: identityKey)
 		guard let kind = Kind(itemKind: item.kind) else { throw RemoteKitError(part, "not a push") }
 		let fields = try Fields(item.body, part: part, keys: ["body", "pad"])

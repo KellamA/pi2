@@ -115,6 +115,44 @@ enum Attach {
         }
     }
 
+    /// What the Mac answered an offer of a new presence key (#891). The channel ends after it, whatever it is.
+    enum OfferOutcome: Equatable, Sendable {
+        /// The key offered is the one the Mac uses: the person accepted it there.
+        case accepted
+        /// Refused, with the Mac's reason: `presence` while the key waits to be accepted on the Mac; nil for none this
+        /// build knows.
+        case refused(Refusal.Reason?)
+        /// The Mac's identity key revoked this device.
+        case revoked
+        /// The channel closed with no answer.
+        case closed
+    }
+
+    /// Offers the presence key that waits to be accepted on the Mac (3.2, #891), on the channel that came first, in
+    /// place of an attach: the offer signed by the device key and by the new key, once, and the Mac's answer. Nothing is
+    /// attached on it: the channel is dropped once answered.
+    static func offer(_ proved: Proved, mac: PairedMac, keys: PairedKeys, build: String, now: @Sendable () -> Date = { Date() }) async throws -> OfferOutcome {
+        defer { proved.channel.drop() }
+        let channel = proved.channel
+        let offer: PresenceKeyOffer
+        do {
+            offer = try await PresenceSignatures.offer(
+                pairing: mac.pairing, device: mac.device, binding: channel.channel.handshakeHash, challenge: proved.proof.challenge, build: build, at: now(),
+                deviceKey: keys.device, presence: keys.presence)
+        } catch {
+            if let presence = PresenceError(error) { throw Failure.presence(presence) }
+            throw Failure.deviceKey
+        }
+        try channel.send(.presenceKey(offer))
+        guard let answer = try await channel.nextLine(within: answerWithin) else { return .closed }
+        switch try? ControlLine.parse(answer, from: .mac) {
+        case .presenceKeyAccepted?: return .accepted
+        case let .refused(refusal)?: return .refused(refusal.reason)
+        case let .revoked(revocation)?: return try verified(revocation, mac: mac) ? .revoked : .closed
+        default: throw Failure.unreadable
+        }
+    }
+
     /// Whether a `revoked` line is the Mac's word: its identity key's signature, for this pairing and this device. One
     /// that is not is not believed, and the channel is closed as any other that misbehaves.
     static func verified(_ revocation: Revocation, mac: PairedMac) throws -> Bool {
