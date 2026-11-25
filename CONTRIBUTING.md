@@ -93,7 +93,7 @@ A copy opens on projects, as pi² does, with nothing to turn on: on the Dashboar
 
 It launches the copy with `open -n -g`, so it does not take the focus, and with a clean environment that names that data folder and Keychain service explicitly. A shell can have `PI2_HOME` naming the usual data folder (a terminal where it is set, or a command an agent of a pi² from before #195 runs, inherited from its engine), and `open` would pass it on; nothing the shell has reaches the copy. The copy's windows open behind every other window and parked in the bottom-right corner of the screen (`PI2_WINDOW_BEHIND=1`, `PI2_WINDOW_ORIGIN=10000,10000`), and keep drawing while covered (`PI2_DRAW_WHEN_HIDDEN=1`); `--show` sets `PI2_SHOW`, what the window opens on, and `--hub` how a project's hub is folded (see [Choosing what a copy shows](docs/development.md#choosing-what-a-copy-shows)).
 
-`--remote` turns on remote access for a phone in the simulator, with the copy's own pi² Remote on 127.0.0.1 alone; `pair` and `attach` then pair and attach the debug build in a simulator of your own ([Trying the phone against a copy](docs/development.md#trying-the-phone-against-a-copy)).
+`--remote` turns on remote access for a phone in the simulator, with the copy's own pi² Remote on 127.0.0.1 alone; `pair` and `attach` then pair and attach the debug build in a simulator of your own, and `remote-off` and `remote-on` put it out of reach and back with no second pairing ([Trying the phone against a copy](docs/development.md#trying-the-phone-against-a-copy)).
 
 `--no-app-nap` disables App Nap in the copy's own preferences before launch, for speed measurements. `reopen` keeps the preference and `stop` removes it with the rest of the copy's preferences.
 
