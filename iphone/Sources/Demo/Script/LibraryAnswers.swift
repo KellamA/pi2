@@ -9,13 +9,17 @@ extension DemoScript {
     static let library: [String: DemoAnswer] = [
         "conversation.create": { request, world in
             if let chat = request.params["chat"], !(chat is NSNull), !(chat is Bool) { throw DemoRefusal("chat must be true or false") }
-            // An agent's conversation is made by a project's screens through their own requests; the phone's New Chat
-            // makes a chat with pi²'s assistant.
-            guard request.params["chat"] as? Bool == true else {
-                throw DemoRefusal("The demo does not do conversation.create for an agent: nothing was changed. On a Mac paired with this iPhone, pi² does it.")
+            if request.params["chat"] as? Bool == true {
+                if request.params["agentId"] != nil { throw DemoRefusal("A chat has no agent: leave agentId out") }
+                return ["id": DemoLibrary.makeChat(world)]
             }
-            if request.params["agentId"] != nil { throw DemoRefusal("A chat has no agent: leave agentId out") }
-            return ["id": DemoLibrary.makeChat(world)]
+            // A conversation with an agent, as the board's New Conversation makes one: the oldest agent when none is named.
+            let agents = DemoSettings.agents(world)
+            let named = agents.first { $0["id"] as? String == request.params["agentId"].map { "\($0)" } ?? "" }
+            guard let agent = named ?? agents.min(by: { ($0["createdAt"] as? Double ?? 0) < ($1["createdAt"] as? Double ?? 0) }) else {
+                throw DemoRefusal("There is no agent to start a conversation with")
+            }
+            return ["id": try DemoLibrary.startWith(agent, title: "", world: world)]
         },
         "conversation.pin": { request, world in
             let id = try request.requireInt("id")
@@ -130,6 +134,28 @@ enum DemoLibrary {
         world.change("library") { library in
             library["conversations"] = [row] + (library["conversations"] as? [[String: Any]] ?? [])
         }
+    }
+
+    /// A conversation with `agent`, empty, on the demo model, refused as the engine refuses one with an agent removed, or
+    /// of a project deleted or archived (`refuseStartWith`). A project's limits are the Mac's to apply: the demo spends
+    /// nothing.
+    static func startWith(_ agent: [String: Any], title: String, world: DemoWorld) throws -> Int {
+        let agentID = agent["id"] as? String ?? ""
+        if agent["removedAt"] != nil { throw DemoRefusal("Unknown agent: \(agentID)") }
+        let projectID = agent["projectId"] as? String
+        if let projectID, let project = DemoProjects.project(projectID, world: world) {
+            if project["deletedAt"] is NSNumber { throw DemoRefusal(DemoSettings.projectDeleted) }
+            if project["archivedAt"] is NSNumber { throw DemoRefusal(DemoSettings.archived) }
+        }
+        let id = world.newItemID()
+        let state: [String: Any] = [
+            "model": agent["model"] is [String: Any] ? agent["model"] ?? NSNull() : ["provider": "demo", "modelId": "demo-1"],
+            "thinkingLevel": agent["thinkingLevel"] ?? NSNull(), "cwd": agent["cwd"] ?? NSNull(), "access": agent["access"] ?? "none",
+            "agentId": agentID, "parent": NSNull(),
+        ]
+        add(newRow(id, title: title, agentId: agentID, parent: nil, projectId: projectID, chat: false, now: world.now),
+            state: newState(title: title, chat: false, agent: state, project: projectID.map { ["id": $0, "orchestrator": NSNull()] }), world: world)
+        return id
     }
 
     /// A chat with pi²'s assistant, on the demo model, empty: what New Chat makes (`createChat`).

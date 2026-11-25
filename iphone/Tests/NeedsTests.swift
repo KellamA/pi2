@@ -139,6 +139,14 @@ struct NeedsTests {
         #expect(!NeedHeldAgain.isHeldAgain(.limit(start: true), need: "n5", waiting: [limit]))
     }
 
+    /// Since #953 the engine says so itself: `{ held: true, limit }` for a start held again, `{}` for one taken.
+    @Test func theEnginesAnswerSaysWhetherTheStartWasHeldAgain() {
+        #expect(NeedAnswering.sent(.object(["held": .bool(true), "limit": .object(["id": .string("r2"), "limit": .string("dailySpend")])])) == .held)
+        #expect(NeedAnswering.sent(.object([:])) == .taken)
+        #expect(NeedAnswering.sent(.object(["held": .bool(false)])) == .taken)
+        #expect(NeedAnswering.sent(.object(["outbox": .string("o1")])) == .kept)
+    }
+
     /// `PI2_NEEDS_PRESS=<need id>:<answer>`: the answer named, as the card's own button sends it, for each kind.
     @Test func aPressNamesTheAnswerItsCardWouldSend() throws {
         let approval = try need(id: "134", kind: "approval", at: 1)

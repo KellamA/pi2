@@ -315,6 +315,7 @@ enum Relayed {
 
 		hostile(engine, mac: fmac, device: device, keys: keys1, wire: wire)
 		mailbox(engine, mac: mac, device: device, keys: keys1, wire: wire, relay: relay)
+		RelayedPushes.through(engine, mac: mac, device: device, keys: keys1, wire: wire, relay: relay, home: home)
 
 		Check.section("the relay path off, and the home path on its own (6.5)")
 		var count = engine.states.count
@@ -322,6 +323,7 @@ enum Relayed {
 		engine.event("settings", [("relay", .string(relay.absoluteString)), ("switches", relayOff)])
 		let off = engine.relayState("off", from: count)
 		Check.expect(off?["available"]?.boolValue == false && off?["why"]?.stringValue?.contains("home and private networks only") == true, "Reach through pi²'s relay off: the engine is told the relay path is off, as wanted", off.map(JSON.text) ?? "nothing")
+		RelayedPushes.afterStop(engine, device: device, relay: relay, home: home, "the engine's first push again, the relay switch off")
 		Check.expect(wire.ended(within: 5) == nil, "the phone's own socket at the relay stays")
 		if let (home2, _) = Flows.attach(engine, mac: fmac, device: device, keys: keys1, session: "r_two") {
 			Check.expect(true, "the home path attaches with the relay off")
@@ -330,15 +332,15 @@ enum Relayed {
 		} else {
 			Check.expect(false, "the home path attaches with the relay off")
 		}
-		count = engine.states.count
-		engine.event("settings", [("relay", .string(relay.absoluteString)), ("switches", Flows.switches)])
-		Check.expect(engine.relayState("ready", from: count) != nil, "on again: the relay path connects and is ready")
+		// On again, with a push in the same write (#935).
+		Check.expect(RelayedPushes.beforeReady(engine, device: device, relay: relay, home: home), "on again: the relay path connects and is ready")
 		// Another relay's address: the pairing is shown to no relay but its own.
 		count = engine.states.count
 		engine.event("settings", [("relay", .string("ws://127.0.0.1:9/v1")), ("switches", Flows.switches)])
 		if let other = engine.request("remote.hello") { engine.answer(other.id) }
 		let elsewhere = engine.relayState("unavailable", from: count)
 		Check.expect(elsewhere?["why"]?.stringValue?.contains("not registered at this relay") == true, "another relay's address: the pairing is not shown to it, and the engine is told why", elsewhere.map(JSON.text) ?? "nothing")
+		RelayedPushes.afterStop(engine, device: device, relay: relay, home: home, "the same push, at another relay's address")
 		count = engine.states.count
 		engine.event("settings", [("relay", .string(relay.absoluteString)), ("switches", Flows.switches)])
 		if let back = engine.request("remote.hello") { engine.answer(back.id) }
@@ -348,8 +350,10 @@ enum Relayed {
 		guard let (revoked, _) = Flows.attach(engine, mac: fmac, device: device, keys: keys1, session: "r_three", path: "relay", make: { Phone(relay: wire) }) else {
 			Check.stop("attached over the relay before the revocation")
 		}
-		engine.event("revoke", [("device", .string(device.text))])
-		engine.event("sessionClosed", [("session", .string("r_three")), ("why", .string("revoked"))])
+		let pushesAfter = RelayedPushes.revokedWhileWaiting(engine, device: device, relay: relay, home: home) {
+			engine.event("revoke", [("device", .string(device.text))])
+			engine.event("sessionClosed", [("session", .string("r_three")), ("why", .string("revoked"))])
+		}
 		if let line = revoked.line(), case let .revoked(revocation)? = try? ControlLine.parse(line, from: .mac) {
 			Check.expect((try? revocation.verify(identityKey: identity, pairing: pairing, device: device)) != nil && revoked.event() == .bye, "a revoked device is told so over the relay, signed by the identity key, and its channel ends")
 		} else {
@@ -357,6 +361,7 @@ enum Relayed {
 		}
 		let removed = wire.ended(within: 15)
 		Check.expect(removed?.contains("removed") == true, "and its slot at the relay is removed: the relay closes its socket", removed ?? "still open")
+		pushesAfter()
 		Check.expect(kept(home)?.devices.isEmpty == true, "and it is dropped from pi² Remote's own list")
 		let log = (try? String(contentsOf: home.appendingPathComponent("remote.log"), encoding: .utf8)) ?? ""
 		Check.expect(!log.contains(Base64URL.encode(secret)), "pi² Remote's log holds no pairing secret")

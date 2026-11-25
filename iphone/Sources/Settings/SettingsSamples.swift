@@ -21,8 +21,10 @@ import SwiftUI
 /// `PI2_SETTINGS_SCROLL=<section>` opens a settings screen scrolled to that section (`phone`, `mac`, `chat`, `commits`,
 /// `more`, `onlyMac`; `project`, `repository`, `orchestrator`, `switches`, `reports`, `limits`, `schedules`,
 /// `lifecycle`), for a picture of what is below the screen. `PI2_SETTINGS_PRESS=<row>` makes one change once the screen
-/// has drawn, as a tap would, so that the engine's answer to it can be pictured: `awake` (Settings), `reports` (a
-/// project's), `run` (the first schedule, on Schedules), `live-activity` (a project's Live Activity switch, turned on; with
+/// has drawn and the Mac is reached, as a tap would, so that the engine's answer to it can be pictured: `awake`
+/// (Settings), `lock` and `unpair` (Settings' This iPhone, Unpair as confirmed), `reports` and `daily-spend:<dollars>` (a
+/// project's; empty for No Limit), `run`, `pause` and `delete` (the first schedule, on Schedules: Run Now, Turn Off or On,
+/// and Delete as confirmed), `live-activity` (a project's Live Activity switch, turned on; with
 /// `PI2_LIVE_ACTIVITY_SWITCH=off-in-ios`, drawn as while iOS has Live Activities off).
 struct SettingsSamples {
     let names: Set<String>
@@ -48,6 +50,14 @@ struct SettingsSamples {
         guard press == row, !pressed else { return false }
         pressed = true
         return true
+    }
+
+    /// What follows `row:` in `PI2_SETTINGS_PRESS` (empty for `row` alone), once a launch, as `shouldPress` does.
+    @MainActor
+    static func pressArgument(_ row: String) -> String? {
+        guard let press, press == row || press.hasPrefix(row + ":"), !pressed else { return nil }
+        pressed = true
+        return press == row ? "" : String(press.dropFirst(row.count + 1))
     }
 
     func lay(over source: inout SettingsSource) {

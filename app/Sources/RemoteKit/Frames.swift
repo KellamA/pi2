@@ -117,6 +117,9 @@ public struct LineAssembler: Sendable {
 	/// Whether a line has been begun and not finished.
 	public var isPartway: Bool { !pending.isEmpty }
 
+	/// How much of a line begun and not finished it holds, in bytes: zero between lines (#908).
+	public var unfinishedLength: Int { pending.count }
+
 	/// Takes a `data` or `more` frame; gives back the line a `data` frame ends.
 	public mutating func take(_ frame: Frame) throws -> Data? {
 		guard frame.kind == .data || frame.kind == .more else { throw RemoteKitError("line", "a frame that is not part of a line") }

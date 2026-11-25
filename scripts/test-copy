@@ -69,6 +69,13 @@ Usage: scripts/test-copy <command> [arguments]
   attach <suffix> [--sim <name>] [--show <route>] [--env NAME=VALUE]
                                    Launch the paired simulator's app again (PI2_TRANSPORT=remote, --show's route and
                                    --env's values), and answer its Face ID until it is attached to the copy again.
+                                   An attach whose session has already ended (a launch value that locks or unpairs)
+                                   counts, and is said so.
+  remote-off <suffix>              Turn remote access off in a copy started with --remote, as Settings › Devices does:
+                                   its pi² Remote stops, and a paired phone is out of reach.
+  remote-on <suffix>               Turn it on again, as start --remote left it. pi² Remote starts on a new port, so the
+                                   port the paired phone knows is forwarded to it, on 127.0.0.1, until remote-off, pair
+                                   or stop; then Face ID is answered until the phone has come back, with no pairing.
   reopen <suffix> [--show <what>] [--hub <fold>] [--appearance light|dark]
                                    Replace and launch the app from the latest development build in this checkout.
                                    Keep its engine, data, environment and previous --show, --hub and --appearance unless
@@ -265,6 +272,9 @@ APP_PID="" APP_START="" APP_EXE="" ENGINE_PID="" ENGINE_START="" ENGINE_EXE="" S
 APPEARANCE=""
 # start --remote (#681): remote access for a phone in the simulator, and which simulator and device pair paired.
 REMOTE=0 PHONE_SIM="" PHONE_DEVICE=""
+# The address the paired phone knows the copy by, its pairing code's (pair), and the forwarder remote-on starts from it to
+# pi² Remote's port of the moment (#951), recorded as the app and engine are.
+PHONE_ADDRESS="" FORWARD_PID="" FORWARD_START="" FORWARD_EXE=""
 # What a copy started with --remote gives its engine, beside its own folders: with PI2_TEST_COPY, it takes a pairing
 # claim with no App Attest attestation, which a simulator cannot make (devices.ts, docs/iphone.md 10). A development
 # engine alone honours it (testswitches.ts).
@@ -395,18 +405,25 @@ load_state() {
 			remote) [[ $value == 1 ]] && REMOTE=1 ;;
 			phone_sim) PHONE_SIM=$value ;;
 			phone_device) PHONE_DEVICE=$value ;;
+			phone_address) PHONE_ADDRESS=$value ;;
+			forward_pid) FORWARD_PID=$value ;;
+			forward_start) FORWARD_START=$value ;;
+			forward_exe) FORWARD_EXE=$value ;;
 			test_env) add_test_env "$value" ;;
 		esac
 	done <"$STATE"
 	[[ -z $APP_PID || $APP_PID =~ ^[0-9]+$ ]] || die "$STATE is damaged: app_pid is '$APP_PID'"
 	[[ -z $ENGINE_PID || $ENGINE_PID =~ ^[0-9]+$ ]] || die "$STATE is damaged: engine_pid is '$ENGINE_PID'"
+	[[ -z $FORWARD_PID || $FORWARD_PID =~ ^[0-9]+$ ]] || die "$STATE is damaged: forward_pid is '$FORWARD_PID'"
+	[[ -z $PHONE_ADDRESS || $PHONE_ADDRESS =~ ^127\.0\.0\.1:[0-9]+$ ]] || die "$STATE is damaged: phone_address is '$PHONE_ADDRESS'"
 }
 
 save_state() {
 	printf '%s\n' "suffix=$SUFFIX" "show=$SHOW" "hub=$HUB" "menu=$MENU" "appearance=$APPEARANCE" \
 		"app_pid=$APP_PID" "app_start=$APP_START" "app_exe=$APP_EXE" \
 		"engine_pid=$ENGINE_PID" "engine_start=$ENGINE_START" "engine_exe=$ENGINE_EXE" \
-		"remote=$REMOTE" "phone_sim=$PHONE_SIM" "phone_device=$PHONE_DEVICE" >"$STATE.new"
+		"remote=$REMOTE" "phone_sim=$PHONE_SIM" "phone_device=$PHONE_DEVICE" "phone_address=$PHONE_ADDRESS" \
+		"forward_pid=$FORWARD_PID" "forward_start=$FORWARD_START" "forward_exe=$FORWARD_EXE" >"$STATE.new"
 	local pair
 	for pair in ${TEST_ENV[@]+"${TEST_ENV[@]}"}; do printf '%s\n' "test_env=$pair" >>"$STATE.new"; done
 	mv "$STATE.new" "$STATE"
@@ -473,6 +490,7 @@ stop_copy() {
 		stop_process "process from the copy's bundle" "$pid" "$(started_at "$pid")" "$(executable "$pid")"
 	done
 	stop_process engine "$ENGINE_PID" "$ENGINE_START" "$ENGINE_EXE"
+	stop_process "forwarder to pi² Remote" "$FORWARD_PID" "$FORWARD_START" "$FORWARD_EXE"
 	for pid in $(from_bundle); do
 		stop_process "process from the copy's bundle" "$pid" "$(started_at "$pid")" "$(executable "$pid")"
 	done
@@ -799,6 +817,39 @@ require_loopback_helper() {
 	die "$why; the pairing was closed, and nothing was given to the phone"
 }
 
+# The port the copy's pi² Remote listens on, once it does: nothing while it is not running or not yet listening.
+helper_port() {
+	local pid name
+	for pid in $(helper_pids); do
+		name=$(lsof -nP -a -p "$pid" -i 2>/dev/null | awk 'NR > 1 && $10 == "(LISTEN)" { print $9; exit }')
+		[[ $name =~ ^127\.0\.0\.1:([0-9]+)$ ]] && { echo "${BASH_REMATCH[1]}"; return 0; }
+	done
+	return 0
+}
+
+# Stops the forwarder remote-on started, by its recorded pid, and forgets it.
+stop_forward() {
+	[[ -n $FORWARD_PID ]] || return 0
+	stop_process "forwarder to pi² Remote" "$FORWARD_PID" "$FORWARD_START" "$FORWARD_EXE"
+	FORWARD_PID="" FORWARD_START="" FORWARD_EXE=""
+	save_state
+}
+
+# Forwards the port the paired phone knows ($PHONE_ADDRESS) to $1, pi² Remote's port now, if they differ (#951): a
+# copy's pi² Remote has no Bonjour, and the phone would never find it again on its new port.
+forward_phone_address() {
+	local now=$1 known pid
+	stop_forward
+	[[ -n $PHONE_ADDRESS ]] || return 0
+	known=${PHONE_ADDRESS#127.0.0.1:}
+	[[ $known != "$now" ]] || return 0
+	pid=$(node "$ROOT/scripts/test-copy-forward.mjs" start "$known" "$now" "$DIR/forward.log" 2>&1) ||
+		die "could not forward 127.0.0.1:$known, which the phone knows, to pi² Remote's new port $now: $pid. Pair the phone again with scripts/test-copy pair $SUFFIX"
+	FORWARD_PID=$pid FORWARD_START=$(started_at "$pid") FORWARD_EXE=$(executable "$pid")
+	save_state
+	echo "pi² Remote listens on 127.0.0.1:$now now; forwarding 127.0.0.1:$known, the address the phone knows, to it (process $pid)."
+}
+
 # The simulator a phone command works on: --sim's, or pi2-N for a copy test-N, through scripts/iphone-sim, which
 # refuses one it did not make (and booted). Sets SIM and UDID.
 phone_simulator() {
@@ -822,19 +873,27 @@ launch_phone() {
 # Answers the phone's Face ID with a matching face, as the simulator's Features › Face ID › Matching Face does, until
 # the copy's engine has a session for the device other than those in $2 (the phone attached), within $1 seconds. A
 # match given while no Face ID is asked is let pass by the simulator, so it is given every two seconds: the app asks
-# once the first screen has gone on by itself after "Paired", or at launch.
+# once the first screen has gone on by itself after "Paired", or at launch. A session that ended between two looks, as
+# one does that a launch value ends at once (Lock, unpair; #984), counts too: an attach the devices' log has for the
+# device since $3 (the launch, in milliseconds), said as ended.
 attach_phone() {
-	local limit=$1 before=$2 deadline sessions
+	local limit=$1 before=$2 since=$3 deadline sessions attached
 	deadline=$((SECONDS + limit))
 	while :; do
 		"$ROOT/scripts/iphone-sim" face-id "$SIM" match >/dev/null 2>&1 || true
 		sleep 2
+		attached=$(engine_call devices.log "{\"device\":\"$PHONE_DEVICE\"}" |
+			from_json "r.entries.filter((e) => (e.method === 'attach' || e.method === 'resume') && e.outcome === 'done' && e.at >= $since).map((e) => e.path)[0]")
 		sessions=$(engine_call devices.watch | from_json "r.sessions.filter((s) => s.device === '$PHONE_DEVICE').map((s) => s.session + ' ' + s.path).join('\\n')")
 		while read -r session path; do
 			[[ -n $session && " $before " != *" $session "* ]] || continue
 			echo "The phone is attached to $NAME over the $path path (session $session)."
 			return 0
 		done <<<"$sessions"
+		if [[ -n $attached ]]; then
+			echo "The phone attached to $NAME over the $attached path, and its session has already ended; the copy's devices.log has both."
+			return 0
+		fi
 		((SECONDS < deadline)) ||
 			die "the phone did not attach within $limit seconds; see it with scripts/iphone-sim shot $SIM <file.png>, and $(tidy "$DATA")/remote.log"
 	done
@@ -1319,9 +1378,10 @@ JS
 			# signs under its Face ID there.
 			"$ROOT/scripts/iphone-sim" face-id "$SIM" enrol >/dev/null || die "could not enrol a face in $SIM"
 			before=$(engine_call devices.watch | from_json "r.sessions.map((s) => s.session).join(' ')")
+			since=$(($(date +%s) * 1000))
 			pid=$(launch_phone "${phone_env[@]}")
 			echo "Launched the app in $SIM (process $pid); answering its Face ID with a matching face."
-			attach_phone 120 "$before"
+			attach_phone 120 "$before" "$since"
 			exit 0
 		fi
 
@@ -1330,9 +1390,11 @@ JS
 		if [[ -n $PHONE_DEVICE ]]; then
 			engine_call devices.revoke "{\"device\":\"$PHONE_DEVICE\"}" >/dev/null
 			echo "Revoked $PHONE_DEVICE, the phone paired before."
-			PHONE_DEVICE="" PHONE_SIM=""
+			PHONE_DEVICE="" PHONE_SIM="" PHONE_ADDRESS=""
 			save_state
 		fi
+		# The new phone knows the new pairing's address alone.
+		stop_forward
 
 		# Face ID enrolled, which making the phone's keys needs; this boots the simulator too, which can take a minute or
 		# two, before the pairing's five minutes start.
@@ -1352,6 +1414,7 @@ JS
 
 		# 2. The code, as the phone would scan it: a fresh install of the debug build, given it in PI2_PAIR, which it takes
 		#    as scanned.
+		since=$(($(date +%s) * 1000))
 		pid=$(launch_phone --fresh "${phone_env[@]}" --env "PI2_PAIR=$payload")
 		echo "Gave the code to a fresh install of the app in $SIM (process $pid)."
 
@@ -1391,13 +1454,61 @@ JS
 		fi
 		PHONE_DEVICE=$(from_json r.device <<<"$confirmed")
 		[[ $PHONE_DEVICE =~ ^dev_[A-Za-z0-9_-]+$ ]] || die "the copy's engine paired no device: $confirmed"
-		PHONE_SIM=$SIM
+		PHONE_SIM=$SIM PHONE_ADDRESS=$addresses
 		save_state
 		echo "Paired $PHONE_DEVICE with $NAME."
 
 		# 5. Attached: the app goes on by itself after "Paired", and asks Face ID for its session.
-		attach_phone 120 ""
+		attach_phone 120 "" "$since"
 		echo "Picture it with scripts/iphone-sim shot $SIM <file.png>; launch it again, attached, with scripts/test-copy attach $SUFFIX [--show <route>]."
+		;;
+	remote-off|remote-on)
+		names "${1-}"; shift
+		(($# == 0)) || die "use: scripts/test-copy $cmd $SUFFIX"
+		require_copy
+		require_engine
+		((REMOTE)) || die "the copy $SUFFIX was not started with --remote, so it has no remote access to turn off or on: stop it, and start it again with --remote"
+		if [[ $cmd == remote-off ]]; then
+			# Off as the person turns it off in Settings › Devices: the engine stops pi² Remote, and the port the phone knows
+			# is left with nothing on it.
+			stop_forward
+			out=$(engine_call devices.set '{"on":false}')
+			[[ $(from_json 'r.remote.on' <<<"$out") == false ]] || die "the copy's engine did not turn remote access off: $out"
+			waited=0
+			while [[ -n $(helper_pids) ]]; do
+				((waited < STOP_LIMIT * 2)) ||
+					die "remote access is off in $NAME, but its pi² Remote ($(helper_pids | tr '\n' ' ')) still runs $STOP_LIMIT seconds later"
+				sleep 0.5
+				waited=$((waited + 1))
+			done
+			echo "Remote access is off in $NAME, and its pi² Remote has stopped${PHONE_DEVICE:+: the phone paired with it is out of reach}. Turn it on again with scripts/test-copy remote-on $SUFFIX."
+			exit 0
+		fi
+		before=$(engine_call devices.watch | from_json "r.sessions.map((s) => s.session).join(' ')")
+		since=$(($(date +%s) * 1000))
+		remote_on
+		if [[ -z $PHONE_DEVICE ]]; then
+			echo "Remote access is on in $NAME; its pi² Remote starts with a pairing (scripts/test-copy pair $SUFFIX)."
+			exit 0
+		fi
+		# pi² Remote starts again for the paired phone, on a port of its own choosing; held to 127.0.0.1 before the phone's
+		# address is forwarded to it.
+		waited=0 port=""
+		while port=$(helper_port) && [[ -z $port ]]; do
+			((waited < START_LIMIT * 2)) ||
+				die "the copy's pi² Remote was not listening within $START_LIMIT seconds of remote access going on; $(tidy "$DATA")/remote.log may say why"
+			sleep 0.5
+			waited=$((waited + 1))
+		done
+		if ! why=$(loopback_helper_problem); then
+			engine_call devices.set '{"on":false}' >/dev/null
+			die "$why; remote access was turned off again, and nothing was forwarded"
+		fi
+		forward_phone_address "$port"
+		phone_simulator "$PHONE_SIM"
+		"$ROOT/scripts/iphone-sim" face-id "$SIM" enrol >/dev/null || die "could not enrol a face in $SIM"
+		echo "Remote access is on in $NAME; waiting for the phone to come back (it tries again within a minute), answering its Face ID with a matching face."
+		attach_phone 120 "$before" "$since"
 		;;
 	stop)
 		names "${1-}"
@@ -1431,6 +1542,7 @@ JS
 		echo "  app pid           $(state "$APP_PID" "$APP_START" "$APP_EXE")"
 		echo "  engine pid        $(state "$ENGINE_PID" "$ENGINE_START" "$ENGINE_EXE")"
 		((REMOTE == 0)) || echo "  remote access     on (start --remote)${PHONE_DEVICE:+; paired with $PHONE_DEVICE in the simulator $PHONE_SIM}"
+		[[ -z $FORWARD_PID ]] || echo "  forwarder         $(state "$FORWARD_PID" "$FORWARD_START" "$FORWARD_EXE"), from $PHONE_ADDRESS, the address the phone knows"
 		;;
 	""|-h|--help|help) usage ;;
 	*) usage >&2; exit 1 ;;

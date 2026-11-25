@@ -59,9 +59,21 @@ struct ConversationRequests {
     /// One of an entry's pictures, for the page: `conversation.image`, as the Mac's page bridge asks for it
     /// (`TranscriptBridge.sendPicture`). Nil when it could not be had.
     func picture(entry: Int, index: Int) async -> (data: String, mimeType: String)? {
-        guard let result = try? await engine.call("conversation.image", ["id": conversationID, "entryId": entry, "index": index]),
-              let data = result["data"]?.stringValue, let type = result["mimeType"]?.stringValue else { return nil }
-        return (data, type)
+        do {
+            let result = try await engine.call("conversation.image", ["id": conversationID, "entryId": entry, "index": index])
+            guard let data = result["data"]?.stringValue, let type = result["mimeType"]?.stringValue else {
+                #if DEBUG
+                ConversationDebugControls.note("picture \(entry)/\(index) came without data: \(String(describing: result).prefix(200))")
+                #endif
+                return nil
+            }
+            return (data, type)
+        } catch {
+            #if DEBUG
+            ConversationDebugControls.note("picture \(entry)/\(index) not had: \(error.localizedDescription)")
+            #endif
+            return nil
+        }
     }
 
     private func request(_ method: String, _ params: [String: Any], failing: String) async -> String? {

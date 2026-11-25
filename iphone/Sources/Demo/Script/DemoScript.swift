@@ -26,7 +26,11 @@ enum DemoScript {
                         // agents.allowEverything (off), branches.refresh
         work,           // Script/WorkAnswers.swift (#694): work.list, work.create, work.act
         conversationsScreens, // Script/ConversationsAnswers.swift (#698): conversation.rename, .delete, settings.setAutoArchive,
-                        // background.output, .stop, projects.unarchive, .restoreConversation, .folders, .create
+                        // background.output, .stop, files.preview, projects.unarchive, .restoreConversation, .folders, .create
+        github,         // Script/GitHubAnswers.swift (#684, #694, #695): github.refresh, .show, .diff, .merge, .sendBack, .settle
+        agents,         // Script/AgentAnswers.swift (#684, #696): agents.save, .duplicate, .delete, .restore, .updateFromTemplate,
+                        // projects.addAgent, .setOrchestrator, rules.add, .remove
+        worktrees,      // Script/WorktreeAnswers.swift (#684, #696): worktree.suggest, .create, .remove
     ]
 
     /// The answers by method. Two features answering the same method is a mistake, which the tests catch.
@@ -44,15 +48,22 @@ enum DemoScript {
     static func reply(to request: DemoRequest, in world: DemoWorld) -> [String: Any] {
         guard let answer = answers[request.method] else {
             world.unanswered.append(request.method)
-            return ["id": request.id, "error": "The demo does not do \(request.method): nothing was changed. On a Mac paired with this iPhone, pi² does it."]
+            let refusal = "The demo does not do \(request.method): nothing was changed. On a Mac paired with this iPhone, pi² does it."
+            world.asked.append((request.method, refusal))
+            return ["id": request.id, "error": refusal]
         }
+        let refusal: String
         do {
-            return ["id": request.id, "result": try answer(request, world)]
-        } catch let refusal as DemoRefusal {
-            return ["id": request.id, "error": refusal.message]
+            let result = try answer(request, world)
+            world.asked.append((request.method, nil))
+            return ["id": request.id, "result": result]
+        } catch let refused as DemoRefusal {
+            refusal = refused.message
         } catch {
-            return ["id": request.id, "error": error.localizedDescription]
+            refusal = error.localizedDescription
         }
+        world.asked.append((request.method, refusal))
+        return ["id": request.id, "error": refusal]
     }
 }
 

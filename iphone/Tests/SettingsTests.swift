@@ -1,6 +1,7 @@
 import Foundation
 import PiModels
 import Testing
+import UserNotifications
 @testable import pi2
 
 /// Settings, a project's settings and limits, and schedules (#697): the requests each control makes, as the Mac makes
@@ -106,6 +107,68 @@ struct SettingsTests {
         #expect(SettingsRequest.runSchedule("s1").method == "schedules.runNow")
         #expect(try json(.runSchedule("s1")) == #"{"id":"s1"}"#)
         #expect(SettingsRequest.deleteSchedule("s1").method == "schedules.delete")
+    }
+
+    /// Against a copy (#697), Run Now refused by a project's limit showed the engine's words alone at the top of the list,
+    /// naming no schedule. Each refusal on a schedule's row now says which, and what did not happen; the parameters are
+    /// the Mac's still.
+    @Test func aScheduleRefusedSaysWhichAndWhatDidNotHappen() throws {
+        let brief = schedule("s1", agent: "forge")
+        let limit = "Past the project's limit: the project has spent $304.25 today, reaching its daily limit of $5.00. Work already running carries on."
+        let run = SettingsRequest.runSchedule("s1", title: brief.title)
+        #expect(try json(run) == #"{"id":"s1"}"#)
+        #expect(SettingsRequest.refusal(limit, lead: run.lead) == "“Brief s1” did not start: \(limit)")
+        #expect(SettingsRequest.refusal("Unknown schedule: s1", lead: SettingsRequest.deleteSchedule("s1", title: brief.title).lead)
+            == "“Brief s1” was not deleted: Unknown schedule: s1")
+        #expect(SettingsRequest.setSchedule(brief, enabled: false).lead == "“Brief s1” was not turned off")
+        #expect(SettingsRequest.setSchedule(brief, enabled: true).lead == "“Brief s1” was not turned on")
+        // Without a title, and on every other row, the engine's words are said as they are.
+        #expect(SettingsRequest.refusal(limit, lead: SettingsRequest.runSchedule("s1").lead) == limit)
+        #expect(SettingsRequest.awake(keep: true, battery: false).lead == nil)
+    }
+
+    @Test func aRefusedScheduleSaysWhichThroughTheClient() async throws {
+        let transport = UsageRecordingTransport(refusal: "Past the project's limit.")
+        let session = AppSession()
+        session.start(transport, as: .connected(.home))
+        #expect(try await eventually { session.engine.status == .connected })
+        let said = await SettingsRequest.runSchedule("s1", title: "Morning brief").send(through: session.engine)
+        #expect(said == "“Morning brief” did not start: Past the project's limit.")
+        #expect(transport.sent.map(\.method) == ["schedules.runNow"])
+    }
+
+    // MARK: - This iPhone
+
+    /// Settings' own rows for this iPhone (#697, against a copy): notifications as iOS has them, how the Mac is reached,
+    /// and what Unpair says it does.
+    @Test func notificationsAreSaidAsIOSHasThem() {
+        let notAsked = SettingsNotifications(status: .notDetermined, previews: .whenAuthenticated)
+        #expect(notAsked.allowed == .notAsked)
+        #expect(notAsked.value == "Not asked yet")
+        #expect(notAsked.action == .ask)
+        let off = SettingsNotifications(status: .denied, previews: .always)
+        #expect(off.allowed == .off)
+        #expect(off.action == .openSettings, "once refused, only iOS's Settings turns them on")
+        let on = SettingsNotifications(status: .authorized, previews: .whenAuthenticated)
+        #expect(on.value == "Allowed")
+        #expect(on.previews == "Once unlocked")
+        #expect(SettingsNotifications(status: .authorized, previews: .always).previews == "Shown")
+        #expect(SettingsNotifications(status: .authorized, previews: .never).previews == "Never")
+        #expect(SettingsNotifications(status: .provisional, previews: .always).value == "Delivered quietly")
+    }
+
+    @Test func thisIPhoneSaysHowAndWhetherTheMacHearsOfUnpairing() {
+        #expect(SettingsPhoneSection.reached(.connected(.direct, relayReachable: false)) == "Direct · relay unreachable")
+        #expect(SettingsPhoneSection.reached(.connected(.home)) == "At home")
+        #expect(SettingsPhoneSection.pairedWith(.connected(.home), macName: "Studio") == "Studio")
+        #expect(SettingsPhoneSection.pairedWith(.demo, macName: "Demo Mac") == "The demo")
+        #expect(SettingsPhoneSection.isAttached(.connected(.relay)))
+        #expect(!SettingsPhoneSection.isAttached(.outOfReach(lastSeen: nil)))
+        let attached = SettingsPhoneSection.unpairMessage(macName: "Studio", attached: true)
+        #expect(attached.contains("Studio is told now"))
+        let away = SettingsPhoneSection.unpairMessage(macName: "Studio", attached: false)
+        #expect(away.contains("cannot be reached now"))
+        #expect(away.contains("pair it again on the Mac"))
     }
 
     // MARK: - What a phone may send (docs/iphone.md 4.2)

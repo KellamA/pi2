@@ -17,7 +17,7 @@ struct UsageView: View {
         let reading = Self.reading(engine)
         Group {
             if reading.usage != nil {
-                UsagePage(reading: reading, engine: engine)
+                UsagePage(reading: reading, engine: engine, connection: session.connection)
             } else {
                 // The engine sends its usage as it greets a connection, so until it has, the Mac has not answered yet.
                 ProgressView("Waiting for your Mac…")
