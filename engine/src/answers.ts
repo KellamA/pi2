@@ -133,6 +133,9 @@ const FOR_THE_PERSON_SETTINGS: Record<string, (params: Record<string, unknown>) 
 	"computer.result": () => true, // the app's half of computer use
 	"browser.register": () => true, // as with the computer
 	"browser.result": () => true, // as above
+	"present.register": () => true, // as with the browser: a command that registered would be sent presented pages to draw (#946)
+	"present.drawn": () => true, // as above: what a page drawn showed, stored as the app's finding
+	"presented.network": () => true, // whether a page an agent presented may reach the network: the person's setting
 	"mcp.save": () => true, // MCP servers and their settings
 	"mcp.reconnect": () => true, // starts the configured program or reconnects using stored credentials
 	"mcp.delete": () => true, // as above
@@ -222,6 +225,9 @@ const OPEN_TO_ANY = new Set([
 	"projects.list",
 	"projects.folders", // the folders offered for a new project: those already used with pi², never a listing (folders.ts)
 	"files.preview", // reads one text file a conversation links to, under its folder; agents read files themselves
+	"presented.list", // reads what agents presented in a conversation (#946); it changes nothing
+	"presented.picture", // reads a presented picture or a page's snapshot, as conversation.image does
+	"presented.file", // reads one file of a presented page, by its manifest's path, which the engine copied
 	"projects.carryOver", // a dry run alone since carrying over runs by itself at the update (#715): it changes nothing
 	"reports.wake", // waking never widens; the limits bound it
 	"wakes.cancel",
@@ -360,6 +366,7 @@ const FROM_A_DEVICE: Record<string, DeviceRow> = {
 	"local.status": { why: "reading", reading: true },
 	"projects.folders": { why: "reading: the folders the Mac offers for a new project, those already used with pi², never a listing of the disk (folders.ts)", reading: true },
 	"files.preview": { why: "reading a text file the conversation links to, under its folder, not ignored by git, at most 256 KB; logged, since it copies a file out (4.4, 5.7)" },
+	"presented.picture": { why: "reading: a picture an agent presented, or a page's snapshot, as conversation.image is (#946)", reading: true },
 	// Messages, starts and stops.
 	submit: {
 		why: "a message, as the person sends one at the Mac",
@@ -560,6 +567,12 @@ const MAC_ONLY: Record<string, string> = {
 	"computer.result": "the app's host role",
 	"browser.register": "the app's host role",
 	"browser.result": "the app's host role",
+	"present.register": "the app's host role",
+	"present.drawn": "the app's host role",
+	// Presenting (#946): the phone reads presented.picture alone (FROM_A_DEVICE), for now.
+	"presented.network": "a presented page's network switch, the person's setting at the Mac",
+	"presented.list": "presenting's window, the Mac's for now",
+	"presented.file": "a presented page's files, the Mac's for now",
 	// The Mac's upkeep.
 	"backup.create": "the Mac's upkeep",
 	"priority.set": "the Mac's upkeep",

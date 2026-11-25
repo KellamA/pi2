@@ -227,7 +227,7 @@ The tool waits for the answer at most 20 seconds a page (pages of one call are d
 
 | Request | Who may send it (`answers.ts`) | |
 |---|---|---|
-| `presented.list { id }` | anyone; a device: reading | `{ items: PresentationRecord[] }` for the window: every version |
+| `presented.list { id }` | anyone; not a device, for now (the phone's card reads `presented.picture` alone) | `{ items: PresentationRecord[] }` for the window: every version |
 | `presented.picture { id, presentation, version, item }` | anyone; a device: reading | `{ mimeType, data }`: a picture, or a page's snapshot. Refused for a page whose snapshot is not drawn |
 | `presented.file { id, presentation, version, item, path }` | anyone; not a device, for now | `{ mimeType, data }`: one file of a page, by its manifest path; refused for a path the manifest does not have |
 | `presented.network { id, presentation, allow }` | the app only (a setting of the person's) | Stores `network`; sends `conversation.presented` |
