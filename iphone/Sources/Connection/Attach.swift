@@ -124,8 +124,11 @@ enum Attach {
         case refused(Refusal.Reason?)
         /// The Mac's identity key revoked this device.
         case revoked
-        /// The channel closed with no answer.
+        /// The Mac ended the channel with `bye` and no answer: a refusal pi² Remote gives no reason for, such as another
+        /// new key already waiting on the Mac.
         case closed
+        /// The link ended with no answer and no `bye`: nothing came back (a network or a relay that dropped it).
+        case dropped
     }
 
     /// Offers the presence key that waits to be accepted on the Mac (3.2, #891), on the channel that came first, in
@@ -144,7 +147,22 @@ enum Attach {
             throw Failure.deviceKey
         }
         try channel.send(.presenceKey(offer))
-        guard let answer = try await channel.nextLine(within: answerWithin) else { return .closed }
+        // As `nextLine`, but a `bye` is told from a link that ended with nothing (#1016): the first is the Mac's refusal
+        // with no reason, the second no answer at all.
+        let deadline = ContinuousClock.now + answerWithin
+        let answer: Data
+        reading: while true {
+            let left = deadline - .now
+            guard left > .zero else { throw LinkError.timedOut }
+            switch try await channel.next(within: left) {
+            case let .line(line):
+                answer = line
+                break reading
+            case .ack, .ping: continue
+            case .bye: return .closed
+            case nil: return .dropped
+            }
+        }
         switch try? ControlLine.parse(answer, from: .mac) {
         case .presenceKeyAccepted?: return .accepted
         case let .refused(refusal)?: return .refused(refusal.reason)
