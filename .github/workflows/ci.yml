@@ -316,6 +316,15 @@ jobs:
     # without holding up a pull request that does not touch the phone (#871).
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.iphone != 'false' }}
+    # On main, one phone job at a time, each newer one waiting for the one before it rather than running beside it on
+    # the scarce macOS runners (#936). None is cancelled: by default a group keeps one job waiting and cancels it for the
+    # next, which would leave that merge with no finished phone job, so `queue: max` keeps every one waiting (up to 100).
+    # GitHub refuses `queue: max` with `cancel-in-progress: true`; a pull request's older job is cancelled with its run
+    # by the workflow's own group above.
+    concurrency:
+      group: ci-iphone-${{ github.ref }}
+      cancel-in-progress: false
+      queue: max
     # The xcode-27 image (macOS 27) carries Xcode 27.0 to 27.2 and their iOS 27 simulators; macos-26 has only Xcode 26
     # and iOS 26. The project was made with Xcode 27.2 (LastUpgradeVersion 2720), and its deployment target is iOS 18.
     runs-on: xcode-27
