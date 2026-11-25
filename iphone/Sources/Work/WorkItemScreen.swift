@@ -379,6 +379,12 @@ struct WorkItemScreen: View {
                 giving = true
             }
         }
+        if WorkDebugAct.take("give-anyway"), let name = WorkDebugAct.argument("give-anyway"),
+           let agent = agents.first(where: { $0.name == name }) {
+            await desk.assign(session.engine, project: project.id, item: item, to: agent)
+            // What Start Anyway does, on the start the project's limit held.
+            if let held = desk.held { await desk.assign(session.engine, project: project.id, item: held.item, to: held.agent, confirming: held.limit) }
+        }
         if WorkDebugAct.take("edit") { editing = true }
         if WorkDebugAct.take("note"), let text = WorkDebugAct.argument("note") {
             noteText = text

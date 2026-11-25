@@ -9,7 +9,8 @@ import PiModels
 ///
 /// - `PI2_WORK_ACT=new`: opens New Work on the list. `new:<title>`: with that title, and adds it.
 ///   `give`: opens Give to an Agent for the first piece nobody has (on a piece's screen, for it). `give:<agent name>`:
-///   gives it to that agent. `refresh`: on a repository's list, reads it again, as pulling the list down does.
+///   gives it to that agent; `give-anyway:<agent name>`, on a piece's screen, gives it and, if the project's limit holds
+///   the start, answers Start Anyway. `refresh`: on a repository's list, reads it again, as pulling the list down does.
 ///   `pull:<number>`: opens that pull request's row.
 ///   On a piece's screen, `edit` opens its editor, `edit:<title>` saves that title in it; `note:<text>` adds a note;
 ///   `close` closes it as done, `close:dropped` as dropped; `release`, `resume` and `reopen` do what their buttons do;
