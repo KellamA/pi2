@@ -499,7 +499,11 @@ export function maskKeysFrom(text: string, from: number): string {
 			const after = found.index + found[0].length;
 			let end = after;
 			while (end < text.length && run(text.charCodeAt(end))) end++;
-			if (end - after >= least) spans.push([keep === true ? after : found.index, end, KEY_HIDDEN]);
+			// A text that ends partway into a key, its prefix and fewer characters than make one (#997): hidden to its end too,
+			// so that an answer or an output still coming shows no part of a key before the rest arrives (#965's read: 29 of a
+			// `ghp_` key's 36). Only at the text's very end; a text that ends in a prefix alone ("sk-") shows the mark for it.
+			const cutShort = end === text.length && (keep !== true || end > after);
+			if (end - after >= least || cutShort) spans.push([keep === true ? after : found.index, end, KEY_HIDDEN]);
 			start.lastIndex = Math.max(end, found.index + 1);
 		}
 	}
@@ -718,13 +722,29 @@ function summaryLine(given: string, params: Params): string {
 }
 
 /**
- * `text` with nothing in it that the log would show other than as it reads (#902): a right-to-left override or another
- * bidirectional control, which could make a path a phone sent read as another (U+202E then "txt.md" shows "dm.txt"),
- * a zero-width character or another invisible format character, and half a character are taken out; a control
- * character (a line break) is a space. Before the masks, so that nothing invisible can split a key out of their sight.
+ * What a text shows as nothing, or as something other than what is there, in the devices' log and in a push (pushes.ts):
+ * one set for both (#997), so that neither lets through what the other takes out. Every control character; every
+ * format character (`Cf`: a right-to-left override or another bidirectional control, which could make a path a phone
+ * sent read as another, U+202E then "txt.md" showing "dm.txt"; zero-width characters, U+00AD, U+061C, U+2060 to U+2064,
+ * the tag characters); the line and paragraph separators; every default-ignorable code point (variation selectors,
+ * U+034F, the Hangul fillers); and half a character.
  */
-export function unhidden(text: string): string {
-	return text.replace(/[\p{Cf}\p{Cs}]/gu, "").replace(/\p{Cc}/gu, " ");
+const NOT_SHOWN_IN_TEXT = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
+const CONTROL = /^\p{Cc}$/u;
+
+/**
+ * `text` with nothing in it that would show other than as it reads (#902, #997), before the masks, so that nothing
+ * invisible can split a key out of their sight: NOT_SHOWN_IN_TEXT taken out, but what breaks a line. On one line
+ * (`"spaces"`, the log's), every control character, a line break among them, and a line or paragraph separator is a
+ * space. With its lines (`"kept"`, a push's), a line break stays, a line or paragraph separator is one, a tab is a
+ * space, and every other control character is taken out; so that two lines never read as one word.
+ */
+export function unhidden(text: string, lines: "spaces" | "kept" = "spaces"): string {
+	return text.replace(NOT_SHOWN_IN_TEXT, (found) => {
+		if (found === "\n" || found === "\u2028" || found === "\u2029") return lines === "kept" ? "\n" : " ";
+		if (found === "\t") return " ";
+		return lines === "spaces" && CONTROL.test(found) ? " " : "";
+	});
 }
 
 /** A value a device gave, as words: an object or an array as "?", since `String` of one can throw (`{"toString": 1}`). */
@@ -762,18 +782,34 @@ const LOG_KEPT = new Set(["pair", "suspend", "presenceKey", "devices.acceptPrese
 const MAX_METHOD = 64;
 const MAX_SUMMARY = 200;
 const MAX_WHY = 200;
-/** Each device's share of the log, so that one device cannot push out another's entries (5 devices, 10,000 in all). */
+/**
+ * Each device's share of the log, so that one device cannot push out another's entries (5 devices, 10,000 in all). Of
+ * it, what was done and what was refused or failed each keep their newest half whatever the other does (#997).
+ */
 const MAX_PER_DEVICE = MAX_LOG / MAX_DEVICES;
-/** Refusals of the same request for the same reason, from the same device and path, within this, are one entry. */
+/** Refusals or failures alike (`mergedBy`), from the same device and path, within this of the first, are one entry. */
 const COALESCE_MS = 60_000;
+
+/**
+ * What makes a refusal or a failure one with another, for the log's merging (#997): the device, the path, the method
+ * and the outcome, and for a refusal the words of its why before the first number in them. A refusal's words are the
+ * engine's own sentences, and one that carries a size (#924, #940: "this one has 1.2 MB", "… 20,001 characters") is
+ * the same refusal whatever the size; a failure's are its handler's, which can repeat what the phone sent, so the
+ * failures of one request are alike whatever they say. What was done is never merged.
+ */
+function mergedBy(entry: DeviceLogEntry): string | undefined {
+	if (entry.outcome === "done") return undefined;
+	const kind = entry.outcome === "failed" ? null : (entry.why ?? "").replace(/[0-9][\s\S]*$/, "");
+	return JSON.stringify([entry.device, entry.path, entry.method, entry.outcome, kind]);
+}
 
 /** How long new entries wait in memory before they are written together. */
 const FLUSH_MS = 2_000;
 /** Entries made and not yet written: the next write takes them all, at most FLUSH_MS after the first. */
 const pendingLog: DeviceLogEntry[] = [];
 /**
- * The refusal entries made this last minute, by device, path, method and why, with how many like them came since and
- * are not yet written. While its entry waits in `pendingLog`, a repeat adds to the entry itself.
+ * The refusal and failure entries made this last minute, by `mergedBy`, with how many like them came since and are not
+ * yet written. While its entry waits in `pendingLog`, a repeat adds to the entry itself.
  */
 const refusalsMade = new Map<string, { entry: DeviceLogEntry; more: number; lastAt: number }>();
 let flushTimer: ReturnType<typeof setTimeout> | undefined;
@@ -801,7 +837,7 @@ async function writePending(alongside?: (doc: DevicesState) => void): Promise<vo
 		if (alongside !== undefined) alongside(await tx.doc(Devices));
 		const doc = await tx.doc(DeviceLog);
 		for (const { entry, more, lastAt } of counts) {
-			const stored = doc.entries.findLast((one) => one.at === entry.at && one.device === entry.device && one.path === entry.path && one.method === entry.method && one.why === entry.why && one.outcome === "refused");
+			const stored = doc.entries.findLast((one) => one.at === entry.at && one.device === entry.device && one.path === entry.path && one.method === entry.method && one.why === entry.why && one.outcome === entry.outcome);
 			if (stored === undefined) continue;
 			stored.count = (stored.count ?? 1) + more;
 			stored.lastAt = lastAt;
@@ -811,7 +847,16 @@ async function writePending(alongside?: (doc: DevicesState) => void): Promise<vo
 			// Only what the engine itself did is kept past the share: a device's own refused requests, under any name, are in it.
 			const mine = kept.filter((one) => one.device === device && !(LOG_KEPT.has(one.method) && one.outcome === "done"));
 			if (mine.length <= MAX_PER_DEVICE) continue;
-			const dropped = new Set(mine.slice(0, mine.length - MAX_PER_DEVICE));
+			// Of what is over, the side (done, or refused and failed) past its half gives up its oldest first, so that no
+			// flood of refusals or failures, of any request in any words, pushes out what the device did, nor the reverse (#997).
+			let over = mine.length - MAX_PER_DEVICE;
+			const dropped = new Set<DeviceLogEntry>();
+			for (const done of [false, true]) {
+				const side = mine.filter((one) => (one.outcome === "done") === done);
+				const given = Math.min(over, Math.max(0, side.length - MAX_PER_DEVICE / 2));
+				for (const one of side.slice(0, given)) dropped.add(one);
+				over -= given;
+			}
 			kept = kept.filter((one) => !dropped.has(one));
 		}
 		// Past every device's share (a device removed after 90 days leaves its entries to theirs), the oldest go first.
@@ -833,24 +878,26 @@ export function requestLogged(method: string): string {
 }
 
 /**
- * Adds an entry to the devices' log: its method one the engine knows, its summary and why masked and cut short. Each
- * device keeps its own newest 2,000 entries, so that no device pushes out another's, and its pairing and suspension stay
- * their 90 days.
+ * Adds an entry to the devices' log: its method one the engine knows, its summary and why cleaned (`unhidden`), masked
+ * and cut short, here whoever made them, so that no line skips it (#997). Each device keeps its own newest 2,000
+ * entries, so that no device pushes out another's, and its pairing and suspension stay their 90 days; of them, its
+ * newest 1,000 done and its newest 1,000 refused or failed, whatever the other side does.
  *
  * Off the request's path: a commit rewrites the whole log (some 6 MB full) and holds the engine's one thread while it
  * does, so entries wait in memory and are written together at most two seconds after the first. `urgent` writes them
  * at once, and resolves once they are stored: for what must outlive a crash (a pairing, a suspension and the refusal
- * that made it, a request that widens). A clean stop writes what waits (`flushDeviceLog`). A refusal like one of the
- * device's from the last minute adds to that entry's `count` instead of making one.
+ * that made it, a request that widens). A clean stop writes what waits (`flushDeviceLog`). A refusal or a failure like
+ * one of the device's from the last minute (`mergedBy`) adds to that entry's `count` and `lastAt` instead of making one;
+ * the entry keeps the first one's words.
  */
 export async function logDevice(entry: Omit<DeviceLogEntry, "at"> & { at?: number }, urgent = false): Promise<void> {
 	if (unreadable !== null) return;
 	const at = entry.at ?? Date.now();
 	const method = loggedMethod(entry.method);
 	const why = entry.why === undefined ? undefined : clip(maskKeys(unhidden(entry.why)), MAX_WHY);
-	const made: DeviceLogEntry = { ...entry, at, method, summary: clip(maskKeys(entry.summary), MAX_SUMMARY), ...(why === undefined ? {} : { why }) };
-	const key = JSON.stringify([made.device, made.path, made.method, made.why ?? null]);
-	const known = made.outcome === "refused" ? refusalsMade.get(key) : undefined;
+	const made: DeviceLogEntry = { ...entry, at, method, summary: clip(maskKeys(unhidden(entry.summary)), MAX_SUMMARY), ...(why === undefined ? {} : { why }) };
+	const key = mergedBy(made);
+	const known = key === undefined ? undefined : refusalsMade.get(key);
 	if (known !== undefined && at - known.entry.at < COALESCE_MS) {
 		if (pendingLog.includes(known.entry)) {
 			known.entry.count = (known.entry.count ?? 1) + 1;
@@ -860,7 +907,7 @@ export async function logDevice(entry: Omit<DeviceLogEntry, "at"> & { at?: numbe
 			known.lastAt = at;
 		}
 	} else {
-		if (made.outcome === "refused") {
+		if (key !== undefined) {
 			for (const [old, one] of refusalsMade) if (at - one.entry.at >= COALESCE_MS && one.more === 0) refusalsMade.delete(old);
 			refusalsMade.set(key, { entry: made, more: 0, lastAt: at });
 		}
@@ -878,7 +925,7 @@ async function logEntries(device: string | null, before: number | undefined, cou
 	const stored = ((await harness.snapshot(DeviceLog, context))?.entries ?? []).map((entry) => ({ ...entry }));
 	for (const one of refusalsMade.values()) {
 		if (one.more === 0) continue;
-		const entry = stored.findLast((e) => e.at === one.entry.at && e.device === one.entry.device && e.method === one.entry.method && e.why === one.entry.why && e.outcome === "refused");
+		const entry = stored.findLast((e) => e.at === one.entry.at && e.device === one.entry.device && e.path === one.entry.path && e.method === one.entry.method && e.why === one.entry.why && e.outcome === one.entry.outcome);
 		if (entry === undefined) continue;
 		entry.count = (entry.count ?? 1) + one.more;
 		entry.lastAt = one.lastAt;
@@ -1570,8 +1617,9 @@ export async function checkAttach(params: Params): Promise<Attached> {
 		throw signedBy(text, attach.signature, p256Key(device.deviceKey)!) ? attachRefused(why, "suspended") : new Error(why);
 	}
 	const method = signed.session === null ? "attach" : "resume";
-	const refuse = async (why: string, reason?: AttachRefusal): Promise<never> => {
-		await refused(device, path, method, why);
+	// `logged`: the log's words, where they say more than the phone is told.
+	const refuse = async (why: string, reason?: AttachRefusal, logged = why): Promise<never> => {
+		await refused(device, path, method, logged);
 		throw reason === undefined ? new Error(why) : attachRefused(why, reason);
 	};
 	// Until the device key proved the attach is the device's, nothing is counted against it (pi² Remote checks the same
@@ -1589,7 +1637,13 @@ export async function checkAttach(params: Params): Promise<Attached> {
 	if (presenceKey === null || !signedBy(text, attach.presence, presenceKey)) {
 		const waiting = device.pendingPresenceKey === null ? null : p256Key(device.pendingPresenceKey);
 		if (waiting === null || !signedBy(text, attach.presence, waiting)) {
-			return refuse(presenceKey === null || device.pendingPresenceKey !== null ? PRESENCE_KEY_WAITS : "The attach's presence signature is not the presence key's.", "presence");
+			// The phone is told its key waits, as ever; the log tells this counted refusal from the uncounted one below by its
+			// words, so that the two never merge into one entry (#1008's security read, #997).
+			return refuse(
+				presenceKey === null || device.pendingPresenceKey !== null ? PRESENCE_KEY_WAITS : PRESENCE_NOT_THE_KEYS,
+				"presence",
+				device.pendingPresenceKey !== null ? PRESENCE_BY_NEITHER_KEY : PRESENCE_NOT_THE_KEYS,
+			);
 		}
 		keyWaits = true;
 	}
@@ -1642,6 +1696,9 @@ export async function attachTaken(device: string, path: DevicePath, resumed: boo
 // ---- A new Face ID key (3.2, 4.3, 4.4; #786)
 
 export const PRESENCE_KEY_WAITS = "This device's new Face ID key waits to be accepted on the Mac.";
+const PRESENCE_NOT_THE_KEYS = "The attach's presence signature is not the presence key's.";
+/** The log's words for an attach whose presence signature neither the accepted key nor the waiting one made: counted. */
+export const PRESENCE_BY_NEITHER_KEY = "The attach's presence signature is neither the presence key's nor the new Face ID key's that waits; counted towards suspension.";
 export const PRESENCE_KEY_ALREADY_WAITS = "A new Face ID key already waits to be accepted on the Mac. Accept or refuse it there first.";
 const NO_KEY_WAITS = "No new Face ID key waits for this device.";
 export const PRESENCE_KEY_CHANGED = "This device's Face ID key changed on the Mac while it attached. Open pi² with Face ID again.";

@@ -821,7 +821,7 @@ function deviceLineFailed(id: string, message: unknown): (error: unknown) => voi
 		log("remote: a device's request failed in the engine:", error instanceof Error ? (error.stack ?? error.message) : error);
 		try {
 			const given = typeof message === "object" && message !== null && !Array.isArray(message) ? (message as { id?: unknown }).id : undefined;
-			const body = { id: given ?? null, error: DEVICE_LINE_FAILED };
+			const body = { id: deviceId(given) ? (given ?? null) : null, error: DEVICE_LINE_FAILED };
 			const session = sessions.get(id);
 			if (session !== undefined) send(session.client, body);
 			else {
@@ -844,17 +844,35 @@ function endpointsByName(message: Record<string, unknown>): void {
 	}
 }
 
+/**
+ * A device's request id: a whole number, a text of at most MAX_DEVICE_ID characters, or none. The phone numbers its
+ * requests (`ChannelTransport`); a test's are short words.
+ */
+const MAX_DEVICE_ID = 64;
+const deviceId = (id: unknown) => id === undefined || id === null || Number.isSafeInteger(id) || (typeof id === "string" && id.length <= MAX_DEVICE_ID);
+
+/** What a device is answered for a request whose id is none of those. */
+export const NOT_AN_ID = "A request from a phone must have a whole number or a text of at most 64 characters as its id.";
+
 /** A device's line in a session: refused outside one, checked against its table, handled as from the app, logged. */
 async function deviceLine(id: string, message: unknown): Promise<void> {
 	const session = sessions.get(id);
 	const request = (typeof message === "object" && message !== null && !Array.isArray(message) ? message : {}) as { id?: unknown; method?: unknown; params?: unknown };
+	// An id is answered back with every reply, masked and written each time: one of tens of megabytes, a list or an
+	// object is refused before anything else is done with the line, answered with none, and logged nowhere (#997).
+	const idTaken = deviceId(request.id);
+	const answeredId = idTaken ? (request.id ?? null) : null;
 	const reply = (body: Record<string, unknown>, picture?: string) => {
-		if (session !== undefined && picture === undefined) send(session.client, { id: request.id ?? null, ...body });
+		if (session !== undefined && picture === undefined) send(session.client, { id: answeredId, ...body });
 		else if (session?.closed !== true) {
-			const out = forDevice(JSON.stringify({ id: request.id ?? null, ...body }));
+			const out = forDevice(JSON.stringify({ id: answeredId, ...body }));
 			if (out !== null) toSession(id, picture === undefined ? out : withPicture(out, picture));
 		}
 	};
+	if (!idTaken) {
+		reply({ error: NOT_AN_ID });
+		return;
+	}
 	const device = session === undefined ? undefined : pairedDevice(session.device);
 	if (session === undefined || device === undefined || device.suspendedAt !== null) {
 		reply({ error: OPEN_WITH_FACE_ID });
