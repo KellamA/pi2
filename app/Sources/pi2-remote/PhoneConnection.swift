@@ -183,8 +183,9 @@ final class PhoneConnection: @unchecked Sendable {
 	/// The line the phone has begun and not finished, as pi² Remote times it (#908); nil between lines.
 	private(set) var unfinished: UnfinishedLine?
 
-	/// How much of a line its channel holds, begun and not finished (#908).
-	var unfinishedHeld: Int { channel?.unfinishedLineLength ?? 0 }
+	/// How much of a line its channel holds, begun and not finished (#908): `Channel.unfinishedLineLength` as it was read
+	/// after the last message opened, which alone changes it, so that the budget's sum takes no channel's lock.
+	var unfinishedHeld: Int { unfinished?.held ?? 0 }
 
 	/// A pairing channel whose claimer has sent no claim yet: the one kind `closeJoin` ends. A claim passed to the engine
 	/// is the engine's to answer (`paired` or `pairRefused`, or its refusal of `remote.pairClaim`); the engine closes the
