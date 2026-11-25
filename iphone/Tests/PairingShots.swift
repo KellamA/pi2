@@ -112,7 +112,7 @@ struct PairingShots {
         }
         let problems: [(String, ConnectionProblem)] = [
             ("update", .update), ("suspended", .suspended), ("presence", .presence), ("clock", .clock), ("face-id", .faceID(.sessionNotOpen)),
-            ("mac-not-proved", .macNotProved), ("relay-left", .relaySaid("left")),
+            ("mac-not-proved", .macNotProved), ("new-key-waits", .presenceKeyWaits), ("new-key-not-taken", .presenceKeyNotTaken), ("relay-left", .relaySaid("left")),
         ]
         for (name, problem) in problems {
             let session = AppSession(connection: .outOfReach(lastSeen: Date(timeIntervalSinceNow: -5 * 60)))

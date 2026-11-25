@@ -16,6 +16,11 @@ import RemoteKit
 /// - A refusal that trying again cannot help (`update`, `suspended`, `presence`, `clock`) stops it, with `problem`
 ///   saying what to do, until the person's word (`tryAgain`) or the next `start`; `resume` sends it to attach afresh
 ///   once; anything else, or a channel that closes with no word, is tried again after a wait that grows.
+/// - While its presence key waits to be accepted on the Mac (Face ID set up again, 3.2), it offers the key in place of
+///   attaching, once for each `start` or `tryAgain` (#891): an offer of the waiting key is free at the Mac, but an attach
+///   under it would be refused. Told the key waits, it stops with `problem` saying to accept it on the Mac; told it is
+///   accepted, it attaches at once, under it; any other end of an offer stops it too, since a refused offer counts
+///   towards suspending the device.
 /// - It moves no session between paths (#693): a path is chosen at connect time, and its loss is a drop.
 @MainActor
 @Observable
@@ -158,11 +163,36 @@ final class RemoteConnection {
     private func run() async {
         var failures = 0
         var resumeRefused = false
+        // Set once the Mac answered `presenceKeyAccepted` in this run: it attaches from then on, even if the Keychain
+        // could not forget that the key waited.
+        var offerAccepted = false
         while !Task.isCancelled, !unpaired {
             do {
                 // A channel that loses is dropped: its link closed, with no `bye` and no attach, so the Mac has no
                 // session to end on it.
                 let proved = try await Race.first(attempts(), closing: { $0.channel.drop() })
+                // A new presence key that waits to be accepted on the Mac signs no attach there: it is offered instead, and
+                // the phone never attaches while it waits (#891).
+                if !offerAccepted, (try? keys.presence.presenceKeyWaits()) == true {
+                    let answer = try await Attach.offer(proved, mac: mac, keys: keys, build: build, now: now)
+                    guard !Task.isCancelled else { return }
+                    switch answer {
+                    case .accepted:
+                        offerAccepted = true
+                        try? keys.presence.presenceKeyWasAccepted()
+                        failures = 0
+                        continue
+                    case .refused(.presence?):
+                        stopTrying(.presenceKeyWaits)
+                    case let .refused(reason?) where reason != .resume:
+                        stopTrying(ConnectionProblem(reason))
+                    case .revoked:
+                        await unpair()
+                    case .refused, .closed:
+                        stopTrying(.presenceKeyNotTaken)
+                    }
+                    return
+                }
                 let resume = session.flatMap { session in current.map { Attach.Resume(session: session, received: $0.received) } }
                 let outcome = try await Attach.attach(proved, mac: mac, keys: keys, resume: resume, build: build, now: now)
                 guard !Task.isCancelled else {
@@ -379,6 +409,11 @@ enum ConnectionProblem: Equatable, Sendable {
     case faceID(PresenceError)
     /// What answered on a path did not prove it is the paired Mac.
     case macNotProved
+    /// The new Face ID key, made when Face ID was set up again, waits to be accepted on the Mac: the offer was answered
+    /// `refused` with `presence` (#891).
+    case presenceKeyWaits
+    /// The offer of the new Face ID key ended with no answer the phone acts on.
+    case presenceKeyNotTaken
     /// The relay stopped this phone's connection, with its word: shown as the relay's word, never acted on.
     case relaySaid(String)
 
@@ -400,6 +435,8 @@ enum ConnectionProblem: Equatable, Sendable {
         case .clock: "The clocks are apart"
         case .faceID: "Face ID needed"
         case .macNotProved: "Not your Mac"
+        case .presenceKeyWaits: "Accept the new Face ID key on your Mac"
+        case .presenceKeyNotTaken: "Your Mac did not take the new Face ID key"
         case .relaySaid: "What pi²'s relay says"
         }
     }
@@ -420,6 +457,10 @@ enum ConnectionProblem: Equatable, Sendable {
             "Face ID did not pass, so pi² did not connect to your Mac. Try again."
         case .macNotProved:
             "Something answered as your Mac but could not prove it is. Nothing was sent to it; pi² keeps trying your Mac."
+        case .presenceKeyWaits:
+            "Face ID was set up again on this iPhone, so pi² made a new key for it and sent it to your Mac. On your Mac, accept it in pi² › Settings › Devices, only if you set up Face ID yourself. Then tap Try again here."
+        case .presenceKeyNotTaken:
+            "Your Mac did not take the new key pi² made when Face ID was set up again on this iPhone. If your Mac shows another new key for this iPhone in pi² › Settings › Devices, refuse it there, then tap Try again here."
         case let .relaySaid(word):
             switch word {
             case "left", "removed", "not-listed", "deleted", "unknown-pairing":

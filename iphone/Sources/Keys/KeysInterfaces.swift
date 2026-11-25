@@ -24,6 +24,11 @@ protocol PresenceSigning: Sendable {
     /// if no session is open, and, where each new connection asks Face ID again (4.3's fallback), shows Face ID and
     /// throws `KeysError.faceIDNotPassed` if it does not pass.
     func signPresence(_ data: Data) async throws -> Data
+    /// Whether the presence key was made after Face ID was enrolled again and waits for the person to accept it on the
+    /// Mac (3.2): while it does, the connection offers it and never attaches with it (#891).
+    func presenceKeyWaits() throws -> Bool
+    /// The Mac answered an offer of the key `presenceKeyAccepted`: it is the key in use, and attaches are signed with it.
+    func presenceKeyWasAccepted() throws
 }
 
 /// Removing every key: on unpairing (3.6), on a revocation the Mac signed, before pairing with another Mac.
@@ -44,4 +49,11 @@ protocol PresenceKeyHolding: Sendable {
     /// Makes a new presence key (and cache key) for the faces enrolled now, and answers its public half.
     func replacePresenceKey(faceIDState: Data?) throws -> Data
     func cacheKey(context: LAContext?) throws -> SymmetricKey?
+    /// Whether the presence key no longer signs because Face ID was enrolled again (`biometryCurrentSet`), as the Secure
+    /// Enclave and the Keychain say under `context`, one Face ID evaluated just now. Throws when they cannot tell.
+    func presenceKeyInvalidated(context: LAContext?) throws -> Bool
+    /// Keeps `state`, LocalAuthentication's hash of the faces enrolled now, beside a presence key that still signs.
+    func keepFaceIDState(_ state: Data?) throws
+    func presenceKeyIsWaiting() throws -> Bool
+    func presenceKeyAccepted() throws
 }

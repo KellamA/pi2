@@ -398,6 +398,62 @@ struct ConnectionTests {
         #expect(await Wait.until { Self.isConnected(connection) })
     }
 
+    /// A new presence key that waits to be accepted on the Mac (#891): offered, never attached with. Told it waits, the
+    /// phone stops and says to accept it on the Mac, offers it again only at the person's word, and attaches under it at
+    /// once when the Mac answers it accepted.
+    @Test func aKeyThatWaitsIsOfferedAndNeverAttachedWith() async throws {
+        let paired = try await Self.paired()
+        defer { paired.mac.stop() }
+        let software = try #require(paired.keys.software)
+        software.softwarePresence.waiting.withLock { $0 = true }
+        let connection = try Self.connection(paired)
+        connection.start()
+        defer { connection.stop() }
+        #expect(await Wait.until { connection.problem == .presenceKeyWaits })
+        try await Task.sleep(for: .seconds(1))
+        let (offers, attaches) = paired.mac.state.withLock { ($0.offers, $0.attaches) }
+        #expect(offers.count == 1 && attaches.isEmpty, "one offer, no attach, and no retry by itself: \(offers.count) offers, \(attaches.count) attaches")
+        let offer = try #require(offers.first)
+        #expect(offer.presenceKey.derRepresentation == software.softwarePresence.publicKey.derRepresentation, "it offers the presence key the session signs with")
+        #expect(software.softwarePresence.signed.withLock { $0 } == [Data(offer.statement.text.utf8)], "signed by it, under the session, over the offer's text alone")
+
+        // The person's word: offered again, and still not attached with.
+        connection.tryAgain()
+        #expect(await Wait.until { paired.mac.state.withLock { $0.offers.count } == 2 })
+        #expect(await Wait.until { connection.problem == .presenceKeyWaits })
+        #expect(paired.mac.state.withLock { $0.attaches.isEmpty }, "no attach while the key waits")
+
+        // Accepted on the Mac: the next offer is answered so, and the phone attaches at once, under the new key.
+        paired.mac.rules.withLock { $0.offers = .accepted }
+        connection.tryAgain()
+        #expect(await Wait.until { Self.isConnected(connection) })
+        #expect(paired.mac.state.withLock { ($0.offers.count, $0.attaches.count) } == (3, 1))
+        #expect(try software.softwarePresence.presenceKeyWaits() == false, "the key no longer waits")
+    }
+
+    @Test func anOfferEndedWithNoWordStopsTrying() async throws {
+        // A refused offer counts towards suspending the device: one that ends with no word is not tried again by itself.
+        let paired = try await Self.paired(TestMac.Rules(offers: .nothing))
+        defer { paired.mac.stop() }
+        try #require(paired.keys.software).softwarePresence.waiting.withLock { $0 = true }
+        let connection = try Self.connection(paired)
+        connection.start()
+        defer { connection.stop() }
+        #expect(await Wait.until { connection.problem == .presenceKeyNotTaken })
+        try await Task.sleep(for: .seconds(1))
+        #expect(paired.mac.state.withLock { ($0.offers.count, $0.attaches.count) } == (1, 0))
+    }
+
+    @Test func aKeyThatDoesNotWaitIsNeverOffered() async throws {
+        let paired = try await Self.paired()
+        defer { paired.mac.stop() }
+        let connection = try Self.connection(paired)
+        connection.start()
+        defer { connection.stop() }
+        #expect(await Wait.until { Self.isConnected(connection) })
+        #expect(paired.mac.state.withLock { ($0.offers.count, $0.attaches.count) } == (0, 1), "it attaches, and offers nothing")
+    }
+
     @Test func noSessionNoAttach() async throws {
         let paired = try await Self.paired()
         defer { paired.mac.stop() }
@@ -580,7 +636,10 @@ struct ConnectionTests {
     }
 
     @Test func everyProblemHasWordsOfItsOwn() {
-        let problems: [ConnectionProblem] = [.update, .suspended, .presence, .clock, .faceID(.sessionNotOpen), .faceID(.faceIDNotPassed), .macNotProved, .relaySaid("left"), .relaySaid("update-required"), .relaySaid("new-word")]
+        let problems: [ConnectionProblem] = [
+            .update, .suspended, .presence, .clock, .faceID(.sessionNotOpen), .faceID(.faceIDNotPassed), .macNotProved, .presenceKeyWaits, .presenceKeyNotTaken,
+            .relaySaid("left"), .relaySaid("update-required"), .relaySaid("new-word"),
+        ]
         let words = problems.map(\.words)
         #expect(Set(words).count == words.count)
         #expect(words.allSatisfy { $0.hasSuffix(".") })

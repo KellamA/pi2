@@ -23,9 +23,13 @@ final class SoftwarePresenceKey: PresenceSigning, Sendable {
     let open = Mutex(true)
     /// Every text it signed, in order.
     let signed = Mutex<[Data]>([])
+    /// Whether the key waits to be accepted on the Mac, as one made after Face ID was set up again does (#891).
+    let waiting = Mutex(false)
     var publicKey: P256.Signing.PublicKey { key.publicKey }
 
     func presencePublicKeyDER() throws -> Data? { key.publicKey.derRepresentation }
+    func presenceKeyWaits() throws -> Bool { waiting.withLock { $0 } }
+    func presenceKeyWasAccepted() throws { waiting.withLock { $0 = false } }
 
     func signPresence(_ data: Data) async throws -> Data {
         guard open.withLock({ $0 }) else { throw KeysError.sessionNotOpen }
