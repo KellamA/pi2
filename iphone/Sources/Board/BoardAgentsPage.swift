@@ -224,14 +224,16 @@ struct BoardAgentsPage: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
-            Button("Restore") {
-                let engine = session.engine
-                boardSend($problem) { await BoardRequests.restore(engine, agent: agent.id).map { "\(agent.name) was not restored: \($0)" } }
-            }
+            Button("Restore") { restore(agent) }
             .buttonStyle(.bordered)
             .disabled(!data.connected)
             .accessibilityHint("Puts \(agent.name) back as it was, for the project's conversations")
         }
+    }
+
+    private func restore(_ agent: AgentProfile) {
+        let engine = session.engine
+        boardSend($problem) { await BoardRequests.restore(engine, agent: agent.id).map { "\(agent.name) was not restored: \($0)" } }
     }
 
     // MARK: - Adding
@@ -307,7 +309,14 @@ struct BoardAgentsPage: View {
     #if DEBUG
     /// For `BoardDebugAct`: what a tap would do.
     func debugAsk(_ name: String) { confirming = BoardSwitch.all.first { $0.name == name } }
+    func debugSet(_ name: String, on: Bool) { if let each = BoardSwitch.all.first(where: { $0.name == name }) { set(each, on: on) } }
     func debugAdd() { makeAgent() }
+    func debugCopy(_ name: String) { if let template = data.templates.first(where: { $0.name == name }) { copy(template) } }
+    func debugRestore() { if let agent = data.removedAgents(project).first { restore(agent) } }
+    private func debugAgent(_ name: String) -> AgentProfile? { data.projectAgents(project).first { $0.name == name } }
+    func debugAskOrchestrator(_ name: String) { promoting = debugAgent(name) }
+    func debugMakeOrchestrator(_ name: String) { if let agent = debugAgent(name) { promote(agent) } }
+    func debugNewConversation(_ name: String) { if let agent = debugAgent(name) { startConversation(agent) } }
     #endif
 }
 
