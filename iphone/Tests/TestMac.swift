@@ -52,6 +52,8 @@ final class TestMac: @unchecked Sendable {
         var dropAfterTaking = 0
         /// The same, but after acknowledging the line at once: the phone knows the Mac had it.
         var dropAfterAcking = 0
+        /// Answers `submit` as the engine does, once for each request id; the recording refuses it otherwise.
+        var takesMessages = false
     }
 
     struct Device {
@@ -508,8 +510,8 @@ final class EngineEnd: @unchecked Sendable {
     func request(_ line: Data) async {
         let request = try? JSONSerialization.jsonObject(with: line) as? [String: Any]
         if let method = request?["method"] as? String { mac?.requested(method) }
-        // The recording answers no `submit`: answered here, as the engine does, once for each request id.
-        if request?["method"] as? String == "submit", let id = request?["id"] as? Int,
+        // The recording answers no `submit`: answered here when the rules say, as the engine does, once for each request id.
+        if request?["method"] as? String == "submit", mac?.rules.withLock({ $0.takesMessages }) == true, let id = request?["id"] as? Int,
            let requestId = (request?["params"] as? [String: Any])?["requestId"] as? String, let mac {
             let answer = ["id": id, "result": ["submissionId": mac.submitted(requestId)]] as [String: Any]
             if let data = try? JSONSerialization.data(withJSONObject: answer) { send(data) }

@@ -184,7 +184,7 @@ struct ConnectionTests {
     @Test func aLineCutMidwayIsSentAgainOnTheResumedChannel() async throws {
         // The channel drops after the first part of a message too long for one transport message went: the Mac never had
         // it whole, and never counted it. The session resumes, and the message is sent again on the new channel.
-        let paired = try await Self.paired(TestMac.Rules(cutLines: 1))
+        let paired = try await Self.paired(TestMac.Rules(cutLines: 1, takesMessages: true))
         defer { paired.mac.stop() }
         let (app, transport, connection) = try await Self.attached(paired)
         defer { connection.stop() }
@@ -202,7 +202,7 @@ struct ConnectionTests {
     @Test func aLineTakenWholeButNotCountedIsSentAgainAndTakenOnce() async throws {
         // The Mac took the message whole, then the channel dropped before its ack: the phone cannot know it arrived, so
         // it sends it again, with the same request id, and the engine gives it the submission it already has.
-        let paired = try await Self.paired(TestMac.Rules(dropAfterTaking: 1))
+        let paired = try await Self.paired(TestMac.Rules(dropAfterTaking: 1, takesMessages: true))
         defer { paired.mac.stop() }
         let (app, transport, connection) = try await Self.attached(paired)
         defer { connection.stop() }
@@ -219,7 +219,7 @@ struct ConnectionTests {
     @Test func aLineTheMacCountedIsNotSentAgain() async throws {
         // The Mac acknowledged the message before the channel dropped: its answer comes on the resumed channel, and the
         // message is not sent again.
-        let paired = try await Self.paired(TestMac.Rules(dropAfterAcking: 1))
+        let paired = try await Self.paired(TestMac.Rules(dropAfterAcking: 1, takesMessages: true))
         defer { paired.mac.stop() }
         let (app, _, connection) = try await Self.attached(paired)
         defer { connection.stop() }
@@ -233,7 +233,7 @@ struct ConnectionTests {
     @Test func aLineCutEveryTimeGoesBackToTheField() async throws {
         // A Mac that cuts the message every time (a line pi² Remote cuts for its budget, #908): the phone tries three
         // times, then gives up, and the message goes back to the field with why.
-        let paired = try await Self.paired(TestMac.Rules(cutLines: 100))
+        let paired = try await Self.paired(TestMac.Rules(cutLines: 100, takesMessages: true))
         defer { paired.mac.stop() }
         let (app, transport, connection) = try await Self.attached(paired)
         defer { connection.stop() }
