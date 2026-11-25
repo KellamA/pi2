@@ -421,20 +421,21 @@ package final class Remote: @unchecked Sendable {
 	package var slowestLine = 64 * 1024
 
 	/// Since when phones are held back by the engine's backlog, while they are, and for how long in all before.
-	private var heldBackSince: ContinuousClock.Instant?
+	private var heldBackSince: SuspendingClock.Instant?
 	private var heldBackFor: Duration = .zero
 	private var lineWatch: DispatchSourceTimer?
 
 	/// The clock an unfinished line is timed by: it stands still while phones are held back (`phonesPaused`), since a
-	/// phone pi² Remote does not read cannot send the rest of its line.
-	var lineClock: ContinuousClock.Instant {
-		let now = ContinuousClock.now
+	/// phone pi² Remote does not read cannot send the rest of its line; and, a suspending clock, while the Mac sleeps, when
+	/// pi² Remote reads nothing either (the watch's `DispatchTime` does not run then).
+	var lineClock: SuspendingClock.Instant {
+		let now = SuspendingClock.now
 		return now - heldBackFor - (heldBackSince.map { now - $0 } ?? .zero)
 	}
 
 	/// Whether `line` is overdue at `now`, and why: nothing more of it came for `stalledAfter`, or it has taken longer
 	/// than `stalledAfter` and what it holds takes at `slowest` bytes a second.
-	package static func overdue(_ line: UnfinishedLine, at now: ContinuousClock.Instant, stalledAfter: Duration, slowest: Int) -> LineOverdue? {
+	package static func overdue(_ line: UnfinishedLine, at now: SuspendingClock.Instant, stalledAfter: Duration, slowest: Int) -> LineOverdue? {
 		if now - line.grew >= stalledAfter { return .stalled }
 		if now - line.began > stalledAfter + .seconds(Double(line.held) / Double(max(1, slowest))) { return .tooSlow }
 		return nil
@@ -689,11 +690,11 @@ package final class Remote: @unchecked Sendable {
 /// A phone's line begun and not finished, as pi² Remote times it (#908): when it began and when it last grew, on
 /// `Remote.lineClock`, and how much of it its channel holds.
 package struct UnfinishedLine: Equatable, Sendable {
-	package var began: ContinuousClock.Instant
-	package var grew: ContinuousClock.Instant
+	package var began: SuspendingClock.Instant
+	package var grew: SuspendingClock.Instant
 	package var held: Int
 
-	package init(began: ContinuousClock.Instant, grew: ContinuousClock.Instant, held: Int) {
+	package init(began: SuspendingClock.Instant, grew: SuspendingClock.Instant, held: Int) {
 		self.began = began
 		self.grew = grew
 		self.held = held

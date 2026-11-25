@@ -109,7 +109,7 @@ enum Units {
 	/// more of it, or longer than 30 seconds and what it holds takes at 64 KiB a second.
 	static func unfinishedLines() {
 		Check.section("how long a phone's unfinished line is held (#908), on the check's own clock")
-		let zero = ContinuousClock.now
+		let zero = SuspendingClock.now
 		let stall = Duration.seconds(30), slowest = 64 * 1024
 		func overdue(began: Double, grew: Double, held: Int, at now: Double) -> LineOverdue? {
 			Remote.overdue(UnfinishedLine(began: zero + .seconds(began), grew: zero + .seconds(grew), held: held), at: zero + .seconds(now), stalledAfter: stall, slowest: slowest)
@@ -135,6 +135,10 @@ enum Units {
 		let allowed = 30 + Double(most) / Double(slowest)
 		Check.expect(overdue(began: 0, grew: allowed - 29, held: most, at: allowed - 1) == nil && overdue(began: 0, grew: allowed - 1, held: most + 1, at: allowed + 1) == .tooSlow, "71 MiB sent at once and then a byte every 29 seconds is held \(Int(allowed / 60)) minutes at most, not for ever")
 		Check.expect(overdue(began: 0, grew: 0, held: 1, at: 30) == .stalled && overdue(began: 0, grew: 59, held: 2, at: 60.5) == .tooSlow, "and a byte a minute is ended by either clock")
+		// Timed on a suspending clock (#960's security read): a sleep of the Mac, when pi² Remote reads nothing, is no time
+		// on it, so a line held through one is not cut on waking. That this takes SuspendingClock's instants is the check.
+		let timedBy: (UnfinishedLine, SuspendingClock.Instant, Duration, Int) -> LineOverdue? = Remote.overdue
+		Check.expect(timedBy(UnfinishedLine(began: zero, grew: zero, held: most), zero + .seconds(29), stall, slowest) == nil, "a line is timed on a clock that stops while the Mac sleeps: 29 seconds awake after its last piece, however long the Mac slept, it is held")
 	}
 
 	static func scan() {
