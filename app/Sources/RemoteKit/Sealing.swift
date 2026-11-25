@@ -6,7 +6,9 @@ import Foundation
 // authenticates with its record key; HPKE's `info` is "pi2-item-v2", the pairing, the reader and the item's id, each
 // after a zero byte, so an item cannot be moved and still open. Inside the seal, every item is also signed by its
 // writer (the Mac's identity key, or the phone's device key), since HPKE's sender authentication does not hold against
-// someone with the reader's private key.
+// someone with the reader's private key. A sealed push (`PushSealing`) is sealed as a Mac item is, but its `info`
+// begins "pi2-push-v1" in place of "pi2-item-v2" (`SealLabel`, #937): a push's bytes open as no mailbox item, nor a
+// mailbox item's as a push.
 //
 // An item's bytes are HPKE's encapsulated key (65 bytes, an uncompressed P-256 point) and then the ciphertext.
 //
@@ -27,6 +29,15 @@ public enum ItemReader: Hashable, Sendable {
 	}
 }
 
+/// What HPKE's `info` begins with: what the sealed bytes are. A mailbox item's (`pi2-item-v2`, as it has been since
+/// v2) and a sealed push's (`pi2-push-v1`, #937) are apart, so that neither opens as the other: the same pairing,
+/// reader and id give two different `info`s. Only `PushSealing` seals and opens with `push`.
+@_spi(Vectors)
+public enum SealLabel: String, Sendable, CaseIterable {
+	case item = "pi2-item-v2"
+	case push = "pi2-push-v1"
+}
+
 /// Where an item is going: what HPKE's `info` binds it to.
 public struct ItemAddress: Hashable, Sendable {
 	public let pairing: PairingID
@@ -39,8 +50,10 @@ public struct ItemAddress: Hashable, Sendable {
 		self.id = id
 	}
 
-	var info: Data {
-		var info = Data("pi2-item-v2".utf8)
+	/// The label, then a zero byte before each of the pairing's id, the reader and the item's id, as text.
+	@_spi(Vectors)
+	public func info(_ label: SealLabel) -> Data {
+		var info = Data(label.rawValue.utf8)
 		for part in [pairing.text, reader.text, id.text] {
 			info.append(0)
 			info.append(Data(part.utf8))
@@ -59,9 +72,17 @@ public enum SealedItem {
 	public static func seal<Key: HPKEDiffieHellmanPrivateKey>(
 		_ plaintext: Data, to address: ItemAddress, readerKey: P256.KeyAgreement.PublicKey, writerKey: Key
 	) throws -> Data where Key.PublicKey == P256.KeyAgreement.PublicKey {
+		try seal(plaintext, to: address, label: .item, readerKey: readerKey, writerKey: writerKey)
+	}
+
+	/// As `seal`, under `label`: `PushSealing`'s with `push`, and the checks'.
+	@_spi(Vectors)
+	public static func seal<Key: HPKEDiffieHellmanPrivateKey>(
+		_ plaintext: Data, to address: ItemAddress, label: SealLabel, readerKey: P256.KeyAgreement.PublicKey, writerKey: Key
+	) throws -> Data where Key.PublicKey == P256.KeyAgreement.PublicKey {
 		let item: Data
 		do {
-			var sender = try HPKE.Sender(recipientKey: readerKey, ciphersuite: ciphersuite, info: address.info, authenticatedBy: writerKey)
+			var sender = try HPKE.Sender(recipientKey: readerKey, ciphersuite: ciphersuite, info: address.info(label), authenticatedBy: writerKey)
 			item = sender.encapsulatedKey + (try sender.seal(plaintext))
 		} catch {
 			throw RemoteKitError("sealed item", "could not seal")
@@ -72,10 +93,10 @@ public enum SealedItem {
 
 	/// Opens an item sealed for `address` by the writer whose record key is `writerKey`, without reading or verifying
 	/// what it holds: for the checks only. Everyone else opens with `openRequest` or `openMacItem`, which give nothing
-	/// unverified.
+	/// unverified. A mailbox item's label unless `label` says otherwise.
 	@_spi(Vectors)
 	public static func open<Key: HPKEDiffieHellmanPrivateKey>(
-		_ item: Data, at address: ItemAddress, readerKey: Key, writerKey: P256.KeyAgreement.PublicKey
+		_ item: Data, at address: ItemAddress, label: SealLabel = .item, readerKey: Key, writerKey: P256.KeyAgreement.PublicKey
 	) throws -> Data where Key.PublicKey == P256.KeyAgreement.PublicKey {
 		guard item.count <= maxLength else { throw RemoteKitError("sealed item", "too long") }
 		guard item.count >= encapsulatedKeyLength + 16 else { throw RemoteKitError("sealed item", "too short") }
@@ -84,7 +105,7 @@ public enum SealedItem {
 		guard encapsulated.first == 0x04 else { throw RemoteKitError("sealed item", "not an uncompressed P-256 point") }
 		do {
 			var recipient = try HPKE.Recipient(
-				privateKey: readerKey, ciphersuite: ciphersuite, info: address.info, encapsulatedKey: encapsulated, authenticatedBy: writerKey)
+				privateKey: readerKey, ciphersuite: ciphersuite, info: address.info(label), encapsulatedKey: encapsulated, authenticatedBy: writerKey)
 			return try recipient.open(Data(item[(start + encapsulatedKeyLength)...]))
 		} catch {
 			throw RemoteKitError("sealed item", "does not open for this reader, writer and address")
@@ -110,10 +131,23 @@ extension SealedItem {
 	/// Opens an item the Mac left for this device, reads it and checks it, in one call: sealed for this address by the
 	/// Mac's record key, signed by its identity key, for this pairing and device, with the item's own id as its nonce.
 	/// Whether a state is newer than the one shown is `StateNumbers`'.
+	///
+	/// A mailbox item's label alone: a sealed push opens here never, since it is sealed under the push's (#937). Behind
+	/// the label, a second line: a Mac item of a push's kind (`push`, `pushGone`) is refused here too, as `PushSealing.open`
+	/// refuses every other kind, so that the two keep apart even if a label were ever shared again.
 	public static func openMacItem<Key: HPKEDiffieHellmanPrivateKey>(
 		_ item: Data, at address: ItemAddress, readerKey: Key, writerRecordKey: P256.KeyAgreement.PublicKey, identityKey: P256.Signing.PublicKey
 	) throws -> MacItem where Key.PublicKey == P256.KeyAgreement.PublicKey {
-		let macItem = try MacItem.read(try open(item, at: address, readerKey: readerKey, writerKey: writerRecordKey))
+		let macItem = try openMacItem(item, at: address, label: .item, readerKey: readerKey, writerRecordKey: writerRecordKey, identityKey: identityKey)
+		guard PushSealing.Kind(itemKind: macItem.kind) == nil else { throw RemoteKitError("mac item", "a push's kind, never a mailbox item's") }
+		return macItem
+	}
+
+	/// As `openMacItem`, under `label`: `PushSealing.open`'s with `push`, which checks the kind itself.
+	static func openMacItem<Key: HPKEDiffieHellmanPrivateKey>(
+		_ item: Data, at address: ItemAddress, label: SealLabel, readerKey: Key, writerRecordKey: P256.KeyAgreement.PublicKey, identityKey: P256.Signing.PublicKey
+	) throws -> MacItem where Key.PublicKey == P256.KeyAgreement.PublicKey {
+		let macItem = try MacItem.read(try open(item, at: address, label: label, readerKey: readerKey, writerKey: writerRecordKey))
 		try macItem.verify(identityKey: identityKey, address: address)
 		return macItem
 	}

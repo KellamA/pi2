@@ -19,8 +19,10 @@ import pi2_remote
 //   no client, and one after `ready` again reaches the relay.
 //
 // "Handed to no client" is read in pi² Remote's log: the client itself refuses a push while it is not ready, so the
-// engine is answered `push-later` either way, and only the log tells a push the hand-over kept from the client
-// ("no relay connected as this Mac") from one the client refused ("refused, push-later", or a stopped client's line).
+// engine is answered `push-later` either way, and only the log tells a push the hand-over kept from the client from one
+// the client refused ("refused, push-later", or a stopped client's line). The hand-over's own line, "no relay connected
+// as this Mac", is said once each time the relay goes, by the first push's id, and not for the pushes after it until a
+// relay is connected again (#937): each check says which it expects.
 
 enum RelayedPushes {
 	/// The phone's push token at the relay, as `token { apns }` takes it: 32 bytes in hexadecimal.
@@ -94,18 +96,22 @@ enum RelayedPushes {
 	}
 
 	/// The push the engine named `id`, given by `sending`, is answered `push-later`, and pi² Remote's log says it was
-	/// handed to no relay client: no client refused it, and no stopped client was asked.
-	static func answeredLater(_ engine: FakeEngine, _ id: String, home: URL, _ what: String, sending: () -> Void) {
+	/// handed to no relay client: no client refused it, and no stopped client was asked. `said`: whether it is the first
+	/// since the relay went, which alone the log names ("no relay connected as this Mac"); the next say nothing (#937).
+	static func answeredLater(_ engine: FakeEngine, _ id: String, home: URL, _ what: String, said: Bool, sending: () -> Void) {
 		func lines(_ text: String) -> Int { log(home).components(separatedBy: "\n").filter { $0.contains(text) }.count }
-		let none = "push \(id): no relay connected as this Mac", client = "push \(id) to ", stopped = "relay client that has stopped"
-		let before = (lines(none), lines(client), lines(stopped))
+		let none = "no relay connected as this Mac", client = "push \(id) to ", stopped = "relay client that has stopped", named = "push \(id):"
+		let before = (lines(none), lines(client), lines(stopped), lines(named))
 		sending()
 		let refused = engine.request("remote.pushRefused")
 		if let refused { engine.answer(refused.id) }
 		Check.expect(refused?.params == .object([("id", .string(id)), ("why", .string("push-later"))]), "\(what): the push is answered push-later", refused.map { JSON.text($0.params) } ?? "nothing")
-		let after = (lines(none), lines(client), lines(stopped))
-		Check.expect(after.0 == before.0 + 1 && after.1 == before.1 && after.2 == before.2,
-		             "and handed to no relay client: pi² Remote's log says no relay is connected as this Mac, and no client refused it",
+		let after = (lines(none), lines(client), lines(stopped), lines(named))
+		let added = said ? 1 : 0
+		let name = said
+			? "and handed to no relay client: pi² Remote's log says, by its id, no relay is connected as this Mac, and no client refused it"
+			: "and handed to no relay client, no client refused it, and the log says nothing of it: that no relay is connected was said once already since the relay went (#937)"
+		Check.expect(after.0 == before.0 + added && after.3 == before.3 + added && after.1 == before.1 && after.2 == before.2, name,
 		             log(home).split(separator: "\n").filter { $0.contains("push") }.suffix(4).joined(separator: "\n"))
 	}
 
@@ -147,10 +153,10 @@ enum RelayedPushes {
 	}
 
 	/// The engine's first alert again, after the relay path stopped: `push-later`, and nothing more at Apple's stand-in.
-	static func afterStop(_ engine: FakeEngine, device: DeviceID, relay: URL, home: URL, _ what: String) {
+	static func afterStop(_ engine: FakeEngine, device: DeviceID, relay: URL, home: URL, _ what: String, said: Bool) {
 		let apple = Apple(relay: relay)
 		let before = apple.taken()?.count
-		answeredLater(engine, "p1", home: home, what) { send(engine, Pushes.alert("p1", device: device)) }
+		answeredLater(engine, "p1", home: home, what, said: said) { send(engine, Pushes.alert("p1", device: device)) }
 		Check.expect(apple.taken()?.count == before, "and nothing reaches Apple's stand-in")
 	}
 
@@ -163,7 +169,8 @@ enum RelayedPushes {
 		let settings = JSON.write(.object([("event", .string("remote")), ("kind", .string("settings")), ("relay", .string(relay.absoluteString)), ("switches", Flows.switches)]))
 		let push = JSON.write(.object([("event", .string("remote")), ("kind", .string("push")), ("push", try! JSON.parse(Pushes.alert("p4", device: device))["push"]!)]))
 		// One write: pi² Remote reads both before its client can have heard the relay's `ready`.
-		answeredLater(engine, "p4", home: home, "given with the switch turned on, before the relay says the Mac is ready") { engine.lines.write(settings + Data([0x0A]) + push) }
+		// The relay has been away since the switch went off, and that was said then.
+		answeredLater(engine, "p4", home: home, "given with the switch turned on, before the relay says the Mac is ready", said: false) { engine.lines.write(settings + Data([0x0A]) + push) }
 		let ready = engine.relayState("ready", from: count) != nil
 		send(engine, Pushes.alert("p5", device: device))
 		let taken = apple.taken(moreThan: before)
@@ -246,9 +253,11 @@ enum RelayedPushes {
 		var count = engine.states.count
 		relay.drop()
 		guard engine.relayState("down", from: count) != nil else { return Check.expect(false, "the relay dropped the Mac's socket: down") }
-		answeredLater(engine, "p22", home: home, "the socket dropped (disconnected)") { send(engine, Pushes.alert("p22", device: device)) }
+		answeredLater(engine, "p22", home: home, "the socket dropped (disconnected)", said: true) { send(engine, Pushes.alert("p22", device: device)) }
 		guard relay.waitHeld(within: 30) else { return Check.expect(false, "the client connects again, and the relay holds it before ready") }
-		answeredLater(engine, "p23", home: home, "connected again and proved, before the relay says ready (connecting)") { send(engine, Pushes.alert("p23", device: device)) }
+		// Still away since the drop: said once already (#937).
+		answeredLater(engine, "p23", home: home, "connected again and proved, before the relay says ready (connecting)", said: false) { send(engine, Pushes.alert("p23", device: device)) }
+		answeredLater(engine, "p26", home: home, "the engine's next push in the same state, as it offers one each minute", said: false) { send(engine, Pushes.alert("p26", device: device)) }
 		count = engine.states.count
 		relay.letIn()
 		guard engine.relayState("ready", from: count) != nil else { return Check.expect(false, "ready again") }
@@ -257,7 +266,9 @@ enum RelayedPushes {
 		count = engine.states.count
 		relay.refuse("removed")
 		guard engine.relayState("stopped", from: count) != nil else { return Check.expect(false, "the relay's refusal stops the client") }
-		answeredLater(engine, "p25", home: home, "the client stopped on the relay's refusal (stopped)") { send(engine, Pushes.alert("p25", device: device)) }
+		// The relay was back between: said again, once.
+		answeredLater(engine, "p25", home: home, "the client stopped on the relay's refusal (stopped)", said: true) { send(engine, Pushes.alert("p25", device: device)) }
+		answeredLater(engine, "p27", home: home, "the next push while it stays stopped", said: false) { send(engine, Pushes.alert("p27", device: device)) }
 		Check.expect(relay.pushes.count == 2, "and the relay was asked for the two pushes made while ready, and no other", "\(relay.pushes.count)")
 	}
 }

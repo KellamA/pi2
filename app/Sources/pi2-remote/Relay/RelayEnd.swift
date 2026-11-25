@@ -28,7 +28,8 @@ import RemoteKit
 //   for a phone (`mailboxOut`) is signed with the identity key, sealed to the device's record key on the list and put.
 // - Pushes (#689, #935): the hand-over (`PushHandOver.relay`) has this client from the relay's `ready`, which proves
 //   this pairing's Mac on its socket, until that socket goes (`connecting`, `disconnected`), the client stops
-//   (`stopped`) or is stopped (`stopClient`); at any other moment every push is answered `push-later`.
+//   (`stopped`) or is stopped (`stopClient`; at once when the relay's address changes, `addressChanged`, #937); at any
+//   other moment every push is answered `push-later`.
 // - What it can do is told to the engine as `remote.state`'s `relay` (6.5): off (none wanted), unavailable and why,
 //   connecting, ready, down until a time, or stopped and the relay's word for it.
 
@@ -236,6 +237,13 @@ final class RelayEnd: @unchecked Sendable {
 			for await event in made.events { queue.async { self.heard(event, generation) } }
 		}
 		Task { await made.start() }
+	}
+
+	/// The relay's address changed: the old address's client stops now, and the pushes' hand-over with it, rather than
+	/// once the engine has taken the new address's `remote.hello` and `reconsider` runs (#937). Until then no push goes
+	/// to the relay that was in use.
+	func addressChanged() {
+		stopClient()
 	}
 
 	private func stopClient() {

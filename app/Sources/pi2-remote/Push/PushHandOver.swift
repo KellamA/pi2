@@ -23,10 +23,12 @@ import RemoteKit
 // - **A Live Activity's numbers** pass unsealed, as the system reads them, held again to exactly their four members, each
 //   in range, and the activity's id to its shape (`ActivityNumbers`, `RelayOutgoing.validate`): one that is not would
 //   close the relay's socket as `malformed`.
-// - **No queue of its own.** While there is no relay to ask, a push is answered `push-later` at once, said in the log
-//   by its id, and the engine asks again when it sees fit; so is one past `maxInFlight` waiting on the relay. There is
-//   one to ask only from the relay's `ready` for this pairing's Mac until that socket goes or the client stops
-//   (`RelayEnd.heard`, `stopClient`; #935).
+// - **No queue of its own.** While there is no relay to ask, a push is answered `push-later` at once, and the engine
+//   asks again when it sees fit; so is one past `maxInFlight` waiting on the relay. There is one to ask only from the
+//   relay's `ready` for this pairing's Mac until that socket goes, the client stops or the relay's address changes
+//   (`RelayEnd.heard`, `stopClient`, `addressChanged`; #935, #937). The log says so once each time the relay goes,
+//   by the first push's id, and then nothing until a relay is connected again (#937): the engine offers each waiting
+//   push again once a minute, which would otherwise be a line a minute for each.
 //   Pushes go to the relay in the order they came, each once.
 // - **The relay's refusal, as it is.** For a push the relay refused, `remote.pushRefused { id, why }`, once, with the
 //   relay's word (`no-token`, `token-dead`, `unknown-device`, `push-limit`, `push-later`, `unavailable`, `clock`, or a
@@ -110,8 +112,13 @@ package final class PushHandOver: @unchecked Sendable {
 	private let keys: MacKeys
 	private let answer: (_ id: String, _ why: String) -> Void
 	/// The relay's client while it is connected as this pairing's Mac: set by `RelayEnd` at the relay's `ready` and taken
-	/// away when its socket goes or it stops (#935). None, and every push is `push-later`.
-	package var relay: (any PushRelay)?
+	/// away when its socket goes, it stops or the relay's address changes (#935, #937). None, and every push is
+	/// `push-later`.
+	package var relay: (any PushRelay)? {
+		didSet { if relay != nil { saidNoRelay = false } }
+	}
+	/// Whether the log has said, since the relay last went, that no relay is connected as this Mac (#937).
+	private var saidNoRelay = false
 	private var inFlight = 0
 	private var tail: Task<Void, Never>?
 	/// Devices revoked since a push for them was handed over: dropped rather than sent.
@@ -202,8 +209,12 @@ package final class PushHandOver: @unchecked Sendable {
 			return
 		}
 		guard let relay, let pairing else {
-			// Said for each push, as the relay's refusals are: the engine asks again no sooner than its hold ends.
-			log("push \(asked.id): no relay connected as this Mac; push-later, not handed to any relay client")
+			// Said once each time the relay goes, not once a push: the engine offers each waiting push again once its hold
+			// of a minute ends, for as long as the relay is away (#937).
+			if !saidNoRelay {
+				saidNoRelay = true
+				log("push \(asked.id): no relay connected as this Mac; push-later, not handed to any relay client, and so is every push until one is, unsaid")
+			}
 			return answer(asked.id, Self.later)
 		}
 		guard inFlight < Self.maxInFlight else {
