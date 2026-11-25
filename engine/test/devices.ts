@@ -38,6 +38,7 @@ const AIZA_RUN = `${"AIza"}SyD3noiseNoiseNoise0123456789abcdefg`;
 const pad = (text: string) => text + "A".repeat((4 - (text.length % 4)) % 4);
 import { offerFolders } from "../src/answers.ts";
 import { SETTINGS_ONLY_IN_THE_APP } from "../src/answers.ts";
+import { deviceRequestsListed, MAX_OTHER_FROM_A_DEVICE } from "../src/answers.ts";
 import { NOT_PRESENTED } from "../src/presented.ts";
 import { DatabaseSync } from "node:sqlite";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
@@ -741,7 +742,7 @@ class Phone {
 
 	// A relay that kept a device's genuine items replays them after the person accepted a new Face ID key: each is refused
 	// as too old or taken before, ahead of the presence signature, and none counts towards suspension (#921's security
-	// read). Three refused presence signatures above count already: two more would suspend the device.
+	// read).
 	const threeDaysAgo = Date.now() - 3 * 86_400_000;
 	const keptByRelay = Array.from({ length: 5 }, (_, i) => phone.item(pairing, "submit", { id: 4, text: `kept ${i}` }, { at: threeDaysAgo }));
 	const takenOnce = phone.item(pairing, "abort", { id: 4 });
@@ -761,6 +762,67 @@ class Phone {
 	for (let i = 0; i < 5; i++) await assert.rejects(take(takenOnce), /taken before/, "one genuine item handed over again, under the old key");
 	assert.equal(suspended(), false, "five old items and one item five times, replayed after a new Face ID key, do not suspend the device");
 	step("a relay replaying a device's old or taken items after a new Face ID key cannot get it suspended: age and nonce come before the presence signature");
+
+	// A relay that held back five genuine items, signed under the old key within the day, delivers them once a new Face ID
+	// key was accepted (#921's reader's probe, which suspended the device): each is refused for its presence signature
+	// and logged, and none counts towards suspension, nor does one handed over five times (#891): only live attaches count.
+	const heldBack = Array.from({ length: 5 }, (_, i) => phone.item(pairing, "submit", { id: 4, text: `held back ${i}` }, { at: Date.now() - 3_600_000 }));
+	for (const item of heldBack) await assert.rejects(take(item), /presence signature is not the presence key's/, "a fresh genuine item under the old key");
+	for (let i = 0; i < 5; i++) await assert.rejects(take(heldBack[0]!), /presence signature is not the presence key's/, "one handed over again");
+	assert.equal(suspended(), false, "ten refused presence signatures of sealed items do not suspend the device");
+	await flushDeviceLog();
+	const itemRefusals = (await harness.snapshot(DeviceLog, context))!.entries.filter((entry) => entry.device === phone.id && entry.path === "mailbox" && entry.outcome === "refused");
+	assert.ok(itemRefusals.some((entry) => entry.method === "submit" && entry.why === "The item's presence signature is not the presence key's."), "they are logged as refused");
+	step("five genuine items a relay held back under the old Face ID key, delivered after a new one was accepted, are refused and logged, and do not suspend the device");
+
+	// A live attach refused only because the key that signed its presence waits to be accepted on the Mac is answered
+	// with the `presence` reason, logged, and not counted (#891). Every other refusal counts as before, a key waiting or
+	// not: a presence signature neither key made, a used challenge, another channel, another pairing, a stale time.
+	const mac = { socket: { write: () => true, destroyed: false, destroy: () => {} }, subscriptions: new Map(), shown: new Set() } as unknown as Client;
+	const attachWith = (presence: KeyObject | null, change: { challenge?: string; signedBinding?: Buffer; pairing?: string; at?: number } = {}) => {
+		const binding = randomBytes(32);
+		const fields = { pairing: change.pairing ?? pairing, challenge: change.challenge ?? attachChallenge().challenge, binding: change.signedBinding ?? binding, ...(change.at === undefined ? {} : { at: change.at }) };
+		return checkAttach({ attach: phone.attach(fields, { presence }), binding: b64url(binding), path: "relay" });
+	};
+	const refusedFor = (why: RegExp | string, reason?: string) => (error: Error & { data?: unknown }) => {
+		assert.ok(typeof why === "string" ? error.message === why : why.test(error.message), error.message);
+		assert.deepEqual(error.data, reason === undefined ? undefined : { reason });
+		return true;
+	};
+	// Four of a kind leave the device as it was; the fifth suspends it, and the Mac resumes it, clearing the count.
+	const counts = async (what: string, made: () => Promise<unknown>, why: RegExp | string, reason?: string) => {
+		for (let i = 0; i < 4; i++) await assert.rejects(made(), refusedFor(why, reason), what);
+		assert.equal(suspended(), false, `four do not suspend: ${what}`);
+		await assert.rejects(made(), refusedFor(why, reason), what);
+		assert.equal(suspended(), true, `the fifth suspends: ${what}`);
+		await deviceRequests["devices.resume"]!({ device: phone.id }, mac);
+	};
+	assert.equal((await attachWith(renewed.privateKey)).device.id, phone.id, "the accepted key attaches");
+	const offered = p256();
+	const offerBinding = randomBytes(32);
+	const offerLine = phone.offer({ pairing, challenge: attachChallenge().challenge, binding: offerBinding, presenceKey: spki(offered.publicKey) }, { presence: offered.privateKey });
+	assert.deepEqual(await offerPresenceKey({ offer: offerLine, binding: b64url(offerBinding), path: "relay" }), { waiting: true });
+	for (let i = 0; i < 8; i++) await assert.rejects(attachWith(offered.privateKey), refusedFor(PRESENCE_KEY_WAITS, "presence"), "an attach signed by the waiting key");
+	assert.equal(suspended(), false, "eight attaches refused only because their key waits do not suspend the device");
+	await flushDeviceLog();
+	assert.ok((await harness.snapshot(DeviceLog, context))!.entries.some((entry) => entry.device === phone.id && entry.method === "attach" && entry.outcome === "refused" && entry.why === PRESENCE_KEY_WAITS), "they are logged");
+	await counts("a presence signature neither key made, while one waits", () => attachWith(p256().privateKey), PRESENCE_KEY_WAITS, "presence");
+	await counts("no presence signature, while a key waits", () => attachWith(null), PRESENCE_KEY_WAITS, "presence");
+	const usedChallenge = attachChallenge().challenge;
+	await attachWith(renewed.privateKey, { challenge: usedChallenge });
+	await counts("a used challenge, under the waiting key", () => attachWith(offered.privateKey, { challenge: usedChallenge }), /not one this Mac issued, or was used/);
+	await counts("a challenge the waiting key's refusal used", async () => {
+		const challenge = attachChallenge().challenge;
+		await assert.rejects(attachWith(offered.privateKey, { challenge }), refusedFor(PRESENCE_KEY_WAITS, "presence"));
+		return attachWith(offered.privateKey, { challenge });
+	}, /not one this Mac issued, or was used/);
+	await counts("another channel, under the waiting key", () => attachWith(offered.privateKey, { signedBinding: randomBytes(32) }), /signed for another channel/);
+	await counts("another pairing, under the waiting key", () => attachWith(offered.privateKey, { pairing: b64url(randomBytes(16)) }), /another pairing/);
+	await counts("a stale time, under the waiting key", () => attachWith(offered.privateKey, { at: Date.now() - 3 * 60_000 }), /more than two minutes/, "clock");
+	await deviceRequests["devices.refusePresenceKey"]!({ device: phone.id }, mac);
+	await counts("the refused key, with no key waiting", () => attachWith(offered.privateKey), "The attach's presence signature is not the presence key's.", "presence");
+	await counts("a presence signature by another key, with no key waiting", () => attachWith(p256().privateKey), "The attach's presence signature is not the presence key's.", "presence");
+	step("an attach refused only because its Face ID key waits on the Mac is told so and not counted; a wrong or missing presence signature, a used challenge, another channel or pairing and a stale time still count, a key waiting or not, and five suspend the device");
 
 	// ---- The devices' log (4.4): bounded in what an entry holds, by device, and with repeated refusals made one
 	const other = `dev_${b64url(randomBytes(16))}`;
@@ -799,7 +861,9 @@ class Phone {
 	entries = (await harness.snapshot(DeviceLog, context))!.entries;
 	assert.ok(entries.some((entry) => entry.device === other), "another device's entry stays");
 	assert.ok(entries.some((entry) => entry.device === phone.id && entry.method === "pair"), "and the pairing");
-	assert.equal(entries.filter((entry) => entry.device === phone.id && entry.method !== "pair").length, 2_000, "one device keeps its own newest 2,000");
+	// Beside the pairing, the suspensions and the offer of a Face ID key above, and its refusal, kept as it is.
+	const keptAside = ["pair", "suspend", "presenceKey", "devices.refusePresenceKey"];
+	assert.equal(entries.filter((entry) => entry.device === phone.id && !keptAside.includes(entry.method)).length, 2_000, "one device keeps its own newest 2,000");
 	const stored = async () => (await harness.snapshot(DeviceLog, context))!.entries;
 	commits = 0;
 	for (let i = 0; i < 200; i++) await logDevice({ device: other, path: "relay", method: "submit", summary: `ordinary ${i}`, presence: true, outcome: "done" });
@@ -815,19 +879,19 @@ class Phone {
 	// A suspension and its entry are stored in one write (#881): after no write is the device suspended with no entry.
 	const after: { suspended: boolean; entry: boolean }[] = [];
 	const counting = harness.commit.bind(harness);
+	const suspendEntries = async () => (await stored()).filter((one) => one.device === phone.id && one.method === "suspend").length;
+	const earlier = await suspendEntries(); // the suspensions above, by refused attaches
 	(harness as unknown as { commit: typeof commit }).commit = (async (...given: Parameters<typeof commit>) => {
 		const result = await counting(...given);
 		const device = (await harness.snapshot(Devices, context))!.devices.find((one) => one.id === phone.id)!;
-		after.push({ suspended: device.suspendedAt !== null, entry: (await stored()).some((one) => one.device === phone.id && one.method === "suspend") });
+		after.push({ suspended: device.suspendedAt !== null, entry: (await suspendEntries()) > earlier });
 		return result;
 	}) as typeof commit;
-	for (let i = 0; i < 5 && !suspended(); i++) {
-		await assert.rejects(take(phone.item(pairing, "submit", { id: 4, text: "x" }, { presence: p256().privateKey })), /presence signature|suspended/);
-	}
+	for (let i = 0; i < 5 && !suspended(); i++) await assert.rejects(attachWith(p256().privateKey), /presence signature|suspended/);
 	assert.ok(suspended(), "five refused presence signatures suspend the device");
 	assert.ok(after.some((one) => one.suspended && one.entry), JSON.stringify(after));
 	assert.ok(!after.some((one) => one.suspended && !one.entry), `never suspended without its entry: ${JSON.stringify(after)}`);
-	const suspendEntry = (await stored()).find((one) => one.device === phone.id && one.method === "suspend")!;
+	const suspendEntry = (await stored()).findLast((one) => one.device === phone.id && one.method === "suspend")!;
 	assert.equal(suspendEntry.at, devicesState().devices.find((one) => one.id === phone.id)!.suspendedAt, "the entry has the suspension's time");
 	(harness as unknown as { commit: typeof commit }).commit = commit;
 	await harness.close(context);
@@ -1945,9 +2009,12 @@ try {
 		assert.equal(typedRefusal("submit", { text: overByOne }), overMessage("just over 1 MB"), "rounded, a byte over would read as 1.0 MB");
 		assert.equal(typedRefusal("submit", { text: "t".repeat(1_258_292) }), overMessage("1.2 MB"));
 		assert.equal(typedRefusal("needs.answer", { answer: { kind: "question", text: overByOne } }), overAnswer("just over 1 MB"));
-		for (const params of [{ answer: null }, { answer: overByOne }, { answer: [overByOne] }, {}]) assert.equal(typedRefusal("needs.answer", params), null, JSON.stringify(params).slice(0, 40));
-		assert.equal(typedRefusal("submit", { text: [overByOne] }), null, "what is not text is the handler's to refuse");
-		assert.equal(typedRefusal("memory.add", { text: overByOne }), null, "a note is not a message");
+		for (const params of [{ answer: null }, {}]) assert.equal(typedRefusal("needs.answer", params), null, JSON.stringify(params).slice(0, 40));
+		// Since #940, what is not the typed text is held to the rest's count, and the typed text is text or nothing.
+		const overTheRest = "A request from a phone can carry at most 65,536 characters beside its message or its longer texts; this one carries more. Shorten what it holds, or do this on the Mac.";
+		for (const params of [{ answer: overByOne }, { answer: [overByOne] }]) assert.equal(typedRefusal("needs.answer", params), overTheRest, JSON.stringify(params).slice(0, 40));
+		assert.equal(typedRefusal("submit", { text: [overByOne] }), "A message from a phone must be text.", "what is not text is refused before its handler");
+		assert.equal(typedRefusal("memory.add", { text: overByOne }), overTheRest, "a note is not a message");
 		assert.equal(typedRefusal("variables.set", { value: overByOne }), null, "nor is what only the Mac may send");
 
 		const { id: typedIn } = (await ask("conversation.create", { model: { provider: "demo", modelId: "demo-1" } })).result;
@@ -1968,7 +2035,7 @@ try {
 		const fromMac = await app.call("submit", { id: typedIn, text: overByOne });
 		assert.ok(fromMac.submissionId !== undefined, "the same message from the Mac's own app is taken");
 		const logged = (await app.call("devices.log", { device: phone.id })).entries.filter((entry: any) => entry.why === overMessage("just over 1 MB"));
-		assert.ok(logged.some((entry: any) => entry.method === "submit" && entry.outcome === "refused" && entry.summary.startsWith("Sent a message")), "refused in the devices' log, by its summary");
+		assert.ok(logged.some((entry: any) => entry.method === "submit" && entry.outcome === "refused" && entry.summary === "submit: refused for the text it carries"), "refused in the devices' log, summarized by its method alone (#940)");
 		assert.ok(!JSON.stringify(logged).includes("éééé"), "with nothing of the text");
 
 		// By mailbox: the item's signed text, which holds the request whole, is at most 16 KB (`readSigned`, as pi² Remote's
@@ -2042,6 +2109,188 @@ try {
 		assert.ok(!remote.sessionLines.get(session)!.slice(hugeFrom).some((line) => JSON.stringify(line).includes("qqqqqqqqqqqqqqqq")), "and is sent nothing of the text");
 		step(
 			`a phone's typed text: exactly 1 MB taken; a byte over refused, as a message, a steer, an edit, a message handed to an agent and an answer, with what to do, and by mailbox the item's 16 KB refuses either first; the same from the Mac's app taken; 66 MiB refused in ${Math.round(sized.took)} ms (the table's refusal of the same line, ${Math.round(table.took)} ms)`,
+		);
+	}
+
+	// ---- The other texts a phone sends (#940): each one its row names at most its own bound and text, or left out; the
+	// rest of a request at most MAX_OTHER_FROM_A_DEVICE in all; measured before anything copies them. The Mac's own app
+	// is not held to them.
+	{
+		const over = (what: string, max: number, has: number) => `${what} from a phone can be at most ${max.toLocaleString("en-US")} characters; this one has ${has.toLocaleString("en-US")}. Shorten it, or do this on the Mac.`;
+		const notText = (what: string) => `${what} from a phone must be text.`;
+		const overTheRest = "A request from a phone can carry at most 65,536 characters beside its message or its longer texts; this one carries more. Shorten what it holds, or do this on the Mac.";
+		// What every refused text is made of, looked for afterwards in the devices' log, engine.log and the engine's files.
+		const refused = (length: number) => "ŧ".repeat(length);
+		const logFrom = engineLog.length;
+		const answerOf = (call: Promise<any>): Promise<any> => call.then((result) => ({ result }), (error: Error) => ({ error: error.message }));
+		const demo = { provider: "demo", modelId: "demo-1" };
+		const conversationFor = async () => (await app.call("conversation.create", { model: demo })).id as number;
+		const daily = { kind: "daily", hour: 3, minute: 0 };
+		const noRepository = /GitHub|repository/;
+		let named = 0;
+		// The project's agent every assignment goes to, made by the case of projects.addAgent below.
+		let helper = { id: "", name: "" };
+		type Round = "phone" | "mac";
+		type Case = { method: string; what: string; max: number; params: (text: unknown, round: Round) => Promise<Record<string, unknown>>; taken?: (reply: any) => boolean; mac?: RegExp; mailbox?: true };
+		const cases: Case[] = [
+			{
+				method: "projects.addAgent",
+				what: "An agent's instructions",
+				max: 20_000,
+				params: async (instructions) => ({ projectId: made.id, agent: { name: `Bounded ${++named}`, access: "none", model: demo, instructions } }),
+			},
+			{ method: "agents.save", what: "An agent's instructions", max: 20_000, params: async (instructions) => ({ agent: { id: helper.id, name: helper.name, instructions } }) },
+			{
+				method: "work.act",
+				what: "A task",
+				max: 20_000,
+				params: async (task) => ({ projectId: made.id, id: (await app.call("work.create", { projectId: made.id, title: `Bounded ${++named}` })).id, action: "assign", agentId: helper.id, task }),
+			},
+			{
+				method: "work.act",
+				what: "Work's text",
+				max: 20_000,
+				params: async (text) => ({ projectId: made.id, id: (await app.call("work.create", { projectId: made.id, title: `Bounded ${++named}` })).id, action: "edit", text }),
+				mac: /text must be at most 20,000 characters/,
+			},
+			{ method: "work.create", what: "Work's text", max: 20_000, params: async (text) => ({ projectId: made.id, title: `Bounded ${++named}`, text }), mac: /text must be at most 20,000 characters/ },
+			// The project has no repository: what passes the check is answered by sendBack itself, from either side.
+			{ method: "github.sendBack", what: "A reason for sending back", max: 20_000, params: async (reason) => ({ projectId: made.id, number: 1, reason }), taken: (reply) => noRepository.test(reply.error ?? ""), mac: noRepository },
+			{ method: "conversation.compact", what: "Instructions for compacting", max: 20_000, params: async (instructions) => ({ id: await conversationFor(), instructions }) },
+			{ method: "conversation.reset", what: "A note for starting afresh", max: 20_000, params: async (note) => ({ id: await conversationFor(), note }) },
+			{ method: "chat.set", what: "Chat instructions", max: 20_000, params: async (instructions) => ({ instructions }), mac: /chat instructions can be 20,000 characters at most/ },
+			{ method: "schedules.save", what: "A schedule's prompt", max: 20_000, params: async (prompt) => ({ schedule: { title: `Bounded ${++named}`, prompt, agentId: "forge", repeat: daily, enabled: false } }) },
+			{ method: "schedules.save", what: "A schedule's title", max: 200, params: async (title) => ({ schedule: { title, prompt: "Look around", agentId: "forge", repeat: daily, enabled: false } }) },
+			{ method: "submit", what: "A message's request id", max: 200, params: async (requestId) => ({ id: await conversationFor(), text: "/work 0 1 bounded", requestId }), mailbox: true },
+		];
+		const leave = async (item: ReturnType<Phone["item"]>) => {
+			const before = remote.events.length;
+			const reply = await remote.call("remote.mailboxIn", { device: phone.id, id: JSON.parse(item.signed).nonce, item });
+			return { reply: reply.result, receipt: (await remote.event("mailboxOut", before)).item.body };
+		};
+		for (const one of cases) {
+			const name = `${one.method}, ${one.what}`;
+			const atTheLimit = await ask(one.method, await one.params("l".repeat(one.max), "phone"));
+			assert.ok((one.taken ?? ((reply) => reply.result !== undefined))(atTheLimit), `${name}: exactly ${one.max} characters from a phone are taken: ${JSON.stringify(atTheLimit).slice(0, 300)}`);
+			if (one.method === "projects.addAgent") helper = { id: atTheLimit.result.id, name: `Bounded ${named}` };
+			assert.equal((await ask(one.method, await one.params(refused(one.max + 1), "phone"))).error, over(one.what, one.max, one.max + 1), `${name}: a character over is refused`);
+			for (const wrong of [[refused(8)], { text: refused(8) }, 8, true]) assert.equal((await ask(one.method, await one.params(wrong, "phone"))).error, notText(one.what), `${name}: ${JSON.stringify(wrong).slice(0, 20)} is not text`);
+			const fromMac = await answerOf(app.call(one.method, await one.params("m".repeat(one.max + 1), "mac")));
+			if (one.mac === undefined) assert.ok(fromMac.result !== undefined, `${name}: a character over from the Mac's app is taken: ${JSON.stringify(fromMac).slice(0, 300)}`);
+			else assert.match(fromMac.error ?? "", one.mac, `${name}: from the Mac's app, its handler's own answer`);
+			if (one.mailbox) {
+				const mailed = await leave(phone.item(remote.pairing, one.method, await one.params("l".repeat(one.max), "phone")));
+				assert.deepEqual(mailed.reply, { taken: true, outcome: "done" }, `${name}: exactly ${one.max} by mailbox`);
+				const mailedOver = await leave(phone.item(remote.pairing, one.method, await one.params(refused(one.max + 1), "phone")));
+				assert.deepEqual([mailedOver.reply, mailedOver.receipt.why], [{ taken: true, outcome: "refused" }, over(one.what, one.max, one.max + 1)], `${name}: a character over by mailbox`);
+				const mailedWrong = await leave(phone.item(remote.pairing, one.method, await one.params([refused(8)], "phone")));
+				assert.deepEqual([mailedWrong.reply, mailedWrong.receipt.why], [{ taken: true, outcome: "refused" }, notText(one.what)], `${name}: a list by mailbox`);
+			}
+		}
+		await app.call("chat.set", { instructions: "" });
+
+		// The rest of a request, counted: each value one, a string its length besides, a key its length. A note of 65,530
+		// characters is at the count exactly (the parameters 1, `text` 4, its value 1); the handler's own 400 refuses it.
+		assert.equal(MAX_OTHER_FROM_A_DEVICE, 65_536);
+		assert.equal(typedRefusal("memory.add", { text: "n".repeat(65_530) }), null);
+		assert.equal(typedRefusal("memory.add", { text: "n".repeat(65_531) }), overTheRest);
+		assert.equal(typedRefusal("agents.save", { agent: { id: "forge", ["k".repeat(65_536)]: 1 } }), overTheRest, "a key counts");
+		let deep: unknown = [];
+		for (let level = 0; level < 1_000_000; level++) deep = [deep];
+		assert.equal(typedRefusal("conversation.archive", { id: deep }), overTheRest, "a list a million deep, walked without recursion");
+		assert.equal(typedRefusal("variables.set", { value: "n".repeat(65_531) }), null, "what no device list holds is the table's to refuse");
+		// A row added tomorrow is walked with nobody remembering: every request of both lists, with a field no row names.
+		const listed = deviceRequestsListed();
+		assert.ok(listed.length > 100 && listed.includes("submit") && listed.includes("schedules.save"), `${listed.length} requests a device may send`);
+		for (const method of listed) {
+			assert.equal(typedRefusal(method, { namedByNoRow: "n" }), null, method);
+			assert.equal(typedRefusal(method, { namedByNoRow: "n".repeat(65_536) }), overTheRest, `${method}: a field no row names is held to the rest's count`);
+		}
+		for (const [method, params] of [
+			["memory.add", { text: refused(65_531) }],
+			["conversation.archive", { id: Array.from({ length: 70_000 }, () => 1) }],
+			["agents.delete", { id: [refused(40_000), refused(40_000)] }],
+			["needs.answer", { id: "no-such", answer: { kind: "decision", choice: refused(70_000) } }],
+		] as const) {
+			assert.equal((await ask(method, params)).error, overTheRest, `${method}: past the rest's count`);
+		}
+		// A refusal that repeats what a phone sent cuts it (#940), however it came.
+		assert.equal((await ask("inbox.decide", { id: "no-such", decision: `${"d".repeat(60)}${refused(8)}` })).error, ONLY_ON_THE_MAC, "an unknown decision is the table's");
+		assert.equal((await answerOf(app.call("inbox.decide", { id: "no-such", decision: `${"d".repeat(60)}${refused(8)}` }))).error, `Unknown decision: ${"d".repeat(59)}…`, "and the Mac's app is told it cut");
+		assert.equal((await ask("conversation.pin", { id: `${"c".repeat(60)}${refused(8)}`, pinned: true })).error, `Unknown conversation: ${"c".repeat(59)}…`);
+		assert.equal((await ask("conversation.pin", { id: `${"c".repeat(58)}😀${refused(8)}`, pinned: true })).error, `Unknown conversation: ${"c".repeat(58)}…`, "never half a character");
+		assert.equal((await ask("needs.answer", { id: "no-such", answer: { kind: `${"k".repeat(60)}${refused(8)}` } })).error, ONLY_ON_THE_MAC, "an unknown kind is the table's");
+		assert.match((await answerOf(app.call("needs.answer", { id: "no-such", answer: { kind: `${"k".repeat(60)}${refused(8)}` } }))).error ?? "", new RegExp(`^Unknown kind of answer: k{59}…$`), "from the Mac's app too");
+
+		// A task of 66 MiB, as #924 measured its message: refused for what it costs to carry the line in, no more. The same
+		// line refused by the table (variables.set) is the measure.
+		const huge = refused(66 * 1024 * 1024);
+		const rssOf = async () => Number((await execFileAsync("/bin/ps", ["-o", "rss=", "-p", String(engine.pid)])).stdout.trim()) * 1024;
+		const cost = async (id: string, method: string, params: Record<string, unknown>) => {
+			const line = `${JSON.stringify({ session, message: { id, method, params } })}\n`;
+			const before = await rssOf();
+			let peak = before;
+			let answered = false;
+			const sampled = (async () => {
+				while (!answered) peak = Math.max(peak, await rssOf());
+			})();
+			const sent = performance.now();
+			remote.socket.write(line);
+			const reply = await until(`the answer to ${id}`, () => remote.sessionLines.get(session)?.find((message) => message.id === id), { over: () => (remote.closed ? "pi² Remote's connection closed" : undefined) });
+			const took = performance.now() - sent;
+			answered = true;
+			await sampled;
+			return { reply, took, before, peak };
+		};
+		const table = await cost("huge-task-table", "variables.set", { agentId: "forge", name: "HUGE", value: huge });
+		assert.equal(table.reply.error, ONLY_ON_THE_MAC);
+		const hugeItem = (await app.call("work.create", { projectId: made.id, title: "Huge" })).id;
+		const sized = await cost("huge-task", "work.act", { projectId: made.id, id: hugeItem, action: "assign", agentId: helper.id, task: huge });
+		assert.equal(sized.reply.error, over("A task", 20_000, huge.length), "a task of 66 MiB is refused");
+		const mb = (bytes: number) => Math.round(bytes / 1e6);
+		console.log(`    66 MiB task: refused by the table in ${Math.round(table.took)} ms (${mb(table.before)} MB, at most ${mb(table.peak)} MB), for its size in ${Math.round(sized.took)} ms (${mb(sized.before)} MB, at most ${mb(sized.peak)} MB)`);
+		assert.ok(sized.took <= 3 * table.took + 2_000, `in ${Math.round(sized.took)} ms, where the same line refused by the table took ${Math.round(table.took)} ms`);
+		const grew = (one: { before: number; peak: number }) => one.peak - one.before;
+		assert.ok(grew(sized) <= grew(table) + 2 * huge.length, `with the engine grown by ${mb(grew(sized))} MB, where the table's refusal grew it by ${mb(grew(table))} MB`);
+		// The same in fields the devices' log's summary reads (#940's security read): a refused request is summarized by its
+		// method alone, so nothing cleans, masks or splits the title or the path first. Held closer than the task, since a
+		// summary made from them took seconds and grew the engine by gigabytes.
+		const { id: renamed } = (await ask("conversation.create", { model: demo })).result;
+		for (const [what, method, params] of [
+			["title", "conversation.rename", { id: renamed, title: huge }],
+			["path", "files.preview", { id: renamed, path: "/ŧ".repeat(huge.length / 2) }],
+		] as const) {
+			const read = await cost(`huge-${what}`, method, params);
+			assert.equal(read.reply.error, overTheRest, `a ${what} of 66 MiB is past the rest's count`);
+			console.log(`    66 MiB ${what}: refused in ${Math.round(read.took)} ms (${mb(read.before)} MB, at most ${mb(read.peak)} MB)`);
+			assert.ok(read.took <= 2 * table.took + 1_000, `in ${Math.round(read.took)} ms, where the same line refused by the table took ${Math.round(table.took)} ms`);
+			assert.ok(grew(read) <= grew(table) + huge.length, `with the engine grown by ${mb(grew(read))} MB, where the table's refusal grew it by ${mb(grew(table))} MB`);
+			const entry = (await app.call("devices.log", { device: phone.id })).entries.find((one: any) => one.method === method && one.why === overTheRest);
+			assert.equal(entry?.summary, `${method}: refused for the text it carries`, `logged by its method alone: ${JSON.stringify(entry).slice(0, 200)}`);
+		}
+		const hugeParams = { projectId: made.id, id: hugeItem, action: "assign", agentId: helper.id, task: huge };
+		const heapBefore = process.memoryUsage().heapUsed;
+		const checkedIn = performance.now();
+		assert.equal(typedRefusal("work.act", hugeParams), over("A task", 20_000, huge.length));
+		const checking = performance.now() - checkedIn;
+		assert.ok(checking < 50 && process.memoryUsage().heapUsed - heapBefore < 1024 * 1024, `the check itself took ${checking.toFixed(2)} ms`);
+		assert.ok((await ask("engine.info")).result !== undefined, "the session goes on");
+
+		// Nothing of a refused text anywhere: the devices' log keeps the sentence, engine.log and the engine's files nothing.
+		const mark = refused(8);
+		const logged = (await app.call("devices.log", { device: phone.id })).entries;
+		assert.ok(logged.some((entry: any) => entry.method === "work.act" && entry.outcome === "refused" && entry.why === over("A task", 20_000, 20_001)), "refused in the devices' log, with its sentence");
+		assert.ok(!JSON.stringify(logged).includes(mark), "the devices' log holds nothing of a refused text");
+		assert.ok(!engineLog.slice(logFrom).includes(mark), "nor engine.log");
+		const keptIn = (text: string) =>
+			execFileAsync("/usr/bin/grep", ["-rlF", "-D", "skip", text, home], { env: { ...process.env, LC_ALL: "C" } }).then(
+				({ stdout }) => stdout,
+				(error: { code?: number; stdout?: string }) => (error.code === 1 ? "" : `grep failed: ${error.code} ${error.stdout}`),
+			);
+		assert.notEqual(await keptIn("l".repeat(200)), "", "where what was taken is found");
+		assert.equal(await keptIn(mark), "", "nor any file the engine keeps");
+		step(
+			`a phone's other texts: ${cases.length} bounded fields, each exactly at its bound taken, a character over refused with what to do, a list, an object, a number and true refused as not text, a request id by mailbox too; the same over from the Mac's app taken (or its handler's own answer); the rest of a request at most ${MAX_OTHER_FROM_A_DEVICE.toLocaleString("en-US")} characters; a repeated value cut; a 66 MiB task refused in ${Math.round(sized.took)} ms (the table's refusal, ${Math.round(table.took)} ms); nothing of a refused text in the devices' log, engine.log or a file`,
 		);
 	}
 
@@ -2462,6 +2711,17 @@ try {
 	assert.equal((await remote.inSession(faceSession, "engine.info")).error, OPEN_WITH_FACE_ID, "the old session is over");
 	await assert.rejects(app.call("devices.acceptPresenceKey", { device: phone.id }), /No new Face ID key waits/);
 	assert.match((await attach()).reply.error, /presence signature is not the presence key's/, "the old key signs nothing now");
+	// Five genuine items a relay held back, signed under the old key within the hour, delivered now (#891): each refused,
+	// with its receipt, and the device not suspended, though the attach above counted.
+	for (let i = 0; i < 5; i++) {
+		const held = phone.item(remote.pairing, "submit", { id: 4, text: `held back ${i}` }, { at: Date.now() - 30 * 60_000 });
+		const before = remote.events.length;
+		assert.deepEqual((await remote.call("remote.mailboxIn", { device: phone.id, id: JSON.parse(held.signed).nonce, item: held })).result, { taken: true, outcome: "refused" });
+		const { body } = (await remote.event("mailboxOut", before)).item;
+		assert.deepEqual([body.outcome, body.why], ["refused", "The item's presence signature is not the presence key's."], "its receipt says why");
+	}
+	await app.call("engine.info");
+	assert.equal(recordOf().suspendedAt, null, "five held-back items under the old key do not suspend the device");
 	phone.presence = renewed;
 	const underNew = await attach();
 	assert.equal(underNew.reply.result.resume, false, "the new key opens a session");
@@ -2487,6 +2747,48 @@ try {
 	assert.ok(faceLog.some((entry: any) => entry.method === "unknown" && entry.why === ONLY_ON_THE_MAC), "but as unknown");
 	assert.equal(recordOf().suspendedAt, null, "and the device is not suspended");
 	step("a new Face ID key waits, signs nothing and is told to the app alone; a second cannot replace it; a device cannot accept or refuse one; accepting replaces the key, tells pi² Remote, then ends the session; refusing drops it; the log has each");
+
+	// ---- An offer's refusals carry the reasons an attach's would (#891), with the same words, counting and log
+	const offerRefusal = (reply: any) => [reply.error, reply.data?.reason];
+	// Refused offers in the log, the same refusal again counted in its entry (`count`).
+	const refusedOffers = async () =>
+		((await app.call("devices.log", { device: phone.id })).entries as any[]).filter((entry) => entry.method === "presenceKey" && entry.outcome === "refused").reduce((sum, entry) => sum + (entry.count ?? 1), 0);
+	// A build below the minimum: `update`, not counted (five do not suspend), not logged.
+	const beforeUpdate = await refusedOffers();
+	for (let i = 0; i < 5; i++) assert.deepEqual(offerRefusal(await offer(p256(), { build: "0" })), ["This build of pi² for iPhone is too old for this Mac. Update it.", "update"], "a build below the minimum is told update");
+	await app.call("engine.info");
+	assert.equal(recordOf().suspendedAt, null, "five offers from a build too old do not suspend the device");
+	assert.equal(await refusedOffers(), beforeUpdate, "nor are they logged");
+	// Another key while one waits: no reason, never `presence`, since the key that waits is not this phone's; counted and
+	// logged as before.
+	const waitingKey = p256();
+	assert.deepEqual((await offer(waitingKey)).result, { waiting: true });
+	const beforeSecond = await refusedOffers();
+	assert.deepEqual(offerRefusal(await offer(p256())), [PRESENCE_KEY_ALREADY_WAITS, undefined], "a second key while one waits is told no reason");
+	assert.equal(await refusedOffers(), beforeSecond + 1, "and logged as refused");
+	assert.deepEqual(await app.call("devices.refusePresenceKey", { device: phone.id }), {});
+	// Other refusals still carry no reason.
+	const usedChallenge = (await remote.call("remote.attachBegin")).result.challenge;
+	await offer(p256(), { challenge: usedChallenge, at: Date.now() - 3 * 60_000 });
+	const noReason = await offer(p256(), { challenge: usedChallenge });
+	assert.match(noReason.error, /challenge is not one this Mac issued, or was used/);
+	assert.equal(noReason.data, undefined, "a used challenge is told no reason");
+	assert.equal((await offer(p256(), { device: p256().privateKey })).data, undefined, "nor an offer a stranger signed");
+	await app.call("devices.resume", { device: phone.id });
+	// A clock more than two minutes off: `clock`, counted as before; five, with the two above resumed away, suspend.
+	for (let i = 0; i < 5; i++) {
+		assert.deepEqual(offerRefusal(await offer(p256(), { at: Date.now() + 3 * 60_000 })), ["The offer's time is more than two minutes from the Mac's.", "clock"], "a clock three minutes off is told clock");
+	}
+	await app.until("five offers with the wrong clock suspend the device", () => recordOf().suspendedAt !== null);
+	// Suspended: `suspended` for an offer the device key signed, none for one it did not; neither counted nor logged.
+	const beforeSuspended = await refusedOffers();
+	assert.deepEqual(offerRefusal(await offer(p256())), ["This device is suspended. Resume it on the Mac's Devices page.", "suspended"], "a suspended device's offer is told suspended");
+	const strangers = await offer(p256(), { device: p256().privateKey });
+	assert.deepEqual([strangers.error, strangers.data], ["This device is suspended. Resume it on the Mac's Devices page.", undefined], "one the device key did not sign is told no reason");
+	assert.equal(await refusedOffers(), beforeSuspended, "neither is logged");
+	await app.call("devices.resume", { device: phone.id });
+	await app.until("the device resumed", () => recordOf().suspendedAt === null);
+	step("an offer's refusals carry the attach's reasons: update and suspended uncounted, clock counted, the same words and log; a second key while one waits counted with no reason, and no reason for any other");
 
 	// ---- pi² Remote stopping, then revocation (3.6)
 	const later = await attach();

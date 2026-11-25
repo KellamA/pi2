@@ -323,7 +323,7 @@ enum Relayed {
 		engine.event("settings", [("relay", .string(relay.absoluteString)), ("switches", relayOff)])
 		let off = engine.relayState("off", from: count)
 		Check.expect(off?["available"]?.boolValue == false && off?["why"]?.stringValue?.contains("home and private networks only") == true, "Reach through pi²'s relay off: the engine is told the relay path is off, as wanted", off.map(JSON.text) ?? "nothing")
-		RelayedPushes.afterStop(engine, device: device, relay: relay, home: home, "the engine's first push again, the relay switch off")
+		RelayedPushes.afterStop(engine, device: device, relay: relay, home: home, "the engine's first push again, the relay switch off", said: true)
 		Check.expect(wire.ended(within: 5) == nil, "the phone's own socket at the relay stays")
 		if let (home2, _) = Flows.attach(engine, mac: fmac, device: device, keys: keys1, session: "r_two") {
 			Check.expect(true, "the home path attaches with the relay off")
@@ -337,10 +337,14 @@ enum Relayed {
 		// Another relay's address: the pairing is shown to no relay but its own.
 		count = engine.states.count
 		engine.event("settings", [("relay", .string("ws://127.0.0.1:9/v1")), ("switches", Flows.switches)])
-		if let other = engine.request("remote.hello") { engine.answer(other.id) }
+		let other = engine.request("remote.hello")
+		// Before the engine answers the new address's hello, the old relay's client, which was ready as this Mac, has the
+		// pushes no longer (#937): it would have sent this one to Apple's stand-in.
+		RelayedPushes.afterStop(engine, device: device, relay: relay, home: home, "the relay's address changed, before the engine has answered its hello", said: true)
+		if let other { engine.answer(other.id) }
 		let elsewhere = engine.relayState("unavailable", from: count)
 		Check.expect(elsewhere?["why"]?.stringValue?.contains("not registered at this relay") == true, "another relay's address: the pairing is not shown to it, and the engine is told why", elsewhere.map(JSON.text) ?? "nothing")
-		RelayedPushes.afterStop(engine, device: device, relay: relay, home: home, "the same push, at another relay's address")
+		RelayedPushes.afterStop(engine, device: device, relay: relay, home: home, "the same push, at another relay's address", said: false)
 		count = engine.states.count
 		engine.event("settings", [("relay", .string(relay.absoluteString)), ("switches", Flows.switches)])
 		if let back = engine.request("remote.hello") { engine.answer(back.id) }

@@ -54,6 +54,8 @@ enum Sessions {
 		refusals(mac: mac, phone: phone, pairing: pairing, secret: secret, device: paired.device)
 		refusedClaim(mac: mac, phone: phone, pairing: pairing, secret: secret)
 		refusedAttach(mac: mac, phone: phone, pairing: pairing, device: paired.device)
+		Check.section("Offering a new presence key, in place of attach")
+		offeredKey(mac: mac, phone: phone, pairing: pairing, device: paired.device)
 		Check.section("Sealed items, signed by their writer")
 		sealing(mac: mac, phone: phone, pairing: pairing, device: paired.device)
 	}
@@ -683,6 +685,56 @@ enum Sessions {
 			print("ok   an attach refused: refused with each reason, then bye, all of one length")
 		} catch {
 			Check.that(false, "refused attach: \(error)")
+		}
+	}
+
+	/// The phone's offer of a new presence key on a connection's channel (#891): read by the Mac from the phone, checked
+	/// as the engine checks it, and answered `presenceKeyAccepted` or `refused` `presence` (the key waits), then `bye`, the
+	/// two of one length, so that the relay cannot tell which; nothing is sent after either.
+	static func offeredKey(mac: Mac, phone: Phone, pairing: PairingID, device: DeviceID) {
+		do {
+			let newKey = P256.Signing.PrivateKey()
+			secrets.append(newKey.rawRepresentation)
+			var lengths: [[Int]] = []
+			for accepted in [false, true] {
+				var wire = Wire()
+				let (phoneChannel, macChannel) = try kk(mac: mac, phone: phone, pairing: pairing, device: device)
+				let challenge = Bytes.random(32)
+				let proof = try MacProof.make(challenge: challenge, pairing: pairing, binding: macChannel.handshakeHash, identity: mac.identity)
+				guard case let .mac(receivedProof) = try send(.mac(proof), from: macChannel, to: phoneChannel, wire: &wire) else { throw RemoteKitError("check", "not a proof") }
+				let offer = try PresenceKeyOffer.make(
+					pairing: pairing, device: device, binding: phoneChannel.handshakeHash, challenge: receivedProof.challenge, build: "1.0.42",
+					deviceKey: phone.device, offeredKey: newKey)
+				guard case let .presenceKey(received) = try send(.presenceKey(offer), from: phoneChannel, to: macChannel, wire: &wire) else {
+					throw RemoteKitError("check", "not an offer")
+				}
+				Check.runs("pi² Remote finds the offer signed by the device on its own list, for this channel") {
+					try received.verifyDevice(deviceKey: phone.device.publicKey, pairing: pairing, device: device, binding: macChannel.handshakeHash)
+				}
+				Check.runs("the offer passes the engine's whole check, signed by the key it offers") {
+					try received.verify(deviceKey: phone.device.publicKey, pairing: pairing, device: device, binding: macChannel.handshakeHash, challenge: challenge)
+				}
+				Check.that(received.presenceKey.derRepresentation == newKey.publicKey.derRepresentation, "and names the new key")
+				let messages = accepted ? try macChannel.sealPresenceKeyAccepted() : try macChannel.sealRefusal(Refusal(.presence))
+				lengths.append(messages.map(\.count))
+				Check.that(macChannel.isOver, "after the answer to an offer the Mac's end is over")
+				var events: [ChannelEvent?] = []
+				for message in messages { events.append(try phoneChannel.open(try wire.carry(message))) }
+				Check.that(events.count == 2 && events.last == .bye, "the answer comes before bye")
+				switch try line(events.first!) {
+				case .presenceKeyAccepted: Check.that(accepted, "the phone reads presenceKeyAccepted")
+				case let .refused(refusal): Check.that(!accepted && refusal.reason == .presence, "the phone reads refused presence: the key waits on the Mac")
+				default: Check.that(false, "the phone reads the answer to its offer")
+				}
+				subjects += [phoneChannel, macChannel]
+			}
+			Check.that(lengths.count == 2 && lengths[0] == lengths[1], "an offer accepted and one that waits are answered in messages of the same lengths")
+			let (_, ended) = try kk(mac: mac, phone: phone, pairing: pairing, device: device)
+			_ = try ended.sealBye()
+			Check.refuses("no presenceKeyAccepted after bye") { _ = try ended.sealPresenceKeyAccepted() }
+			print("ok   an offer of a new presence key: read, checked, answered accepted or waiting, then bye")
+		} catch {
+			Check.that(false, "offered key: \(error)")
 		}
 	}
 
