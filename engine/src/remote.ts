@@ -46,6 +46,7 @@ import { existsSync } from "node:fs";
 import type { Socket } from "node:net";
 import { join } from "node:path";
 import { allowsHiddenApproval, type DevicePath, deviceLogged, deviceMay, forTheHelper, HIDDEN_FROM_THE_PHONE, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID } from "./answers.ts";
+import { isPicture } from "./attachments.ts";
 import { type Client, clients, send, type Wire } from "./clients.ts";
 import {
 	checkRequestItem,
@@ -773,10 +774,12 @@ let droppedSaid = 0;
 /**
  * A line as a device may be sent it, or null for none (5.7). The line is read whole: an event on the list, or an answer
  * (`id` with `result` or `error`), and nothing else; endpoints by name only; then every string in it, the keys of its
- * objects too, masked of key shapes before it is written again, and what is nested too deep replaced by a marker
- * (devices.ts, `maskValue`), so that one deep call does not keep a whole list from the phone. Anything that still goes
- * wrong drops the line, but an answer, which is answered with an error, so that no request goes unanswered: a line is
- * never sent unmasked, and never throws into what wrote it.
+ * objects too, masked of key shapes and of the values of the secrets the engine knows (secrets.ts) before it is
+ * written again, and what is nested too deep replaced by a marker (devices.ts, `maskValue`), so that one deep call
+ * does not keep a whole list from the phone. Anything that still goes wrong drops the line, but an answer, which is
+ * answered with an error, so that no request goes unanswered: a line is
+ * never sent unmasked, and never throws into what wrote it. It leaves nothing out by a field's name: the one answer
+ * whose picture bytes go unmasked is put together by `deviceRequest` (PICTURE_ANSWERS).
  */
 export function forDevice(line: string): string | null {
 	try {
@@ -845,11 +848,11 @@ function endpointsByName(message: Record<string, unknown>): void {
 async function deviceLine(id: string, message: unknown): Promise<void> {
 	const session = sessions.get(id);
 	const request = (typeof message === "object" && message !== null && !Array.isArray(message) ? message : {}) as { id?: unknown; method?: unknown; params?: unknown };
-	const reply = (body: Record<string, unknown>) => {
-		if (session !== undefined) send(session.client, { id: request.id ?? null, ...body });
-		else {
+	const reply = (body: Record<string, unknown>, picture?: string) => {
+		if (session !== undefined && picture === undefined) send(session.client, { id: request.id ?? null, ...body });
+		else if (session?.closed !== true) {
 			const out = forDevice(JSON.stringify({ id: request.id ?? null, ...body }));
-			if (out !== null) toSession(id, out);
+			if (out !== null) toSession(id, picture === undefined ? out : withPicture(out, picture));
 		}
 	};
 	const device = session === undefined ? undefined : pairedDevice(session.device);
@@ -872,6 +875,39 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
 }
 
 /**
+ * The answers whose picture bytes a device is sent as they are, unmasked and unsearched (#956), by the request that
+ * fills them, never by a field's name or by how a string looks: `conversation.image`'s `data`, which the engine takes
+ * from the entry's own image block (`imagesOf`, transcript.ts) and sends only once `isPicture` (attachments.ts) finds
+ * it base64 of a picture of its `mimeType`, one of PICTURE_TYPES. Masking would break the picture (a run of base64
+ * can look like a key) and would hide nothing a person reads: a picture shows a key as pixels, if it shows one, and no
+ * mask ever looked at those.
+ */
+export const PICTURE_ANSWERS: ReadonlySet<string> = new Set(["conversation.image"]);
+
+/**
+ * The picture types whose bytes go to a device unmasked, fixed here on the owner's path: a type that attachments.ts
+ * takes later (one that is text, such as SVG) reaches the exemption only by a change to this list.
+ */
+export const PICTURE_TYPES: ReadonlySet<string> = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+/** `result` as `conversation.image` answers it, `{ data, mimeType }` and nothing else, with bytes of a picture of that type; else undefined. */
+export function pictureAnswer(result: unknown): { data: string; mimeType: string } | undefined {
+	if (typeof result !== "object" || result === null || Array.isArray(result)) return undefined;
+	const fields = result as Record<string, unknown>;
+	const keys = Object.keys(fields).sort();
+	if (keys.length !== 2 || keys[0] !== "data" || keys[1] !== "mimeType") return undefined;
+	if (typeof fields.mimeType !== "string" || !PICTURE_TYPES.has(fields.mimeType) || !isPicture(fields.mimeType, fields.data)) return undefined;
+	return { data: fields.data as string, mimeType: fields.mimeType as string };
+}
+
+/** A masked answer `out` with the picture's bytes put back as its `data`; an answer turned into a refusal stays one. */
+function withPicture(out: string, data: string): string {
+	const answer = JSON.parse(out) as { result?: unknown };
+	if (typeof answer.result !== "object" || answer.result === null) return out;
+	return JSON.stringify({ ...answer, result: { ...answer.result, data } });
+}
+
+/**
  * A device's request once the device is known, on either path: a live session's line (`deviceLine`) or an item from the
  * mailbox that `checkRequestItem` passed (`mailboxIn`). Checked against the device's table on its path, handled as from
  * the app, logged under the log's own rule for a device's names (#786), on disk before it is answered when it widens
@@ -880,7 +916,7 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
  * returned. What throws here outside the handler's own `try` (a fault of the engine's) is the caller's to catch, with
  * `DEVICE_LINE_FAILED`'s words.
  */
-async function deviceRequest(device: Device, path: DevicePath, client: Client, method: string, params: Params, reply: (body: Record<string, unknown>) => void): Promise<"done" | "failed" | "refused"> {
+async function deviceRequest(device: Device, path: DevicePath, client: Client, method: string, params: Params, reply: (body: Record<string, unknown>, picture?: string) => void): Promise<"done" | "failed" | "refused"> {
 	const gate = { path, approvalSwitch, approvalHidden };
 	const answer = deviceMay(method, params as Params, gate);
 	// The log's own names (a pairing, an offer of a Face ID key) are the engine's to write: a device's are "unknown" (#786).
@@ -910,7 +946,10 @@ async function deviceRequest(device: Device, path: DevicePath, client: Client, m
 	try {
 		const result = await handlers[method]!(params as Params, client);
 		if (logged) await writeLog("done");
-		reply({ result });
+		// The rest of the answer is masked as any is; only the bytes the picture check took are left as they are.
+		const picture = PICTURE_ANSWERS.has(method) ? pictureAnswer(result) : undefined;
+		if (picture === undefined) reply({ result });
+		else reply({ result: { mimeType: picture.mimeType } }, picture.data);
 		if (widens) notify("widening", device.id, `${device.name}: ${summary}`);
 		return "done";
 	} catch (error) {
