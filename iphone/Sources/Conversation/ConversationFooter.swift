@@ -49,7 +49,7 @@ struct ConversationFooter: View {
     }
 
     private var arrival: String? {
-        guard status.busy, status.archived == nil else { return nil }
+        guard status.busy, !status.isChat, status.archived == nil else { return nil }
         return steer ? status.arrivalSteered : status.arrivalQueued
     }
 
@@ -131,7 +131,8 @@ struct ConversationFooter: View {
         let root: Int?
         switch archived {
         case .itself:
-            text = status.isSubChat ? "This sub-chat is archived. You can read it; restore it to carry on." : "This conversation is archived. You can read it; restore it to carry on."
+            text = status.isChat ? "This chat is archived. You can read it; restore it to carry on."
+                : status.isSubChat ? "This sub-chat is archived. You can read it; restore it to carry on." : "This conversation is archived. You can read it; restore it to carry on."
             root = nil
         case .parent(let id):
             text = "This sub-chat belongs to an archived conversation. Restore that conversation to carry on."

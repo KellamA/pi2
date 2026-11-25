@@ -184,23 +184,33 @@ struct PullRequestTests {
     }
 
     /// A real engine's `openedBy` is any conversation that used `work pull_request`: the orchestrator's own as often as
-    /// a sub-chat, which the first part called every one of them.
+    /// a sub-chat, which the first part called every one of them. The orchestrator's is named for what it is, from the
+    /// library's row (`orchestrator`), whatever its agent is called: the demo's pull request #4 said "sub-chat 275" (#981).
     @Test func theConversationThatOpenedItIsNamedAsThePersonKnowsIt() throws {
         let conversations = try JSONDecoder().decode([ConversationSummary].self, from: Data("""
-        [{"id":9,"title":"Walkthrough","updatedAt":0,"busy":false,"agentId":"orch-template","parent":null,"runsAs":"orch-1"},
+        [{"id":9,"title":"Walkthrough","updatedAt":0,"busy":false,"agentId":"orch-template","parent":null,"runsAs":"orch-1","orchestrator":"current"},
+         {"id":7,"title":"Before","updatedAt":0,"busy":false,"agentId":"orch-template","parent":null,"runsAs":"orch-1","orchestrator":"earlier"},
+         {"id":275,"title":"Site","updatedAt":0,"busy":false,"agentId":"atlas-1","parent":null,"orchestrator":"current"},
          {"id":166,"title":"Fix the fold","updatedAt":0,"busy":false,"agentId":"forge-1","parent":9},
+         {"id":40,"title":"On its own","updatedAt":0,"busy":false,"agentId":"forge-1","parent":null,"orchestrator":null},
          {"id":20,"title":"Someone gone","updatedAt":0,"busy":false,"agentId":"removed","parent":null}]
         """.utf8))
         let agents = try JSONDecoder().decode([AgentProfile].self, from: Data("""
         [{"id":"orch-1","name":"Orchestrator","description":"","color":"lavender","instructions":"","access":"full","delegates":[],"createdAt":0},
+         {"id":"atlas-1","name":"Atlas","description":"","color":"blue","instructions":"","access":"full","delegates":[],"createdAt":0},
          {"id":"forge-1","name":"Forge","description":"","color":"mint","instructions":"","access":"full","delegates":[],"createdAt":0}]
         """.utf8))
-        #expect(PullRequestLook.opener(9, conversations: conversations, agents: agents) == "Orchestrator's conversation")
+        #expect(PullRequestLook.opener(9, conversations: conversations, agents: agents) == "the orchestrator's conversation")
+        #expect(PullRequestLook.opener(275, conversations: conversations, agents: agents) == "the orchestrator's conversation")
+        #expect(PullRequestLook.opener(7, conversations: conversations, agents: agents) == "an earlier conversation with the orchestrator")
         #expect(PullRequestLook.opener(166, conversations: conversations, agents: agents) == "sub-chat 166")
+        #expect(PullRequestLook.opener(40, conversations: conversations, agents: agents) == "Forge's conversation")
         #expect(PullRequestLook.opener(20, conversations: conversations, agents: agents) == "conversation 20")
+        // Not in the library (not loaded yet, archived, deleted): its number alone, neither a sub-chat nor anyone's.
         #expect(PullRequestLook.opener(31, conversations: conversations, agents: agents) == "conversation 31")
-        #expect(PullRequestLook.sentBackWords(opener: "Orchestrator's conversation")
-            == "Sent back: your reason is on the pull request, and goes to Orchestrator's conversation, which opened it.")
+        #expect(PullRequestLook.opener(31, conversations: [], agents: []) == "conversation 31")
+        #expect(PullRequestLook.sentBackWords(opener: "the orchestrator's conversation")
+            == "Sent back: your reason is on the pull request, and goes to the orchestrator's conversation, which opened it.")
         #expect(PullRequestLook.sentBackWords(opener: nil).contains("no agent was told"))
     }
 
