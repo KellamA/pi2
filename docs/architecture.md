@@ -53,8 +53,9 @@ app/      SwiftUI app: the window (projects and chat mode), the menu bar, Quick 
           Sources/FileLinkKit   a file linked in a conversation: its path made whole, and what a click and its menu do with it
           Sources/pi2-file-link-check checks FileLinkKit, in a temporary folder of its own; not part of the app
           Sources/pi2-computer-check  checks how ComputerKit reaches SwiftUI controls, in windows of its own read in-process; not part of the app
-          Sources/TranscriptKit the conversation page's loading and messages, shared with the iPhone app; the Mac's web view and the page loaded ahead; the phone's web view
+          Sources/TranscriptKit the conversation page's loading and messages, shared with the iPhone app; the Mac's web view and the page loaded ahead; the phone's web view; the sandboxed view an agent's presented page is drawn in
           Sources/pi2-transcript-check checks TranscriptKit, with real pages in windows that never come on screen; not part of the app
+          Sources/pi2-presented-check checks the presented page's view against hostile pages, offscreen, with listeners on 127.0.0.1 alone; not part of the app
           Sources/PeerKit       whether the process at the other end of a connection to the engine's socket is the pi² app
           Sources/pi2-peer      the engine's helper that asks PeerKit of one connection; in the app's bundle
           Sources/pi2-peer-check checks PeerKit and pi2-peer on real connections; not part of the app
@@ -213,6 +214,7 @@ A development build measures this when asked: see [Measuring the app's speed](de
 | `src/rules.ts` | Allowed commands: reading a command line, matching, refusing. See [allowed-commands.md](allowed-commands.md) |
 | `src/features.ts` | The list of features that live in one file each, and what such a file can add |
 | `src/folders.ts` | What a paired phone may see of the Mac's folders and files (#698, [iphone.md](iphone.md#42-what-a-device-may-send) 4.2 and 5.7): `projects.folders`, the folders already used with pi² offered for a new project, the check of the folder a phone gives `projects.create`, and `files.preview`, a text file a conversation links to, read with no link followed |
+| `src/presented.ts` | Presenting's requests (#963, [design/presenting.md](design/presenting.md#events-and-requests-for-the-app-and-the-phone)): `present.*` and `presented.*`, named in `answers.ts`'s lists, each answered "Presenting is not available yet." by one stub until the engine's part is built |
 | `src/builtins.ts` | The built-in tools an agent's settings list, and which of them an agent leaves out, and the chat assistant's fixed set. See [Built-in tools](#built-in-tools) |
 | `src/chat.ts` | Chat mode's built-in assistant: its settings, the folder its documents go in, and what it is told. See [chat.md](chat.md) |
 | `src/handover.ts` | Continue with an Agent (#289): what an agent is given of a chat, as a Markdown file with the chat's own pictures and files beside it, and what is left out. See [chat.md](chat.md#continue-with-an-agent) |

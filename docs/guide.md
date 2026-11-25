@@ -156,7 +156,7 @@ A project's limits, on its Settings tab, hold back new work, not work already ru
 - **Plan window used**: no agent starts while a window of the subscription it would run on is this much used. A new project starts at 90%.
 - **Spent today**: no agent starts once the project's conversations, sub-chats included, have cost this much today.
 
-A start past a limit is refused, and a card under Needs you says why: **Start Anyway** starts that one, **Leave It** drops it. Past a limit, reports do not wake the orchestrator either; they wait for its next turn. pi²'s own **daily budget**, on the Usage page, applies on top, to everything.
+A start past a limit is refused, and a card under Needs you says why: **Start Anyway** starts that one, however much more the project has spent since the card was made, and no other; **Leave It** drops it. If the limit was made tighter since, another limit is now passed, or a new day has begun, the card stays and shows the new reading, for you to decide again. Past a limit, reports do not wake the orchestrator either; they wait for its next turn. pi²'s own **daily budget**, on the Usage page, applies on top, to everything.
 
 **Reports wake the orchestrator** (on the Now and Settings tabs) decides whether a finished piece of work wakes the orchestrator at once, so it can read the report and hand the work on, or waits for its next turn. It is off for a new project; the orchestrator can ask for its own hand-offs to wake it.
 

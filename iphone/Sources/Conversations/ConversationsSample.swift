@@ -12,19 +12,31 @@ import Foundation
 ///
 /// `PI2_CONVERSATIONS_ACT` does what a tap would, once, as the screen shows, so that what the engine answers can be
 /// pictured: `archive` (the first row of a conversations list), `new-chat`, `restore` (the Archive's first conversation),
-/// `restore-project` (the first conversation of a deleted project: its dry run), `stop` (the first background command, or
-/// the one whose output shows), `make` (Make Project). Each sends the real request through the session.
+/// `restore-project` (the first conversation of a deleted project: its dry run), `restore-project-go` (the same, then the
+/// sheet's Restore), `unarchive-project` (the Archive's first archived project), `stop` (the first background command, or
+/// the one whose output shows), `make` (Make Project). Each sends the real request through the session, once the client
+/// has reached the Mac itself.
 struct ConversationsSample {
     static let current: ConversationsSample? = ProcessInfo.processInfo.environment["PI2_CONVERSATIONS_SAMPLE"] == "1" ? ConversationsSample() : nil
 
     private static let act = ProcessInfo.processInfo.environment["PI2_CONVERSATIONS_ACT"]
     @MainActor private static var done: Set<String> = []
 
-    /// Whether `name` was asked for and not done yet; marks it done. Waits a moment first, for the screen to have drawn.
-    @MainActor static func take(_ name: String) async -> Bool {
+    /// Whether `name` was asked for and not done yet; marks it done. Waits first for the client to reach the Mac itself
+    /// (a paired phone's starts on what the Mac last sent, which refuses every request), up to half a minute, then a
+    /// moment more, for the screen to have drawn.
+    @MainActor static func take(_ name: String, in session: AppSession) async -> Bool {
         guard act == name, !done.contains(name) else { return false }
         done.insert(name)
+        for _ in 0..<150 where !ConversationsReach(session).ready {
+            try? await Task.sleep(for: .milliseconds(200))
+        }
         try? await Task.sleep(for: .seconds(1))
+        // A screen's task started again (it reached the Mac meanwhile) takes it then, on what the Mac sent.
+        if Task.isCancelled {
+            done.remove(name)
+            return false
+        }
         return true
     }
 

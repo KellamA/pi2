@@ -34,6 +34,7 @@ import { order } from "./order.ts";
 import { pictureLook } from "./picturelook.ts";
 import { pictures } from "./pictures.ts";
 import { plan } from "./plan.ts";
+import { presented } from "./presented.ts";
 import { priority } from "./priority.ts";
 import { projectAgents } from "./projectagents.ts";
 import { projectLimits } from "./projectlimits.ts";
@@ -291,6 +292,8 @@ export const FEATURES: Feature[] = [
 	carryOver,
 	// What a paired phone may see of the Mac's folders and files (#698): requests only, with no greeting of its own.
 	folders,
+	// Presenting's requests (#963): named in answers.ts's lists, each answered "not available yet" until #946's piece 2.
+	presented,
 	// The projects epic (docs/projects.md). Their greetings go to an app in this order (4.4).
 	projects,
 	projectRules,

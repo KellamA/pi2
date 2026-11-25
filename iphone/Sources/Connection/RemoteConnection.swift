@@ -144,6 +144,7 @@ final class RemoteConnection {
         }
         do {
             try channel.send(line: line)
+            transport.went(line)
         } catch {
             waiting.append(line)
             channel.drop()
@@ -172,7 +173,8 @@ final class RemoteConnection {
                 case let .attached(attached, channel):
                     failures = 0
                     resumeRefused = false
-                    if !attached.resume, session != nil { current?.end("The Mac did not resume the session.") }
+                    // The lines waiting were the lost session's: its calls fail with it, and none goes to the next.
+                    if !attached.resume, session != nil { forgetSession("The Mac did not resume the session.") }
                     session = attached.session
                     await carry(channel, attached: attached)
                     continue
@@ -234,6 +236,7 @@ final class RemoteConnection {
         self.channel = channel
         let transport = transport()
         lastAcked = transport.received
+        transport.channelStarted()
         transport.becameAttached()
         lastSeen = now()
         connection = .connected(channel.path, relayReachable: channel.path == .relay || relay?.status.ready == true)
@@ -289,7 +292,10 @@ final class RemoteConnection {
                     bytes = 0
                     ack(force: true)
                 }
-            case .ack, .ping:
+            case let .ack(count):
+                transport.counted(count)
+                continue
+            case .ping:
                 continue
             case .bye:
                 log.notice("channel ended with bye")
@@ -298,6 +304,8 @@ final class RemoteConnection {
         }
         if self.channel === channel { self.channel = nil }
         channel.drop()
+        // What the Mac had not counted is sent again, on the next channel, by the calls that wait on it (5.8).
+        if transport === current { transport.channelEnded() }
         if !Task.isCancelled, !unpaired { connection = .connecting }
     }
 

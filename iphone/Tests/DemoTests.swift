@@ -58,6 +58,8 @@ enum DemoScreens {
             ("The archive (#698)", .archive),
             ("Background commands (#698)", .backgroundCommands()),
             ("New project, from a folder the Mac offers (#698)", .newProject),
+            // The demo's agents link to no file: the screen says why the Mac does not show it.
+            ("A file a conversation links to (#698)", .filePreview(conversation: agent, path: "notes/plan.md")),
             // A command's output needs a command, and the demo's agents start none.
             // The demo's projects keep their work in pi², with no repository: the page says it has no pull requests, and
             // asks the demo nothing.
