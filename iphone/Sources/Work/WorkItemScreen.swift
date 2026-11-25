@@ -25,6 +25,8 @@ struct WorkItemScreen: View {
     @State private var editing = false
     @State private var noteText = ""
     @State private var filling = false
+    /// The engine's words when it would not read the issue whole for the phone (`github.show`).
+    @State private var unread: String?
 
     var body: some View {
         content
@@ -41,11 +43,17 @@ struct WorkItemScreen: View {
             })
             .task(id: itemID) {
                 if let initialHeld, desk.held == nil { desk.held = initialHeld }
-                await fill()
                 #if DEBUG
                 await debugAct()
                 #endif
             }
+            // Only on the channel: while the app shows the store's last state, the Mac is not there to read it.
+            .task(id: "\(itemID)|\(live)") { await fill() }
+    }
+
+    /// The client is on the channel to the Mac, not on the store's last state.
+    private var live: Bool {
+        if case .connected = session.connection { true } else { false }
     }
 
     @ViewBuilder
@@ -59,7 +67,11 @@ struct WorkItemScreen: View {
             ContentUnavailableView {
                 Label("Not in the list", systemImage: "checklist")
             } description: {
-                Text(listing.onGitHub ? "Issue #\(itemID) is no longer in the list." : "This piece of work is no longer in the list.")
+                if let unread {
+                    Text("Issue #\(itemID) is not in the list read from GitHub. \(Self.unreadWords(unread))")
+                } else {
+                    Text(listing.onGitHub ? "Issue #\(itemID) is no longer in the list." : "This piece of work is no longer in the list.")
+                }
             } actions: {
                 if placement == .screen {
                     Button("All Work") { dismiss() }
@@ -120,7 +132,10 @@ struct WorkItemScreen: View {
                 }
             }
             Section("Text") {
-                if listed.partial {
+                if listed.partial, let unread {
+                    Label(Self.unreadWords(unread), systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.secondary)
+                } else if listed.partial {
                     Label("Reading its text and comments from GitHub…", systemImage: "arrow.down.circle")
                         .foregroundStyle(.secondary)
                 } else if listed.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -171,12 +186,16 @@ struct WorkItemScreen: View {
             WorkFlow(spacing: 8) {
                 WorkTag(state: item.state)
                 WorkHolder(agent: session.engine.agent(item.holderAgentId), agentId: item.holderAgentId)
-                if item.held, let conversation = item.holderConversation {
-                    Text(branchWords(conversation))
-                }
             }
             .font(.subheadline)
             .foregroundStyle(.secondary)
+            // A line of its own: a branch is named after the piece's title, and beside the tag it wrapped in a narrow
+            // column (seen against a copy, where the Mac makes a worktree for the piece given).
+            if item.held, let conversation = item.holderConversation {
+                Text(Self.whereWorked(conversation: conversation, branch: session.engine.branches[conversation]?.branch))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
             WorkFlow(spacing: 8) {
                 Text(classWords(item.modelClass))
                 if !typeSize.isAccessibilitySize { Text("·").accessibilityHidden(true) }
@@ -285,11 +304,11 @@ struct WorkItemScreen: View {
         session.engine.agent(item.holderAgentId)?.name ?? item.holderAgentId ?? "its agent"
     }
 
-    /// "in sub-chat 17, on fix-the-thing": where it is worked on, with the branch its sub-chat works on when the Mac
+    /// "In sub-chat 17, on fix-the-thing": where it is worked on, with the branch its sub-chat works on when the Mac
     /// knows it.
-    private func branchWords(_ conversation: Int) -> String {
-        var words = "in sub-chat \(conversation)"
-        if let branch = session.engine.branches[conversation]?.branch { words += ", on \(branch)" }
+    static func whereWorked(conversation: Int, branch: String?) -> String {
+        var words = "In sub-chat \(conversation)"
+        if let branch { words += ", on \(branch)" }
         return words
     }
 
@@ -323,18 +342,29 @@ struct WorkItemScreen: View {
         }
     }
 
-    /// Reads an issue whole when the list holds less of it than this screen shows, or the list was read over a minute
-    /// ago, as the Mac does as one opens (`github.show`). What the list knows shows meanwhile.
+    /// Reads an issue whole when the list holds less of it than this screen shows (`github.show`), once the client is on
+    /// the channel. What the list knows shows meanwhile; if the Mac will not read it, the screen says so where the text
+    /// would be.
     private func fill() async {
-        guard listing.onGitHub, !filling else { return }
-        let listed = listing.item(itemID)
-        let fresh = listing.readAt.map { Date().timeIntervalSince($0) < 60 } ?? false
-        if listed?.partial == false && fresh { return }
+        guard Self.wantsWholeRead(listing, itemID: itemID, live: live), !filling, unread == nil else { return }
         filling = true
         defer { filling = false }
-        if let refused = await WorkRequests.show(session.engine, project: project.id, number: itemID) {
-            desk.problem = "pi² could not read it whole from GitHub: \(refused)"
-        }
+        unread = await WorkRequests.show(session.engine, project: project.id, number: itemID)
+    }
+
+    /// Whether the screen asks the Mac to read an issue whole: on the channel, for one the list holds only briefly (a
+    /// closed one) or not at all. The Mac also reads one again that is whole but was read over a minute ago; the phone
+    /// does not, since the engine takes `github.show` from the Mac alone (iphone.md 4.2 does not name it), and the
+    /// listing it already has is read again by Pull to Refresh and while the tab shows.
+    static func wantsWholeRead(_ listing: WorkListing, itemID: Int, live: Bool) -> Bool {
+        guard listing.onGitHub, live, !listing.firstRead else { return false }
+        return listing.item(itemID)?.partial ?? true
+    }
+
+    /// What the screen says where an issue's text would be when the Mac would not read it whole for the phone, with
+    /// the engine's words.
+    static func unreadWords(_ refusal: String) -> String {
+        "Its text and comments were not read for this iPhone. Your Mac answered: “\(refusal.trimmingCharacters(in: .whitespacesAndNewlines))” Open it on GitHub, or on your Mac, to read them."
     }
 
     #if DEBUG
@@ -354,7 +384,11 @@ struct WorkItemScreen: View {
             noteText = text
             addNote(item)
         }
-        if WorkDebugAct.take("close") { act(item, "close", ["as": "done"]) }
+        if WorkDebugAct.take("close") { act(item, "close", ["as": WorkDebugAct.argument("close") == "dropped" ? "dropped" : "done"]) }
+        for action in ["release", "resume", "reopen"] where WorkDebugAct.take(action) { act(item, action) }
+        if WorkDebugAct.take("classify"), let chosen = WorkDebugAct.argument("classify") {
+            act(item, "classify", ["class": chosen == "none" ? (NSNull() as Any) : (chosen as Any)])
+        }
     }
     #endif
 }
