@@ -24,6 +24,9 @@ import RemoteKit
 //   list, and handed to the engine (`remote.mailboxIn`), which checks it again; the relay is told `took` only for what
 //   the engine kept or certainly refused, and for what certainly is not genuine (#806, #876). What the engine leaves
 //   for a phone (`mailboxOut`) is signed with the identity key, sealed to the device's record key on the list and put.
+// - Pushes (#689, #935): the hand-over (`PushHandOver.relay`) has this client from the relay's `ready`, which proves
+//   this pairing's Mac on its socket, until that socket goes (`connecting`, `disconnected`), the client stops
+//   (`stopped`) or is stopped (`stopClient`); at any other moment every push is answered `push-later`.
 // - What it can do is told to the engine as `remote.state`'s `relay` (6.5): off (none wanted), unavailable and why,
 //   connecting, ready, down until a time, or stopped and the relay's word for it.
 
@@ -234,6 +237,7 @@ final class RelayEnd: @unchecked Sendable {
 	}
 
 	private func stopClient() {
+		remote.pushes.relay = nil
 		guard let client else { return }
 		generation += 1
 		self.client = nil
@@ -249,11 +253,15 @@ final class RelayEnd: @unchecked Sendable {
 		switch event {
 		case .connecting:
 			isReady = false
+			remote.pushes.relay = nil
 			dropRequests()
 			endLinks()
 			if case .down = reported {} else { report(.connecting) }
 		case let .macReady(info):
 			isReady = true
+			// The pushes go through this client from now until its socket goes (#935): only once the relay has proved this
+			// pairing's Mac on it, and only the client of this generation, which is this pairing's at this relay.
+			if let client { remote.pushes.relay = RelayClientPushes(client: client) }
 			report(.ready)
 			Seldom.shared.say("relay ready", "the relay path is ready")
 			inStep(with: info)
@@ -287,11 +295,13 @@ final class RelayEnd: @unchecked Sendable {
 			take()
 		case let .disconnected(drop, retryAt):
 			isReady = false
+			remote.pushes.relay = nil
 			dropRequests()
 			endLinks()
 			report(.down(Self.describe(drop), retryAt: retryAt))
 		case let .stopped(reason):
 			isReady = false
+			remote.pushes.relay = nil
 			dropRequests()
 			endLinks()
 			client = nil
