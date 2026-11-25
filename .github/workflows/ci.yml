@@ -42,8 +42,6 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
       - id: files
-        # The completion controller looks for this name in attempt 1 before retrying onto GitHub's runners.
-        name: Decide which jobs to run (App and Engine retries are hosted)
         env:
           EVENT: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}

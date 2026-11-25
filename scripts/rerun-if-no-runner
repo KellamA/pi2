@@ -1,7 +1,6 @@
 #!/bin/bash
-# Reruns completed runs' jobs only for recognized runner errors, never ordinary test failures. The default branch's
-# workflow "Rerun jobs no runner took" calls this after CI/Release ends badly. A person can use --dry-run. Needs gh
-# and jq; the repository is the one gh finds here, or GH_REPO. The owner PR check also reads the public PR API.
+# The default branch's "Rerun jobs no runner took" retries hosted capacity misses (#245). App/Engine runs that
+# used the mini stay manual (#993). A person can use --dry-run. Needs gh and jq; set GH_REPO outside the checkout.
 set -euo pipefail
 
 usage() { echo "usage: scripts/rerun-if-no-runner <run-id> [--dry-run]" >&2; exit 2; }
@@ -10,11 +9,8 @@ id=${1:-}
 dry=false
 case ${2:-} in "") ;; --dry-run) dry=true ;; *) usage ;; esac
 
-MAX_ATTEMPTS=4 # Three hosted retries as before (#245); one retry when recovering from the mini (#993).
+MAX_ATTEMPTS=4 # Three retries for the existing hosted-only capacity case (#245).
 HOSTED='The job was not acquired by Runner of type hosted even after multiple attempts'
-MINI_QUEUE='The job was not acquired by Runner of type self-hosted even after multiple attempts'
-MINI_LOST='The self-hosted runner: pi2-mini lost communication with the server. Verify the machine is running and has a healthy network connection. Anything in your workflow that terminates the runner process, starves it for CPU/Memory, or blocks its network access can cause this error.'
-ROUTING='Decide which jobs to run (App and Engine retries are hosted)'
 api="repos/{owner}/{repo}"
 run_path="$api/actions/runs/$id"
 
@@ -26,35 +22,34 @@ if ! jq -e '.status == "completed" and (.conclusion == "failure" or .conclusion 
 	exit 0
 fi
 
+event=$(jq -re '.event | select(type == "string" and length > 0)' <<<"$run")
 list_jobs() {
-	gh api --paginate "$run_path/attempts/$1/jobs?per_page=100" | jq -se '[.[] | .jobs[]] | select(length > 0)'
+	gh api --paginate "$1" | jq -se '.[0].total_count as $count | [.[].jobs[]] | select(length > 0 and length == $count)'
 }
+jobs=$(list_jobs "$run_path/attempts/$attempt/jobs?per_page=100")
 
-# Narrower than just a job name/label: the repo, event, actor and the original PR must agree with CI's routing.
-owner_run=false
-if jq -e '.path == ".github/workflows/ci.yml" and .event == "pull_request" and
-	(.repository.owner.login | type == "string") and .actor.login == .repository.owner.login and
-	(.repository.full_name | type == "string") and .head_repository.full_name == .repository.full_name' <<<"$run" >/dev/null; then
-	owner_run=true
+if [[ $event == pull_request ]]; then
+	# Keep the entire mini App/Engine run out of the hosted capacity retry, even if a partial manual retry only
+	# lists hosted jobs in its latest attempt. Missing runner data for a non-skipped App/Engine is not proof it was hosted.
+	history='[]'
+	if ((attempt > 1)); then
+		history=$(list_jobs "$run_path/jobs?filter=all&per_page=100")
+	fi
+	manual=$(printf '%s\n%s\n' "$jobs" "$history" | jq -sr 'add |
+		any(.[]; (.name == "App (build)" or .name == "Engine (type-check and tests)") and
+			(((.runner_name // "") | ascii_downcase) == "pi2-mini" or
+			any((.labels // [])[]; ascii_downcase == "pi2-mini") or
+			(.conclusion != "skipped" and ((.labels // []) | length == 0))))')
+	if [[ $manual == true ]]; then
+		# A run-ID POST can select a newer attempt. The job-ID POST also reruns dependents and has no documented
+		# precondition that rejects a request if another attempt became current. Neither is safe for mini fallback.
+		echo 'This PR run has mini or unknown App/Engine routing. Inspect the latest attempt and retry manually only for runner failures.'
+		exit 0
+	fi
 fi
 
-# Set off the supported App/Engine checks from anything else ever sent to the mini (including relay/phone).
-mini_targets() {
-	jq -c '[.[] | select(.labels == ["pi2-mini"] and (.name == "App (build)" or .name == "Engine (type-check and tests)"))]'
-}
-
-jobs=$(list_jobs "$attempt")
-first_jobs=$jobs
-if $owner_run && ((attempt > 1)); then
-	first_jobs=$(list_jobs 1)
-fi
-if $owner_run && ((attempt > 1)) && mini_targets <<<"$first_jobs" |
-	jq -e 'any(.[]; .conclusion != "success" and .conclusion != "skipped")' >/dev/null; then
-	echo 'The original attempt had a non-passing mini App or Engine check; no further automatic retry.'
-	exit 0
-fi
-
-# Refuse unknown or incomplete observations. Workflow completion does not authorize retrying a queued/running job.
+# The existing #245 hosted retry policy, not the mini fallback. Refuse ambiguous or incomplete observations.
+((attempt < MAX_ATTEMPTS)) || { echo 'Hosted retry budget exhausted.'; exit 0; }
 if ! jq -e 'all(.[]; .status == "completed" and (.id | type == "number"))' <<<"$jobs" >/dev/null; then
 	echo 'Not all jobs are terminal: leaving the run alone.'
 	exit 0
@@ -62,90 +57,32 @@ fi
 failed=$(jq -c '[.[] | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")]' <<<"$jobs")
 count=$(jq 'length' <<<"$failed")
 ((count > 0)) || exit 0
-
-# Check annotations are data, not commands. A runner step can emit its own annotations, so never infer an
-# infrastructure error from text on its own; require the job and step state to corroborate it.
-# A step timeout, a reported test failure, an ordinary cancellation or an ambiguous failure stays visible.
-no_assignment='(.runner_id == 0 or .runner_id == null) and (.runner_name == "" or .runner_name == null) and .steps == []'
-annotations() { gh api --paginate "$api/check-runs/$1/annotations?per_page=100" | jq -sc 'add'; }
-mini_failure() {
-	local job=$1 msg
-	if jq -e "(.conclusion == \"failure\" or .conclusion == \"cancelled\") and ($no_assignment)" <<<"$job" >/dev/null; then
-		msg=$MINI_QUEUE
-	elif jq -e '.conclusion == "failure" and (.runner_id | type == "number" and . > 0) and .runner_name == "pi2-mini" and
-		(.steps | type == "array") and all(.steps[]; .conclusion == "success" or .conclusion == "skipped" or
-		.conclusion == "cancelled" or (.conclusion == null and (.status == "queued" or .status == "in_progress")))' <<<"$job" >/dev/null; then
-		msg=$MINI_LOST
-	else
-		return 1
-	fi
-	annotations "$(jq -r .id <<<"$job")" |
-		jq -e --arg msg "$msg" '[.[] | select(.annotation_level == "failure") | .message] == [$msg]' >/dev/null
-}
-
-mini_count=$(mini_targets <<<"$failed" | jq 'length')
-if ((mini_count > 0)); then
-	# Do not run any relay, phone, Linux or other failed job again along with a mini check. In particular do not
-	# cover up a real failure in the other required check. The marker avoids rerunning pre-rollout CI on the mini.
-	if ! $owner_run || ((attempt != 1 || mini_count != count)) || ! jq -e --arg marker "$ROUTING" '
-		all(.[]; .conclusion != "neutral") and
-		any(.[]; .name == "Which jobs the change needs" and .conclusion == "success" and
-			any(.steps[]; .name == $marker and .conclusion == "success"))' <<<"$jobs" >/dev/null; then
-		echo 'Not an eligible mini-only retry: leaving the failed checks alone.'
+while IFS= read -r job; do
+	if ! jq -e '.conclusion == "cancelled" and (.runner_id == 0 or .runner_id == null) and
+		(.runner_name == "" or .runner_name == null) and .steps == []' <<<"$job" >/dev/null ||
+		! gh api --paginate "$api/check-runs/$(jq -r .id <<<"$job")/annotations?per_page=100" |
+			jq -se --arg msg "$HOSTED" 'add | any(.[]; (.message // "") | contains($msg))' >/dev/null; then
+		echo 'Not every failed job ended for want of a hosted runner: leaving the failed checks alone.'
 		exit 0
 	fi
-	while IFS= read -r job; do
-		if ! mini_failure "$job"; then
-			echo 'A mini check did not end with a recognized runner error: leaving the failed checks alone.'
-			exit 0
-		fi
-	done < <(jq -c '.[]' <<<"$failed")
-	mode='mini checks on macos-26'
-else
-	((attempt < MAX_ATTEMPTS)) || { echo 'Hosted retry budget exhausted.'; exit 0; }
-	while IFS= read -r job; do
-		if ! jq -e ".conclusion == \"cancelled\" and ($no_assignment)" <<<"$job" >/dev/null ||
-			! annotations "$(jq -r .id <<<"$job")" |
-				jq -e --arg msg "$HOSTED" 'any(.[]; (.message // "") | contains($msg))' >/dev/null; then
-			echo 'Not every failed job ended for want of a hosted runner: leaving the failed checks alone.'
-			exit 0
-		fi
-	done < <(jq -c '.[]' <<<"$failed")
-	mode='checks that no hosted runner took'
-fi
+done < <(jq -c '.[]' <<<"$failed")
 
-# Newest run of this workflow/event/branch, as in #245. Recheck the attempt before writing too: another controller
-# delivery or a manual rerun may have acted meanwhile. The owner PR retry's concurrency key cannot cancel a new run.
+# Running an old run again could cancel a newer one. The last read narrows the race on #245's existing run-ID
+# endpoint, but isn't a compare-and-set; the mini path never reaches this endpoint.
 workflow=$(jq -re '.workflow_id | select(type == "number" and . >= 1 and floor == .)' <<<"$run")
 newest=$(gh api -X GET "$api/actions/workflows/$workflow/runs" -f branch="$(jq -r .head_branch <<<"$run")" \
-	-f event="$(jq -r .event <<<"$run")" -f per_page=1 --jq '.workflow_runs[0].id // empty')
+	-f event="$event" -f per_page=1 --jq '.workflow_runs[0].id // empty')
 if [[ $newest != "$id" ]]; then
 	echo 'Not the newest run on this branch: leaving it alone.'
 	exit 0
-fi
-if ((mini_count > 0)); then
-	pr_number=$(jq -r '.pull_requests | if length == 1 then .[0].number else empty end' <<<"$run")
-	repo=$(jq -r .repository.full_name <<<"$run")
-	if [[ ! $pr_number =~ ^[1-9][0-9]*$ || ! $repo =~ ^[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+$ ]]; then
-		echo 'No unambiguous same-repository pull request: leaving the run alone.'
-		exit 0
-	fi
-	# Unauthenticated public read: the controller needs no additional pull-requests or runner-admin permissions.
-	pr=$(curl --disable --fail --silent --show-error --max-time 10 "https://api.github.com/repos/$repo/pulls/$pr_number")
-	if ! jq -e --argjson run "$run" '.state == "open" and .user.login == $run.repository.owner.login and
-		.base.repo.full_name == $run.repository.full_name and .head.repo.full_name == $run.repository.full_name and
-		.head.ref == $run.head_branch and .head.sha == $run.head_sha' <<<"$pr" >/dev/null; then
-		echo 'The pull request is no longer current and eligible: leaving the run alone.'
-		exit 0
-	fi
 fi
 if ! gh api "$run_path" | jq -e --argjson attempt "$attempt" '.status == "completed" and .run_attempt == $attempt' >/dev/null; then
 	echo 'The attempt changed during review: leaving the run alone.'
 	exit 0
 fi
 if $dry; then
-	echo "Would rerun $count $mode (--dry-run)."
+	echo "Would rerun $count checks that no hosted runner took (--dry-run)."
 	exit 0
 fi
 gh api -X POST "$run_path/rerun-failed-jobs" >/dev/null
-echo "Requested attempt $((attempt + 1)) for $count $mode. The checks still have to pass."
+echo "Requested attempt $((attempt + 1)) for $count checks that no hosted runner took. The checks still have to pass."
