@@ -15,8 +15,10 @@ import PiModels
 ///   a conflict), `running`, `merged`, `closed` (closed, listed without its checks and findings), `trouble` (GitHub
 ///   unreachable on the Mac), `unknown` (a write whose outcome is unknown), `large` (a file of 4,000 lines and a line of
 ///   5,000 characters), `nodiff` (the diff is asked of the engine, which the recording refuses).
-/// - `PI2_PR_PRESS=merge` opens the merge question once the page shows, `send-back` the sheet, `merge-now` sends the
-///   merge at once, so that each can be pictured with no tap.
+/// - `PI2_PR_PRESS=merge` opens the merge question once the page shows and the Mac answers, `send-back` the sheet,
+///   `merge-now` sends the merge at once, `send-back:<reason>` sends it back with that reason, and `refresh` reads
+///   GitHub and the diff again, as pull to refresh does, so that each can be pictured, and tried against a Mac, with no
+///   tap. Each sends the real request, whether the page shows a sample or what the Mac sent.
 /// - `PI2_PR_WRAP=off` opens a file's diff with long lines scrolling sideways.
 /// - `PI2_PR_SCROLL=bottom` opens the pull request's page scrolled to its end, for a picture of its files.
 struct PullRequestSamples {
@@ -36,14 +38,17 @@ struct PullRequestSamples {
 
     /// Does what `PI2_PR_PRESS` names, once a launch.
     @MainActor
-    static func press(merge: () -> Void, sendBack: () -> Void, mergeNow: () -> Void) {
+    static func press(merge: () -> Void, sendBack: () -> Void, mergeNow: () -> Void, sendBackNow: (String) -> Void,
+                      refresh: () -> Void) {
         guard !pressed, let pressing else { return }
         pressed = true
         switch pressing {
         case "merge": merge()
         case "send-back": sendBack()
         case "merge-now": mergeNow()
-        default: break
+        case "refresh": refresh()
+        default:
+            if pressing.hasPrefix("send-back:") { sendBackNow(String(pressing.dropFirst("send-back:".count))) }
         }
     }
 

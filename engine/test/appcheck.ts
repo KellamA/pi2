@@ -5,7 +5,8 @@
 // refusals through a real engine.
 
 import assert from "node:assert/strict";
-import { fstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { closeSync, fstatSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -52,6 +53,40 @@ async function connection(): Promise<{ socket: Socket; inode: string; close: () 
 const logged: string[] = [];
 const log = (...parts: unknown[]) => logged.push(parts.join(" "));
 
+// Run by the last section below, in a process of its own whose limit on open descriptors is low enough to reach (#932).
+if (process.argv[2] === "out-of-descriptors") {
+	const { bundle, asked } = helper("out-of-descriptors", [], { app: true, why: "the stand-in app" });
+	const { socket, close } = await connection();
+	const check = new AppCheck(bundle, log, PATIENCE_MS);
+	const held: number[] = [];
+	try {
+		while (true) held.push(openSync("/dev/null", "r"));
+	} catch (error) {
+		assert.equal((error as NodeJS.ErrnoException).code, "EMFILE");
+	}
+	const first = check.verdict(socket);
+	const refused = await first;
+	const second = check.verdict(socket);
+	assert.notEqual(second, first, "a check that could not be made is not kept");
+	const refusedAgain = await second;
+	// An `error` event of the helper's that nothing listened to would end this process here, as it would the engine.
+	await new Promise((resolve) => setTimeout(resolve, 200));
+	for (const fd of held) closeSync(fd);
+	for (const verdict of [refused, refusedAgain]) {
+		assert.equal(verdict.app, false);
+		assert.match(verdict.why, /^the connection could not be checked: spawn .*pi2-peer E[MN]FILE$/);
+	}
+	assert.equal(asked().length, 0, "the helper could not be started");
+	console.log("ok  out of descriptors: the connection could not be checked, twice, and is not the app's");
+	assert.deepEqual(await check.verdict(socket), { app: true, why: "the stand-in app" });
+	assert.equal(asked().length, 1, "once descriptors are free, the next request checks again");
+	assert.deepEqual(await check.verdict(socket), { app: true, why: "the stand-in app" });
+	assert.equal(asked().length, 1, "and that answer is kept");
+	console.log("ok  with descriptors free again, the same connection is checked again, and the answer kept");
+	close();
+	process.exit(0);
+}
+
 // ---- Slow the first time: asked once more, and the app is known
 {
 	const { bundle, asked } = helper("first-slow", [1], { app: true, why: "the stand-in app" });
@@ -94,4 +129,15 @@ const log = (...parts: unknown[]) => logged.push(parts.join(" "));
 	assert.ok(!logged.slice(before).some((line) => line.includes("asking once more")));
 	close();
 	step("a helper that answers no is asked once, and the no is final");
+}
+
+// ---- Out of descriptors (#932): Node's spawn then gives no stdout and an `error` event on the next tick. Neither may
+// end the engine or be kept as the connection's verdict. Run in a process of its own, limited to 256 descriptors, so
+// that using them all up touches nothing else.
+{
+	const run = spawnSync("/bin/sh", ["-c", 'ulimit -n 256 && exec "$0" "$@"', process.execPath, ...process.execArgv, import.meta.filename, "out-of-descriptors"], {
+		stdio: ["ignore", "inherit", "inherit"],
+	});
+	assert.equal(run.status, 0, `the check out of descriptors ended with ${run.status ?? run.signal}`);
+	step("a check made while the engine is out of descriptors refuses the connection, ends nothing and is not kept");
 }

@@ -42,6 +42,18 @@ final class TestMac: @unchecked Sendable {
         /// Leaves this many attaches unanswered, the first ones: it reads and checks each, then closes the channel, as the
         /// phone sees a Mac whose answer did not come within its ten seconds (3.4).
         var unanswered = 0
+        /// Cuts this many of the phone's lines longer than one transport message, the first ones: once the first part of
+        /// one has come, the link closes under the phone, as a network that drops mid-line (or pi² Remote cutting a line,
+        /// #908). What came of it is not passed on, and not counted in an ack.
+        var cutLines = 0
+        /// Closes the link under the phone right after taking this many `submit` lines whole, the first ones, before
+        /// answering or acknowledging them: the line arrived, but the phone cannot know it. The answer is kept in the
+        /// session, for a resume.
+        var dropAfterTaking = 0
+        /// The same, but after acknowledging the line at once: the phone knows the Mac had it.
+        var dropAfterAcking = 0
+        /// Answers `submit` as the engine does, once for each request id; the recording refuses it otherwise.
+        var takesMessages = false
     }
 
     struct Device {
@@ -70,6 +82,12 @@ final class TestMac: @unchecked Sendable {
         var paired: [DeviceID] = []
         var sessionEnds = 0
         var requests: [String] = []
+        /// The phone's lines cut part way, by `cutLines`.
+        var cut = 0
+        /// Every `submit` the engine was sent, by request id, and the submission each was given: one for each request id,
+        /// as the engine takes a message sent again with its request id once (engine/src/main.ts, `submit`).
+        var submits: [String] = []
+        var submissions: [String: Int] = [:]
         /// The home tag's key, sent in `paired` and after every `attached`.
         var homeKey = HomeKey.random()
     }
@@ -362,15 +380,83 @@ final class TestMac: @unchecked Sendable {
             engines.withLock { $0[session] = end }
             await end.begin(on: channel)
         }
-        // The phone's lines, to the engine, until the channel ends.
-        while let line = try? await channel.nextLine() {
+        // The phone's lines, to the engine, until the channel ends, each counted in an ack a second after the first one
+        // not yet counted, as pi² Remote acknowledges them (5.8).
+        let cut: @Sendable () -> Bool = { [weak self] in
+            guard let self else { return false }
+            let rules = self.rules.withLock { $0 }
+            return self.state.withLock { state in
+                guard state.cut < rules.cutLines else { return false }
+                state.cut += 1
+                return true
+            }
+        }
+        let counter = AckCounter()
+        while let line = try? await channel.nextLine(cutting: cut) {
             if case .sessionEnd? = try? ControlLine.parse(line) {
                 state.withLock { $0.sessionEnds += 1 }
                 break
             }
+            let schedule = counter.state.withLock { counter in
+                counter.received += 1
+                defer { counter.scheduled = true }
+                return !counter.scheduled
+            }
+            let drop = dropsAfter(line)
+            if drop == .taking {
+                link.close()
+                await end.request(line)
+                break
+            }
+            if drop == .acking {
+                // The ack goes, then the link closes, with no `bye`; the answer, after, only to the session.
+                try? channel.sendAck(counter.state.withLock { $0.received })
+                channel.finish()
+                await end.request(line)
+                break
+            }
+            if schedule {
+                Task {
+                    try? await Task.sleep(for: .seconds(1))
+                    let count = counter.state.withLock { counter in
+                        counter.scheduled = false
+                        return counter.received
+                    }
+                    try? channel.sendAck(count)
+                }
+            }
             await end.request(line)
         }
         channel.close()
+    }
+
+    private enum Drop { case taking, acking }
+
+    /// Whether the rules drop the channel after `line`, a `submit`, and how.
+    private func dropsAfter(_ line: Data) -> Drop? {
+        guard (try? JSONSerialization.jsonObject(with: line) as? [String: Any])?["method"] as? String == "submit" else { return nil }
+        return rules.withLock { rules in
+            if rules.dropAfterTaking > 0 {
+                rules.dropAfterTaking -= 1
+                return .taking
+            }
+            if rules.dropAfterAcking > 0 {
+                rules.dropAfterAcking -= 1
+                return .acking
+            }
+            return nil
+        }
+    }
+
+    /// A `submit` taken: the submission for its request id, a new one the first time it is seen.
+    fileprivate func submitted(_ requestId: String) -> Int {
+        state.withLock { state in
+            state.submits.append(requestId)
+            if let known = state.submissions[requestId] { return known }
+            let next = state.submissions.count + 1
+            state.submissions[requestId] = next
+            return next
+        }
     }
 
     fileprivate func requested(_ method: String) {
@@ -422,9 +508,22 @@ final class EngineEnd: @unchecked Sendable {
     }
 
     func request(_ line: Data) async {
-        if let method = (try? JSONSerialization.jsonObject(with: line) as? [String: Any])?["method"] as? String { mac?.requested(method) }
+        let request = try? JSONSerialization.jsonObject(with: line) as? [String: Any]
+        if let method = request?["method"] as? String { mac?.requested(method) }
+        // The recording answers no `submit`: answered here when the rules say, as the engine does, once for each request id.
+        if request?["method"] as? String == "submit", mac?.rules.withLock({ $0.takesMessages }) == true, let id = request?["id"] as? Int,
+           let requestId = (request?["params"] as? [String: Any])?["requestId"] as? String, let mac {
+            let answer = ["id": id, "result": ["submissionId": mac.submitted(requestId)]] as [String: Any]
+            if let data = try? JSONSerialization.data(withJSONObject: answer) { send(data) }
+            return
+        }
         await MainActor.run { replay?.send(line + Data([0x0A])) }
     }
+}
+
+/// The phone's lines one channel received, and whether an ack of them is on its way.
+final class AckCounter: Sendable {
+    let state = Mutex((received: UInt64(0), scheduled: false))
 }
 
 /// The Mac's end of one channel: sealing and writing in order, through one writer, and reading lines.
@@ -477,11 +576,25 @@ final class MacChannel: Sendable {
         outgoing.finish()
     }
 
-    func nextLine(within limit: Duration = .seconds(3600)) async throws -> Data? {
+    func sendAck(_ count: UInt64) throws {
+        try order.withLock { _ in outgoing.push(try channel.sealAck(count)) }
+    }
+
+    /// The next whole line. `cutting`, asked at the first part of a line longer than one message, closes the link there
+    /// when it says so: the rest of the line never comes.
+    func nextLine(within limit: Duration = .seconds(3600), cutting: (@Sendable () -> Bool)? = nil) async throws -> Data? {
+        var inLine = false
         while let message = try await link.inbox.next(within: limit) {
             switch try channel.open(message) {
             case let .line(line)?: return line
             case .bye?: return nil
+            case nil:
+                // A part of a longer line.
+                if !inLine, let cutting, cutting() {
+                    link.close()
+                    return nil
+                }
+                inLine = true
             default: continue
             }
         }
