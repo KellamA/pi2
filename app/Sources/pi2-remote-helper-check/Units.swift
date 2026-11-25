@@ -18,6 +18,7 @@ enum Units {
 		keychainVault()
 		keyFiles()
 		Advertising.run()
+		Unfinished.run()
 		sessionLines()
 		parentCode(helper: helper)
 		nothingFromOutside(sources: sources)
@@ -101,6 +102,39 @@ enum Units {
 		Check.expect(Remote.overBudget([("a", 100), ("b", 50)], budget: 200) == nil, "within the budget, nothing is let go")
 		Check.expect(Remote.overBudget([("a", 100), ("b", 150), ("c", 10)], budget: 200) == "b", "over it, the connection leaving the most unread is")
 		Check.expect(Remote.queueBudget == 256 * 1024 * 1024 && Remote.attachedPerDevice == 2, "the budget is 256 MB in all, and a device keeps two attached connections")
+		unfinishedLines()
+	}
+
+	/// When a phone's unfinished line ends its connection (#908), on a clock of the check's own: 30 seconds with nothing
+	/// more of it, or longer than 30 seconds and what it holds takes at 64 KiB a second.
+	static func unfinishedLines() {
+		Check.section("how long a phone's unfinished line is held (#908), on the check's own clock")
+		let zero = ContinuousClock.now
+		let stall = Duration.seconds(30), slowest = 64 * 1024
+		func overdue(began: Double, grew: Double, held: Int, at now: Double) -> LineOverdue? {
+			Remote.overdue(UnfinishedLine(began: zero + .seconds(began), grew: zero + .seconds(grew), held: held), at: zero + .seconds(now), stalledAfter: stall, slowest: slowest)
+		}
+		let piece = Frame.maxBodyLength, pictures = 67 * 1024 * 1024, most = 71 * 1024 * 1024
+		Check.expect(overdue(began: 0, grew: 0, held: most, at: 29.9) == nil && overdue(began: 0, grew: 0, held: most, at: 30) == .stalled, "most of a line, then nothing: held 30 seconds, then its connection ends")
+		Check.expect(overdue(began: 90, grew: 100, held: 10 * piece, at: 129) == nil && overdue(began: 90, grew: 100, held: 10 * piece, at: 130) == .stalled, "a line that stops partway is ended 30 seconds after its last piece, whenever it began")
+		// Ten pictures on the slowest link allowed, a piece as soon as it has come: never overdue, though it takes 17 minutes.
+		var slowAndHonest = true
+		var held = 0, at = 0.0
+		while held + piece < pictures {
+			let grew = at
+			held += piece
+			at = Double(held) / Double(slowest)
+			if overdue(began: 0, grew: grew, held: held, at: at - 0.001) != nil { slowAndHonest = false }
+		}
+		Check.expect(slowAndHonest && at > 16 * 60, "ten pictures (67 MiB) at 64 KiB a second, the slowest link allowed, are never cut", String(format: "%.0f s", at))
+		Check.expect(overdue(began: 0, grew: 35.9, held: 72 * 1024 * 1024, at: 36) == nil, "nor 72 MiB at the relay's 2 MB a second")
+		// At half that rate, it is cut, a little after twice as long as what it holds would take at the slowest.
+		let half = Double(4 * 1024 * 1024) / Double(slowest / 2)
+		Check.expect(overdue(began: 0, grew: half - 1, held: 4 * 1024 * 1024, at: half) == .tooSlow, "a line coming at half the slowest link's rate is ended as too slow, though a piece came a second before")
+		// A piece every 29 seconds, or a byte: the stall's clock never runs out, the whole line's does.
+		let allowed = 30 + Double(most) / Double(slowest)
+		Check.expect(overdue(began: 0, grew: allowed - 29, held: most, at: allowed - 1) == nil && overdue(began: 0, grew: allowed - 1, held: most + 1, at: allowed + 1) == .tooSlow, "71 MiB sent at once and then a byte every 29 seconds is held \(Int(allowed / 60)) minutes at most, not for ever")
+		Check.expect(overdue(began: 0, grew: 0, held: 1, at: 30) == .stalled && overdue(began: 0, grew: 59, held: 2, at: 60.5) == .tooSlow, "and a byte a minute is ended by either clock")
 	}
 
 	static func scan() {

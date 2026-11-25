@@ -180,6 +180,12 @@ final class PhoneConnection: @unchecked Sendable {
 	/// What waits to be written to the phone.
 	var queued: Int { link.pending }
 
+	/// The line the phone has begun and not finished, as pi² Remote times it (#908); nil between lines.
+	private(set) var unfinished: UnfinishedLine?
+
+	/// How much of a line its channel holds, begun and not finished (#908).
+	var unfinishedHeld: Int { channel?.unfinishedLineLength ?? 0 }
+
 	/// A pairing channel whose claimer has sent no claim yet: the one kind `closeJoin` ends. A claim passed to the engine
 	/// is the engine's to answer (`paired` or `pairRefused`, or its refusal of `remote.pairClaim`); the engine closes the
 	/// window before it says `paired`, so a claimed channel must outlive `closeJoin`.
@@ -300,6 +306,18 @@ final class PhoneConnection: @unchecked Sendable {
 		}
 		if awaitingClaimerProof { claimerProven = true }
 		awaitingClaimerProof = false
+		// A line begun and not finished (#908): timed from its first piece, again at each piece that adds to it (never at a
+		// ping), and counted with every phone's, which may end this connection or another.
+		let held = channel.unfinishedLineLength
+		if held == 0 {
+			unfinished = nil
+		} else if held != unfinished?.held {
+			let now = remote.lineClock
+			unfinished = UnfinishedLine(began: unfinished?.began ?? now, grew: now, held: held)
+			remote.watchLines()
+			remote.keepLinesWithinBudget()
+			if case .ended = phase { return }
+		}
 		guard let event else { return }
 		switch event {
 		case .bye: return end()
@@ -628,6 +646,21 @@ final class PhoneConnection: @unchecked Sendable {
 		link.finish()
 	}
 
+	/// Its unfinished line is overdue (#908): said at most once a minute for each device, by the device and the limit,
+	/// never what the line held; then the channel ends, and an attached one's session keeps what a resume needs.
+	func endOverdue(_ overdue: LineOverdue) {
+		let who = device.map { "device \($0)" } ?? "a phone not yet paired"
+		switch overdue {
+		case .stalled:
+			let (whole, atto) = remote.lineStalledAfter.components
+			let seconds = String(format: "%g", Double(whole) + Double(atto) / 1e18)
+			Seldom.shared.say("stalled \(device?.text ?? "")", "nothing more of a line from \(who) came for \(seconds) seconds; its connection closed")
+		case .tooSlow:
+			Seldom.shared.say("slow \(device?.text ?? "")", "a line from \(who) came slower than \(remote.slowestLine / 1024) KiB a second; its connection closed")
+		}
+		end()
+	}
+
 	/// Ends the channel with `bye` and closes the connection.
 	func end() {
 		if case .ended = phase { return }
@@ -638,6 +671,7 @@ final class PhoneConnection: @unchecked Sendable {
 	private func closed() {
 		let was = phase
 		phase = .ended
+		unfinished = nil
 		deadline?.cancel()
 		if admitted {
 			admitted = false
