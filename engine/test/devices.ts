@@ -2132,6 +2132,9 @@ try {
 		assert.equal(typedRefusal("memory.add", { text: "n".repeat(65_530) }), null);
 		assert.equal(typedRefusal("memory.add", { text: "n".repeat(65_531) }), overTheRest);
 		assert.equal(typedRefusal("agents.save", { agent: { id: "forge", ["k".repeat(65_536)]: 1 } }), overTheRest, "a key counts");
+		let deep: unknown = [];
+		for (let level = 0; level < 1_000_000; level++) deep = [deep];
+		assert.equal(typedRefusal("conversation.archive", { id: deep }), overTheRest, "a list a million deep, walked without recursion");
 		assert.equal(typedRefusal("variables.set", { value: "n".repeat(65_531) }), null, "what no device list holds is the table's to refuse");
 		for (const [method, params] of [
 			["memory.add", { text: refused(65_531) }],
