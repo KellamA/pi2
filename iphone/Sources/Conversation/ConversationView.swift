@@ -76,7 +76,9 @@ struct ConversationView: View {
                 Text("An agent wrote it: \(url.absoluteString)")
             }
             #if DEBUG
-            .task { await ConversationSample.current?.act(sending: sendText, pictures: pictures) }
+            .task { await ConversationSample.current?.act(sending: { sendText($0) }, pictures: pictures) }
+            .task(id: pageShown) { if pageShown { await debugControls.run(ConversationDebugAct.current) } }
+            .onAppear { ConversationDebugControls.note("conversation \(conversationID) appeared; acts: \(ConversationDebugAct.current.count)") }
             #endif
     }
 
@@ -166,9 +168,9 @@ struct ConversationView: View {
         sendText(text)
     }
 
-    private func sendText(_ text: String) {
+    private func sendText(_ text: String, steer: Bool? = nil) {
         let carried = pictures.takeReady()
-        let steered = status.busy && steer
+        let steered = status.busy && (steer ?? self.steer)
         problem = nil
         Task {
             switch await requests.send(text, pictures: carried, steer: steered) {
@@ -202,6 +204,22 @@ struct ConversationView: View {
     private func restore(_ root: Int?) {
         Task { if let why = await requests.restore(root ?? conversationID) { problem = why } }
     }
+
+    #if DEBUG
+    /// The screen's controls, for `PI2_CONVERSATION_ACT`.
+    private var debugControls: ConversationDebugControls {
+        ConversationDebugControls(
+            missing: {
+                data?.state == nil ? "the conversation's state" : engine.status != .connected ? "the engine (\(engine.status))" : nil
+            },
+            status: { status },
+            send: { sendText($0, steer: $1) },
+            stop: stop, withdraw: withdraw, carryOn: carryOn, restore: restore,
+            pictures: pictures,
+            page: { ConversationPageBridge.shown }
+        )
+    }
+    #endif
 }
 
 /// What only a whole screen has: the header in the navigation bar. Inline, in a hub's Chat tab, the hub draws its own.

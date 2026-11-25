@@ -514,6 +514,35 @@ struct StoreOutboxTests {
         #expect(throws: StoreError.self) { try outbox.add("abort", ["id": 1]) }
     }
 
+    /// The engine's 1 MB of typed text from a phone (#924): the Outbox does not take more, counted in bytes (a character
+    /// as Swift counts one may be many), and keeps what the Mac refused for its size, with its text, to send again.
+    @Test func typedTextOverOneMegabyteIsNotTakenAndARefusalKeepsTheText() async throws {
+        let (_, outbox, folder) = openStore()
+        defer { try? folder.remove() }
+        // 300 characters of some 3,500 bytes each: a letter with combining marks.
+        let heavy = String(repeating: "e" + String(repeating: "\u{301}", count: 1_750), count: 300)
+        #expect(heavy.count == 300 && heavy.utf8.count == 1_050_300)
+        #expect(throws: StoreError("A message from a phone can carry at most 1 MB of typed text; this one has just over 1 MB. Shorten it, or send it from the Mac.")) {
+            try outbox.add("submit", ["id": 1, "text": heavy])
+        }
+        let longAnswer = String(repeating: "a", count: TypedTextLimit.bytes + 1)
+        let saysAnswer = StoreError("An answer from a phone can carry at most 1 MB of typed text; this one has just over 1 MB. Shorten it, or answer on the Mac.")
+        #expect(throws: saysAnswer) { try outbox.add("inbox.answer", ["id": "q-1", "text": longAnswer]) }
+        #expect(throws: saysAnswer) { try outbox.add("needs.answer", ["id": "n-1", "answer": ["kind": "question", "text": longAnswer]]) }
+        #expect(outbox.items.isEmpty)
+
+        // Refused by the Mac for its size: not sent, saying why, its text kept to send again.
+        let refusal = "A message from a phone can carry at most 1 MB of typed text; this one has 1.2 MB. Shorten it, or send it from the Mac."
+        let message = try outbox.add("submit", ["id": 1, "text": "Kept as it was written"])
+        let mac = StandInMac()
+        mac.mood[message.id] = .refuses(refusal)
+        #expect(await outbox.send(through: mac).notSent == [message.id])
+        #expect(outbox.items.map(\.id) == [message.id])
+        #expect(outbox.items.first?.state == .notSent(refusal))
+        #expect(outbox.items.first?.summary == "Kept as it was written")
+        #expect(outbox.items.first?.parameters["text"] as? String == "Kept as it was written")
+    }
+
     @Test func theOutboxLineCounts() {
         #expect(OutboxLine.words(waiting: 1, notSent: 0) == "Outbox: 1 waits for your Mac")
         #expect(OutboxLine.words(waiting: 2, notSent: 1) == "Outbox: 2 wait for your Mac, 1 not sent")

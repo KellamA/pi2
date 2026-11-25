@@ -25,6 +25,8 @@ struct ConversationComposer: View {
 
     /// Why the message cannot go as it is, if it cannot: in words under the field.
     private var holdBack: String? {
+        // The engine's own sentence (#924), before Send, so that what was typed stays in the field.
+        if let tooLong = TypedTextLimit.refusal(draft.text) { return tooLong }
         if !connected { return "Not connected to your Mac. You can write now, and send once it is back." }
         if status.blindModel != nil, !pictures.entries.isEmpty {
             return "\(status.blindModel ?? "This model") cannot see pictures. Take them off to send."
