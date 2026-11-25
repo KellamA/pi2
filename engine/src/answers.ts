@@ -389,16 +389,11 @@ export function typedRefusal(method: string, params: Params): string | null {
 	return otherTextRefusal(params, textsOf(method));
 }
 
-/** The value at `at` (a `Texts` key) in `params`, or undefined where a step is not the object or the list it names. */
+/** The value at the typed text's `at` (keys, no list) in `params`, or undefined where a step is not an object. */
 function textAt(params: Params, at: string): unknown {
-	let values: unknown[] = [params];
-	for (const step of at.split(".")) {
-		const list = step.endsWith("[]");
-		const key = list ? step.slice(0, -2) : step;
-		values = values.map((value) => (typeof value === "object" && value !== null && Object.hasOwn(value, key) ? (value as Params)[key] : undefined));
-		if (list) values = values.flatMap((value) => (Array.isArray(value) ? value : []));
-	}
-	return values[0];
+	let value: unknown = params;
+	for (const key of at.split(".")) value = typeof value === "object" && value !== null && Object.hasOwn(value, key) ? (value as Params)[key] : undefined;
+	return value;
 }
 
 /** A request's named texts, typed and other, as a tree of the steps to each: built once for each request. */
