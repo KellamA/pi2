@@ -26,8 +26,9 @@ import UIKit
 /// Scripts run: what makes them safe here is everything above.
 ///
 /// "Allow network for this page" is a live view made with `network: true`, the person's choice in the window alone,
-/// for one view: its rule list lets http, https and WebSockets through but to this Mac and the local network, its
-/// policy lets them load, and it has no dead-end proxy. Everything else holds as above: no message handler, no
+/// for one view: its rule list lets https and secure WebSockets through (never plain http or ws) but to this Mac and the
+/// local network as written, its policy lets them load, and it has no dead-end proxy. All of it hangs on one constant,
+/// `PresentedPagePolicy.networkCanBeAllowed`. Everything else holds as above: no message handler, no
 /// navigation away, no new windows, downloads or panels, WebRTC and what asks for a permission taken away. A view made
 /// without it, and every offscreen one, has the network off as above, and nothing can turn it on afterwards: allowing
 /// it is making a new view.
@@ -85,7 +86,7 @@ public final class PresentedPageView: WKWebView, WKNavigationDelegate, WKUIDeleg
 
     private static func make(page: PresentedPage, source: any PresentedFiles, mode: Mode, network: Bool, loadEnded: ((String?) -> Void)?) async throws -> PresentedPageView {
         // Only a live view, in the window, is ever drawn with the network: never one drawn offscreen for the engine.
-        let network = network && mode == .live
+        let network = network && mode == .live && PresentedPagePolicy.networkCanBeAllowed
         let rules = try await PresentedRules.shared(network: network)
         let deadEnd = PresentedDeadEnd.port
         guard network || deadEnd != nil else { throw PresentedRulesError.noDeadEnd }

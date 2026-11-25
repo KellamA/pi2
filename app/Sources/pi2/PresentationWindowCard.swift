@@ -77,6 +77,7 @@ private struct NeedPresentationThumb: View {
                 .overlay(RoundedRectangle(cornerRadius: 5).stroke(Theme.line2, lineWidth: 1))
                 Text(verbatim: label).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.tx2).lineLimit(1)
                     .frame(width: 112, alignment: .leading)
+                    .clipped()
             }
             .contentShape(Rectangle())
         }
@@ -86,7 +87,7 @@ private struct NeedPresentationThumb: View {
     }
 
     private var label: String {
-        let label = PresentationText.plain(item.label, limit: PresentationText.label)
+        let label = PresentationText.name(item.label, limit: PresentationText.label)
         if item.kind == .page { return label.isEmpty || label == "Page" ? "Page" : "\(label) · Page" }
         return label.isEmpty ? "Picture \(index + 1)" : label
     }
@@ -94,29 +95,13 @@ private struct NeedPresentationThumb: View {
     private func load() async {
         guard image == nil, let conversation = ref.conversation else { return }
         if item.kind == .page, item.snapshot?.isDrawn != true { return }
-        guard let bytes = try? await engine.presentedPicture(conversation: conversation, presentation: ref.presentation, version: version, item: index),
-              let picture = PresentedPicture.image(bytes.data, mimeType: bytes.mimeType) else { return }
-        image = Self.small(picture)
-    }
-
-    /// A copy no larger than the thumbnail needs, so a card under Needs you does not keep a large picture for itself.
-    private static func small(_ picture: NSImage) -> NSImage {
-        let side: CGFloat = 240
-        let size = picture.size
-        guard size.width > side || size.height > side, size.width > 0, size.height > 0 else { return picture }
-        let scale = min(side / size.width, side / size.height)
-        let target = NSSize(width: (size.width * scale).rounded(), height: (size.height * scale).rounded())
-        // Drawn once into pixels of its own at twice the size, for a Retina screen; the picture itself is let go.
-        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(target.width * 2), pixelsHigh: Int(target.height * 2), bitsPerSample: 8,
-                                         samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
-              let context = NSGraphicsContext(bitmapImageRep: rep) else { return picture }
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = context
-        picture.draw(in: NSRect(x: 0, y: 0, width: target.width * 2, height: target.height * 2))
-        NSGraphicsContext.restoreGraphicsState()
-        rep.size = target
-        let small = NSImage(size: target)
-        small.addRepresentation(rep)
-        return small
+        guard let bytes = try? await engine.presentedPicture(conversation: conversation, presentation: ref.presentation, version: version, item: index) else { return }
+        // Made by ImageIO at the size it is drawn (an SVG drawn into a bitmap of that size), never from the whole picture
+        // decoded, and off the main thread.
+        let data = bytes.data, type = bytes.mimeType, longest = PresentationWindowModel.thumbnailPixels
+        let made = type == PresentedPicture.svg
+            ? PresentedPicture.thumbnail(data, mimeType: type, longest: longest)
+            : await Task.detached { PresentedPicture.thumbnail(data, mimeType: type, longest: longest) }.value
+        if let made { image = PresentedPicture.image(made) }
     }
 }

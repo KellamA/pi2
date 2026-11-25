@@ -1,24 +1,118 @@
 import AppKit
+import ImageIO
 import SwiftUI
 
-/// A presented picture's bytes made into an image, by the kind the engine says it is and only so: PNG, JPEG, GIF and
-/// WebP by ImageIO (`NSBitmapImageRep`), and an SVG by AppKit's SVG representation alone, which draws shapes and runs
-/// nothing. Bytes that are not what they are said to be (a PDF said to be an SVG, an SVG said to be a PNG) make no
-/// image, rather than whatever `NSImage` would make of them.
+/// A presented picture's bytes made into an image, by the kind the engine says it is and only so, and never larger in
+/// memory than it is shown (#1001's security read):
+///
+/// - PNG, JPEG, GIF and WebP by ImageIO, and only when ImageIO reads the bytes as that very kind
+///   (`CGImageSourceGetType`): a BMP said to be a GIF, an SVG said to be a PNG, a PDF said to be a JPEG make nothing.
+/// - An SVG by AppKit's SVG representation alone (`_NSSVGImageRep`, CoreSVG), which draws shapes and runs nothing; only
+///   when its first byte is `<` and that is the one representation `NSImage` made.
+/// - A thumbnail (the strip, the card under Needs you) is made by ImageIO at the size it is drawn
+///   (`CGImageSourceCreateThumbnailAtIndex`), never from the whole picture decoded; an SVG's is drawn into a bitmap of
+///   that size.
+/// - The picture shown is decoded whole only up to `largest` pixels (4,096 × 4,096, 64 MB); above that it is shown made
+///   smaller to 4,096 a side, and "100%" (⌘1) decodes the real one on request.
 enum PresentedPicture {
-    static let raster: Set<String> = ["image/png", "image/jpeg", "image/gif", "image/webp"]
+    /// The kinds a picture is presented as, and the type ImageIO must read each one's bytes as.
+    static let raster: [String: String] = [
+        "image/png": "public.png", "image/jpeg": "public.jpeg", "image/gif": "com.compuserve.gif", "image/webp": "org.webmproject.webp",
+    ]
+    static let svg = "image/svg+xml"
+    /// The most pixels a picture is decoded to unless "100%" is asked: 4,096 × 4,096, 64 MB.
+    static let largest = 4096 * 4096
+    /// The longest side of a picture shown made smaller.
+    static let smaller = 4096
 
-    static func image(_ data: Data, mimeType: String) -> NSImage? {
-        if raster.contains(mimeType) {
-            guard let rep = NSBitmapImageRep(data: data), rep.pixelsWide > 0, rep.pixelsHigh > 0 else { return nil }
-            let image = NSImage(size: rep.size)
-            image.addRepresentation(rep)
-            return image
+    /// A decoded raster picture: the image, the picture's own size, and whether it is shown made smaller.
+    struct Decoded: @unchecked Sendable {
+        let image: CGImage
+        let pixels: CGSize
+        let smaller: Bool
+        /// An animated GIF within the bound, which is shown by AppKit from its bytes so that it moves.
+        let animated: Bool
+    }
+
+    /// ImageIO's reading of the bytes, if it reads them as the kind said.
+    static func source(_ data: Data, mimeType: String) -> CGImageSource? {
+        guard let type = raster[mimeType], let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+              CGImageSourceGetType(source) as String? == type, CGImageSourceGetCount(source) > 0 else { return nil }
+        return source
+    }
+
+    static func pixels(_ source: CGImageSource) -> CGSize? {
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue, width > 0, height > 0 else { return nil }
+        return CGSize(width: width, height: height)
+    }
+
+    /// The raster picture to show: whole up to `largest` pixels, or `full`; else made smaller.
+    static func decode(_ data: Data, mimeType: String, full: Bool) -> Decoded? {
+        guard let source = source(data, mimeType: mimeType), let pixels = pixels(source) else { return nil }
+        let smaller = !full && pixels.width * pixels.height > CGFloat(largest)
+        let made = smaller ? thumbnail(source, longest: Self.smaller)
+            : CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+        // Within the bound, drawn once into pixels of its own here, off the main thread, so that it is decoded now (ImageIO
+        // may otherwise decode it as it is first drawn, on the main thread) and kept at exactly its size. A picture larger
+        // than that, asked for at 100%, is left to be decoded as it is drawn: a copy here would hold it twice at once.
+        let large = pixels.width * pixels.height > CGFloat(largest)
+        guard let made, let image = large && !smaller ? made : decoded(made) else { return nil }
+        return Decoded(image: image, pixels: pixels, smaller: smaller, animated: !smaller && mimeType == "image/gif" && CGImageSourceGetCount(source) > 1)
+    }
+
+    /// An image drawn into a bitmap of its own size: its pixels decoded once, now.
+    private static func decoded(_ image: CGImage) -> CGImage? {
+        guard let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        return context.makeImage()
+    }
+
+    /// A small picture of the item, `longest` pixels on its longest side at most: for raster bytes by ImageIO, for an SVG
+    /// drawn into a bitmap of that size.
+    static func thumbnail(_ data: Data, mimeType: String, longest: Int) -> CGImage? {
+        if mimeType == svg {
+            guard let image = svgImage(data) else { return nil }
+            return draw(image, longest: longest)
         }
-        guard mimeType == "image/svg+xml", data.first(where: { ![0x20, 0x09, 0x0A, 0x0D, 0xEF, 0xBB, 0xBF].contains($0) }) == UInt8(ascii: "<"),
+        return source(data, mimeType: mimeType).flatMap { thumbnail($0, longest: longest) }
+    }
+
+    private static func thumbnail(_ source: CGImageSource, longest: Int) -> CGImage? {
+        CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: longest,
+            kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceShouldCacheImmediately: true,
+        ] as CFDictionary)
+    }
+
+    /// An SVG as AppKit draws it, if that is what the bytes are.
+    static func svgImage(_ data: Data) -> NSImage? {
+        guard data.first(where: { ![0x20, 0x09, 0x0A, 0x0D, 0xEF, 0xBB, 0xBF].contains($0) }) == UInt8(ascii: "<"),
               let image = NSImage(data: data), image.isValid,
               image.representations.count == 1, String(describing: type(of: image.representations[0])).contains("SVG") else { return nil }
         return image
+    }
+
+    /// An image drawn into a bitmap no longer than `longest` on a side.
+    private static func draw(_ image: NSImage, longest: Int) -> CGImage? {
+        let size = image.size
+        guard size.width > 0, size.height > 0 else { return nil }
+        let scale = min(CGFloat(longest) / max(size.width, size.height), 4)
+        let width = max(Int(size.width * scale), 1), height = max(Int(size.height * scale), 1)
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        image.draw(in: NSRect(x: 0, y: 0, width: width, height: height))
+        NSGraphicsContext.restoreGraphicsState()
+        return context.makeImage()
+    }
+
+    /// Kept for the card's and the window's callers that want an image of a whole small picture.
+    static func image(_ cgImage: CGImage) -> NSImage {
+        NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
     }
 }
 
@@ -126,7 +220,11 @@ final class PictureScrollView: NSScrollView {
         imageView.image = image
         // Actual size: one pixel of the picture to one of the screen's, so a screenshot taken at 2× shows as it was.
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
-        let size = pixels.map { CGSize(width: max($0.width / scale, 1), height: max($0.height / scale, 1)) } ?? image.size
+        // An SVG is drawn at its stated size, but never larger than 4,096 points a side before magnification: it is drawn
+        // again as it is magnified, and a stated size of 16,000 would ask for a layer of that size at once.
+        let stated = image.size
+        let fitted = max(stated.width, stated.height) > 4096 ? stated.applying(.init(scaleX: 4096 / max(stated.width, stated.height), y: 4096 / max(stated.width, stated.height))) : stated
+        let size = pixels.map { CGSize(width: max($0.width / scale, 1), height: max($0.height / scale, 1)) } ?? fitted
         imageView.frame = CGRect(origin: .zero, size: size)
         apply(zoom, force: true)
     }

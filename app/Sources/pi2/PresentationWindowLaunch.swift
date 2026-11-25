@@ -46,7 +46,8 @@ enum PresentationLaunch {
 enum PresentationFixture {
     static let conversation = "fixture"
     static let agent = "Forge"
-    static let conversationTitle = "Sign-in work\nVersion 9 of 9 · network on · Approved by pi²"
+    static let conversationTitle = "Sign-in work” · Version 9 of 9 · Network on · Approved by pi² “ok"
+    static let projectName = "Drawn from pi²'s own files · Network off"
 
     private static var network: [Int: Bool] = [:]
     private static var listeners: [AsyncStream<PresentationRecord>.Continuation] = []
@@ -95,6 +96,7 @@ enum PresentationFixture {
             version(3, rtl, [
                 item("\u{202E}A", "\u{202E}txet sdrawkcab\u{202C} then \u{2066}isolated\u{2069} and a zero\u{200B}width space"),
                 item("مرحبا", "A caption in Arabic, drawn right to left in its own text: مرحبا بالعالم"),
+                item("Z" + String(repeating: "\u{030D}", count: 59), "59 stacked marks above: two are kept. Sign\u{00AD}in with a soft hyphen, tags\u{E0041}\u{E0042}\u{E007F} after this, a variation selector B\u{FE0F}\u{E0100} and \u{201C}quoted\u{201D} «names»"),
             ]),
             version(4, "A page that draws a bar like the window's", [item("Page", "It draws “Mockup by pi² · network on” inside its own area", page: true)]),
         ])

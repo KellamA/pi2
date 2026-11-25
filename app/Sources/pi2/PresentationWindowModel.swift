@@ -44,12 +44,31 @@ final class PresentationWindowModel {
     private(set) var versionNumber: Int?
     private(set) var item = 0
 
-    /// Pictures fetched, and why one could not be, by version and item.
-    private(set) var pictures: [ItemKey: NSImage] = [:]
+    /// The strip's small pictures, made at the size they are drawn (`PresentedPicture.thumbnail`), by version and item;
+    /// and why one could not be made.
+    private(set) var thumbnails: [ItemKey: NSImage] = [:]
     private(set) var pictureProblems: [ItemKey: String] = [:]
     private var fetching: Set<ItemKey> = []
 
-    var zoom: PictureZoom = .fit
+    /// The one picture shown at its size, the item's alone: the one before is let go as another is shown.
+    private(set) var shown: ShownPicture?
+    private var showing: ItemKey?
+
+    struct ShownPicture {
+        let key: ItemKey
+        let image: NSImage
+        /// The picture's own size in pixels (nil for an SVG, drawn at its stated size), and whether it is shown made
+        /// smaller than that.
+        let pixels: CGSize?
+        let smaller: Bool
+    }
+
+    var zoom: PictureZoom = .fit {
+        // "100%" of a picture shown made smaller decodes the real one, on this request alone.
+        didSet {
+            if zoom == .actual, let shown, shown.smaller { Task { await show(shown.key, full: true) } }
+        }
+    }
     /// The magnification the picture is drawn at, as its view last said.
     var magnification: CGFloat = 1
     var background: PictureBackground = .light
@@ -171,38 +190,86 @@ final class PresentationWindowModel {
     func select(_ index: Int) {
         guard items.indices.contains(index), index != item else { return }
         item = index
+        shown = nil
         if current?.kind == .picture { zoom = .fit }
         refreshPage()
     }
 
     // MARK: Pictures
 
-    /// Fetches the picture of an item once, from a view's task: a picture's own bytes, or a page's snapshot (for the
-    /// strip) once it is drawn, made into an image only as the kind it is (`PresentedPicture`).
-    func load(_ key: ItemKey) async {
-        guard pictures[key] == nil, !fetching.contains(key), pictureProblems[key] == nil else { return }
+    /// The thumbnail's longest side in pixels: the strip's 120 points, at a Retina screen's scale and a little over.
+    nonisolated static let thumbnailPixels = 300
+
+    /// Makes an item's thumbnail once, from a view's task: a picture's own bytes, or a page's snapshot once it is drawn,
+    /// made by ImageIO at the size it is drawn, never from the whole picture decoded.
+    func loadThumbnail(_ key: ItemKey) async {
+        guard thumbnails[key] == nil, !fetching.contains(key), pictureProblems[key] == nil else { return }
         guard let entry = record?.version(key.version)?.items[safe: key.item] else { return }
         if entry.kind == .page, entry.snapshot?.isDrawn != true { return }
         fetching.insert(key)
         defer { fetching.remove(key) }
         do {
             let bytes = try await feed.picture(key.version, key.item)
-            // Only the kinds a picture is presented as are made into one, each only as that kind.
-            guard let image = PresentedPicture.image(bytes.data, mimeType: bytes.mimeType) else {
+            let made: CGImage?
+            if bytes.mimeType == PresentedPicture.svg {
+                made = PresentedPicture.thumbnail(bytes.data, mimeType: bytes.mimeType, longest: Self.thumbnailPixels)
+            } else {
+                let data = bytes.data, type = bytes.mimeType
+                made = await Task.detached { PresentedPicture.thumbnail(data, mimeType: type, longest: Self.thumbnailPixels) }.value
+            }
+            guard let made else {
                 pictureProblems[key] = "This picture could not be read."
                 return
             }
-            pictures[key] = image
+            thumbnails[key] = PresentedPicture.image(made)
         } catch {
             pictureProblems[key] = PresentationText.plain(error.localizedDescription, limit: PresentationText.caption)
         }
     }
 
+    /// Shows an item's picture at its size, from the stage's task: decoded off the main thread, whole up to
+    /// `PresentedPicture.largest` pixels unless `full`, else made smaller. The picture shown before is let go first.
+    func show(_ key: ItemKey, full: Bool = false) async {
+        if let shown, shown.key == key, !shown.smaller || !full { return }
+        if showing == key, !full { return }
+        if shown?.key != key { shown = nil }
+        showing = key
+        pictureProblems[key] = nil
+        do {
+            let bytes = try await feed.picture(key.version, key.item)
+            guard showing == key else { return }
+            if bytes.mimeType == PresentedPicture.svg {
+                guard let image = PresentedPicture.svgImage(bytes.data) else { throw PictureUnread() }
+                shown = ShownPicture(key: key, image: image, pixels: nil, smaller: false)
+                return
+            }
+            let data = bytes.data, type = bytes.mimeType
+            guard let decoded = await Task.detached(operation: { PresentedPicture.decode(data, mimeType: type, full: full) }).value else { throw PictureUnread() }
+            guard showing == key else { return }
+            // An animated GIF within the bound moves: AppKit draws it from its bytes, one frame at a time.
+            let image: NSImage
+            if decoded.animated, let rep = NSBitmapImageRep(data: data) {
+                image = NSImage(size: decoded.pixels)
+                image.addRepresentation(rep)
+            } else {
+                image = PresentedPicture.image(decoded.image)
+            }
+            shown = ShownPicture(key: key, image: image, pixels: decoded.pixels, smaller: decoded.smaller)
+        } catch is PictureUnread {
+            pictureProblems[key] = "This picture could not be read."
+        } catch {
+            pictureProblems[key] = PresentationText.plain(error.localizedDescription, limit: PresentationText.caption)
+        }
+        if showing == key { showing = nil }
+    }
+
+    private struct PictureUnread: Error {}
 
     // MARK: Pages
 
     /// Whether the version shown has the network allowed for its pages: the person's, per version.
-    var networkAllowed: Bool { version?.network.allowed == true }
+    /// Always false without the switch (`PresentedPagePolicy.networkCanBeAllowed`): the engine's record is then not read.
+    var networkAllowed: Bool { PresentedPagePolicy.networkCanBeAllowed && version?.network.allowed == true }
 
     /// Turns the network on or off for the version shown; the record comes back changed, and the page is made again.
     func setNetwork(_ allow: Bool) async {
@@ -238,25 +305,60 @@ final class PresentationWindowModel {
         }
         let source = files[key] ?? CachedPresentedFiles(feed.files(key.version, key.item))
         files[key] = source
+        let before = ending
         Task { [weak self] in
+            // The page shown before is ended first, its process gone and its place given back.
+            await before?.value
+            guard let self, self.pageKey == wanted else { return }
+            // Every presented page's process has a place, the app's drawings' and windows' together; none without one.
+            guard let place = PresentedProcesses.shared.take() else {
+                self.pageProblem = PresentedProcesses.shared.refusal
+                return
+            }
             do {
                 let view = try await PresentedPageView.makeLive(page: page, source: source, network: wanted.network)
-                guard let self, self.pageKey == wanted else {
-                    view.close()
+                guard self.pageKey == wanted else {
+                    await place.end(view)
                     return
                 }
                 view.onBlockedNavigation = { [weak self] url in self?.blocked(url) }
                 view.onProcessEnded = { [weak self] in self?.pageStopped = true }
                 self.pageView = view
+                self.pagePlace = place
+                #if PI2_DEVELOPMENT
+                self.note("presentation window: page process \(Self.process(of: view)) shown, \(PresentedProcesses.shared.taken) places taken")
+                #endif
             } catch {
-                if let self, self.pageKey == wanted { self.pageProblem = "The page could not be drawn: \(error.localizedDescription)" }
+                place.release()
+                if self.pageKey == wanted { self.pageProblem = "The page could not be drawn: \(error.localizedDescription)" }
             }
         }
     }
 
+    /// The place the page shown holds among the presented pages' processes (`PresentedProcesses`).
+    private var pagePlace: PresentedProcesses.Place?
+    /// The ending of the pages let go, one after another; a new page waits for it.
+    private var ending: Task<Void, Never>?
+
+    /// Lets go of the page shown: its view is ended, its process seen gone and its place given back, never only closed.
     private func dropPage() {
-        pageView?.close()
+        if let view = pageView, let place = pagePlace {
+            let before = ending
+            #if PI2_DEVELOPMENT
+            let note = note, pid = Self.process(of: view)
+            #endif
+            ending = Task {
+                await before?.value
+                let gone = await place.end(view)
+                #if PI2_DEVELOPMENT
+                note("presentation window: page process \(pid) \(gone ? "ended" : "did not end"), \(PresentedProcesses.shared.taken) places taken")
+                #else
+                _ = gone
+                #endif
+            }
+        }
         pageView = nil
+        pagePlace = nil
         pageKey = nil
         pageProblem = nil
         pageStopped = false
@@ -276,9 +378,16 @@ final class PresentationWindowModel {
         }
     }
 
-    /// Lets go of the page's view as the window closes.
+    /// Lets go of the page's view as the window closes: it is ended, and its place given back once its process is gone.
     func close() {
         dropPage()
+    }
+
+    /// A line for app.log, in a development build: each page process shown and ended, for a copy's check.
+    var note: (String) -> Void = { _ in }
+
+    private static func process(of view: PresentedPageView) -> String {
+        (view.value(forKey: "_webProcessIdentifier") as? NSNumber).map { String($0.int32Value) } ?? "?"
     }
 }
 

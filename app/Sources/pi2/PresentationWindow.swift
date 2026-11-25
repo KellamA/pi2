@@ -33,7 +33,11 @@ struct PresentationWindow: View {
     init(app: AppModel, ref: PresentationRef) {
         self.app = app
         self.ref = ref
-        _model = State(initialValue: PresentationWindowModel(ref: ref, feed: Self.feed(app.engine, ref)))
+        let model = PresentationWindowModel(ref: ref, feed: Self.feed(app.engine, ref))
+        #if PI2_DEVELOPMENT
+        model.note = { [engine = app.engine] in engine.note($0) }
+        #endif
+        _model = State(initialValue: model)
     }
 
     private static func feed(_ engine: EngineClient, _ ref: PresentationRef) -> PresentationFeed {
@@ -49,41 +53,39 @@ struct PresentationWindow: View {
         ref.conversation.flatMap { id in engine.conversations.first { $0.id == id } }
     }
 
-    private var agent: AgentProfile? { engine.agent(summary?.runsAs ?? summary?.agentId) }
-
-    private var agentName: String {
-        #if PI2_DEVELOPMENT
-        if ref.conversationId == PresentationFixture.conversation { return PresentationFixture.agent }
-        #endif
-        let name = PresentationText.plain(agent?.name, limit: PresentationText.agent)
-        return name.isEmpty ? "an agent" : name
+    /// The conversation as the Archive lists it, for a window on an archived one.
+    private var archived: ArchivedConversation? {
+        ref.conversation.flatMap { id in engine.archived.first { $0.id == id } }
     }
 
-    private var conversationTitle: String {
-        #if PI2_DEVELOPMENT
-        if ref.conversationId == PresentationFixture.conversation { return PresentationText.plain(PresentationFixture.conversationTitle, limit: PresentationText.conversation) }
-        #endif
-        let id = ref.conversation ?? 0
-        let title = summary?.title ?? engine.archived.first { $0.id == id }?.title
-        let plain = PresentationText.plain(title, limit: PresentationText.conversation)
-        return plain.isEmpty ? "conversation \(ref.conversationId)" : plain
-    }
+    private var agent: AgentProfile? { engine.agent(summary.map { $0.runsAs ?? $0.agentId } ?? archived?.agentId) }
 
-    private var projectName: String? {
-        guard let project = summary?.projectId.flatMap(engine.project) else { return nil }
-        let name = PresentationText.plain(project.name, limit: PresentationText.conversation)
-        return name.isEmpty ? nil : name
+    /// The names in the bar, each someone else's choice: the agent's, the conversation's, the project's.
+    private var names: PresentationNames {
+        #if PI2_DEVELOPMENT
+        if ref.conversationId == PresentationFixture.conversation {
+            return PresentationNames(agent: PresentationText.name(PresentationFixture.agent, limit: PresentationText.agent),
+                                     conversation: PresentationText.name(PresentationFixture.conversationTitle, limit: PresentationText.conversation),
+                                     project: PresentationText.name(PresentationFixture.projectName, limit: PresentationText.project))
+        }
+        #endif
+        let agent = PresentationText.name(agent?.name, limit: PresentationText.agent)
+        let conversation = PresentationText.name(summary?.title ?? archived?.title, limit: PresentationText.conversation)
+        let project = (summary?.projectId ?? archived?.projectId).flatMap(engine.project).map { PresentationText.name($0.name, limit: PresentationText.project) }
+        return PresentationNames(agent: agent.isEmpty ? "An agent" : agent,
+                                 conversation: conversation.isEmpty ? "Conversation \(ref.conversationId)" : conversation,
+                                 project: project?.isEmpty == false ? project : nil)
     }
 
     /// The window's title, as Mission Control and the Window menu list it: the presentation's title and whose it is.
     private var windowTitle: String {
-        let title = PresentationText.plain(model.version?.title, limit: PresentationText.title)
-        return "\(title.isEmpty ? "Presentation" : title) — Mockup by \(agentName)"
+        let title = PresentationText.name(model.version?.title, limit: PresentationText.title)
+        return "\(title.isEmpty ? "Presentation" : title) — Mockup by \(names.agent)"
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            PresentationBar(model: model, agent: agent, agentName: agentName, conversation: conversationTitle, project: projectName) {
+            PresentationBar(model: model, agent: agent, names: names) {
                 askingNetwork = true
             }
             stage
@@ -135,10 +137,10 @@ struct PresentationWindow: View {
         }
     }
 
-    /// What allowing the network means, said before it is allowed.
+    /// What allowing the network means, said before it is allowed: what the page can then do, and what is not stopped.
     private var networkMeaning: String {
         let number = model.place.map { "version \($0.0)" } ?? "this version"
-        return "The page, which \(agentName) wrote, can then load from and send to any address on the internet: pictures, fonts and scripts from other sites, and whatever it is shown or you type into it. It still cannot reach this Mac or your local network, leave this window, open others, or ask for your files, camera, microphone or location.\n\nIt is for \(number) alone: a newer version \(agentName) presents starts with the network off again."
+        return "The page, which an agent wrote, can then load anything from the internet over secure (https) addresses, and send whatever it holds, or whatever you type into it, to any site.\n\nPlain http addresses stay blocked, and so do the addresses of this Mac and your local network as written. A secure address whose name points back at this Mac or your network is not stopped.\n\nIt still cannot leave this window, open others, or ask for your files, camera, microphone or location. It is for \(number) alone: a newer version starts with the network off again."
     }
 
     @ViewBuilder
@@ -159,21 +161,19 @@ struct PresentationWindow: View {
 
     @ViewBuilder
     private func pictureStage(_ item: PresentedItem, _ key: PresentationWindowModel.ItemKey) -> some View {
-        Group {
-            if let image = model.pictures[key] {
-                PictureStage(image: image, pixels: pixels(item), zoom: $model.zoom, background: model.background) { model.magnification = $0 }
+        ZStack(alignment: .bottom) {
+            if let shown = model.shown, shown.key == key {
+                PictureStage(image: shown.image, pixels: shown.pixels, zoom: $model.zoom, background: model.background) { model.magnification = $0 }
+                if shown.smaller, let pixels = shown.pixels {
+                    PresentationToast(text: "Shown smaller than its \(Int(pixels.width)) × \(Int(pixels.height)) pixels, to keep memory. 100% (⌘1) shows it at full size.")
+                }
             } else if let problem = model.pictureProblems[key] {
                 PresentationNote(text: problem)
             } else {
                 ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .task(id: key) { await model.load(key) }
-    }
-
-    private func pixels(_ item: PresentedItem) -> CGSize? {
-        guard let width = item.width, let height = item.height, width > 0, height > 0, item.mimeType != "image/svg+xml" else { return nil }
-        return CGSize(width: width, height: height)
+        .task(id: key) { await model.show(key) }
     }
 
     @ViewBuilder
@@ -204,20 +204,22 @@ struct PresentationWindow: View {
 private struct PresentationBar: View {
     let model: PresentationWindowModel
     let agent: AgentProfile?
-    let agentName: String
-    let conversation: String
-    let project: String?
+    let names: PresentationNames
     let askNetwork: () -> Void
 
+    /// pi²'s own statements are at the bar's ends and in its middle, in their own places and style: the version in the
+    /// middle, and at the right where the picture or page came from and whether the page may reach the network. Every
+    /// name someone else chose is together at the left, drawn as names: in a chip of their own, in the secondary
+    /// colour, each cut in its middle at a stated length. No name stands beside or between pi²'s statements.
     var body: some View {
         HStack(spacing: 10) {
-            AgentAvatar(agent: agent, size: 20)
-            who
+            PresentationNamesChip(agent: agent, names: names)
                 .layoutPriority(-1)
             Spacer(minLength: 8)
             versions
             Spacer(minLength: 8)
             tools
+            statement
             Button { model.stripShown.toggle() } label: { Image(systemName: "rectangle.bottomthird.inset.filled") }
                 .buttonStyle(BarButtonStyle(on: model.stripShown))
                 .help(model.stripShown ? "Hide the strip of items (⌥⌘S)" : "Show the strip of items (⌥⌘S)")
@@ -226,31 +228,27 @@ private struct PresentationBar: View {
         .font(.system(size: 12.5))
         .padding(.horizontal, 12)
         .frame(height: 44)
+        .clipped()
         .background(Theme.panel)
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.line2).frame(height: 1) }
     }
 
-    /// "Mockup by Forge · Sign-in screen · pi2 · Drawn from Forge's files · network off", each part its own text.
-    private var who: some View {
-        HStack(spacing: 5) {
-            Text(verbatim: "Mockup by \(agentName)").fontWeight(.semibold).foregroundStyle(Theme.tx).lineLimit(1).fixedSize()
-            Text(verbatim: "·").foregroundStyle(Theme.tx3)
-            // In quotation marks: a name someone gave, never one of the bar's own words.
-            Text(verbatim: "“\(conversation)”").foregroundStyle(Theme.tx2).lineLimit(1).truncationMode(.middle)
-            if let project {
-                Text(verbatim: "·").foregroundStyle(Theme.tx3)
-                Text(verbatim: project).foregroundStyle(Theme.tx2).lineLimit(1).truncationMode(.tail)
-            }
-            if let current = model.current {
-                Text(verbatim: "·").foregroundStyle(Theme.tx3)
-                if current.kind == .page {
-                    Text(verbatim: "Drawn from \(agentName)’s files").foregroundStyle(Theme.tx2).lineLimit(1).fixedSize()
-                } else {
-                    Text(verbatim: "A picture \(agentName) made").foregroundStyle(Theme.tx2).lineLimit(1).fixedSize()
-                }
+    /// Where it came from, and for a page its network: pi²'s own words, with no name in them.
+    @ViewBuilder
+    private var statement: some View {
+        if let current = model.current {
+            HStack(spacing: 8) {
+                Divider().frame(height: 20)
+                Label(current.kind == .page ? "Drawn from the agent’s files" : "A picture the agent made",
+                      systemImage: current.kind == .page ? "doc.richtext" : "photo")
+                    .labelStyle(.titleAndIcon)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Theme.tx)
+                    .lineLimit(1)
+                    .fixedSize()
+                if current.kind == .page { network }
             }
         }
-        .accessibilityElement(children: .combine)
     }
 
     private var versions: some View {
@@ -325,17 +323,72 @@ private struct PresentationBar: View {
 
     private func backgroundHelp(_ background: PictureBackground) -> String { "A \(background.rawValue) background behind the picture" }
 
-    /// The network's state, said plainly, and the switch. Allowing it asks first; turning it off does not.
+    /// The network's state, said plainly, and the switch. Allowing it asks first; turning it off does not. Without the
+    /// switch at all (`PresentedPagePolicy.networkCanBeAllowed`), it only says "Network off".
+    @ViewBuilder
     private var network: some View {
         let on = model.networkAllowed
-        return Button {
-            if on { Task { await model.setNetwork(false) } } else { askNetwork() }
-        } label: {
-            Label(on ? "Network on" : "Network off", systemImage: on ? "network" : "network.slash")
-                .font(.system(size: 12, weight: on ? .semibold : .regular))
+        if PresentedPagePolicy.networkCanBeAllowed {
+            Button {
+                if on { Task { await model.setNetwork(false) } } else { askNetwork() }
+            } label: {
+                Label(on ? "Network on: https" : "Network off", systemImage: on ? "network" : "network.slash")
+                    .font(.system(size: 12, weight: on ? .semibold : .regular))
+            }
+            .buttonStyle(NetworkButtonStyle(on: on))
+            .help(on
+                ? "This version's page can load anything from the internet over https, and send what it holds or what you type into it to any site. Addresses of this Mac and your network are blocked as written, but a secure address whose name points back at them is not. Click to turn it off."
+                : "This page cannot reach the network. Click to allow it, for this version alone, after reading what that means.")
+        } else {
+            Label("Network off", systemImage: "network.slash")
+                .font(.system(size: 12))
+                .foregroundStyle(Theme.tx2)
+                .fixedSize()
+                .help("This page cannot reach the network.")
         }
-        .buttonStyle(NetworkButtonStyle(on: on))
-        .help(on ? "This version's page can reach the internet. Click to turn it off." : "This page cannot reach the network. Click to allow it, for this version alone, after saying what that means.")
+    }
+}
+
+/// The names in a presentation's bar, already made plain and cut.
+struct PresentationNames: Equatable {
+    let agent: String
+    let conversation: String
+    let project: String?
+}
+
+/// The names someone else chose, together, drawn as names: the agent's avatar, then its name, the conversation's and the
+/// project's, each in the secondary colour and cut in its middle, in a chip of their own.
+private struct PresentationNamesChip: View {
+    let agent: AgentProfile?
+    let names: PresentationNames
+
+    var body: some View {
+        HStack(spacing: 6) {
+            AgentAvatar(agent: agent, size: 18)
+            name(names.agent, width: 160)
+            separator
+            name(names.conversation, width: 260)
+            if let project = names.project {
+                separator
+                name(project, width: 180)
+            }
+        }
+        .font(.system(size: 12))
+        .padding(.leading, 3).padding(.trailing, 9).padding(.vertical, 3)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Theme.card))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .combine)
+        .help("Who presented it, in which conversation and project")
+    }
+
+    private var separator: some View {
+        Text(verbatim: "/").foregroundStyle(Theme.tx3)
+    }
+
+    private func name(_ text: String, width: CGFloat) -> some View {
+        Text(verbatim: text).foregroundStyle(Theme.tx2).lineLimit(1).truncationMode(.middle)
+            .frame(maxWidth: width, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -424,6 +477,7 @@ private struct PresentationStrip: View {
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
         .frame(height: 112)
+        .clipped()
         .background(Theme.panel)
         .overlay(alignment: .top) { Rectangle().fill(Theme.line2).frame(height: 1) }
     }
@@ -453,6 +507,7 @@ private struct PresentationThumb: View {
             }
             .padding(5)
             .frame(width: 280, alignment: .leading)
+            .clipped()
             .background(RoundedRectangle(cornerRadius: 9).fill(on ? Theme.acc.opacity(0.10) : .clear))
             .overlay(RoundedRectangle(cornerRadius: 9).stroke(on ? Theme.acc : .clear, lineWidth: 1))
             .contentShape(Rectangle())
@@ -460,12 +515,12 @@ private struct PresentationThumb: View {
         .buttonStyle(.plain)
         .help(PresentationText.plain(item.name, limit: 300))
         .task(id: "\(key.map { "\($0.version)-\($0.item)" } ?? "")-\(item.snapshot?.isDrawn == true)") {
-            if let key { await model.load(key) }
+            if let key { await model.loadThumbnail(key) }
         }
     }
 
     private var label: String {
-        let label = PresentationText.plain(item.label, limit: PresentationText.label)
+        let label = PresentationText.name(item.label, limit: PresentationText.label)
         if item.kind == .page { return label.isEmpty || label == "Page" ? "Page" : "\(label) · Page" }
         return label.isEmpty ? "Picture \(index + 1)" : label
     }
@@ -475,7 +530,7 @@ private struct PresentationThumb: View {
     private var mini: some View {
         ZStack {
             Theme.card
-            if let key, let image = model.pictures[key] {
+            if let key, let image = model.thumbnails[key] {
                 Image(nsImage: image).resizable().interpolation(.medium).aspectRatio(contentMode: .fit)
             } else {
                 Image(systemName: item.kind == .page ? "doc.richtext" : "photo").foregroundStyle(Theme.tx3)
@@ -510,7 +565,7 @@ private struct PresentationToast: View {
     }
 }
 
-/// The window's keys: ← → between items, ⌘[ ⌘] between versions, ⌘0 ⌘1 ⌘+ ⌘− for a picture, ⌘R for a page, ⌥⌘S for
+/// The window's keys: ⌘W to close, ← → between items, ⌘[ ⌘] between versions, ⌘0 ⌘1 ⌘+ ⌘− for a picture, ⌘R for a page, ⌥⌘S for
 /// the strip. Full screen is the window's own (the green button, ⌃⌘F). They are taken from the window's key events
 /// before its views see them, since a page's web view would otherwise keep ⌘[ and ⌘] (back and forward) and the arrows
 /// for itself; but while the page has the keyboard (the person clicked into it, to type in a mockup's field), ← → are
@@ -569,6 +624,8 @@ private struct PresentationKeys: NSViewRepresentable {
                 if window.firstResponder is WKWebView || window.firstResponder is NSText { return false }
                 if (window.firstResponder as? NSView)?.isDescendant(of: model.pageView ?? NSView()) == true { return false }
                 model.step(item: event.keyCode == 123 ? -1 : 1)
+            // ⌘W closes the window whatever has the keyboard: a page that answers its keydown cannot keep it open.
+            case ([.command], "w"): window.performClose(nil)
             case ([.command], "["): model.step(version: -1)
             case ([.command], "]"): model.step(version: 1)
             case ([.command, .option], "s"), ([.command, .option], "ß"): model.stripShown.toggle()
