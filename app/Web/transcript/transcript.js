@@ -20,6 +20,7 @@
 	const K = window.PiKeys;
 	const Ch = window.PiChat;
 	const H = window.PiHistory;
+	const Pr = window.PiPresented;
 	const char = String.fromCharCode;
 	const ELLIPSIS = char(0x2026);
 	const RSQUO = char(0x2019);
@@ -70,6 +71,17 @@
 	const opened = new Map();
 	/** Pictures by "entry/index": { state: "loading" | "ready" | "failed", url }. */
 	const pictures = new Map();
+	/** What `present` calls showed (#946): the conversation's presentations by id, as the app sends them (`presented`). */
+	let presented = new Map();
+	/** Their pictures, and the snapshots of their pages, by "p2/3/0", as `pictures` keeps the entries'. */
+	const presentedPictures = new Map();
+	/** On a phone, the item each card shows, by call. */
+	const presentShown = new Map();
+	/** The present questions answered from this page and not yet heard back about, by need. */
+	const presentAnswering = new Set();
+	/** Whether the phone's view marked the page (TranscriptLayout.phone), which it does before any script runs. */
+	const NARROW = document.documentElement.classList.contains("narrow");
+	const TOUCH = document.documentElement.classList.contains("touch");
 	let rendered = false;
 	/** A chat's own controls and what they need (chat.js); nothing for an agent's conversation. */
 	let chat = Ch.NONE;
@@ -118,7 +130,22 @@
 			refusals.clear();
 			undoing.clear();
 			answering.clear();
+			presented = new Map();
+			presentAnswering.clear();
 			asked = false;
+		}
+		// What `present` calls showed, as stored (#946): only the records that changed come, each whole.
+		if (isObject(message.presented)) {
+			for (const record of Pr.readRecords(message.presented.records)) {
+				const previous = presented.get(record.id);
+				if (previous && JSON.stringify(previous) === JSON.stringify(record)) continue;
+				presented.set(record.id, stamp(record));
+				// An answer heard back about frees its card from waiting on this page.
+				for (const version of record.versions) {
+					const question = version.data && version.data.question;
+					if (question && question.answer) presentAnswering.delete(question.need);
+				}
+			}
 		}
 		if (isObject(message.history)) {
 			more = message.history.more === true;
@@ -243,7 +270,7 @@
 			if (!chat.enabled) editing = menuFor = null;
 		}
 		if (isObject(message.palette)) applyPalette(message.palette);
-		if (isObject(message.image)) receivePicture(message.image);
+		if (isObject(message.image)) (isObject(message.image.presented) ? receivePresentedPicture : receivePicture)(message.image);
 		if (typeof message.notice === "string") showNotice(message.notice);
 
 		if (follow) pinned = true;
@@ -321,6 +348,8 @@
 		close: ["M4 4l8 8", "M12 4l-8 8"],
 		picture: ["M2.5 3h11a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z", "M1.8 11l3.6-3.6 3 3 2-2 3.8 3.8", "M10.5 6.2v.1"],
 		warning: ["M8 2 14.5 13.5h-13z", "M8 6.5v3", "M8 11.6v.1"],
+		expand: ["M9.5 2.5h4v4", "M13.5 2.5 9 7", "M6.5 13.5h-4v-4", "M2.5 13.5 7 9"],
+		page: ["M4 1.8h5.2l2.8 2.8v9.6H4z", "M9 1.8v3h3", "M6 8.5h4", "M6 10.8h4"],
 	};
 
 	function glyph(name, className = "glyph") {
@@ -873,7 +902,24 @@
 			rev(live.tools.get(call.callId)),
 			pending ? rev(pending) : 0,
 			phase === "preparing" ? JSON.stringify(call.arguments ?? null) : "",
+			presentKey(call),
 		].join(":");
+	}
+
+	/** What a `present` call's card was drawn from: its record, the item shown on a phone, and an answer on its way. */
+	function presentKey(call) {
+		if (call.name !== "present") return "";
+		let record = null;
+		for (const candidate of presented.values()) if (candidate.versions.some((version) => version.callId === call.callId)) record = candidate;
+		const view = presentedView(call);
+		const waiting = view && view.question && presentAnswering.has(view.question.need) ? 1 : 0;
+		return [rev(record), presentShown.get(call.callId) ?? 0, waiting].join(",");
+	}
+
+	/** The version a `present` call's card shows, or null for the plain row (none yet, or none this page understands). */
+	function presentedView(call) {
+		const result = results.get(call.callId);
+		return Pr.forCall(presented, call.callId, result && !result.isError ? result.details : null);
 	}
 
 	function assistantSpec(item, turnEnd, visible, index, attempts, point, turnStart) {
@@ -1199,6 +1245,11 @@
 
 	function toolSpec(call, phase) {
 		const pending = phase === "preparing" ? null : inbox.get(call.callId);
+		// A presentation is a card in place of its row, with the row folded under it; its question is the card's own.
+		const shown = call.name === "present" && phase !== "preparing" ? presentedView(call) : null;
+		if (shown) {
+			return { key: "pr:" + call.callId, sig: callSignature(call, phase) + "/" + namesRevision, build: () => el("div", "present-call"), update: (row) => fillPresent(row, call, phase) };
+		}
 		if (pending) return { key: "q:" + pending.id, sig: "q" + rev(pending) + "/" + namesRevision, build: () => questionCard(pending, call) };
 		const sig = callSignature(call, phase) + "/" + namesRevision;
 		if (call.name === "delegate") return { key: "d:" + call.callId, sig, build: () => el("div", "tool delegate"), update: (row) => fillDelegate(row, call, phase) };
@@ -1849,52 +1900,113 @@
 			card.appendChild(choices);
 		} else {
 			card.appendChild(el("p", "card-question", str(pending.question)));
-			const form = el("div", "card-answer");
-			form.setAttribute("data-nocopy", "");
-			// A text area, so an answer can have line breaks; it starts one line high and grows with them.
-			const field = el("textarea", "answer-field");
-			field.rows = 1;
-			field.placeholder = "Type an answer" + ELLIPSIS;
-			field.setAttribute("aria-label", "Your answer");
-			const send = button("btn primary", null, "Send");
-			send.disabled = true;
-			const submit = () => {
-				if (field.value.trim() === "") return;
-				post({ type: "answer", inbox: pending.id, text: field.value });
-				field.disabled = true;
-				send.disabled = true;
-			};
-			const fit = () => {
-				field.style.height = "auto";
-				field.style.height = field.scrollHeight + 2 + "px";
-			};
-			field.addEventListener("input", () => {
-				send.disabled = field.value.trim() === "";
-				fit();
-			});
-			// Return sends; Shift-Return or Option-Return starts a new line, as in the app's message field.
-			field.addEventListener("keydown", (event) => {
-				const action = K.returnKey(event);
-				if (action === "send") {
-					event.preventDefault();
-					submit();
-				} else if (action === "newLine") {
-					// Inserted here rather than left to WebKit, which does not break the line for every one of these keys.
-					// insertText replaces the selection, can be undone and fires `input`.
-					event.preventDefault();
-					if (!document.execCommand("insertText", false, "\n")) {
-						field.setRangeText("\n", field.selectionStart, field.selectionEnd, "end");
-						field.dispatchEvent(new Event("input"));
-					}
-				} else if (action === "nothing") {
-					event.preventDefault();
-				}
-			});
-			send.addEventListener("click", submit);
-			form.append(field, send);
-			card.appendChild(form);
+			card.appendChild(
+				answerForm("Type an answer" + ELLIPSIS, false, (text) => {
+					post({ type: "answer", inbox: pending.id, text });
+					return true;
+				}),
+			);
 		}
 		return card;
+	}
+
+	/**
+	 * The field for an answer in words, and its Send. `send(text)` says whether the words went; once they have, the field
+	 * and its button are done with.
+	 */
+	function answerForm(placeholder, disabled, sendText) {
+		const form = el("div", "card-answer");
+		form.setAttribute("data-nocopy", "");
+		// A text area, so an answer can have line breaks; it starts one line high and grows with them.
+		const field = el("textarea", "answer-field");
+		field.rows = 1;
+		field.placeholder = placeholder;
+		field.setAttribute("aria-label", "Your answer");
+		field.disabled = disabled;
+		const send = button("btn primary", null, "Send");
+		send.disabled = true;
+		const submit = () => {
+			if (field.disabled || field.value.trim() === "") return;
+			if (!sendText(field.value)) return;
+			field.disabled = true;
+			send.disabled = true;
+		};
+		const fit = () => {
+			field.style.height = "auto";
+			field.style.height = field.scrollHeight + 2 + "px";
+		};
+		field.addEventListener("input", () => {
+			send.disabled = field.value.trim() === "";
+			fit();
+		});
+		// Return sends; Shift-Return or Option-Return starts a new line, as in the app's message field.
+		field.addEventListener("keydown", (event) => {
+			const action = K.returnKey(event);
+			if (action === "send") {
+				event.preventDefault();
+				submit();
+			} else if (action === "newLine") {
+				// Inserted here rather than left to WebKit, which does not break the line for every one of these keys.
+				// insertText replaces the selection, can be undone and fires `input`.
+				event.preventDefault();
+				if (!document.execCommand("insertText", false, "\n")) {
+					field.setRangeText("\n", field.selectionStart, field.selectionEnd, "end");
+					field.dispatchEvent(new Event("input"));
+				}
+			} else if (action === "nothing") {
+				event.preventDefault();
+			}
+		});
+		send.addEventListener("click", submit);
+		form.append(field, send);
+		return form;
+	}
+
+	// MARK: Presentations (#946)
+
+	/** A `present` call: its card, and the call's own row folded under it, with what the agent was told. */
+	function fillPresent(row, call, phase) {
+		const view = presentedView(call);
+		row.replaceChildren();
+		if (!view) return;
+		const need = view.question ? view.question.need : "";
+		const answer = (message) => {
+			presentAnswering.add(need);
+			post(message);
+			schedule();
+		};
+		row.appendChild(
+			Pr.card(document, view, {
+				narrow: NARROW,
+				shown: presentShown.get(call.callId) ?? 0,
+				picture: (key) => presentedPictures.get(key),
+				answering: need !== "" && presentAnswering.has(need),
+				glyph,
+				form: answerForm,
+				expand: (index, from) => expandPresented(view, index, from),
+				select: (index) => {
+					presentShown.set(call.callId, index);
+					schedule();
+				},
+				choose: (choice) => answer({ type: "choose", need, choice }),
+				answer: (text) => answer({ type: "answer", need, text }),
+			}),
+		);
+		// The row reads the version the card shows, which is newer than the call's result once a snapshot is drawn or the
+		// question answered; while the call waits for that answer it has been presented, and says so rather than spin.
+		const result = results.get(call.callId);
+		const status = statusOf(call, phase);
+		const details = Pr.asDetails(view);
+		const toolRow = el("div", "tool");
+		if (result) fillTool(toolRow, call, phase, { status, result: { ...result, details: { ...(isObject(result.details) ? result.details : {}), ...details } } });
+		else fillTool(toolRow, call, phase, { status: status === "running" ? "done" : status, result: status === "running" ? { text: "", details } : undefined });
+		row.appendChild(toolRow);
+	}
+
+	/** Expand, or a click on an item: the app opens the presentation's window at it; on a phone, the lightbox. */
+	function expandPresented(view, index, from) {
+		if (TOUCH) return openGallery(view, index, from);
+		post({ type: "expand", presentation: view.presentation, version: view.version, item: index });
 	}
 
 	// MARK: - Pictures
@@ -1933,14 +2045,15 @@
 			for (const entry of entries) {
 				if (!entry.isIntersecting) continue;
 				pictureObserver.unobserve(entry.target);
-				requestPicture(entry.target.getAttribute("data-picture"));
+				if (entry.target.hasAttribute("data-presented")) requestPresented(entry.target.getAttribute("data-presented"));
+				else requestPicture(entry.target.getAttribute("data-picture"));
 			}
 		},
 		{ rootMargin: "400px 0px" },
 	);
 
 	function observePictures(root) {
-		for (const b of root.querySelectorAll("[data-picture]")) {
+		for (const b of root.querySelectorAll("[data-picture], [data-presented]")) {
 			if (b.__observed || b.closest("[hidden]")) continue;
 			b.__observed = true;
 			pictureObserver.observe(b);
@@ -1972,6 +2085,36 @@
 		for (const b of document.querySelectorAll("[data-picture]")) if (b.getAttribute("data-picture") === key) showPicture(b, picture);
 	}
 
+	/** Asks the app for a presented picture, or a page's snapshot, as its card nears the screen (#946). */
+	function requestPresented(key) {
+		const at = Pr.parseKey(key);
+		if (!at || presentedPictures.has(key)) return;
+		presentedPictures.set(key, { state: "loading" });
+		post({ type: "presentedImage", presentation: at.presentation, version: at.version, item: at.item });
+	}
+
+	/** A presented picture as the app answered it; an SVG too, which an `<img>` draws without running or loading anything. */
+	function receivePresentedPicture(message) {
+		const at = message.presented;
+		if (typeof at.presentation !== "string" || !Number.isInteger(at.version) || !Number.isInteger(at.item)) return;
+		const key = at.presentation + "/" + at.version + "/" + at.item;
+		if (!Pr.parseKey(key)) return;
+		let picture = { state: "failed" };
+		if (typeof message.data === "string" && (PICTURE_TYPES.includes(message.mimeType) || message.mimeType === "image/svg+xml")) {
+			try {
+				const bytes = Uint8Array.from(atob(message.data), (c) => c.charCodeAt(0));
+				picture = { state: "ready", url: URL.createObjectURL(new Blob([bytes], { type: message.mimeType })) };
+			} catch {
+				picture = { state: "failed" };
+			}
+		}
+		const old = presentedPictures.get(key);
+		if (old && old.url) URL.revokeObjectURL(old.url);
+		presentedPictures.set(key, picture);
+		for (const frame of document.querySelectorAll("[data-presented]")) if (frame.getAttribute("data-presented") === key) Pr.showPicture(frame, picture);
+		if (gallery && Pr.key(gallery.view, gallery.index) === key && picture.state === "ready") showGallery();
+	}
+
 	// MARK: Lightbox
 
 	const lightbox = document.getElementById("lightbox");
@@ -1992,7 +2135,49 @@
 		lightbox.querySelector(".lightbox-close").focus();
 	}
 
+	/**
+	 * On a phone, Expand opens a presentation's items in the lightbox, a swipe left or right stepping between them
+	 * (#946): `{ view, index, from }` while it does.
+	 */
+	let gallery = null;
+
+	function openGallery(view, index, from) {
+		gallery = { view, index, from };
+		showGallery();
+	}
+
+	/** Shows the gallery's item once its picture is there, asking for it if need be. */
+	function showGallery() {
+		const { view, index, from } = gallery;
+		const item = view.items[index];
+		const key = Pr.key(view, index);
+		if (Pr.fetchable(item)) requestPresented(key);
+		const picture = presentedPictures.get(key);
+		const label = [item.label, item.caption].filter(Boolean).join(": ") || view.title;
+		if (picture && picture.state === "ready") openLightbox(picture.url, label, from);
+	}
+
+	function stepGallery(by) {
+		if (!gallery || lightbox.hidden) return;
+		const next = gallery.index + by;
+		if (next < 0 || next >= gallery.view.items.length) return;
+		gallery.index = next;
+		showGallery();
+	}
+
+	let swipeFrom = null;
+	lightbox.addEventListener("touchstart", (event) => (swipeFrom = event.touches[0] ? { x: event.touches[0].clientX, y: event.touches[0].clientY } : null), { passive: true });
+	lightbox.addEventListener("touchend", (event) => {
+		const touch = event.changedTouches[0];
+		if (!swipeFrom || !touch) return;
+		const dx = touch.clientX - swipeFrom.x;
+		const dy = touch.clientY - swipeFrom.y;
+		swipeFrom = null;
+		if (Math.abs(dx) >= 40 && Math.abs(dx) >= Math.abs(dy) * 1.5) stepGallery(dx < 0 ? 1 : -1);
+	});
+
 	function closeLightbox() {
+		gallery = null;
 		if (lightbox.hidden) return;
 		lightbox.hidden = true;
 		lightbox.querySelector("img").removeAttribute("src");
@@ -2010,6 +2195,8 @@
 	});
 	document.addEventListener("keydown", (event) => {
 		if (event.key === "Escape") closeLightbox();
+		else if (event.key === "ArrowRight") stepGallery(1);
+		else if (event.key === "ArrowLeft") stepGallery(-1);
 	});
 
 	// MARK: - Following the newest
