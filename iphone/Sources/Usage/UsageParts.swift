@@ -100,6 +100,8 @@ struct UsagePlanCard: View {
     let asking: Bool
     /// What the engine said when Check Now was refused.
     let problem: String?
+    /// False while the Mac cannot be reached: Check Now waits for it.
+    var canCheck = true
     let check: () -> Void
 
     var body: some View {
@@ -154,6 +156,7 @@ struct UsagePlanCard: View {
                     Button("Check Now", systemImage: "arrow.clockwise", action: check)
                         .labelStyle(.iconOnly)
                         .buttonStyle(.borderless)
+                        .disabled(!canCheck)
                         .accessibilityLabel("Check \(provider.name)'s limits now")
                 }
             }

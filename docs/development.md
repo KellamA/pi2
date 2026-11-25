@@ -303,7 +303,7 @@ cd app && swift build --product pi2-remote-helper && swift build --product pi2-r
 cd app && .build/debug/pi2-remote-helper-check --engine ../engine/src/main.ts
 ```
 
-Its relay path (#678) is checked against the relay itself, which `scripts/relay-protocol-test --remote` starts on 127.0.0.1 as it does for [the protocol test](#the-relays-protocol-test) (the relay's own package, through `relay/scripts/isolated.mjs`, nothing deployed) and gives the check as `--relay`: registering, pairing, a session and #675's hostile cases over the relay, the mailbox both ways, and, with `--engine`, the same through a real engine. It needs the relay's packages (`cd relay && npm ci`) too, and takes about five minutes, two of them waiting out a device's handshakes a minute. CI runs it in the protocol test's job:
+Its relay path (#678) is checked against the relay itself, which `scripts/relay-protocol-test --remote` starts on 127.0.0.1 as it does for [the protocol test](#the-relays-protocol-test) (the relay's own package, through `relay/scripts/isolated.mjs`, nothing deployed) and gives the check as `--relay`: registering, pairing, a session and #675's hostile cases over the relay, the mailbox both ways, the engine's pushes out of the relay's stand-in for Apple's service (#935), and, with `--engine`, the same through a real engine. It needs the relay's packages (`cd relay && npm ci`) too, and takes about five minutes, two of them waiting out a device's handshakes a minute. CI runs it in the protocol test's job:
 
 ```bash
 cd app && swift build --product pi2-remote-helper && swift build --product pi2-remote-helper-check

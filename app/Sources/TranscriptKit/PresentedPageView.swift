@@ -164,11 +164,62 @@ public final class PresentedPageView: WKWebView, WKNavigationDelegate, WKUIDeleg
         load(URLRequest(url: url))
     }
 
-    /// Stops listening to the page, for a view that is going away.
+    /// Stops listening to the page, for a view that is going away. Its web content process may outlive it: `end` ends it.
     public func close() {
         configuration.userContentController.removeAllScriptMessageHandlers()
         log?.view = nil
         stopLoading()
+    }
+
+    /// Whether `end` has been asked: the page is never loaded again after that.
+    public private(set) var isEnding = false
+    /// Told when the page's process has ended, while `end` waits for it.
+    private var processGone: (() -> Void)?
+
+    /// Closes the view and ends its web content process, and says whether it is known to have gone. Call it whenever a
+    /// page is done with: after drawing, when its window closes, before its window shows another item.
+    ///
+    /// WebKit keeps a page's process after its view is let go, closed, stopped, sent to a blank page or to another
+    /// origin, and after `_killWebContentProcess`; a page whose script never yields keeps it at full speed (#1000's
+    /// security read; each was measured). No public call ends it. So this uses WebKit's own
+    /// `_killWebContentProcessAndResetState`, which is not public, looked up when it runs; on a WebKit without it, the
+    /// process's id (`_webProcessIdentifier`, also not public) and SIGKILL, to the process WebKit started for this view.
+    /// Gone is seen by the process's id where WebKit gives it, else by `webViewWebContentProcessDidTerminate`, within
+    /// `wait`. False if it could not be ended or seen to end: the caller then counts it as alive (`PresentedProcesses`).
+    public func end(wait: Duration = .seconds(5)) async -> Bool {
+        isEnding = true
+        close()
+        let pid = Self.processIdentifier(of: self)
+        // No process (none was started, or it has ended already): nothing to end.
+        if pid == 0 { return true }
+        var told = false
+        processGone = { told = true }
+        defer { processGone = nil }
+        let kill = NSSelectorFromString("_killWebContentProcessAndResetState")
+        if responds(to: kill) {
+            perform(kill)
+        } else if let pid {
+            Darwin.kill(pid, SIGKILL)
+        } else {
+            return false
+        }
+        let until = ContinuousClock.now + wait
+        while ContinuousClock.now < until {
+            if let pid {
+                if Darwin.kill(pid, 0) != 0 && errno == ESRCH { return true }
+            } else if told {
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        return false
+    }
+
+    /// The id of the view's web content process: 0 for none, nil if WebKit does not say (a call that is not public).
+    static func processIdentifier(of view: WKWebView) -> pid_t? {
+        guard view.responds(to: NSSelectorFromString("_webProcessIdentifier")),
+              let number = view.value(forKey: "_webProcessIdentifier") as? NSNumber else { return nil }
+        return number.int32Value
     }
 
     /// Whether an address is this page's own: its scheme and its origin.
@@ -181,7 +232,9 @@ public final class PresentedPageView: WKWebView, WKNavigationDelegate, WKUIDeleg
         guard message.webView === self, message.frameInfo.isMainFrame, let url = message.frameInfo.request.url, isOwn(url),
               let line = message.body as? String else { return }
         if line.hasPrefix("blocked ") {
-            record.blocked(String(line.dropFirst("blocked ".count)))
+            // The page's own report of a refusal (its security-policy events, which it can make itself): kept apart from
+            // what the app saw refused itself.
+            record.blocked(String(line.dropFirst("blocked ".count)), byPage: true)
         } else if line.hasPrefix("console ") {
             record.console(String(line.dropFirst("console ".count)))
         }
@@ -251,6 +304,11 @@ public final class PresentedPageView: WKWebView, WKNavigationDelegate, WKUIDeleg
     }
 
     public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        // Ended on purpose: never loaded again.
+        if isEnding {
+            processGone?()
+            return
+        }
         if let loadEnded {
             self.loadEnded = nil
             loadEnded("its web content process ended")
@@ -342,7 +400,10 @@ public final class PresentedPageView: WKWebView, WKNavigationDelegate, WKUIDeleg
 /// What a page did that its findings report, each list capped as the design says.
 public struct PresentedPageRecord: Sendable {
     public private(set) var consoleLines: [String] = []
+    /// Every address refused: those the app saw refused itself, and those the page reported.
     public private(set) var blockedAddresses: [String] = []
+    /// Of those, the ones the app saw refused itself (the navigation delegate's), which the page cannot make up.
+    public private(set) var blockedSeen: [String] = []
     public private(set) var notFoundPaths: [String] = []
     public private(set) var answeredRequests: [String] = []
 
@@ -351,8 +412,10 @@ public struct PresentedPageRecord: Sendable {
         consoleLines.append(String(line.prefix(PresentedPageFindings.lineLength)))
     }
 
-    mutating func blocked(_ address: String) {
-        Self.add(String(address.prefix(PresentedPageFindings.lineLength)), to: &blockedAddresses)
+    mutating func blocked(_ address: String, byPage: Bool = false) {
+        let address = String(address.prefix(PresentedPageFindings.lineLength))
+        Self.add(address, to: &blockedAddresses)
+        if !byPage, blockedAddresses.contains(address) { Self.add(address, to: &blockedSeen) }
     }
 
     mutating func notFound(_ path: String) {

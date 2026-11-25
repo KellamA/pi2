@@ -110,6 +110,11 @@ final class EngineClient: EngineSessionHost {
     let projectStore = ProjectsStore()
     /// Who follows which conversation's presentations as `conversation.presented` brings them (PresentedEngine.swift).
     @ObservationIgnored let presentedFollowers = PresentedFollowers()
+    /// Draws agents' pages offscreen when the engine asks (PresentedDrawing.swift).
+    @ObservationIgnored let presentedDrawing = PresentedDrawing()
+    /// How many times the app has connected to an engine: what was read on an earlier connection, and the events it
+    /// missed while it had none, are read again (the transcript's presentations).
+    @ObservationIgnored private(set) var connections = 0
     #if PI2_DEVELOPMENT
     /// Paired devices and remote access, for Settings › Devices, the menu bar item and the sidebar (DevicesSettings.swift):
     /// development builds alone until a real phone is paired (#712).
@@ -210,6 +215,7 @@ final class EngineClient: EngineSessionHost {
 
     func sessionConnected() {
         guard let connection = session.transport else { return }
+        connections += 1
         self.startsWithoutConnecting = 0
         self.launchFailure = nil
         self.lastExit = nil
@@ -218,6 +224,8 @@ final class EngineClient: EngineSessionHost {
         Task { _ = try? await self.call("computer.register") }
         // And as the one whose browser agents use.
         Task { _ = try? await self.call("browser.register") }
+        // And as the one that draws the pages agents present (the engine never loads one).
+        presentedDrawing.register(self)
         // After an update either the running engine or its login item may still be out of date.
         Task { await self.reconcileEngine(on: connection) }
         Task { await self.noteEngineFromAnotherCheckout() }
@@ -251,6 +259,8 @@ final class EngineClient: EngineSessionHost {
             browser.handle(try decoder.decode(BrowserEvent.self, from: line), engine: self)
         case "conversation.presented":
             presentedFollowers.take(line)
+        case "present.draw":
+            presentedDrawing.take(line, engine: self)
         #if PI2_DEVELOPMENT
         case "devices":
             devices.take(line: line, decoder: decoder, engine: self)

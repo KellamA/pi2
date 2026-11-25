@@ -45,9 +45,20 @@ public enum TranscriptAction: Equatable {
     /// The person's answer to a reach request or a proposed rule at the call that asked (7.2), by the need's id as
     /// the page was sent it: the same `needs.answer` the board's card answers it with.
     case answerNeed(id: String, answer: NeedAnswer)
+    /// A presented picture, or a page's snapshot, for a `present` call's card (#946): by the presentation's id ("p2"),
+    /// the version's number and the item's index, as the page was sent the conversation's records.
+    case presentedImage(presentation: String, version: Int, item: Int)
+    /// Expand, or a click on an item of a `present` call's card: the presentation's window at that version and item.
+    case expand(presentation: String, version: Int, item: Int)
+    /// One of a `present` question's choices, by its id ("c1"), and the question's need, as the record names it.
+    case choose(need: String, choice: String)
+    /// An answer in the person's words to a `present` question, by its need's id.
+    case answerPresented(need: String, text: String)
 
     static let copyLimit = 20_000_000
     static let answerLimit = 100_000
+    /// An answer in words to a `present` question: as long as the engine takes one (`MAX_ANSWER` in needs.ts).
+    static let presentedAnswerLimit = 20_000
     /// An edited message: as long as a message can be, within reason.
     static let editLimit = 1_000_000
 
@@ -69,6 +80,11 @@ public enum TranscriptAction: Equatable {
             guard let id = Self.identifier(body["inbox"]), let decision = body["decision"] as? String,
                   ["once", "always", "rule", "deny"].contains(decision) else { return nil }
             self = .decide(inbox: id, decision: decision)
+        case "answer" where body["need"] != nil:
+            // A `present` question's, by its need: never one that names an Inbox item as well.
+            guard body["inbox"] == nil, let need = Self.identifier(body["need"]), let text = body["text"] as? String,
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.utf16.count <= Self.presentedAnswerLimit else { return nil }
+            self = .answerPresented(need: need, text: text)
         case "answer":
             guard let id = Self.identifier(body["inbox"]), let text = body["text"] as? String,
                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.utf16.count <= Self.answerLimit else { return nil }
@@ -139,8 +155,79 @@ public enum TranscriptAction: Equatable {
             } else {
                 return nil
             }
+        case "presentedImage", "expand":
+            guard let presentation = Self.presentation(body["presentation"]), let version = Self.integer(body["version"]), version >= 1,
+                  let item = Self.integer(body["item"]), (0..<Self.presentedItems).contains(item) else { return nil }
+            self = type == "expand" ? .expand(presentation: presentation, version: version, item: item) : .presentedImage(presentation: presentation, version: version, item: item)
+        case "choose":
+            guard let need = Self.identifier(body["need"]), let choice = Self.choiceID(body["choice"]) else { return nil }
+            self = .choose(need: need, choice: choice)
         default:
             return nil
+        }
+    }
+
+    /// The most items a version of a presentation has (engine/src/presented.ts, `LIMITS.items`).
+    static let presentedItems = 6
+
+    /// A presentation's id as the engine makes them, "p" and a whole number from 1, and nothing else.
+    static func presentation(_ value: Any?) -> String? {
+        guard let text = value as? String, PresentationRecord.isID(text) else { return nil }
+        return text
+    }
+
+    /// A choice's id: short printable text. The engine makes them "c1", "c2", …; whether it is one of the question's
+    /// is `PresentedChecks`'s to say.
+    static func choiceID(_ value: Any?) -> String? {
+        guard let text = value as? String, (1...64).contains(text.utf16.count),
+              text.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else { return nil }
+        return text
+    }
+
+    /// What a message about a presentation may ask, checked against what the conversation has (#946): the bridge acts on
+    /// one only if `allows` says so. The page names presentations, versions, items and needs; it is believed only where
+    /// the conversation's own records have them.
+    public struct PresentedChecks {
+        /// The conversation's records, by presentation, as the engine gave them.
+        public let records: [String: PresentationRecord]
+        /// The needs waiting for the person in this conversation that are decisions, as the engine's `needs` list has them.
+        public let waiting: Set<String>
+
+        public init(records: [String: PresentationRecord], waiting: Set<String>) {
+            self.records = records
+            self.waiting = waiting
+        }
+
+        /// An item the conversation's records have.
+        public func item(_ presentation: String, _ version: Int, _ item: Int) -> PresentedItem? {
+            guard let found = records[presentation]?.version(version), found.items.indices.contains(item) else { return nil }
+            return found.items[item]
+        }
+
+        /// A `present` question of the conversation's records by its need, still open in the record and still waiting in
+        /// this conversation: never another conversation's, one already answered, nor a need that is not a `present` question.
+        public func question(_ need: String) -> PresentedQuestion? {
+            guard waiting.contains(need) else { return nil }
+            for record in records.values {
+                for version in record.versions {
+                    if let question = version.question, question.need == need { return question.isOpen ? question : nil }
+                }
+            }
+            return nil
+        }
+
+        /// Whether the bridge may act on `action`: true for an action about no presentation, which is checked elsewhere.
+        public func allows(_ action: TranscriptAction) -> Bool {
+            switch action {
+            case .presentedImage(let presentation, let version, let index), .expand(let presentation, let version, let index):
+                return item(presentation, version, index) != nil
+            case .choose(let need, let choice):
+                return question(need)?.choices.contains { $0.id == choice } == true
+            case .answerPresented(let need, _):
+                return question(need) != nil
+            default:
+                return true
+            }
         }
     }
 

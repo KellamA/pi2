@@ -56,7 +56,10 @@ enum ConversationPagePolicy {
         case .older:
             // Whether there is more, and whether a part is on its way, is the client's to say (`loadOlder`).
             return .loadOlder
-        case .decide, .answer, .answerNeed:
+        case .presentedImage, .expand:
+            // A `present` call's card is not sent to the phone's page yet (#946's piece 6).
+            return .ignore
+        case .decide, .answer, .answerNeed, .choose, .answerPresented:
             // The page is sent no cards to answer on the phone; what waits is answered under Needs you.
             return .notice("Answer it under Needs you, above the message field.")
         case .undo:
