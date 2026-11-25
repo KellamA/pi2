@@ -15,6 +15,11 @@
 // - the second project's daily spend limit is set below what it spent, and its orchestrator's `delegate` is held back
 //   by it (a limit card); its `fileWork` switch is turned off, and its orchestrator's `work` `file` then asks (an
 //   approval a project's switch asked for).
+// - a third project, Demo site, keeps its work on GitHub, through a stand-in for `gh` (engine/test/gh-stand-in.mjs, given
+//   as PI2_GH: it never reaches the network) holding the repository pi2-demo/walkthrough: its orchestrator files an
+//   issue and opens a pull request that fixes it from the folder's branch, and Atlas posts a finding on it; its checks
+//   pass. The pull request's diff, as `github.diff` answers it, is kept in the recording as an `answer` line, which the
+//   demo answers `github.diff` with.
 // It then connects to the copy's engine socket as the app does, takes the greeting, opens every conversation the
 // library lists, and writes what a client would then know: the latest event of each kind and one snapshot of each
 // conversation. The copy's data folder and this Mac's home folder are written as /Users/someone, this Mac's memory and
@@ -27,9 +32,9 @@
 
 'use strict';
 const { spawnSync } = require('node:child_process');
-const { writeFileSync, mkdirSync } = require('node:fs');
+const { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } = require('node:fs');
 const { connect } = require('node:net');
-const { homedir, hostname, userInfo } = require('node:os');
+const { homedir, hostname, tmpdir, userInfo } = require('node:os');
 const { join, dirname } = require('node:path');
 const { createInterface } = require('node:readline');
 
@@ -102,13 +107,156 @@ async function until(what, ready, seconds = 120) {
 /** The harmless command the fill allows Atlas and Forge in the project's folder (engine/scripts/test-copy-project.ts). */
 const longRun = '/bin/sleep 540';
 
+// ---- The third project's repository, on a stand-in for gh
+
+const repository = 'pi2-demo/walkthrough';
+const branch = 'walkthrough-script';
+const ago = (days) => new Date(Date.now() - days * 86_400_000).toISOString();
+const issue = (number, title, body, closed) => ({
+	number, title, body, state: closed ? 'CLOSED' : 'OPEN', stateReason: closed ? 'COMPLETED' : null, labels: [],
+	url: `https://github.com/${repository}/issues/${number}`, createdAt: ago(4 - number), updatedAt: ago(closed ? 1 : 2),
+	closedAt: closed ? ago(1) : null, comments: [], author: { login: 'pi2-demo' },
+});
+/** What the pull request changes, as `gh pr diff` prints it. */
+const diff = [
+	'diff --git a/docs/walkthrough.md b/docs/walkthrough.md',
+	'new file mode 100644',
+	'index 0000000..3f2a1c4',
+	'--- /dev/null',
+	'+++ b/docs/walkthrough.md',
+	'@@ -0,0 +1,12 @@',
+	'+# The Friday walkthrough',
+	'+',
+	'+Five minutes, from opening a project to merging its first pull request.',
+	'+',
+	'+1. Open Demo project and ask the orchestrator for a plan.',
+	'+2. Answer what needs you: a question, a decision and an approval.',
+	'+3. Watch Atlas and Forge at work under Now.',
+	'+4. Open the pull request from Work, read its diff and its findings.',
+	'+5. Merge it from the phone.',
+	'+6. See it under Finished today.',
+	'+',
+	'+Keep every name and number in the sample fictional.',
+	'diff --git a/site/steps.json b/site/steps.json',
+	'index 8d1e2a0..b41c9f7 100644',
+	'--- a/site/steps.json',
+	'+++ b/site/steps.json',
+	'@@ -1,6 +1,8 @@',
+	' [',
+	' \t{ "id": "open", "title": "Open a project" },',
+	'-\t{ "id": "ask", "title": "Ask the orchestrator" },',
+	'+\t{ "id": "ask", "title": "Ask the orchestrator for a plan" },',
+	'+\t{ "id": "answer", "title": "Answer what needs you" },',
+	' \t{ "id": "review", "title": "Review the pull request" },',
+	'-\t{ "id": "merge", "title": "Merge" }',
+	'+\t{ "id": "merge", "title": "Merge it from the phone" },',
+	'+\t{ "id": "done", "title": "See it under Finished today" }',
+	' ]',
+	'diff --git a/README.md b/README.md',
+	'index 51c0e2d..9a7d3b8 100644',
+	'--- a/README.md',
+	'+++ b/README.md',
+	'@@ -1,3 +1,5 @@',
+	' # Walkthrough site',
+	' ',
+	' The pages of the Friday walkthrough, one for each step.',
+	'+',
+	'+The script is docs/walkthrough.md.',
+	'',
+].join('\n');
+
+/** A folder of its own with the stand-in's file and a `gh` that runs it on that file, which PI2_GH names. */
+function standIn() {
+	const folder = mkdtempSync(join(tmpdir(), 'demo-recording-gh-'));
+	const state = join(folder, 'state.json');
+	writeFileSync(state, JSON.stringify({ repos: { [repository]: { defaultBranch: 'main', labels: [], next: 3, pulls: [], issues: [
+		issue(1, 'Set up the walkthrough site', 'A page for each step, built from Markdown.', true),
+		issue(2, 'Add a page of the questions people ask', 'Collect them at the walkthrough first.', false),
+	] } } }, null, '\t'));
+	const gh = join(folder, 'gh');
+	const quote = (text) => `'${text.split("'").join(`'\\''`)}'`;
+	writeFileSync(gh, `#!/bin/sh\nGH_STAND_IN_STATE=${quote(state)} exec ${quote(process.execPath)} ${quote(join(root, 'engine/test/gh-stand-in.mjs'))} "$@"\n`);
+	chmodSync(gh, 0o755);
+	return {
+		folder,
+		gh,
+		/** Changes the repository in the stand-in's file, whole, as the stand-in itself writes it. */
+		change(body) {
+			const all = JSON.parse(readFileSync(state, 'utf8'));
+			body(all.repos[repository]);
+			writeFileSync(`${state}.next`, JSON.stringify(all, null, '\t'));
+			renameSync(`${state}.next`, state);
+		},
+	};
+}
+
+/** A git repository in `folder` on `branch`, its upstream on GitHub, with no network: what `work` `pull_request` reads. */
+function gitRepository(folder) {
+	const git = (...args) => {
+		const result = spawnSync('git', ['-c', 'user.name=Demo', '-c', 'user.email=demo@pi2.invalid', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', ...args], { cwd: folder, encoding: 'utf8' });
+		if (result.status !== 0) throw new Error(`git ${args[0]} failed: ${result.stderr}`);
+	};
+	mkdirSync(folder, { recursive: true });
+	git('init', '-q', '-b', branch);
+	git('commit', '-q', '--allow-empty', '-m', 'Start the walkthrough script');
+	git('remote', 'add', 'origin', `https://github.com/${repository}.git`);
+	git('config', `branch.${branch}.remote`, 'origin');
+	git('config', `branch.${branch}.merge`, `refs/heads/${branch}`);
+}
+
 async function main() {
-	run(['start', suffix, '--fill', 'project:2', '--env', 'PI2_DEMO_COST=3']);
+	const gh = standIn();
+	run(['start', suffix, '--fill', 'project:2', '--env', 'PI2_DEMO_COST=3', '--env', `PI2_GH=${gh.gh}`]);
 	try {
 		const socket = run(['socket', suffix], { quiet: true }).trim();
 		const data = dirname(socket);
 		const client = await engine(socket);
 		await sleep(2000);
+		const answer = (method, params) => JSON.parse(run(['call', suffix, method, JSON.stringify(params)], { quiet: true })).result;
+		const model = { provider: 'demo', modelId: 'demo-1' };
+
+		// Demo site, its work on GitHub: an issue filed and a pull request opened by its orchestrator, a finding by Atlas.
+		const siteFolder = join(data, 'demo-site');
+		gitRepository(siteFolder);
+		const site = answer('projects.create', { name: 'Demo site', folder: siteFolder });
+		const siteOrchestrator = answer('projects.list', {}).projects.find((project) => project.id === site.id).orchestratorId;
+		answer('agents.save', { agent: { id: siteOrchestrator, name: 'Orchestrator', model } });
+		const reviewer = answer('projects.addAgent', { projectId: site.id, agent: { name: 'Atlas', color: 'blue', access: 'ask', model } }).id;
+		const review = answer('conversation.create', { agentId: reviewer }).id;
+		answer('conversation.rename', { id: review, title: 'Review the walkthrough script' });
+		answer('github.attach', { projectId: site.id, repository });
+		const listing = () => latestOf(client, 'github')?.projects?.[site.id];
+		await until('the first read of the stand-in repository', () => listing()?.state === 'ok' && listing()?.readAt != null);
+		const siteFiling = { action: 'file', title: 'Write the walkthrough script', text: 'Five minutes, from opening a project to merging its first pull request.' };
+		run(['send', suffix, String(site.conversation), `/tool work ${JSON.stringify(siteFiling)}`, '--timeout', '120']);
+		await until('the issue filed', () => listing()?.issues?.some((item) => item.title === siteFiling.title));
+		const filed = listing().issues.find((item) => item.title === siteFiling.title).id;
+		const opening = { action: 'pull_request', id: filed, title: 'Add the walkthrough script', text: 'The steps for Friday, a page each, and the site\'s list of them.' };
+		run(['send', suffix, String(site.conversation), `/tool work ${JSON.stringify(opening)}`, '--timeout', '120']);
+		await until('the pull request opened', () => listing()?.pulls?.some((pull) => pull.title === opening.title));
+		const number = listing().pulls.find((pull) => pull.title === opening.title).number;
+		gh.change((repo) => {
+			repo.diff = diff;
+			const pull = repo.pulls.find((one) => one.number === number);
+			// The stand-in signs what it opens "stand-in"; on GitHub it is the account gh is signed in to.
+			pull.author = { login: 'pi2-demo' };
+			pull.statusCheckRollup = ['tests', 'build'].map((name, at) => ({
+				name, status: 'COMPLETED', conclusion: 'SUCCESS', detailsUrl: `https://github.com/${repository}/actions/runs/${at + 1}`,
+			}));
+		});
+		const finding = { action: 'review', id: number, verdict: 'approve', text: 'Every step matches the app, and the list of steps is in the order of the pages.' };
+		run(['send', suffix, String(review), `/tool work ${JSON.stringify(finding)}`, '--timeout', '120'], { allow: [0, 2] });
+		answer('github.refresh', { projectId: site.id });
+		// Its first message was a tool call in the demo model's form, which would be its title.
+		answer('conversation.rename', { id: site.conversation, title: 'Write the walkthrough script' });
+		await until('the pull request read with its checks and the finding', () => {
+			const pull = listing()?.pulls?.find((one) => one.number === number);
+			return pull?.checks === 'passing' && pull.findings?.length === 1 && pull.openedBy !== null && listing().reading === false;
+		});
+		const recordedAnswers = [{ answer: { method: 'github.diff', params: { projectId: site.id, number }, result: await client.ask('github.diff', { projectId: site.id, number }) } }];
+		// A template copied into Demo site and changed since, so that Update from Template has something to bring.
+		answer('projects.addAgent', { projectId: site.id, template: 'scout' });
+		answer('agents.save', { agent: { id: 'scout', name: 'Scout', description: 'Finds what the others need: sources, figures, and where each came from.' } });
 
 		// The two kinds of card the fill leaves out (engine/scripts/test-copy-project.ts), asked as an orchestrator asks.
 		const projects = latestOf(client, 'projects')?.projects ?? [];
@@ -121,7 +269,7 @@ async function main() {
 			if (agent === undefined) throw new Error(`${project.name} has no agent called ${name}`);
 			return agent.id;
 		};
-		const call = (method, params) => run(['call', suffix, method, JSON.stringify(params)], { quiet: true });
+		const call = answer;
 		const tools = [
 			{ name: 'project_settings', arguments: { action: 'change', changes: { without_asking: { merge: true } }, why: 'So that a pull request whose checks pass can merge while you are away.' } },
 			{ name: 'project_rules', arguments: { action: 'propose', text: 'Run the tests before asking for a review.', binds: 'everyone', why: 'Two pull requests this week reached review with failing tests.' } },
@@ -170,6 +318,13 @@ async function main() {
 		await sleep(2000);
 		client.close();
 
+		// The closed issue read whole, as Work asks for it when it is opened (`github.show`): asked on a connection of its
+		// own once the first is closed, so that the recording's listing keeps it as a first read lists it, brief.
+		const late = await engine(socket);
+		const closed = { projectId: site.id, number: 1 };
+		recordedAnswers.push({ answer: { method: 'github.show', params: closed, result: await late.ask('github.show', closed) } });
+		late.close();
+
 		// The latest event of each kind (each is the whole of its state), in the order kinds first came; and each
 		// conversation as a client that opened it then knows it.
 		const latest = new Map();
@@ -183,7 +338,7 @@ async function main() {
 				latest.set(line.event, line);
 			}
 		}
-		let recording = [{ recorded: { at: Date.now(), by: 'scripts/demo-recording', conversations: conversations.size } }, ...latest.values(), ...[...conversations.values()].sort((a, b) => a.id - b.id)];
+		let recording = [{ recorded: { at: Date.now(), by: 'scripts/demo-recording', conversations: conversations.size } }, ...latest.values(), ...[...conversations.values()].sort((a, b) => a.id - b.id), ...recordedAnswers];
 		recording = replace(recording, data, '/Users/someone/Library/Application Support/pi2-demo');
 		recording = replace(recording, homedir(), '/Users/someone');
 		// This Mac's memory and free space, made up, as pi2-client-check's recording has them (#669).
@@ -199,6 +354,7 @@ async function main() {
 		console.log(`Wrote ${out}: ${latest.size} kinds of event, ${conversations.size} conversations, ${text.length} bytes.`);
 	} finally {
 		run(['stop', suffix]);
+		rmSync(gh.folder, { recursive: true, force: true });
 	}
 }
 

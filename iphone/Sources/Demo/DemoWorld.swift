@@ -25,11 +25,17 @@ final class DemoWorld {
     private(set) var kinds: [String] = []
     private var events: [String: [String: Any]] = [:]
     private(set) var conversations: [Int: Conversation] = [:]
+    /// The engine's answers the recording kept for what its events do not hold, such as a pull request's diff: each a
+    /// method, the parameters it was asked with, and the result (`answer` lines, which `scripts/demo-recording` writes).
+    private(set) var recordedAnswers: [(method: String, params: [String: Any], result: [String: Any])] = []
     /// The conversations the client has open, which it is sent the changes of.
     private(set) var opened: Set<Int> = []
     /// The methods the client asked for that no answer of the script takes, in order: a screen that sends one needs its
     /// answer added in `Script/` (the demo's test fails on any).
     var unanswered: [String] = []
+    /// Every request the client sent, in order, with the refusal it was answered with, if any: what the demo's test reads
+    /// to find a screen whose request the demo does not answer.
+    var asked: [(method: String, refusal: String?)] = []
     /// What a feature's answers keep between requests, by a key of their own (such as messages waiting their turn).
     var kept: [String: Any] = [:]
 
@@ -53,6 +59,10 @@ final class DemoWorld {
         let shift = recordedAt.map { now.timeIntervalSince1970 * 1000 - $0 } ?? 0
         for var line in lines {
             if let recordedAt, shift != 0 { line = Self.moved(line, by: shift, near: recordedAt) as? [String: Any] ?? line }
+            if let answer = line["answer"] as? [String: Any], let method = answer["method"] as? String {
+                recordedAnswers.append((method, answer["params"] as? [String: Any] ?? [:], answer["result"] as? [String: Any] ?? [:]))
+                continue
+            }
             guard let kind = line["event"] as? String else { continue }
             if kind == "conversation", let id = (line["id"] as? NSNumber)?.intValue {
                 let items = line["items"] as? [[String: Any]] ?? []
@@ -86,6 +96,15 @@ final class DemoWorld {
 
     /// The latest event of a kind, as the client last got it.
     func event(_ kind: String) -> [String: Any]? { events[kind] }
+
+    /// The engine's answer the recording kept to `method` asked with every parameter in `params` as it is there.
+    func recordedAnswer(_ method: String, _ params: [String: Any]) -> [String: Any]? {
+        recordedAnswers.first { answer in
+            answer.method == method && answer.params.allSatisfy { key, value in
+                params[key].map { NSDictionary(dictionary: [key: $0]).isEqual(to: [key: value]) } ?? false
+            }
+        }?.result
+    }
 
     /// Now, in milliseconds since 1970, as the engine writes times.
     var now: Double { (Date().timeIntervalSince1970 * 1000).rounded() }

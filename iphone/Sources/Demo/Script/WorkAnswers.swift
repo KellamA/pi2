@@ -9,7 +9,9 @@ import Foundation
 ///
 /// Giving work to an agent (`assign`) starts the agent in a new sub-chat of the orchestrator's conversation, and the demo's
 /// world cannot make a conversation yet, so it refuses that one plainly rather than claim the work with no agent on it.
-/// The demo's projects keep no repository, so the `github.*` requests are not answered here.
+/// A project whose work is on GitHub (Demo site) has its items in the `github` event's listing instead, where these
+/// change them as the engine's GitHub backend would after GitHub answered; its other `github.*` requests are
+/// `Script/GitHubAnswers.swift`'s.
 extension DemoScript {
     static let work: [String: DemoAnswer] = [
         "work.list": { request, world in
@@ -21,7 +23,7 @@ extension DemoScript {
                 }
                 items = items.filter { wanted.contains($0["state"] as? String ?? "") }
             }
-            return ["items": items, "readAt": NSNull()]
+            return ["items": items, "readAt": DemoGitHub.listing(project, world: world)?["readAt"] ?? NSNull()]
         },
         "work.create": { request, world in
             let project = try DemoWork.project(request, world: world, writing: true)
@@ -33,12 +35,18 @@ extension DemoScript {
                 modelClass = named
             }
             let items = DemoWork.items(project, world: world)
-            let id = (items.compactMap { ($0["id"] as? NSNumber)?.intValue }.max() ?? 0) + 1
+            // On GitHub, issues and pull requests are numbered in one sequence.
+            let pulls = DemoGitHub.listing(project, world: world)?["pulls"] as? [[String: Any]] ?? []
+            let id = ((items.compactMap { ($0["id"] as? NSNumber)?.intValue } + pulls.compactMap { ($0["number"] as? NSNumber)?.intValue }).max() ?? 0) + 1
             let now = world.now
-            DemoWork.save(project, items + [[
+            var item: [String: Any] = [
                 "id": id, "title": title, "text": text, "state": "open", "class": modelClass, "takenBy": NSNull(), "notes": [Any](),
                 "result": NSNull(), "filedBy": ["kind": "person"], "createdAt": now, "updatedAt": now, "closedAt": NSNull(),
-            ]], world: world)
+            ]
+            if DemoGitHub.listing(project, world: world) != nil {
+                item["url"] = "https://github.com/\(DemoGitHub.repository(project, world: world))/issues/\(id)"
+            }
+            DemoWork.save(project, items + [item], world: world)
             return ["id": id]
         },
         "work.act": { request, world in
@@ -94,11 +102,23 @@ enum DemoWork {
     }
 
     static func items(_ project: String, world: DemoWorld) -> [[String: Any]] {
-        (world.event("work")?["projects"] as? [String: Any])?[project] as? [[String: Any]] ?? []
+        if let listing = DemoGitHub.listing(project, world: world) { return listing["issues"] as? [[String: Any]] ?? [] }
+        return (world.event("work")?["projects"] as? [String: Any])?[project] as? [[String: Any]] ?? []
     }
 
-    /// Keeps the project's list and sends the `work` event whole, as the engine broadcasts it after a change.
+    /// Keeps the project's list and sends the `work` event whole, as the engine broadcasts it after a change; or, for a
+    /// project whose work is on GitHub, the `github` event, as the engine does once it has read the change back.
     static func save(_ project: String, _ items: [[String: Any]], world: DemoWorld) {
+        if DemoGitHub.listing(project, world: world) != nil {
+            world.change("github") { event in
+                var projects = event["projects"] as? [String: Any] ?? [:]
+                var listing = projects[project] as? [String: Any] ?? [:]
+                listing["issues"] = items.sorted { ($0["id"] as? NSNumber)?.intValue ?? 0 > ($1["id"] as? NSNumber)?.intValue ?? 0 }
+                projects[project] = listing
+                event["projects"] = projects
+            }
+            return
+        }
         world.change("work") { event in
             var projects = event["projects"] as? [String: Any] ?? [:]
             projects[project] = items
