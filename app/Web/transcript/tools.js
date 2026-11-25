@@ -15,6 +15,7 @@
 	const MINUS = String.fromCharCode(0x2212);
 	const ELLIPSIS = String.fromCharCode(0x2026);
 	const QUOTE_OPEN = String.fromCharCode(0x201c);
+	const TIMES = String.fromCharCode(0xd7);
 	const QUOTE_CLOSE = String.fromCharCode(0x201d);
 
 	const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -520,6 +521,24 @@
 				if (status === "done" && isObject(details) && str(details.modelName)) stats = str(details.modelName);
 				break;
 			}
+			case "present": {
+				// Pictures and pages shown in a card of their own (#946); this row, folded under the card, says what was shown
+				// and what the agent was told of it. `details` is the version the card was drawn from.
+				glyph = "picture";
+				const title = str(args.title).replace(/\s+/g, " ").trim();
+				if (active) {
+					label = [t("Presenting " + (title ? (title.length > 120 ? title.slice(0, 120) + ELLIPSIS : title) : "pictures") + ELLIPSIS)];
+					break;
+				}
+				const summary = status === "done" ? presentedSummary(details) : null;
+				if (!summary) {
+					label = [t(status === "done" ? "Presented " : "Present "), title ? muted(quoted(title)) : t("pictures")];
+					break;
+				}
+				label = [t(summary.what)];
+				if (summary.note) label.push(muted(" " + String.fromCharCode(0xb7) + " " + summary.note));
+				break;
+			}
 			case "look": {
 				// A model that can see answered the agent's question about a picture file (#540).
 				glyph = "picture";
@@ -808,6 +827,10 @@
 				if (images > 0) sections.push({ kind: "images", entry: result.id, count: images, name: "Picture", label: "Picture made" + (isObject(details) && str(details.modelName) ? " by " + str(details.modelName) : "") });
 				if (failed || images === 0) outputSection("Result");
 				break;
+			case "present":
+				// The card above shows what was presented; the row keeps what the agent was told of it, once it has been told.
+				if (output !== "" || failed || active) outputSection(failed ? "Result" : "What the agent was told");
+				break;
 			case "look":
 				// What was asked, then the other model's answer (#540).
 				if (str(args.question).trim() !== "") sections.push({ kind: "text", label: "Question", text: str(args.question).trim() });
@@ -1013,6 +1036,58 @@
 		return { elapsed: shortDuration(now - startedAt), quiet: quietMs >= QUIET_MS ? "quiet for " + shortDuration(quietMs) : "" };
 	}
 
+	/**
+	 * What a `present` call's row says once it is done (#946), from the version it presented (`details`, a
+	 * `PresentedVersion` with its `presentation`): `what` ("Presented 2 pictures and a page", or "Presented version 2 of
+	 * p2") and a quiet `note` ("the page loaded, no errors", "1440×900, 212 KB", "waits for your answer"). Null for a
+	 * version it cannot read, whose row then names the title alone.
+	 */
+	function presentedSummary(details) {
+		if (!isObject(details) || !Array.isArray(details.items) || details.items.length === 0 || !details.items.every(isObject)) return null;
+		const items = details.items;
+		const pages = items.filter((item) => item.kind === "page");
+		const pictures = items.filter((item) => item.kind === "picture");
+		if (pages.length + pictures.length !== items.length) return null;
+		const version = Number.isInteger(details.version) ? details.version : 1;
+		const id = str(details.presentation);
+		let what;
+		if (version > 1 && id) what = `Presented version ${version} of ${id}`;
+		else {
+			const parts = [];
+			if (pictures.length > 0) parts.push(pictures.length === 1 ? "1 picture" : `${pictures.length} pictures`);
+			if (pages.length > 0) parts.push(pages.length === 1 ? "a page" : `${pages.length} pages`);
+			what = "Presented " + parts.join(" and ");
+		}
+		const question = isObject(details.question) ? details.question : null;
+		const answer = question && isObject(question.answer) ? question.answer : null;
+		let note = "";
+		if (question && !answer) note = "waits for your answer";
+		else if (answer && typeof answer.chose === "string") note = "you chose " + quoted(answer.chose);
+		else if (answer && typeof answer.words === "string") note = "you answered in words";
+		else if (pages.length > 0) note = pagesNote(pages);
+		else if (pictures.length === 1) {
+			const [picture] = pictures;
+			const size = Number.isInteger(picture.width) && Number.isInteger(picture.height) ? `${picture.width}${TIMES}${picture.height}` : "";
+			note = [size, typeof picture.bytes === "number" ? formatBytes(picture.bytes) : ""].filter(Boolean).join(", ");
+		} else note = formatBytes(pictures.reduce((sum, picture) => sum + (Number(picture.bytes) || 0), 0));
+		return { what, note };
+	}
+
+	/** How the pages of a presentation drew, in a few words, from what drawing them found (`drawn`, `snapshot`). */
+	function pagesNote(pages) {
+		const one = pages.length === 1;
+		const the = one ? "the page" : "the pages";
+		if (pages.some((page) => isObject(page.snapshot) && page.snapshot.state === "failed")) return one ? "the page could not be drawn" : "a page could not be drawn";
+		if (pages.some((page) => !isObject(page.drawn))) return one ? "the page is not drawn yet" : "not every page is drawn yet";
+		if (pages.some((page) => page.drawn.blank === true)) return one ? "the page looks blank" : "a page looks blank";
+		const errors = pages.reduce((sum, page) => sum + (Array.isArray(page.drawn.console) ? page.drawn.console.length : 0), 0);
+		const blocked = pages.reduce((sum, page) => sum + (Array.isArray(page.drawn.blocked) ? page.drawn.blocked.length : 0), 0);
+		const found = [];
+		if (errors > 0) found.push(errors === 1 ? "1 console error" : `${errors} console errors`);
+		if (blocked > 0) found.push(blocked === 1 ? "1 address blocked" : `${blocked} addresses blocked`);
+		return found.length > 0 ? `${the} loaded: ${found.join(", ")}` : `${the} loaded, no errors`;
+	}
+
 	/** Bytes as Finder shows a file's size. */
 	function formatBytes(bytes) {
 		const n = Number(bytes) || 0;
@@ -1093,6 +1168,7 @@
 		folded,
 		delegation,
 		formatBytes,
+		presentedSummary,
 		prettyJSON,
 		shortDuration,
 		commandClock,
