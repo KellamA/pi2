@@ -55,10 +55,13 @@ jobs:
       group: ci-engine-${{ github.ref }}
       cancel-in-progress: true
     # The owner's runner when the repository variable CI_MAC_RUNNER names it (its label, pi2-mini), for a pull request
-    # from a branch of this repository; GitHub's macos-26 otherwise: with the variable unset or empty, for a push to main,
-    # and for a fork's pull request (docs/ci-runner.md, #990). That last is not the boundary, since a fork's pull request
-    # can change this file: the boundary is the setting that has a person approve an outside contributor's run.
-    runs-on: "${{ vars.CI_MAC_RUNNER != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.CI_MAC_RUNNER || 'macos-26' }}"
+    # opened by the repository's owner from a branch of this repository; GitHub's macos-26 for everything else: the
+    # variable unset or empty, a push to main, a fork's pull request, anyone else's (docs/ci-runner.md, #990). The
+    # author, not github.actor or github.triggering_actor: those are whoever pushed or ran it again, and the owner's push
+    # to someone else's branch, or the owner's re-run of it, must not send that person's code there. This is routing, not
+    # a lock: a pull request runs its own copy of this file and can change it. The lock for outsiders is GitHub's setting
+    # that has the owner approve their runs; for a collaborator who can push, there is none but trust.
+    runs-on: "${{ vars.CI_MAC_RUNNER != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner && vars.CI_MAC_RUNNER || 'macos-26' }}"
     timeout-minutes: 20
     defaults:
       run:
@@ -189,7 +192,7 @@ jobs:
       group: ci-relay-protocol-${{ github.ref }}
       cancel-in-progress: true
     # As the engine's job, by a second variable, CI_MAC_RUNNER_MORE (docs/ci-runner.md).
-    runs-on: "${{ vars.CI_MAC_RUNNER_MORE != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.CI_MAC_RUNNER_MORE || 'macos-26' }}"
+    runs-on: "${{ vars.CI_MAC_RUNNER_MORE != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner && vars.CI_MAC_RUNNER_MORE || 'macos-26' }}"
     # Ten more than before pi² Remote's relay end ran here (#678), which builds the helper and waits out two minutes.
     timeout-minutes: 30
     steps:
@@ -245,7 +248,7 @@ jobs:
       group: ci-app-${{ github.ref }}
       cancel-in-progress: true
     # As the engine's job, by the same variable, CI_MAC_RUNNER (docs/ci-runner.md).
-    runs-on: "${{ vars.CI_MAC_RUNNER != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.CI_MAC_RUNNER || 'macos-26' }}"
+    runs-on: "${{ vars.CI_MAC_RUNNER != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner && vars.CI_MAC_RUNNER || 'macos-26' }}"
     # Five more than before pi² Remote's check (#675), which runs an engine and waits out a session's resume window.
     timeout-minutes: 25
     steps:
@@ -367,7 +370,7 @@ jobs:
     # and iOS 26. The project was made with Xcode 27.2 (LastUpgradeVersion 2720), and its deployment target is iOS 18.
     # Or the owner's runner, by CI_MAC_RUNNER_MORE, as the relay's protocol test (docs/ci-runner.md): it has Xcode 27.2
     # at the same path.
-    runs-on: "${{ vars.CI_MAC_RUNNER_MORE != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.CI_MAC_RUNNER_MORE || 'xcode-27' }}"
+    runs-on: "${{ vars.CI_MAC_RUNNER_MORE != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner && vars.CI_MAC_RUNNER_MORE || 'xcode-27' }}"
     timeout-minutes: 30
     env:
       # Named, not the image's default (27.1 when this was written), so that the image moving on changes nothing here.
