@@ -201,6 +201,7 @@ func run(pictures: URL?) async {
     let net = listener.origin
 
     await paths()
+    await presentationTexts()
     await drawsItsOwnPage(pictures: pictures)
     await blankPage()
     await outsideTheManifest()

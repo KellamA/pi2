@@ -129,6 +129,14 @@ struct PresentationWindow: View {
             dismiss()
         }
         .onDisappear { model.close() }
+        #if PI2_DEVELOPMENT
+        .background { if PresentationLaunch.smallest { SmallestWindow() } }
+        .task(id: model.pageView != nil) {
+            guard PresentationLaunch.networkAlert, model.pageView != nil, !model.networkAllowed else { return }
+            try? await Task.sleep(for: .seconds(1))
+            askingNetwork = true
+        }
+        #endif
         .alert("Allow network for this page?", isPresented: $askingNetwork) {
             Button("Allow Network") { Task { await model.setNetwork(true) } }
             Button("Cancel", role: .cancel) {}
@@ -201,41 +209,98 @@ struct PresentationWindow: View {
 }
 
 /// The bar along the top: whose it is, which version, and the stage's controls. Drawn by pi², above the page's area.
-private struct PresentationBar: View {
+///
+/// pi²'s own statements (the version, where the picture or page came from, the network's state) and the strip's button
+/// are never cut or pushed out: each is drawn at its own size, with priority. As the window narrows, what gives way, in
+/// this order: the names chip, cut in its middle, down to the agent's badge alone (the names then in its tooltip); then
+/// the page's widths, or a picture's zoom and background controls, folding into one menu button. The window's
+/// smallest width (`minimumWidth`) is what fits all of pi²'s own parts with both given way, measured by the bar check
+/// (`PresentationBarCheck`, a development build's `PI2_SHOW=presentation:bar-check`).
+struct PresentationBar: View {
     let model: PresentationWindowModel
     let agent: AgentProfile?
     let names: PresentationNames
     let askNetwork: () -> Void
+    /// Where a bar check is told where each of pi²'s own parts was laid out.
+    var report: PresentationBarReport?
 
-    /// pi²'s own statements are at the bar's ends and in its middle, in their own places and style: the version in the
-    /// middle, and at the right where the picture or page came from and whether the page may reach the network. Every
-    /// name someone else chose is together at the left, drawn as names: in a chip of their own, in the secondary
-    /// colour, each cut in its middle at a stated length. No name stands beside or between pi²'s statements.
+    /// The window's smallest width, at which the bar still fits all of pi²'s own parts.
+    static let minimumWidth: CGFloat = 760
+    static let spacing: CGFloat = 10
+    static let padding: CGFloat = 12
+    static let spacer: CGFloat = 8
+    /// The chip with the agent's badge alone, and the least room in which its names are still worth drawing.
+    static let badgeWidth: CGFloat = 26
+    static let namesWidth: CGFloat = 150
+
+    @State private var barWidth: CGFloat = 0
+    @State private var versionWidth: CGFloat = 0
+    @State private var fullWidth: CGFloat = 0
+    @State private var foldedWidth: CGFloat = 0
+
+    /// The room left for the names chip beside pi²'s own parts and the tools, folded or not.
+    private func chipRoom(rightWidth: CGFloat) -> CGFloat {
+        barWidth - 2 * Self.padding - versionWidth - rightWidth - 2 * Self.spacer - 4 * Self.spacing
+    }
+
+    /// The tools fold once the chip, at its badge alone, would not fit beside them.
+    private var folded: Bool { barWidth > 0 && chipRoom(rightWidth: fullWidth) < Self.badgeWidth }
+    private var namesShown: Bool { barWidth == 0 || chipRoom(rightWidth: folded ? foldedWidth : fullWidth) >= Self.namesWidth }
+
     var body: some View {
-        HStack(spacing: 10) {
-            PresentationNamesChip(agent: agent, names: names)
+        HStack(spacing: Self.spacing) {
+            PresentationNamesChip(agent: agent, names: names, namesShown: namesShown)
+                .frame(minWidth: Self.badgeWidth, alignment: .leading)
                 .layoutPriority(-1)
-            Spacer(minLength: 8)
+                .reportFrame("names", to: report)
+            Spacer(minLength: Self.spacer)
             versions
-            Spacer(minLength: 8)
-            tools
-            statement
+                .layoutPriority(1)
+                .reportFrame("version", to: report)
+            Spacer(minLength: Self.spacer)
+            right(folded: folded, report: report)
+                .fixedSize()
+                .layoutPriority(1)
+        }
+        .font(.system(size: 12.5))
+        .padding(.horizontal, Self.padding)
+        .frame(height: 44)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { barWidth = $0; report?.barWidth = $0 }
+        // The parts measured at their own sizes, unseen, for deciding what gives way.
+        .background {
+            ZStack {
+                versions.fixedSize().onGeometryChange(for: CGFloat.self) { $0.size.width } action: { versionWidth = $0 }
+                right(folded: false, report: nil).fixedSize().onGeometryChange(for: CGFloat.self) { $0.size.width } action: { fullWidth = $0 }
+                right(folded: true, report: nil).fixedSize().onGeometryChange(for: CGFloat.self) { $0.size.width } action: { foldedWidth = $0 }
+            }
+            .hidden()
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+        .clipped()
+        .background(Theme.panel)
+        .overlay(alignment: .bottom) { Rectangle().fill(Theme.line2).frame(height: 1) }
+        .onChange(of: folded, initial: true) { _, folded in report?.folded = folded }
+        .onChange(of: namesShown, initial: true) { _, shown in report?.namesShown = shown }
+    }
+
+    /// The tools, pi²'s statement and the strip's button.
+    private func right(folded: Bool, report: PresentationBarReport?) -> some View {
+        HStack(spacing: Self.spacing) {
+            tools(folded: folded)
+            statement(report: report)
             Button { model.stripShown.toggle() } label: { Image(systemName: "rectangle.bottomthird.inset.filled") }
                 .buttonStyle(BarButtonStyle(on: model.stripShown))
                 .help(model.stripShown ? "Hide the strip of items (⌥⌘S)" : "Show the strip of items (⌥⌘S)")
                 .accessibilityLabel(model.stripShown ? "Hide the strip" : "Show the strip")
+                .fixedSize()
+                .reportFrame("strip", to: report)
         }
-        .font(.system(size: 12.5))
-        .padding(.horizontal, 12)
-        .frame(height: 44)
-        .clipped()
-        .background(Theme.panel)
-        .overlay(alignment: .bottom) { Rectangle().fill(Theme.line2).frame(height: 1) }
     }
 
     /// Where it came from, and for a page its network: pi²'s own words, with no name in them.
     @ViewBuilder
-    private var statement: some View {
+    private func statement(report: PresentationBarReport?) -> some View {
         if let current = model.current {
             HStack(spacing: 8) {
                 Divider().frame(height: 20)
@@ -246,7 +311,12 @@ private struct PresentationBar: View {
                     .foregroundStyle(Theme.tx)
                     .lineLimit(1)
                     .fixedSize()
-                if current.kind == .page { network }
+                    .reportFrame("whose", to: report)
+                if current.kind == .page {
+                    network
+                        .fixedSize()
+                        .reportFrame("network", to: report)
+                }
             }
         }
     }
@@ -273,17 +343,32 @@ private struct PresentationBar: View {
     }
 
     @ViewBuilder
-    private var tools: some View {
+    private func tools(folded: Bool) -> some View {
         if model.current?.kind == .page {
-            pageTools
+            pageTools(folded: folded)
         } else if model.current?.kind == .picture {
-            pictureTools
+            if folded { pictureMenu } else { pictureTools }
         }
     }
 
-    private var pageTools: some View {
+    private func pageTools(folded: Bool) -> some View {
         HStack(spacing: 6) {
-            Segmented(choices: PageWidth.allCases, chosen: model.width, label: widthLabel, help: widthHelp) { model.width = $0 }
+            if folded {
+                Menu {
+                    Picker("Width", selection: Binding(get: { model.width }, set: { model.width = $0 })) {
+                        ForEach(PageWidth.allCases, id: \.self) { width in Text(verbatim: width.points.map { "\(width.rawValue), \(Int($0)) points" } ?? "Fit the window").tag(width) }
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    Text(verbatim: model.width.rawValue).font(.system(size: 12))
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.visible)
+                .fixedSize()
+                .help("The width the page is drawn at")
+            } else {
+                Segmented(choices: PageWidth.allCases, chosen: model.width, label: widthLabel, help: widthHelp) { model.width = $0 }
+            }
             Button { model.reloadPage() } label: { Image(systemName: "arrow.clockwise") }
                 .buttonStyle(BarButtonStyle())
                 .help("Draw the page again from its copy (⌘R)")
@@ -307,6 +392,28 @@ private struct PresentationBar: View {
                 .buttonStyle(BarButtonStyle()).help("Zoom in (⌘+)").accessibilityLabel("Zoom in")
             Segmented(choices: PictureBackground.allCases, chosen: model.background, label: backgroundLabel, help: backgroundHelp) { model.background = $0 }
         }
+    }
+
+    /// The zoom and background controls folded into one menu, for a narrow window.
+    private var pictureMenu: some View {
+        Menu {
+            Button("Fit (⌘0)") { model.zoom = .fit }
+            Button("Actual Size (⌘1)") { model.zoom = .actual }
+            Button("Zoom In (⌘+)") { model.zoom = .scale(model.magnification * 1.25) }
+            Button("Zoom Out (⌘−)") { model.zoom = .scale(model.magnification / 1.25) }
+            Divider()
+            Picker("Background", selection: Binding(get: { model.background }, set: { model.background = $0 })) {
+                ForEach(PictureBackground.allCases, id: \.self) { background in Text(verbatim: background.rawValue.capitalized).tag(background) }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Image(systemName: "slider.horizontal.3")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.visible)
+        .fixedSize()
+        .help("Zoom and background")
+        .accessibilityLabel("Zoom and background")
     }
 
     private func zoomLabel(_ zoom: PictureZoom) -> Text { Text(verbatim: zoom == .fit ? "Fit" : "100%") }
@@ -356,37 +463,61 @@ struct PresentationNames: Equatable {
 }
 
 /// The names someone else chose, together, drawn as names: the agent's avatar, then its name, the conversation's and the
-/// project's, each in the secondary colour and cut in its middle, in a chip of their own.
+/// project's, each in the secondary colour and cut in its middle, in a chip of their own. The separators between them
+/// are pi²'s own, a small chevron drawn as an image, which no name can contain. With too little room it is the agent's
+/// badge alone, and the names are in its tooltip.
 private struct PresentationNamesChip: View {
     let agent: AgentProfile?
     let names: PresentationNames
+    let namesShown: Bool
 
     var body: some View {
         HStack(spacing: 6) {
             AgentAvatar(agent: agent, size: 18)
-            // Each already cut to its own length; with too little room, the conversation's gives way first.
-            name(names.agent).layoutPriority(2)
-            separator
-            name(names.conversation)
-            if let project = names.project {
+            if namesShown {
+                // Each already cut to its own length; with too little room, the conversation's gives way first.
+                name(names.agent).layoutPriority(2)
                 separator
-                name(project)
+                name(names.conversation)
+                if let project = names.project {
+                    separator
+                    name(project)
+                }
             }
         }
         .font(.system(size: 12))
-        .padding(.leading, 3).padding(.trailing, 9).padding(.vertical, 3)
+        .padding(.leading, 3).padding(.trailing, namesShown ? 9 : 3).padding(.vertical, 3)
         .background(RoundedRectangle(cornerRadius: 8).fill(Theme.card))
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .accessibilityElement(children: .combine)
-        .help("Who presented it, in which conversation and project")
+        .help([names.agent, names.conversation, names.project].compactMap { $0 }.joined(separator: " › "))
     }
 
     private var separator: some View {
-        Text(verbatim: "/").foregroundStyle(Theme.tx3)
+        Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold)).foregroundStyle(Theme.tx3)
+            .accessibilityHidden(true)
     }
 
     private func name(_ text: String) -> some View {
         Text(verbatim: text).foregroundStyle(Theme.tx2).lineLimit(1).truncationMode(.middle)
+    }
+}
+
+/// Where each of pi²'s own parts of a bar was laid out, in its window's space, for the bar check.
+@MainActor
+final class PresentationBarReport {
+    var barWidth: CGFloat = 0
+    var frames: [String: CGRect] = [:]
+    var folded = false
+    var namesShown = true
+}
+
+private extension View {
+    func reportFrame(_ name: String, to report: PresentationBarReport?) -> some View {
+        // In the window's own space: a bar wider than its window would still hold all its parts in its own.
+        onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+            report?.frames[name] = frame
+        }
     }
 }
 
@@ -656,6 +787,11 @@ struct PresentationWindowOpener: View {
             }
             #if PI2_DEVELOPMENT
             .task(id: engine.hasLoadedLibrary) {
+                guard engine.hasLoadedLibrary, PresentationBarCheck.asked else { return }
+                try? await Task.sleep(for: .seconds(1))
+                await PresentationBarCheck.run(home: engine.dataFolder) { engine.note($0) }
+            }
+            .task(id: engine.hasLoadedLibrary) {
                 guard engine.hasLoadedLibrary, let asked = PresentationLaunch.take() else { return }
                 try? await Task.sleep(for: .seconds(1))
                 PresentationWindows.shared.show(asked.ref, version: asked.version, item: asked.item)
@@ -663,3 +799,25 @@ struct PresentationWindowOpener: View {
             #endif
     }
 }
+
+#if PI2_DEVELOPMENT
+/// Puts its window at its smallest size once, for `PI2_SHOW=presentation:…@min`.
+private struct SmallestWindow: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { Sizer() }
+    func updateNSView(_ view: NSView, context: Context) {}
+
+    final class Sizer: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                MainActor.assumeIsolated {
+                    let top = NSPoint(x: window.frame.minX, y: window.frame.maxY)
+                    window.setContentSize(NSSize(width: PresentationBar.minimumWidth, height: 460))
+                    window.setFrameTopLeftPoint(top)
+                }
+            }
+        }
+    }
+}
+#endif

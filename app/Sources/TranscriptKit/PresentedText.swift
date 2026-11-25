@@ -8,7 +8,7 @@ import Foundation
 ///
 /// - line breaks of every kind (`\n`, `\r`, U+2028, U+2029, U+0085) and tabs become spaces, so a title cannot add a line
 ///   that looks like the bar's ("Version 3 of 3 · network off");
-/// - every control character (C0, DEL, C1) and every format character goes: the bidirectional embeddings, overrides,
+/// - every control character (C0, DEL, C1) and every format character goes, but a zero-width joiner between two emoji: the bidirectional embeddings, overrides,
 ///   isolates and marks that turn the words after them around ("fdp.exe" read as "exe.pdf"), zero-width spaces and
 ///   joiners, the soft hyphen, invisible operators, tag characters, the interlinear annotation marks;
 /// - variation selectors, private-use characters, the object replacement character and the Hangul fillers go, which draw
@@ -20,25 +20,25 @@ import Foundation
 /// A name (`name`) also loses every kind of quotation mark, a single one becoming a plain apostrophe, so that no name can
 /// open or close quotation marks of the window's own. What is left of a script written right to left is still drawn right
 /// to left, in its own text view, so it reads as its writer meant and cannot reach the text beside it.
-enum PresentationText {
+public enum PresentationText {
     /// The longest each kind of text is drawn: the engine bounds a title to 120 and a caption to 400 already.
-    static let title = 120
-    static let label = 40
-    static let caption = 400
-    static let conversation = 60
-    static let project = 40
-    static let agent = 30
-    static let address = 80
+    public static let title = 120
+    public static let label = 40
+    public static let caption = 400
+    public static let conversation = 60
+    public static let project = 40
+    public static let agent = 30
+    public static let address = 80
 
     /// The most combining marks kept on one character.
-    static let marks = 2
+    public static let marks = 2
 
-    static func plain(_ text: String?, limit: Int) -> String {
+    public static func plain(_ text: String?, limit: Int) -> String {
         clean(text, limit: limit, quotes: false)
     }
 
     /// A name someone chose: plain, and with no quotation marks.
-    static func name(_ text: String?, limit: Int) -> String {
+    public static func name(_ text: String?, limit: Int) -> String {
         clean(text, limit: limit, quotes: true)
     }
 
@@ -47,11 +47,20 @@ enum PresentationText {
         var out = String.UnicodeScalarView()
         var lastWasSpace = true
         var stacked = 0
-        for scalar in text.unicodeScalars {
+        let scalars = Array(text.unicodeScalars)
+        for (index, scalar) in scalars.enumerated() {
             if breaks.contains(scalar.value) || scalar.properties.isWhitespace {
                 if !lastWasSpace { out.append(" ") }
                 lastWasSpace = true
                 stacked = 0
+                continue
+            }
+            // A zero-width joiner is kept between two emoji alone, so that a joined emoji (👩‍💻) stays one; anywhere else
+            // it is one of the format characters that go.
+            if scalar.value == 0x200D {
+                if let before = out.last, isEmoji(before), let after = scalars[(index + 1)...].first(where: { !removed($0) }), isEmoji(after) {
+                    out.append(scalar)
+                }
                 continue
             }
             if removed(scalar) { continue }
@@ -91,6 +100,11 @@ enum PresentationText {
         case 0x180B...0x180F: return true // Mongolian free variation selectors and vowel separator
         default: return false
         }
+    }
+
+    /// An emoji by its Unicode property, beyond ASCII (where the digits, `#` and `*` are emoji too).
+    private static func isEmoji(_ scalar: Unicode.Scalar) -> Bool {
+        scalar.value > 0x7F && scalar.properties.isEmoji
     }
 
     private static func isMark(_ scalar: Unicode.Scalar) -> Bool {

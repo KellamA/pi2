@@ -393,7 +393,7 @@ struct Pi2App: App {
                     Text("No presentation was chosen.").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            .windowMinimum(width: 760, height: 460) { model.engine.note($0) }
+            .windowMinimum(width: PresentationBar.minimumWidth, height: 460) { model.engine.note($0) }
             .tint(.piAccent)
             .launchWindow()
         }

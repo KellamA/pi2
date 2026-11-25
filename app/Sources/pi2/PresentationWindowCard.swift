@@ -1,5 +1,6 @@
 import AppKit
 import PiModels
+import TranscriptKit
 import SwiftUI
 
 /// The pictures of a `present` question on its card under Needs you (docs/design/presenting.md, "Picking"): each item of

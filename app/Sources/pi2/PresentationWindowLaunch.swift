@@ -1,6 +1,7 @@
 #if PI2_DEVELOPMENT
 import AppKit
 import PiModels
+import SwiftUI
 import TranscriptKit
 
 /// The presentation window a development build was asked to open, in `PI2_SHOW` (docs/development.md, "Choosing what a
@@ -17,10 +18,16 @@ enum PresentationLaunch {
     }
 
     static let asked: Asked? = parse(ProcessInfo.processInfo.environment["PI2_SHOW"])
+    /// `@min` after the value: the window opens at its smallest size, for picturing the bar at its narrowest.
+    static let smallest = ProcessInfo.processInfo.environment["PI2_SHOW"]?.hasSuffix("@min") == true
+    /// `@network-alert` after the value: the window puts up "Allow network for this page?" once it has its page, for
+    /// picturing the alert's words.
+    static let networkAlert = ProcessInfo.processInfo.environment["PI2_SHOW"]?.hasSuffix("@network-alert") == true
     private static var taken = false
 
     static func parse(_ value: String?) -> Asked? {
-        guard let value, value.hasPrefix("presentation:") else { return nil }
+        guard var value, value.hasPrefix("presentation:") else { return nil }
+        for suffix in ["@min", "@network-alert"] where value.hasSuffix(suffix) { value.removeLast(suffix.count) }
         let parts = value.dropFirst("presentation:".count).split(separator: ":", omittingEmptySubsequences: false).map(String.init)
         if parts.first == PresentationFixture.conversation {
             return Asked(ref: PresentationRef(conversationId: PresentationFixture.conversation, presentation: "p1"),
@@ -50,6 +57,9 @@ enum PresentationFixture {
     static let projectName = "Drawn from pi²'s own files · Network off"
 
     private static var network: [Int: Bool] = [:]
+
+    /// The person's switch for a version of the fixture, as the engine's record would have it.
+    static func allowNetwork(_ version: Int, _ allow: Bool) { network[version] = allow }
     private static var listeners: [AsyncStream<PresentationRecord>.Continuation] = []
 
     static var feed: PresentationFeed {
@@ -130,6 +140,88 @@ enum PresentationFixture {
         <p><button onclick="alert('Approve?')">An alert</button>, answered without anything shown.</p></main>
         </body></html>
         """.utf8)
+}
+
+/// Lays the bar out at the window's smallest width in each state (`PI2_SHOW=presentation:bar-check`, a development build
+/// only), and at its default width, and says whether every one of pi²'s own parts (the version, whose files or picture,
+/// the network's state, the strip's button) lies wholly inside the bar: `presentation-bar-check.txt` in the data folder,
+/// with a picture of each bar beside it (`presentation-bar-<state>.png`) and a line in app.log. Each bar is drawn in a
+/// window that is never shown, from the fixture's presentation, with its long names.
+@MainActor
+enum PresentationBarCheck {
+    static let asked = ProcessInfo.processInfo.environment["PI2_SHOW"] == "presentation:bar-check"
+
+    struct State {
+        let name: String
+        let version: Int
+        let item: Int
+        let network: Bool
+    }
+
+    static let states = [
+        State(name: "page-network-on", version: 4, item: 0, network: true),
+        State(name: "page-network-off", version: 4, item: 0, network: false),
+        State(name: "picture", version: 3, item: 0, network: false),
+        State(name: "older-version-picture", version: 1, item: 1, network: false),
+    ]
+
+    static func run(home: URL, note: (String) -> Void) async {
+        var lines: [String] = []
+        var failures = 0
+        let names = PresentationNames(agent: PresentationText.name(PresentationFixture.agent, limit: PresentationText.agent),
+                                      conversation: PresentationText.name(PresentationFixture.conversationTitle, limit: PresentationText.conversation),
+                                      project: PresentationText.name(PresentationFixture.projectName, limit: PresentationText.project))
+        for width in [PresentationBar.minimumWidth, 1180] {
+            for state in states {
+                PresentationFixture.allowNetwork(state.version, state.network)
+                let model = PresentationWindowModel(ref: PresentationRef(conversationId: PresentationFixture.conversation, presentation: "p1"), feed: PresentationFixture.feed)
+                await model.reload(asked: PresentationWindows.Shown(version: state.version, item: state.item, at: Date()))
+                let report = PresentationBarReport()
+                let host = NSHostingView(rootView: PresentationBar(model: model, agent: nil, names: names, askNetwork: {}, report: report).tint(.piAccent))
+                let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: width, height: 44), styleMask: [.borderless], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                window.contentView = host
+                host.frame = NSRect(x: 0, y: 0, width: width, height: 44)
+                // A few passes: the bar decides what gives way from what it measured in the pass before.
+                for _ in 0..<12 {
+                    host.layoutSubtreeIfNeeded()
+                    try? await Task.sleep(for: .milliseconds(60))
+                }
+                var problems: [String] = []
+                let own = model.current?.kind == .page ? ["version", "whose", "network", "strip"] : ["version", "whose", "strip"]
+                for part in own {
+                    guard let frame = report.frames[part] else {
+                        problems.append("\(part) was not laid out")
+                        continue
+                    }
+                    // Inside the window, which is as wide as the bar is given: a bar that grew wider than that has parts
+                    // outside it.
+                    if frame.minX < -0.5 || frame.maxX > width + 0.5 || frame.width < 1 {
+                        problems.append("\(part) at \(Int(frame.minX))–\(Int(frame.maxX)) is not inside the window's \(Int(width))")
+                    }
+                }
+                if report.barWidth > width + 0.5 { problems.append("the bar is \(Int(report.barWidth)) wide, wider than the window's \(Int(width))") }
+                if let chip = report.frames["names"], chip.minX < -0.5 || chip.width < PresentationBar.badgeWidth - 0.5 {
+                    problems.append("the names chip is \(Int(chip.width)) wide, less than the agent's badge")
+                }
+                if width > PresentationBar.minimumWidth, report.folded { problems.append("the tools are folded at \(Int(width))") }
+                failures += problems.isEmpty ? 0 : 1
+                let parts = own.compactMap { part in report.frames[part].map { "\(part) \(Int($0.minX))–\(Int($0.maxX))" } }.joined(separator: ", ")
+                lines.append("\(problems.isEmpty ? "ok  " : "FAIL") \(state.name) at \(Int(width)): \(parts); tools \(report.folded ? "folded" : "shown"), names \(report.namesShown ? "shown" : "the badge alone")"
+                             + (problems.isEmpty ? "" : "\n     " + problems.joined(separator: "; ")))
+                if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                    host.cacheDisplay(in: host.bounds, to: rep)
+                    try? rep.representation(using: .png, properties: [:])?.write(to: home.appendingPathComponent("presentation-bar-\(state.name)-\(Int(width)).png"))
+                }
+                window.contentView = nil
+                window.close()
+                model.close()
+            }
+        }
+        lines.append(failures == 0 ? "all fit" : "\(failures) did not fit")
+        try? (lines.joined(separator: "\n") + "\n").write(to: home.appendingPathComponent("presentation-bar-check.txt"), atomically: true, encoding: .utf8)
+        note("presentation bar check: \(failures == 0 ? "all fit" : "\(failures) did not fit")")
+    }
 }
 
 /// The fixture page's one file, from memory.
