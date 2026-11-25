@@ -231,7 +231,15 @@ try {
 	const { id: a } = await client.call("conversation.create");
 	await client.call("conversation.open", { id: a });
 	const firstSubmission = await client.call("submit", { id: a, text: "hello there", requestId: "r1" });
+	// The same message sent again with its request id while it is answered, and once more after, as a client sends it
+	// when its connection dropped before the copy that arrived was counted (a phone's channel cut mid-line, #939): the
+	// submission it already has, and no second message.
+	const sentAgain = await client.call("submit", { id: a, text: "hello there", requestId: "r1" });
+	assert.equal(sentAgain.submissionId, firstSubmission.submissionId, "sent again while answered: the same submission");
 	let conv = await client.idle(a);
+	const sentLate = await client.call("submit", { id: a, text: "hello there", requestId: "r1" });
+	assert.equal(sentLate.submissionId, firstSubmission.submissionId, "sent again once answered: the same submission");
+	conv = await client.idle(a);
 	assert.deepEqual(conv.items.map((i) => i.kind), ["user", "assistant"]);
 	assert.ok(conv.items[1]!.text.endsWith("Done."));
 	assert.equal(client.library.find((c) => c.id === a)?.title, "hello there");
@@ -241,7 +249,7 @@ try {
 	assert.equal(firstOutcome.busy, false);
 	await assert.rejects(client.call("submission.get", { id: a, submissionId: "bad" }), /must be a number/);
 	await assert.rejects(client.call("submission.get", { id: a, submissionId: 99999999 }), /No such submission/);
-	step("create, submit, streamed answer, automatic title, exact submission outcome");
+	step("create, submit, streamed answer, automatic title, exact submission outcome; the same request id sent again is taken once");
 
 	// ---- Tool access: off by default
 	await client.call("submit", { id: a, text: "/bash echo should-not-run" });

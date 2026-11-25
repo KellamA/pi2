@@ -58,12 +58,20 @@ struct PullRequestView: View {
         }
         .navigationTitle(file.map { PullRequestDiff.File.name(of: $0) } ?? "#\(number)")
         .navigationBarTitleDisplayMode(.inline)
-        .task(id: source.readsDiff) {
+        .task(id: DiffRead(reads: source.readsDiff, live: PullRequestSource.live(session.connection))) {
             // The page lists the files, so it reads the diff each time it opens (a push changes it); a file's page reads it
-            // only if nothing has.
-            guard source.readsDiff else { return }
+            // only if nothing has. Only on the channel: the app opens on the store's last state while it reaches for the
+            // Mac, whose cache refuses every read, and a page opened then reads it once the Mac answers.
+            guard source.readsDiff, PullRequestSource.live(session.connection) else { return }
             PullRequestStore.shared.readDiff(source.key, through: session.engine, again: file == nil)
+            // A closed one is listed without its checks and findings: asked for whole, as the Mac asks, on its page.
+            if source.readsWhole, file == nil { PullRequestStore.shared.readWhole(source.key, through: session.engine) }
         }
+    }
+
+    private struct DiffRead: Equatable {
+        let reads: Bool
+        let live: Bool
     }
 }
 
@@ -122,6 +130,23 @@ struct PullRequestSource {
         } else {
             state = .notListed(name, trouble: listing?.troubleWords())
         }
+    }
+
+    /// Whether a request reaches the Mac now: on the channel, or in the demo mode, which answers. Out of reach, or while
+    /// the app shows the store's last state as it reaches for the Mac, the cache refuses every read and write, so the
+    /// screens send nothing and say they wait.
+    static func live(_ connection: AppSession.Connection) -> Bool {
+        switch connection {
+        case .connected, .demo: true
+        case .notPaired, .connecting, .outOfReach: false
+        }
+    }
+
+    /// Whether the pull request is to be read whole (`github.show`): one the listing holds without its checks and
+    /// findings, as it holds a closed one. A sample's is not asked for.
+    var readsWhole: Bool {
+        guard !sample, case .listed(let pull, _) = state else { return false }
+        return pull.partial
     }
 
     /// Whether the diff is to be read: only for a pull request the Mac lists, and never for a sample's own diff.

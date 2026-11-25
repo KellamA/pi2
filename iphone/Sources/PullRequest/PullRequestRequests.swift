@@ -22,6 +22,15 @@ struct PullRequestRequest: Equatable {
         PullRequestRequest(method: "github.diff", params: ["projectId": .string(project), "number": .number(Double(number))])
     }
 
+    /// Reads it whole into the listing (`ProjectWorkGitHub.fill`): a closed pull request is listed without its checks
+    /// and findings. 4.2 does not name it, so an engine refuses it from a phone today (`answers.ts` lists it as the
+    /// Mac's alone, "not named"); the screen says so where the checks would be, with the engine's words.
+    static func show(project: String, number: Int) -> PullRequestRequest {
+        PullRequestRequest(method: "github.show", params: [
+            "projectId": .string(project), "number": .number(Double(number)), "pull": .bool(true),
+        ])
+    }
+
     /// Merges it into its base (`ProjectWorkGitHub.merge`), past the merge question.
     static func merge(project: String, number: Int) -> PullRequestRequest {
         PullRequestRequest(method: "github.merge", params: ["projectId": .string(project), "number": .number(Double(number))])
