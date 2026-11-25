@@ -22,16 +22,34 @@ public final class PresentedProcesses {
         self.most = most
     }
 
+    /// The processes that did not end when asked, by their number where WebKit gave one: looked at again before a place
+    /// is refused, and their places given back once they have gone.
+    private var stuckProcesses: [pid_t?] = []
+
     /// A place for one page's process, if one is free.
     public func take() -> Place? {
+        if taken >= most { lookAgain() }
         guard taken < most else { return nil }
         taken += 1
         return Place(owner: self)
     }
 
-    /// What is said when no place is free.
+    /// Gives back the places of stuck processes that have gone since.
+    public func lookAgain() {
+        stuckProcesses.removeAll { number in
+            guard let pid = PresentedPageView.signallable(number), Darwin.kill(pid, 0) != 0, errno == ESRCH else { return false }
+            taken -= 1
+            stuck -= 1
+            return true
+        }
+    }
+
+    /// What is said when no place is free: what helps depends on what holds the places. Closing a window frees its
+    /// place; a process that did not end is freed only when it goes, which quitting pi² makes sure of.
     public var refusal: String {
-        "pi² already has \(most) pages drawn or open\(stuck > 0 ? ", \(stuck) of whose processes did not end" : ""); close a presentation's window and try again"
+        if stuck == 0 { return "pi² already has \(most) pages drawn or open; close a presentation's window and try again" }
+        if stuck >= taken { return "the processes of \(stuck) pages pi² drew did not end when asked; quit pi² and open it again to end them" }
+        return "pi² already has \(most) pages drawn or open, and the processes of \(stuck) of them did not end when asked; close a presentation's window, or quit pi² and open it again"
     }
 
     /// One page's place. `end` ends its view's process and gives the place back once the process is gone; a place whose
@@ -49,8 +67,9 @@ public final class PresentedProcesses {
         /// taken, counted as stuck. Says whether it went.
         @discardableResult
         public func end(_ view: PresentedPageView) async -> Bool {
+            let number = PresentedPageView.processIdentifier(of: view)
             let gone = await view.end()
-            if gone { release() } else { markStuck() }
+            if gone { release() } else { markStuck(number) }
             return gone
         }
 
@@ -61,10 +80,13 @@ public final class PresentedProcesses {
             owner?.taken -= 1
         }
 
-        private func markStuck() {
+        /// Keeps the place as held by a process that did not end when asked, by its number if known: as `end` does
+        /// when the view's process is not seen to go.
+        public func markStuck(_ number: pid_t?) {
             guard held else { return }
             held = false
             owner?.stuck += 1
+            owner?.stuckProcesses.append(number)
         }
     }
 }

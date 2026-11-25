@@ -163,25 +163,30 @@ public final class PresentedPageView: WKWebView, WKNavigationDelegate, WKUIDeleg
     public func end(wait: Duration = .seconds(5)) async -> Bool {
         isEnding = true
         close()
-        let pid = Self.processIdentifier(of: self)
-        // No process (none was started, or it has ended already): nothing to end.
-        if pid == 0 { return true }
+        let given = Self.processIdentifier(of: self)
+        let pid = Self.signallable(given)
         var told = false
         processGone = { told = true }
         defer { processGone = nil }
+        // WebKit is asked first, whatever number it gives: a process still being started reads as 0.
         let kill = NSSelectorFromString("_killWebContentProcessAndResetState")
         if responds(to: kill) {
             perform(kill)
         } else if let pid {
             Darwin.kill(pid, SIGKILL)
         } else {
-            return false
+            // Nothing can end it: gone only if WebKit says there is no process.
+            return given == 0
         }
         let until = ContinuousClock.now + wait
         while ContinuousClock.now < until {
+            // By its number where it has one: WebKit says it has ended as it asks it to, before it is gone.
             if let pid {
                 if Darwin.kill(pid, 0) != 0 && errno == ESRCH { return true }
             } else if told {
+                return true
+            } else if given == 0, Self.processIdentifier(of: self) == 0 {
+                // There was none to number, and there is none now.
                 return true
             }
             try? await Task.sleep(for: .milliseconds(20))
@@ -194,6 +199,14 @@ public final class PresentedPageView: WKWebView, WKNavigationDelegate, WKUIDeleg
         guard view.responds(to: NSSelectorFromString("_webProcessIdentifier")),
               let number = view.value(forKey: "_webProcessIdentifier") as? NSNumber else { return nil }
         return number.int32Value
+    }
+
+    /// A number WebKit gave as its process's id, if it may be signalled.
+    /// A number of 0 or below names no single process (a negative one is a group, -1 every process of the person's), 1
+    /// is launchd, and this process's own would end pi²: each is taken as WebKit not saying.
+    public static func signallable(_ number: pid_t?) -> pid_t? {
+        guard let number, number > 1, number != getpid() else { return nil }
+        return number
     }
 
     /// Whether an address is this page's own: its scheme and its origin.
