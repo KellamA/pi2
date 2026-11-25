@@ -72,7 +72,7 @@ Usage: scripts/test-copy <command> [arguments]
   reopen <suffix> [--show <what>] [--hub <fold>] [--appearance light|dark]
                                    Replace and launch the app from the latest development build in this checkout.
                                    Keep its engine, data, environment and previous --show, --hub and --appearance unless
-                                   replaced.
+                                   replaced, and the pi² Remote its engine started (--remote).
   show <suffix> <what>             Show what PI2_SHOW opens on while the copy runs: activity, usage, archive,
                                    agent:<id>[#<section>] (a template's page), chat[:<number or title>],
                                    palette[:<query>], settings[:<tab>[#<section>]], output:<id>, a conversation's
@@ -131,7 +131,7 @@ Usage: scripts/test-copy <command> [arguments]
                                    Read the answer of a submission that was still running when send\'s wait ended, with
                                    the same JSON, statuses, exit codes and limit. Submits nothing, answers nothing and
                                    stops nothing.
-  stop <suffix>                    Stop the copy's app, then its engine, by the pids recorded at start, and remove the
+  stop <suffix>                    Stop the copy's app, then its engine and its pi² Remote, by their pids, and remove the
                                    copy, its data folder, preferences, Keychain items, Launch Services registration
                                    and the files its browser leaves.
   status [<suffix>]                What is recorded for a copy and whether it runs; without a suffix, every copy this
@@ -433,13 +433,17 @@ stop_copy() {
 	load_state || true
 	follow_engine
 	# The app first, and everything else running from the copy's bundle (which can only be the copy's own), so that
-	# nothing is left to start a new engine when this one goes.
+	# nothing is left to start a new engine when this one goes. The copy's pi² Remote goes after its engine, which
+	# would start it again a second after it went (#944).
 	stop_process app "$APP_PID" "$APP_START" "$APP_EXE"
 	local pid left
-	for pid in $(from_bundle); do
+	for pid in $(from_bundle_but_helper); do
 		stop_process "process from the copy's bundle" "$pid" "$(started_at "$pid")" "$(executable "$pid")"
 	done
 	stop_process engine "$ENGINE_PID" "$ENGINE_START" "$ENGINE_EXE"
+	for pid in $(from_bundle); do
+		stop_process "process from the copy's bundle" "$pid" "$(started_at "$pid")" "$(executable "$pid")"
+	done
 	left=$(from_bundle | tr '\n' ' ')
 	[[ -z $left ]] || die "processes are still running from the copy's bundle ($left); nothing was removed"
 	left=$(engine_on_data)
@@ -657,8 +661,12 @@ launch_app() {
 		PATH=/usr/bin:/bin:/usr/sbin:/sbin /usr/bin/open -n -g "$APP" "${vars[@]}" || die "could not open the copy's app"
 
 	waited=0
+	local pid
 	while [[ -z $APP_PID ]]; do
-		APP_PID=$(from_bundle | head -n 1 || true)
+		# The app by its executable: at reopen, the copy's pi² Remote runs from the bundle too (#944).
+		for pid in $(from_bundle); do
+			[[ $(executable "$pid") == "$APP/Contents/MacOS/pi2" ]] && { APP_PID=$pid; break; }
+		done
 		((waited < START_LIMIT * 2)) || die "the copy did not start within $START_LIMIT seconds"
 		[[ -n $APP_PID ]] || { sleep 0.5; waited=$((waited + 1)); }
 	done
@@ -694,6 +702,27 @@ remote_on() {
 	out=$(engine_call devices.set "{\"on\":true,\"preview\":true,\"home\":true,\"direct\":false,\"relay\":false,\"relayAddress\":\"$REMOTE_RELAY\"}")
 	[[ $(from_json 'r.remote.on && r.remote.preview && r.remote.home && !r.remote.direct && !r.remote.relay && r.relay' <<<"$out") == "$REMOTE_RELAY" ]] ||
 		die "the copy's engine did not turn remote access on as asked: $out"
+}
+
+# Whether pid $1 is the copy's own pi² Remote (#944): run from the helper in this copy's bundle, the paths compared
+# resolved, and a child of the copy's recorded engine, which starts it while a device is paired or a pairing is open
+# (docs/pi2-remote.md). reopen keeps it with its engine, and stop stops it after the engine, which would start it
+# again. Anything else from the bundle is not it.
+own_helper() {
+	local pid=$1 exe
+	[[ -n $ENGINE_PID && $(parent_of "$pid") == "$ENGINE_PID" ]] || return 1
+	is_recorded "$ENGINE_PID" "$ENGINE_START" "$ENGINE_EXE" || return 1
+	exe=$(executable "$pid")
+	[[ $exe == "$APP/"* && $(resolved "$exe") == "$(resolved "$APP")/Contents/Helpers/pi² Remote.app/Contents/MacOS/pi² Remote" ]]
+}
+
+# The pids from the copy's bundle (from_bundle) but its own pi² Remote.
+from_bundle_but_helper() {
+	local pid
+	for pid in $(from_bundle); do
+		own_helper "$pid" || echo "$pid"
+	done
+	return 0
 }
 
 # The copy's pi² Remote, by its pid: what runs from its bundle's helper.
@@ -892,10 +921,11 @@ case $cmd in
 		# An exited app can be reopened too, but never signal a pid that has since been reused.
 		[[ -z $(started_at "$APP_PID") ]] || is_recorded "$APP_PID" "$APP_START" "$APP_EXE" ||
 			die "the app pid is no longer the process recorded"
-		for pid in $(from_bundle); do
+		# The engine first, as the one whose child the copy's pi² Remote is, which is kept with it.
+		follow_engine
+		for pid in $(from_bundle_but_helper); do
 			[[ $pid == "$APP_PID" ]] || die "an unrecorded process is running from the copy's bundle; nothing was stopped"
 		done
-		follow_engine
 		is_recorded "$ENGINE_PID" "$ENGINE_START" "$ENGINE_EXE" || die "the copy $SUFFIX has no recorded engine running"
 		require_source
 		# Prepare the replacement before stopping the working app; don't merge files into the old signed bundle.
@@ -906,7 +936,7 @@ case $cmd in
 		[[ -z $requested_hub ]] || HUB=$requested_hub
 		[[ -z $requested_appearance ]] || APPEARANCE=$requested_appearance
 		stop_process app "$APP_PID" "$APP_START" "$APP_EXE" >/dev/null
-		[[ -z $(from_bundle) ]] || die "the app did not stop; nothing was reopened"
+		[[ -z $(from_bundle_but_helper) ]] || die "the app did not stop; nothing was reopened"
 		APP_PID="" APP_START=""
 		save_state
 		mv -h "$APP" "$staged/previous.app" || die "could not move the old bundle aside"
