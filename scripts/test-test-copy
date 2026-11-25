@@ -859,6 +859,124 @@ respond '{"error":"unknown test-copy window command"}'
 PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=yes HOME="$T/home" \
 	answers 2 "predates the request that raises its parked window" can-click test-7
 kill "$RESPONDER_PID" 2>/dev/null
+# The copy's own pi² Remote (#944): reopen keeps it with its engine, and stop stops it after the engine, which would
+# start it again; anything else from the bundle is still refused, and nothing outside the bundle is signalled. With
+# stand-ins, all ad-hoc-signed copies of sleep: the app as above, pi² Remote in the bundle's Helpers, and a shell
+# for the engine that starts its programs and the first of them again a moment after it goes, as the engine does.
+kill "$STANDIN_APP" 2>/dev/null
+helper="$saved/Contents/Helpers/pi² Remote.app/Contents/MacOS/pi² Remote"
+other_helper="$saved/Contents/Helpers/Other.app/Contents/MacOS/pi² Remote"
+outside="$T/elsewhere-copy/pi² test-7.app/Contents/Helpers/pi² Remote.app/Contents/MacOS/pi² Remote"
+outside_node="$T/elsewhere-copy/node"
+for program in "$helper" "$other_helper" "$outside" "$outside_node"; do
+	mkdir -p "$(dirname -- "$program")"
+	cp /bin/sleep "$program"
+	codesign --force --sign - "$program" >/dev/null 2>&1
+done
+printf '%s\n' '#!/bin/bash' 'first=$1; shift' 'for program; do "$program" 600 & done' \
+	'while :; do "$first" 600 & wait $!; sleep 0.2; done' >"$T/engine-stand-in"
+chmod +x "$T/engine-stand-in"
+# child_of <parent pid> <executable>: the pid of that parent's child running it, once it runs (ten seconds at most).
+child_of() {
+	local tries pid ppid exe
+	for ((tries = 0; tries < 100; tries++)); do
+		while read -r pid ppid exe; do
+			[[ $ppid == "$1" && $exe == "$2" ]] && { echo "$pid"; return 0; }
+		done < <(LC_ALL=en_US.UTF-8 ps -axww -o pid=,ppid=,comm=)
+		sleep 0.1
+	done
+}
+running() { [[ -n $(ps -o pid= -p "$1" 2>/dev/null) ]]; }
+# Stops the stand-ins by pid: the engine first, which would start its first program again, then every process run
+# from this temporary folder, which only this test runs.
+stop_stand_ins() {
+	local pid exe
+	kill "$STANDIN_APP" "${STANDIN_ENGINE-}" 2>/dev/null
+	while read -r pid exe; do
+		[[ $exe == "$T/"* ]] && kill "$pid" 2>/dev/null
+	done < <(LC_ALL=en_US.UTF-8 ps -axww -o pid=,comm=)
+	return 0
+}
+# copy_with <engine's programs...>: a new stand-in app and engine, recorded in the copy's state.
+copy_with() {
+	stop_stand_ins
+	"$saved/Contents/MacOS/pi2" 600 &
+	STANDIN_APP=$!
+	"$T/engine-stand-in" "$@" &
+	STANDIN_ENGINE=$!
+	printf '%s\n' "app_pid=$STANDIN_APP" "app_start=$(LC_ALL=en_US.UTF-8 ps -o lstart= -p $STANDIN_APP)" \
+		"app_exe=$saved/Contents/MacOS/pi2" "engine_pid=$STANDIN_ENGINE" \
+		"engine_start=$(LC_ALL=en_US.UTF-8 ps -o lstart= -p $STANDIN_ENGINE)" \
+		"engine_exe=$(LC_ALL=en_US.UTF-8 ps -o comm= -p $STANDIN_ENGINE)" >"$root/app/build/test-copies/test-7/state"
+}
+# still_running <what> <pid...>: each of them must be running yet.
+still_running() {
+	local what=$1 pid; shift
+	for pid; do
+		if [[ -z $pid ]] || ! running "$pid"; then
+			echo "FAIL: $what: process ${pid:-(never started)} is not running"
+			failures=$((failures + 1))
+			return
+		fi
+	done
+	echo "ok: $what"
+}
+# reopen gets past its check of the bundle's processes to staging the new build, which the stand-in ditto fails, so
+# nothing is launched, and it stops nothing on the way.
+copy_with "$helper" "$outside"
+helper_pid=$(child_of "$STANDIN_ENGINE" "$helper")
+outside_pid=$(child_of "$STANDIN_ENGINE" "$outside")
+HOME="$T/home" PATH="$T/bin:$PATH" expect "could not copy the latest development build" reopen test-7
+still_running "reopen takes the copy's pi² Remote, its engine's child, as the copy's own and stops nothing" \
+	"$STANDIN_APP" "$STANDIN_ENGINE" "$helper_pid" "$outside_pid"
+# The helper's program run by another parent than the recorded engine; another program from the bundle that the
+# engine started; and the helper's path in the bundle, a link that leads out of it: each is still unrecorded.
+# A refusal missed would go on to stage the new build, which the stand-in ditto fails.
+"$helper" 600 &
+stray=$!
+HOME="$T/home" PATH="$T/bin:$PATH" expect "an unrecorded process is running from the copy's bundle; nothing was stopped" reopen test-7
+still_running "reopen refuses pi² Remote's program run by another parent, and stops nothing" \
+	"$STANDIN_APP" "$STANDIN_ENGINE" "$helper_pid" "$stray"
+kill "$stray" 2>/dev/null
+copy_with "$helper" "$other_helper"
+other_pid=$(child_of "$STANDIN_ENGINE" "$other_helper")
+HOME="$T/home" PATH="$T/bin:$PATH" expect "an unrecorded process is running from the copy's bundle; nothing was stopped" reopen test-7
+still_running "reopen refuses another program from the bundle that the engine started, and stops nothing" \
+	"$STANDIN_APP" "$STANDIN_ENGINE" "$other_pid"
+mv "$saved/Contents/Helpers/pi² Remote.app" "$T/helper-aside.app"
+ln -s "$(dirname -- "$(dirname -- "$(dirname -- "$outside")")")" "$saved/Contents/Helpers/pi² Remote.app"
+copy_with "$helper"
+linked_pid=$(child_of "$STANDIN_ENGINE" "$helper")
+HOME="$T/home" PATH="$T/bin:$PATH" expect "an unrecorded process is running from the copy's bundle; nothing was stopped" reopen test-7
+still_running "reopen refuses pi² Remote's path in the bundle when it leads out of it, and stops nothing" \
+	"$STANDIN_APP" "$STANDIN_ENGINE" "$linked_pid"
+stop_stand_ins
+rm -- "$saved/Contents/Helpers/pi² Remote.app"
+mv "$T/helper-aside.app" "$saved/Contents/Helpers/pi² Remote.app"
+# stop stops the app, the engine and the pi² Remote it starts again, and nothing outside the bundle, not even the
+# engine's child or a node the data folder names. That node, unrecorded, keeps stop from removing anything.
+copy_with "$helper" "$outside"
+helper_pid=$(child_of "$STANDIN_ENGINE" "$helper")
+outside_pid=$(child_of "$STANDIN_ENGINE" "$outside")
+"$outside_node" 600 &
+node_pid=$!
+printf '%s\n' "$node_pid" >"$data/engine.pid"
+engine_pid=$STANDIN_ENGINE app_pid=$STANDIN_APP
+HOME="$T/home" expect "is named in" stop test-7
+left=""
+for pid in "$app_pid" "$engine_pid" "$helper_pid"; do running "$pid" && left+=" $pid"; done
+while read -r pid exe; do [[ $exe == "$saved/"* ]] && left+=" $pid"; done < <(LC_ALL=en_US.UTF-8 ps -axww -o pid=,comm=)
+if [[ -n $helper_pid && -z $left ]]; then
+	echo "ok: stop stops the app, the engine and the pi² Remote it would start again"
+else
+	echo "FAIL: stop left these of the copy running:$left"
+	failures=$((failures + 1))
+fi
+still_running "stop signals nothing outside the copy's bundle" "$outside_pid" "$node_pid"
+stop_stand_ins
+rm -f -- "$data/engine.pid"
+rm -rf -- "$saved/Contents/Helpers" "$T/elsewhere-copy" "$T/engine-stand-in"
+
 # Put back the symlinked data folder the reopen refusal below expects, and stop the stand-in app.
 kill "$STANDIN_APP" 2>/dev/null
 rm -rf -- "$data/test-copy-control"
