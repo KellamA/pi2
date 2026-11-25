@@ -226,6 +226,17 @@ if [[ $(uname -s) == Darwin && -n $node ]]; then
 else
 	echo "skipped: a process named only by its environment (macOS with node only)"
 fi
+# Symbolic links where the script removes things, each to a folder outside, which must be left as it is: the link is
+# removed as a link, and the log says so (the security read of #991 found the simulators' records followed).
+victim() { # victim <name>: a folder outside everything the script cleans, with a file in it
+	mkdir -p "$T/victim/$1" && echo keep >"$T/victim/$1/keep"
+}
+victim sim && ln -s "$T/victim/sim" "$checkout/iphone/build/simulators/evil"
+victim tmp && ln -s "$T/victim/tmp" "$T/tmp/pi2-link"
+victim cache && ln -s "$T/victim/cache" "$library/Caches/dev.pi2.app.evil"
+victim data && ln -s "$T/victim/data" "$library/Application Support/pi2-evil"
+echo keep >"$T/victim/plist" && ln -s "$T/victim/plist" "$library/Preferences/dev.pi2.app.test-8.plist"
+
 sleep 0.5
 : >"$T/github-env"
 
@@ -280,6 +291,19 @@ expect "keeps /tmp/pi2, which is not pi2-<anything>" test -d "$T/tmp/pi2"
 expect "keeps /tmp's other files" test -f "$T/tmp/keep-me"
 expect "empties the job's temporary folder" test -d "$temp/tmp" -a ! -e "$temp/tmp/left"
 expect "points TMPDIR at it for the job's next steps" grep -qx "TMPDIR=$temp/tmp/" "$T/github-env"
+for name in sim tmp cache data; do
+	expect "leaves what a link pointed to ($name)" test -f "$T/victim/$name/keep"
+done
+expect "leaves the file a preferences link pointed to" test -f "$T/victim/plist"
+for link in "$checkout/iphone/build/simulators/evil" "$T/tmp/pi2-link" "$library/Caches/dev.pi2.app.evil" \
+	"$library/Application Support/pi2-evil" "$library/Preferences/dev.pi2.app.test-8.plist"; do
+	expect "removes the link $(basename -- "$link")" test ! -L "$link"
+done
+for said in "the simulators' record evil" "$T/tmp/pi2-link" "Caches/dev.pi2.app.evil" "Application Support/pi2-evil" \
+	"the preferences of dev.pi2.app.test-8"; do
+	expect "says $said was a link" grep -qF "removed $said, a symbolic link, as a link" <<<"$out"
+done
+expect "asks defaults about no linked preferences" bash -c "! grep -q test-8 '$log/defaults'"
 expect "leaves no list of its own in RUNNER_TEMP" bash -c "! ls '$temp' | grep -q ci-runner-clean"
 
 # ---- At the end, and again, with nothing left: nothing to do, and no TMPDIR written again.
@@ -304,6 +328,25 @@ expect "still leaves the processes outside" alive "$outside"
 rm -rf "$checkout/.git"
 out=$(env_for bash "$script" end 2>&1)
 expect "a checkout that is not a repository is left alone" test $? = 0 -a -f "$checkout/src/tracked"
+
+# ---- A folder on the way replaced by a link: refused, nothing removed through it, and the run fails.
+
+rm -rf "$library/WebKit"
+mkdir -p "$T/victim/webkit/dev.pi2.app.test-9" && ln -s "$T/victim/webkit" "$library/WebKit"
+mkdir -p "$checkout/iphone/build" "$T/victim/records/ci" && echo "$UDID" >"$T/victim/records/ci/udid"
+ln -s "$T/victim/records" "$checkout/iphone/build/simulators"
+rm -rf "$temp/tmp"
+victim temp && ln -s "$T/victim/temp" "$temp/tmp"
+: >"$log/xcrun"
+out=$(env_for bash "$script" end 2>&1)
+expect "a folder replaced by a link fails the run" test $? = 1
+expect "says it refused the linked WebKit folder" grep -qF "refused to look in $(cd -P "$library" && pwd -P)/WebKit" <<<"$out"
+expect "removes nothing in the folder ~/Library/WebKit pointed to" test -d "$T/victim/webkit/dev.pi2.app.test-9"
+expect "reads no simulators' record through a link" test ! -s "$log/xcrun"
+expect "leaves the records a link pointed to" test -f "$T/victim/records/ci/udid"
+expect "removes a linked job's temporary folder as a link" test -f "$T/victim/temp/keep" -a -d "$temp/tmp" -a ! -L "$temp/tmp"
+expect "warns on the run" grep -q '^::warning' <<<"$out"
+rm -f "$library/WebKit" "$checkout/iphone/build/simulators"
 
 # ---- A simulator that will not go fails the run, and its record is kept.
 

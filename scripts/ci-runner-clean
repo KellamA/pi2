@@ -19,12 +19,15 @@
 #   - this user's pi2-<anything> in /tmp (the engines' sockets and scratch folders, the checks' folders);
 #   - the job's temporary folder: start points TMPDIR at an empty folder inside the runner's own temporary folder, which
 #     the runner empties after every job, for the job's later steps (through GITHUB_ENV), and end empties it.
+# Nothing is ever removed through a symbolic link: a link is removed as a link, and said so, and a path whose folder is
+# not the one it was looked for in (a folder on the way replaced by a link) is refused, not removed.
 # Safe to run twice, and where nothing is left. It prints what it removed, the system, Xcode and Swift in use, and the
 # disk's free space.
 #
 # It refuses, before it changes anything, unless it is on that runner: RUNNER_ENVIRONMENT=self-hosted, the runner's work
 # folder (_work, with the runner's own settings file .runner beside it) holding RUNNER_WORKSPACE, RUNNER_TEMP and
-# GITHUB_WORKSPACE, not as root, and no sign of an installed pi² (its data folder or its login item in the account's
+# GITHUB_WORKSPACE, not as root or a member of admin (an administrator's account; the runner's user is standard; in a
+# test this is not checked, since a developer's own account is an administrator's), and no sign of an installed pi² (its data folder or its login item in the account's
 # home, /Applications/pi².app). A Mac where pi² is in use is never cleaned.
 #
 # CI_RUNNER_CLEAN_TEST=<folder> is for scripts/test-ci-runner-clean alone: security, defaults and xcrun are then the
@@ -38,6 +41,8 @@ export LC_ALL=C
 
 refuse() {
 	echo "ci-runner-clean: refused: $*" >&2
+	# A warning on the run too: the end's clean-up does not fail its job, so it would show only in the step's log.
+	echo "::warning title=Runner clean-up refused::$*"
 	exit 2
 }
 
@@ -89,6 +94,8 @@ else
 	defaults=/usr/bin/defaults
 	xcrun=/usr/bin/xcrun
 	shared_tmp=/tmp
+	id -Gn 2>/dev/null | tr ' ' '\n' | grep -qx admin &&
+		refuse "$(id -un) is an administrator: the runner's user is a standard one, and an administrator's account is a person's"
 	# HOME and the account's own home folder, which differ if a caller set HOME.
 	homes=("$HOME")
 	account=$(eval "printf '%s' ~$(id -un)" 2>/dev/null) && [[ -n $account && $account != "$HOME" ]] && homes+=("$account")
@@ -115,7 +122,7 @@ said() {
 # has no BASHPID to leave it out by.
 
 list=$(mktemp "$temp/ci-runner-clean.XXXXXX") || refuse "cannot write in $temp"
-found="$list.found"
+found=$(mktemp "$temp/ci-runner-clean.XXXXXX") || refuse "cannot write in $temp"
 trap 'rm -f -- "$list" "$found"' EXIT
 
 # This script and what it runs under (the step's shell, the runner's worker and listener) are never stopped.
@@ -191,14 +198,55 @@ stop_processes() {
 	said "stopped $stopped process(es)"
 }
 
+# ---- Removing, never through a link.
+
+# remove <path> <folder> <what>: <path> as it was listed in <folder> (the real path of where it was looked for). A link
+# is removed as a link, never what it points to. Anything else only if its folder is still <folder>: a folder on the way
+# replaced by a link since makes it somewhere else, which is refused.
+remove() {
+	local path=$1 folder=$2 what=$3 parent
+	if [[ -L $path ]]; then
+		if rm -f -- "$path"; then said "removed $what, a symbolic link, as a link (not what it points to)"; else fail "could not remove the link $path"; fi
+		return
+	fi
+	[[ -e $path ]] || return 0
+	parent=$(real "$(dirname -- "$path")")
+	if [[ -z $folder || $parent != "$folder" ]]; then
+		fail "refused to remove $path: it is in ${parent:-?}, not ${folder:-?}, where it was looked for"
+		return
+	fi
+	if rm -rf -- "$path"; then said "removed $what"; else fail "could not remove $path"; fi
+}
+
+# inside <parent> <name>: sets $got to <parent>/<name>, a folder that is where it says (not a link, nothing on the way a
+# link), and succeeds; fails if it is not there, and fails and says so if it is anything else. <parent> is a real path.
+# A variable, not $(...), so that the failure is counted here.
+got=
+inside() {
+	local path="$1/$2"
+	got=
+	[[ -e $path || -L $path ]] || return 1
+	if [[ -L $path || ! -d $path || $(real "$path") != "$path" ]]; then
+		fail "refused to look in $path: it is a link, or not a folder, or leads out of $1"
+		return 1
+	fi
+	got=$path
+}
+
 # ---- Simulators, by the ids scripts/iphone-sim recorded in this checkout.
 
 delete_simulators() {
-	local records="$checkout/iphone/build/simulators" record udid
-	[[ -d $records ]] || return 0
-	for record in "$records"/*/; do
-		[[ -d $record ]] || continue
-		udid=$(cat "$record/udid" 2>/dev/null) || udid=
+	local records record udid
+	inside "$checkout" iphone && inside "$got" build && inside "$got" simulators || return 0
+	records=$got
+	for record in "$records"/*; do
+		[[ -e $record || -L $record ]] || continue
+		if [[ -L $record || ! -d $record ]]; then
+			remove "$record" "$records" "the simulators' record $(basename -- "$record")"
+			continue
+		fi
+		udid=
+		[[ -f $record/udid && ! -L $record/udid ]] && udid=$(cat "$record/udid" 2>/dev/null)
 		if [[ $udid =~ ^[0-9A-Fa-f-]{36}$ ]]; then
 			"$xcrun" simctl shutdown "$udid" >/dev/null 2>&1 || true
 			"$xcrun" simctl delete "$udid" >/dev/null 2>&1 || true
@@ -208,7 +256,7 @@ delete_simulators() {
 			fi
 			said "deleted the simulator $(basename -- "$record") ($udid)"
 		fi
-		rm -rf -- "$record"
+		remove "$record" "$records" "the simulators' record $(basename -- "$record")"
 	done
 }
 
@@ -244,35 +292,50 @@ delete_keychain_items() {
 # ---- What macOS keeps for dev.pi2.app and dev.pi2.app.<anything>, and the data folders of builds and copies.
 
 remove_library() {
-	local library="$HOME/Library" file domain folder path
-	for file in "$library/Preferences/dev.pi2.app.plist" "$library/Preferences/"dev.pi2.app.?*.plist; do
-		[[ -e $file || -L $file ]] || continue
-		domain=$(basename -- "$file" .plist)
-		"$defaults" delete "$domain" >/dev/null 2>&1 || true
-		rm -f -- "$file"
-		said "removed the preferences of $domain"
-	done
+	local library place file domain folder path
+	inside "$(real "$HOME")" Library || return 0
+	library=$got
+	if inside "$library" Preferences; then
+		place=$got
+		for file in "$place/dev.pi2.app.plist" "$place/"dev.pi2.app.?*.plist; do
+			[[ -e $file || -L $file ]] || continue
+			domain=$(basename -- "$file" .plist)
+			# By its name, from the user's own preferences: defaults reads no path.
+			[[ -L $file ]] || "$defaults" delete "$domain" >/dev/null 2>&1 || true
+			remove "$file" "$place" "the preferences of $domain"
+		done
+	fi
 	for folder in Caches HTTPStorages WebKit "Saved Application State"; do
-		for path in "$library/$folder/dev.pi2.app" "$library/$folder/"dev.pi2.app.?*; do
-			[[ -e $path || -L $path ]] || continue
-			rm -rf -- "$path" && said "removed $folder/$(basename -- "$path")" || fail "could not remove $path"
+		inside "$library" "$folder" || continue
+		place=$got
+		for path in "$place/dev.pi2.app" "$place/"dev.pi2.app.?*; do
+			[[ -e $path || -L $path ]] && remove "$path" "$place" "$folder/$(basename -- "$path")"
 		done
 	done
-	for path in "$library/Application Support/"pi2-?*; do
-		[[ -e $path || -L $path ]] || continue
-		rm -rf -- "$path" && said "removed Application Support/$(basename -- "$path")" || fail "could not remove $path"
-	done
+	if inside "$library" "Application Support"; then
+		place=$got
+		for path in "$place/"pi2-?*; do
+			[[ -e $path || -L $path ]] && remove "$path" "$place" "Application Support/$(basename -- "$path")"
+		done
+	fi
 }
 
 # ---- This user's pi2-<anything> in /tmp, and the job's own temporary folder.
 
 remove_temporary() {
-	local path
-	while IFS= read -r -d '' path; do
-		rm -rf -- "$path" && said "removed $path" || fail "could not remove $path"
-	done < <(find "$shared_tmp/" -mindepth 1 -maxdepth 1 -name 'pi2-?*' -user "$me" -print0 2>/dev/null)
-	rm -rf -- "$temp/tmp" || fail "could not empty $temp/tmp"
-	mkdir -p -- "$temp/tmp" || fail "could not make $temp/tmp"
+	local path place
+	place=$(real "$shared_tmp")
+	if [[ -n $place ]]; then
+		while IFS= read -r -d '' path; do
+			remove "$path" "$place" "$path"
+		done < <(find "$place/" -mindepth 1 -maxdepth 1 -name 'pi2-?*' -user "$me" -print0 2>/dev/null)
+	fi
+	remove "$temp/tmp" "$temp" "the job's temporary folder"
+	if [[ -e $temp/tmp || -L $temp/tmp ]]; then
+		fail "could not empty $temp/tmp"
+	else
+		mkdir -- "$temp/tmp" || fail "could not make $temp/tmp"
+	fi
 	if [[ $phase == start && -n ${GITHUB_ENV:-} ]]; then
 		printf 'TMPDIR=%s\n' "$temp/tmp/" >>"$GITHUB_ENV" || fail "could not set TMPDIR for the job"
 	fi
@@ -302,6 +365,7 @@ fi
 
 if ((failed)); then
 	echo "ci-runner-clean: $phase: something was left (above)" >&2
+	echo "::warning title=Runner clean-up::The clean-up at the job's $phase left something on the owner's runner: see its step's log"
 	exit 1
 fi
 said "$phase: done"
