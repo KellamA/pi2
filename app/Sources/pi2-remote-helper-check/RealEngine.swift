@@ -33,9 +33,10 @@ enum RealEngine {
 		}
 
 		/// Runs `body` while another thread reads and drops what the engine sends this connection, as the app reads all it
-		/// is sent. Not read, the connection's buffer fills, and the engine's next write to it holds the engine's thread
-		/// until it is read (#919's comment: the descriptor handed to pi2-peer is left blocking), which would stall the
-		/// phones' lines in a step that sends the app nothing for minutes. No `call` within `body`.
+		/// is sent, so that the check sees the engine as it runs beside pi². Not read, the connection's buffer fills, and
+		/// the engine keeps in memory all it owes the app until it is read: some 140 MB in the long-line steps, where the
+		/// engine tells the app of a phone's text of 64 MiB and more. The engine no longer waits on an app that does not
+		/// read (#927, engine/test/appstall.ts). No `call` within `body`.
 		func drained(_ body: () -> Void) {
 			final class Stop: @unchecked Sendable {
 				let lock = NSLock()
