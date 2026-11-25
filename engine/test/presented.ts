@@ -18,6 +18,8 @@ import { restoreBackup } from "../src/backup.ts";
 import { GONE } from "../src/needs.ts";
 import {
 	checkDrawn,
+	consoleWords,
+	errorsIn,
 	checkGiven,
 	copyItem,
 	findItem,
@@ -361,6 +363,15 @@ const refusalOf = (run: () => unknown): string => {
 	assert.throws(() => checkDrawn({ ok: false, reason: "x".repeat(501) }), /500 characters at most/);
 	assert.throws(() => checkDrawn({ ok: false }), /reason must say why/);
 	assert.deepEqual((checkDrawn({ ...good, console: ["line\nbreak\u0007"] }) as { console: string[] }).console, ["line break"], "a finding is one line");
+	// A console line is an error only when the app says so ("error: "): a log, info, debug or warning is a line.
+	assert.equal(consoleWords([]), undefined, "nothing printed, nothing said");
+	assert.equal(consoleWords(["error: TypeError: x"]), '1 console error: "TypeError: x"');
+	assert.equal(consoleWords(["error: a", "error: b"]), '2 console errors: "a"; "b"');
+	assert.equal(consoleWords(["log: hello"]), '1 console line, no errors: "log: hello"');
+	assert.equal(consoleWords(["log: a", "info: b", "debug: c", "warn: d"]), '4 console lines, no errors: "log: a"; "info: b"; "debug: c"; "warn: d"');
+	assert.equal(consoleWords(["log: a", "error: b"]), '1 console error: "b"; 1 other console line: "log: a"');
+	assert.equal(consoleWords(["error: a", "error: b", "log: c", "warn: d"]), '2 console errors: "a"; "b"; 2 other console lines: "log: c"; "warn: d"');
+	assert.equal(errorsIn(["error: a", "log: b", "warn: c", "errors: d", "error:e"]), 1, "by its prefix alone");
 
 	const item = { label: "A", caption: null, kind: "picture" as const, name: "a.svg", mimeType: "image/svg+xml", sha256: "0".repeat(64), bytes: 1, files: 1, width: null, height: null, snapshot: null, drawn: null };
 	const network = { allowed: false, changes: [] };
@@ -436,7 +447,7 @@ const refusalOf = (run: () => unknown): string => {
 	assert.deepEqual(await ask(phone, 3), { mimeType: "image/png", data: snapshotBytes.toString("base64") }, "a page's snapshot is a PNG");
 	await assert.rejects(picture({ id: 8, presentation: "p1", version: 1, item: 1 }, phone), /Unknown conversation: 8/);
 	assert.deepEqual(await picture({ id: 7, presentation: "p1", version: 1, item: 1, sha256: sha(svgBytes) }, phone), { mimeType: "image/png", data: pngBytes.toString("base64") }, "a sha256 in the request is not read");
-	for (const method of ["presented.list", "presented.file"]) await assert.rejects(feature.handlers![method]!({ id: 7, presentation: "p1", version: 1, item: 3, path: "index.html" }, phone), /the Mac's/, `${method} from a phone`);
+	for (const method of ["presented.list", "presented.file", "presented.page"]) await assert.rejects(feature.handlers![method]!({ id: 7, presentation: "p1", version: 1, item: 3, path: "index.html" }, phone), /the Mac's/, `${method} from a phone`);
 	// The blob is read under that conversation's folder only, never through a link, and must still be what was kept.
 	writeFileSync(join(home, "presented", "7", "blobs", sha(pngBytes)), png(3, 4));
 	await assert.rejects(ask(mac, 1), /has changed on disk since it was kept/);
@@ -661,6 +672,24 @@ try {
 	}
 	for (const path of ["x".repeat(1025), "", 5, null]) await assert.rejects(file(path), /path must be a file of the page/, String(path).slice(0, 10));
 	await assert.rejects(client.call("presented.file", { id: chat1, presentation: "p1", version: 1, item: 0, path: "style.css" }), /That item is a picture, not a page/);
+	// The page's list of files, as the page view takes it before it asks for any (presented.page).
+	const listing = (params: Record<string, unknown>) => client.call("presented.page", { id: chat1, presentation: "p1", version: 1, item: 1, ...params });
+	assert.deepEqual(await listing({}), {
+		entry: "index.html",
+		files: ["app.js", "café.css", "index.html", "style.css"].map((path) => ({ path, bytes: readFileSync(join(folder, "signin-b", path)).length, type: path.endsWith(".js") ? "text/javascript" : path.endsWith(".css") ? "text/css" : "text/html" })),
+	});
+	for (const [params, message] of [
+		[{ item: 0 }, /^That item is a picture, not a page/],
+		[{ version: 9 }, new RegExp(`^${NOT_PRESENTED}$`)],
+		[{ presentation: "__proto__" }, /presentation must be/],
+		[{ item: "1" }, /item must be a whole number/],
+		[{ id: 99_999 }, /^Unknown conversation: 99999$/],
+	] as const) {
+		const page = await listing(params).catch((error: Error) => error.message);
+		const file = await client.call("presented.file", { id: chat1, presentation: "p1", version: 1, item: 1, path: "style.css", ...params }).catch((error: Error) => error.message);
+		assert.match(page, message, JSON.stringify(params));
+		assert.equal(page, file, `refused as presented.file refuses it: ${JSON.stringify(params)}`);
+	}
 	await assert.rejects(client.call("presented.picture", { id: chat1, presentation: "p1", version: 1, item: 1 }), (error: Error) => error.message === NOT_DRAWN, "a page not drawn is refused");
 
 	// Answers that are not taken: from another connection, past a bound, for a draw never asked.
@@ -670,13 +699,13 @@ try {
 	assert.deepEqual(await client.call("present.drawn", { requestId: "present-999", ...drawnAnswer() }), { answered: false }, "a draw never asked for");
 	assert.equal((await client.call("presented.list", { id: chat1 })).items[0].versions[0].items[1].snapshot.state, "pending", "nothing refused was stored");
 	const snapshot = png(16, 10);
-	assert.deepEqual(await client.call("present.drawn", { requestId: draw.requestId, ...drawnAnswer({ console: ["TypeError: null is not an object (evaluating 'form.addEventListener') at app.js:12"], blocked: ["https://cdn.tailwindcss.com/3.4.1"] }) }), { answered: true });
+	assert.deepEqual(await client.call("present.drawn", { requestId: draw.requestId, ...drawnAnswer({ console: ["error: TypeError: null is not an object (evaluating 'form.addEventListener') at app.js:12", "log: ready"], blocked: ["https://cdn.tailwindcss.com/3.4.1"] }) }), { answered: true });
 	assert.deepEqual(await client.call("present.drawn", { requestId: draw.requestId, ...drawnAnswer() }), { answered: false }, "once");
 	const drawnEvent = await client.until("the snapshot in conversation.presented", () => client.presented.find((event) => event.id === chat1 && event.record.versions[0].items[1].snapshot.state === "drawn"));
 	const drawnItem = drawnEvent.record.versions[0].items[1];
 	assert.deepEqual(drawnItem.snapshot, { state: "drawn", sha256: sha(snapshot) });
 	assert.deepEqual([drawnItem.width, drawnItem.height], [1280, 2140]);
-	assert.deepEqual(drawnItem.drawn, { loadMs: 400, blank: false, console: ["TypeError: null is not an object (evaluating 'form.addEventListener') at app.js:12"], blocked: ["https://cdn.tailwindcss.com/3.4.1"] });
+	assert.deepEqual(drawnItem.drawn, { loadMs: 400, blank: false, console: ["error: TypeError: null is not an object (evaluating 'form.addEventListener') at app.js:12", "log: ready"], errors: 1, blocked: ["https://cdn.tailwindcss.com/3.4.1"] }, "every console line kept, and its errors counted");
 	assert.deepEqual(await client.call("presented.picture", { id: chat1, presentation: "p1", version: 1, item: 1 }), { mimeType: "image/png", data: snapshot.toString("base64") });
 	assert.deepEqual(readFileSync(join(scratchFolder(home, chat1), "presented", "p1-v1-B.png")), snapshot, "and in the scratch folder, for the agent");
 	assert.equal(other.presented.length, 0, "conversation.presented goes only to connections that have the conversation open");
@@ -684,7 +713,7 @@ try {
 
 	// ---- An update, drawn in time by the app
 
-	client.drawing = () => drawnAnswer({ loadMs: 400, height: 2140, console: ['ReferenceError: x is not defined at app.js:1'], blocked: ["https://fonts.example/a.woff2"] });
+	client.drawing = () => drawnAnswer({ loadMs: 400, height: 2140, console: ["error: ReferenceError: x is not defined at app.js:1", "log: ready", "warn: deprecated"], blocked: ["https://fonts.example/a.woff2"] });
 	writeFileSync(join(folder, "signin-b", "style.css"), "p { color: red }");
 	const second = await client.present(chat1, {
 		title: "Sign-in screen, three layouts",
@@ -694,7 +723,7 @@ try {
 	assert.equal(second.isError, false, second.text);
 	const lines = second.text.split("\n");
 	assert.equal(lines[0], 'Presented "Sign-in screen, three layouts" as p1, version 2. The person sees a card in the conversation and can open it in a window.');
-	assert.match(lines[2]!, /^B {2}signin-b\/index\.html: page, 4 files, \d+ bytes; loaded in 0\.4 s; drawn 1280×2140 \(taller than the window: it scrolls\); 1 console error: "ReferenceError: x is not defined at app\.js:1"; blocked, since the network is off: https:\/\/fonts\.example\/a\.woff2 \(put it in the folder instead\)$/);
+	assert.match(lines[2]!, /^B {2}signin-b\/index\.html: page, 4 files, \d+ bytes; loaded in 0\.4 s; drawn 1280×2140 \(taller than the window: it scrolls\); 1 console error: "ReferenceError: x is not defined at app\.js:1"; 2 other console lines: "log: ready"; "warn: deprecated"; blocked, since the network is off: https:\/\/fonts\.example\/a\.woff2 \(put it in the folder instead\)$/);
 	assert.equal(lines.at(-2), "Pictures of the pages as drawn: $PI2_SCRATCH/presented/p1-v2-B.png. Read it, or look at it, to check.");
 	assert.ok(existsSync(join(scratchFolder(home, chat1), "presented", "p1-v2-B.png")));
 	const record = (await client.call("presented.list", { id: chat1 })).items[0];
@@ -704,9 +733,9 @@ try {
 	assert.equal(readdirSync(blobs).filter((name) => name === sha(pictureBytes)).length, 1, "kept once");
 	assert.deepEqual(Buffer.from((await client.call("presented.file", { id: chat1, presentation: "p1", version: 1, item: 1, path: "style.css" })).data, "base64").toString(), "p { color: teal }", "version 1 still serves its own files");
 	// A page that draws nothing visible, and one that could not be drawn.
-	client.drawing = (one) => (one.item === 0 ? drawnAnswer({ blank: true, height: 800 }) : { ok: false, reason: "The page's web content process ended twice" });
+	client.drawing = (one) => (one.item === 0 ? drawnAnswer({ blank: true, height: 800, console: ["log: one", "debug: two"] }) : { ok: false, reason: "The page's web content process ended twice" });
 	const blank = await client.present(chat1, { title: "Two pages", items: [{ path: "signin-b/index.html", label: "Empty" }, { path: "signin-b/index.html", label: "Broken" }] });
-	assert.match(blank.text, /Empty {2}signin-b\/index\.html: page, 4 files, \d+ bytes; loaded in 0\.4 s; drawn 1280×800; \*\*it looks blank\*\*: nothing but its background was drawn, and its body has no text\n/);
+	assert.match(blank.text, /Empty {2}signin-b\/index\.html: page, 4 files, \d+ bytes; loaded in 0\.4 s; drawn 1280×800; \*\*it looks blank\*\*: nothing but its background was drawn, and its body has no text; 2 console lines, no errors: "log: one"; "debug: two"\n/);
 	assert.match(blank.text, /Broken {2}signin-b\/index\.html: page, 4 files, \d+ bytes; could not be drawn: The page's web content process ended twice\n/);
 	await assert.rejects(client.call("presented.picture", { id: chat1, presentation: "p2", version: 1, item: 1 }), (error: Error) => error.message === NOT_DRAWN, "a page that could not be drawn has no snapshot");
 	step("an update: version 2 beside version 1, an unchanged file kept once, the page drawn in time and its findings in the answer; a blank page and one that failed said so");
@@ -861,6 +890,9 @@ try {
 	assert.deepEqual(readFileSync(join(backupPath, "presented", String(chat1), "blobs", sha(pictureBytes))), pictureBytes, "a backup holds the presented files");
 	await client.call("conversation.delete", { id: chat1 });
 	await client.until("the deleted conversation's files gone", () => !existsSync(join(home, "presented", String(chat1))));
+	for (const method of ["presented.page", "presented.file"]) {
+		await assert.rejects(client.call(method, { id: chat1, presentation: "p1", version: 1, item: 1, path: "style.css" }), /^Error: The presented files of this conversation are not there\.$/, `${method} of a deleted conversation`);
+	}
 	assert.ok(existsSync(join(home, "presented", String(fork), "blobs", sha(pictureBytes))), "the fork's own stay, archived");
 	assert.deepEqual(await client.call("presented.picture", { id: fork, presentation: "p1", version: 1, item: 0 }), { mimeType: "image/png", data: pictureBytes.toString("base64") });
 	step("a fork clones the files and carries the records; archived they stay; deleted they go; a backup holds them");

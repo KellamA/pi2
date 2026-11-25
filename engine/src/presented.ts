@@ -46,7 +46,28 @@ import { testSwitch } from "./testswitches.ts";
 // ---- What is stored (the contract's "What is stored")
 
 export type PresentedSnapshot = { state: "drawn"; sha256: string } | { state: "pending" } | { state: "failed"; reason: string };
-export type PresentedDrawn = { loadMs: number; blank: boolean; console: string[]; blocked: string[] };
+/**
+ * `console` is every line the page's console printed, as the app gives it: its level first ("log: …", "info: …",
+ * "warn: …", "debug: …", "error: …"; a script error or an unhandled rejection is "error: …"). `errors` is how many of
+ * them are errors: those that begin "error: ". A warning is a line, not an error.
+ */
+export type PresentedDrawn = { loadMs: number; blank: boolean; console: string[]; errors: number; blocked: string[] };
+
+/** What the app puts before a console line that is an error: `console.error`, a script error, an unhandled rejection. */
+const ERROR_LINE = "error: ";
+export const isErrorLine = (line: string) => line.startsWith(ERROR_LINE);
+export const errorsIn = (lines: readonly string[]) => lines.filter(isErrorLine).length;
+
+/** A page's console in the agent's answer: its errors by themselves, then its other lines; nothing when it printed nothing. */
+export function consoleWords(lines: readonly string[]): string | undefined {
+	const errors = lines.filter(isErrorLine).map((line) => line.slice(ERROR_LINE.length));
+	const others = lines.filter((line) => !isErrorLine(line));
+	const quoted = (some: string[]) => some.map((line) => JSON.stringify(line)).join("; ");
+	const parts: string[] = [];
+	if (errors.length > 0) parts.push(`${plural(errors.length, "console error")}: ${quoted(errors)}`);
+	if (others.length > 0) parts.push(errors.length > 0 ? `${plural(others.length, "other console line")}: ${quoted(others)}` : `${plural(others.length, "console line")}, no errors: ${quoted(others)}`);
+	return parts.length === 0 ? undefined : parts.join("; ");
+}
 
 export type PresentedItem = {
 	label: string;
@@ -562,6 +583,21 @@ export function findItem(doc: PresentedDocShape | undefined, presentation: unkno
 	return { record, version: found, item: entry, index: item };
 }
 
+/**
+ * What `presented.page` answers of a manifest: its entry and every file's path, size and type, by path. Bounded by a
+ * page's own limits: 500 files, each path 1,024 bytes (2,048 once escaped as JSON, a `"` being two) with about 62 bytes
+ * of fields, and the entry's name 255: at most about 1.06 MB. A file whose entry is not whole is left out, as is the
+ * entry if the manifest does not list it, which the engine never writes.
+ */
+export function pageListing(manifest: PageManifest): { entry: string; files: { path: string; bytes: number; type: string }[] } {
+	const files = Object.entries(manifest.files)
+		.filter(([, file]) => typeof file === "object" && file !== null && Number.isSafeInteger(file.bytes) && file.bytes >= 0 && typeof file.type === "string" && typeof file.sha256 === "string")
+		.map(([path, file]) => ({ path, bytes: file.bytes, type: file.type }))
+		.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+	if (!files.some((file) => file.path === manifest.entry)) throw new Error("The page's list of files cannot be read.");
+	return { entry: manifest.entry, files };
+}
+
 /** What a picture request answers: the picture's bytes or the page's snapshot, never an SVG to a device. */
 export function servedPicture(item: PresentedItem, device: boolean): { part: "blobs"; sha256: string; mimeType: string } {
 	if (item.kind === "page") {
@@ -596,7 +632,8 @@ function describeDrawn(item: PresentedItem, noApp: boolean): string {
 	parts.push(`loaded in ${(drawn.loadMs / 1000).toFixed(1)} s`);
 	if (item.width !== null && item.height !== null) parts.push(`drawn ${item.width}×${item.height}${item.height > DRAW_HEIGHT ? " (taller than the window: it scrolls)" : ""}`);
 	if (drawn.blank) parts.push("**it looks blank**: nothing but its background was drawn, and its body has no text");
-	if (drawn.console.length > 0) parts.push(`${plural(drawn.console.length, "console error")}: ${drawn.console.map((line) => JSON.stringify(line)).join("; ")}`);
+	const said = consoleWords(drawn.console);
+	if (said !== undefined) parts.push(said);
 	if (drawn.blocked.length > 0) parts.push(`blocked, since the network is off: ${drawn.blocked.join(", ")} (put it in the folder instead)`);
 	return parts.join("; ");
 }
@@ -906,10 +943,10 @@ export const presented: Feature = (host: Host, engine: Engine) => {
 				item.snapshot = { state: "drawn", sha256: sha! };
 				item.width = answer.width;
 				item.height = answer.height;
-				item.drawn = { loadMs: Math.round(answer.loadMs), blank: answer.blank, console: answer.console, blocked: answer.blocked };
+				item.drawn = { loadMs: Math.round(answer.loadMs), blank: answer.blank, console: answer.console, errors: errorsIn(answer.console), blocked: answer.blocked };
 			} else {
 				item.snapshot = { state: "failed", reason: answer.reason };
-				item.drawn = { loadMs: 0, blank: false, console: answer.console, blocked: answer.blocked };
+				item.drawn = { loadMs: 0, blank: false, console: answer.console, errors: errorsIn(answer.console), blocked: answer.blocked };
 			}
 		}, engine.context());
 		if (answer.ok && label !== undefined) scratchCopy(page.conversation, page, label, answer.snapshot);
@@ -1179,6 +1216,18 @@ export const presented: Feature = (host: Host, engine: Engine) => {
 		return { id, folder: chatOf(id), doc: await read(id) };
 	};
 	const device = (connection: object | undefined) => (connection as Client | undefined)?.device !== undefined;
+	/** A page item's manifest, for `presented.file` and `presented.page`: the Mac's alone, found only in that conversation's record. */
+	const manifestOf = async (params: Record<string, unknown>, connection: object | undefined): Promise<{ folder: number; manifest: PageManifest }> => {
+		if (device(connection)) throw new Error("A presented page's files are the Mac's.");
+		const { folder, doc } = await conversationOf(params);
+		const { item } = findItem(doc, params.presentation, params.version, params.item);
+		if (item.kind !== "page") throw new Error("That item is a picture, not a page: ask for it with presented.picture.");
+		const manifest = JSON.parse(readKept(home, folder, "pages", item.sha256).toString("utf8")) as PageManifest;
+		if (typeof manifest !== "object" || manifest === null || typeof manifest.entry !== "string" || typeof manifest.files !== "object" || manifest.files === null || Array.isArray(manifest.files)) {
+			throw new Error("The page's list of files cannot be read.");
+		}
+		return { folder, manifest };
+	};
 
 	return {
 		tools: [presentTool],
@@ -1285,16 +1334,20 @@ export const presented: Feature = (host: Host, engine: Engine) => {
 			},
 			/** `{ id, presentation, version, item, path }`: one file of a page, by its manifest's path exactly. */
 			"presented.file": async (params, connection) => {
-				if (device(connection)) throw new Error("A presented page's files are the Mac's.");
-				const { folder, doc } = await conversationOf(params);
-				const { item } = findItem(doc, params.presentation, params.version, params.item);
-				if (item.kind !== "page") throw new Error("That item is a picture, not a page: ask for it with presented.picture.");
 				const path = params.path;
+				const { folder, manifest } = await manifestOf(params, connection);
 				if (typeof path !== "string" || path.length === 0 || !pathFits(path)) throw new Error("path must be a file of the page, as its manifest names it");
-				const manifest = JSON.parse(readKept(home, folder, "pages", item.sha256).toString("utf8")) as PageManifest;
-				const file = typeof manifest.files === "object" && manifest.files !== null && Object.hasOwn(manifest.files, path) ? manifest.files[path] : undefined;
+				const file = Object.hasOwn(manifest.files, path) ? manifest.files[path] : undefined;
 				if (file === undefined || typeof file.sha256 !== "string" || typeof file.type !== "string") throw new Error("The page has no such file.");
 				return { mimeType: file.type, data: readKept(home, folder, "blobs", file.sha256).toString("base64") };
+			},
+			/**
+			 * `{ id, presentation, version, item }`: a page's list of files, its manifest, for the page view before it asks
+			 * `presented.file`: `{ entry, files: [{ path, bytes, type }] }`, by path. Read and refused as `presented.file` is.
+			 */
+			"presented.page": async (params, connection) => {
+				const { manifest } = await manifestOf(params, connection);
+				return pageListing(manifest);
 			},
 			/**
 			 * `{ id, presentation, version, allow }`: the person's Allow network for that version's pages alone, written into
