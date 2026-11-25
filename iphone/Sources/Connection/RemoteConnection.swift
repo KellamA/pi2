@@ -17,7 +17,7 @@ import RemoteKit
 ///   saying what to do, until the person's word (`tryAgain`) or the next `start`; `resume` sends it to attach afresh
 ///   once; anything else, or a channel that closes with no word, is tried again after a wait that grows.
 /// - While its presence key waits to be accepted on the Mac (Face ID set up again, 3.2), it offers the key in place of
-///   attaching, once for each `start` or `tryAgain` (#891): an offer of the waiting key is free at the Mac, but an attach
+///   attaching, once for each `start` or `tryAgain`, a timeout or an unreadable answer included (#891): an offer of the waiting key is free at the Mac, but an attach
 ///   under it would be refused. Told the key waits, it stops with `problem` saying to accept it on the Mac; told it is
 ///   accepted, it attaches at once, under it; any other end of an offer stops it too, since a refused offer counts
 ///   towards suspending the device.
@@ -178,7 +178,19 @@ final class RemoteConnection {
                 // holds, which is the waiting key once one was made (`PhoneKeys.replacePresenceKey` writes it in place of
                 // the old one).
                 if !offerAccepted, (try? keys.presence.presenceKeyWaits()) != false {
-                    let answer = try await Attach.offer(proved, mac: mac, keys: keys, build: build, now: now)
+                    // Once for each `start` or `tryAgain`, whatever happens to it: an answer that does not come within ten
+                    // seconds, or does not read, is not offered again by itself, since the engine may have answered it with
+                    // a refusal that counts towards suspending the device (a relay can hold back the answer).
+                    let answer: Attach.OfferOutcome
+                    do {
+                        answer = try await Attach.offer(proved, mac: mac, keys: keys, build: build, now: now)
+                    } catch let Attach.Failure.presence(error) {
+                        stopTrying(.faceID(error))
+                        return
+                    } catch {
+                        if !Task.isCancelled { stopTrying(.presenceKeyNotTaken) }
+                        return
+                    }
                     guard !Task.isCancelled else { return }
                     switch answer {
                     case .accepted:
@@ -464,7 +476,7 @@ enum ConnectionProblem: Equatable, Sendable {
         case .presenceKeyWaits:
             "Face ID was set up again on this iPhone, so pi² made a new key for it and sent it to your Mac. On your Mac, accept it in pi² › Settings › Devices, only if you set up Face ID yourself. Then tap Try again here."
         case .presenceKeyNotTaken:
-            "Your Mac did not take the new key pi² made when Face ID was set up again on this iPhone. Make sure pi² on your Mac is open and up to date, then tap Try again here."
+            "Your Mac did not take the new key pi² made when Face ID was set up again on this iPhone. If your Mac shows another new key for this iPhone in pi² › Settings › Devices, it is not this iPhone's: refuse it there, then tap Try again here."
         case let .relaySaid(word):
             switch word {
             case "left", "removed", "not-listed", "deleted", "unknown-pairing":

@@ -1682,9 +1682,10 @@ async function changeLogged(edit: (doc: DevicesState) => boolean, entry: Omit<De
  * key offered again is answered as waiting, without a second notice; the key in use offered again is answered as
  * accepted, without counting, so that a phone can learn its key was accepted without attaching to find out.
  *
- * Four refusals carry the reason an attach's would (`AttachRefusal`, #891), which pi² Remote tells the phone in place of
- * a bare end: `suspended` (only for an offer the device key signed; not counted, as before), `clock` (counted, as
- * before), `update` (not counted, as before) and `presence` for a second key while one waits (counted, as before).
+ * Three refusals carry the reason an attach's would (`AttachRefusal`, #891), which pi² Remote tells the phone in place
+ * of a bare end: `suspended` (only for an offer the device key signed; not counted, as before), `clock` (counted, as
+ * before) and `update` (not counted, as before). A second key while one waits carries none (counted, as before): the key
+ * that waits is not this phone's, and `presence` would have the phone tell the person to accept it on the Mac.
  */
 export async function offerPresenceKey(params: Params): Promise<{ waiting: true } | { accepted: true }> {
 	if (!remoteOn()) throw new Error("Reach from an iPhone is off on this Mac.");
@@ -1729,7 +1730,7 @@ export async function offerPresenceKey(params: Params): Promise<{ waiting: true 
 	if (device.presenceKey !== null && sameText(offered, device.presenceKey)) return { accepted: true };
 	if (device.pendingPresenceKey !== null) {
 		if (sameText(offered, device.pendingPresenceKey)) return { waiting: true };
-		return refuse(PRESENCE_KEY_ALREADY_WAITS, "presence");
+		return refuse(PRESENCE_KEY_ALREADY_WAITS);
 	}
 	const taken = await changeLogged(
 		(doc) => {
@@ -1746,7 +1747,7 @@ export async function offerPresenceKey(params: Params): Promise<{ waiting: true 
 		},
 		{ device: device.id, path, method: "presenceKey" },
 	);
-	if (!taken) return refuse(PRESENCE_KEY_ALREADY_WAITS, "presence");
+	if (!taken) return refuse(PRESENCE_KEY_ALREADY_WAITS);
 	notify("presenceKey", device.id, `Face ID was set up again on ${device.name}. Accept the new key in Settings › Devices only if you did it yourself.`);
 	return { waiting: true };
 }

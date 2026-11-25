@@ -67,6 +67,8 @@ final class TestMac: @unchecked Sendable {
         case nothing
         /// `refused` with this reason, as pi² Remote passes on the engine's refusal of an offer.
         case refused(Refusal.Reason)
+        /// A line the phone does not read as an answer to an offer (`attached`), then the close.
+        case unreadable
     }
 
     struct Device {
@@ -334,6 +336,9 @@ final class TestMac: @unchecked Sendable {
             try channel.presenceKeyAccepted()
         case .nothing: channel.close()
         case let .refused(reason): try channel.refuse(reason)
+        case .unreadable:
+            try channel.send(.attached(Attached(session: SessionID("s_offer")!, resume: false)))
+            channel.close()
         }
     }
 

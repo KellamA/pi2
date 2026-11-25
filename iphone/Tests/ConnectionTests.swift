@@ -463,6 +463,23 @@ struct ConnectionTests {
         #expect(await Wait.until { connection.problem == .presenceKeyNotTaken })
         try await Task.sleep(for: .seconds(1))
         #expect(paired.mac.state.withLock { ($0.offers.count, $0.attaches.count) } == (1, 0))
+        // It is how the Mac answers when another new key already waits there (the engine gives that refusal no reason):
+        // that key is not this phone's, so the words say to refuse it, never to accept it.
+        let words = ConnectionProblem.presenceKeyNotTaken.words
+        #expect(words.contains("refuse it there") && words.contains("not this iPhone's") && !words.contains("accept"), "\(words)")
+    }
+
+    @Test func anOfferAnsweredWithWhatThePhoneCannotReadIsNotOfferedAgain() async throws {
+        // An answer the phone does not read, or none within ten seconds, may hide a refusal that counted: not again by itself.
+        let paired = try await Self.paired(TestMac.Rules(offers: .unreadable))
+        defer { paired.mac.stop() }
+        try #require(paired.keys.software).softwarePresence.waiting.withLock { $0 = true }
+        let connection = try Self.connection(paired)
+        connection.start()
+        defer { connection.stop() }
+        #expect(await Wait.until { connection.problem == .presenceKeyNotTaken })
+        try await Task.sleep(for: .seconds(1))
+        #expect(paired.mac.state.withLock { ($0.offers.count, $0.attaches.count) } == (1, 0), "one offer, no attach, no retry")
     }
 
     /// The Mac's refusals of an offer (#891): each reason stops the phone with its own words, and it does not try again by

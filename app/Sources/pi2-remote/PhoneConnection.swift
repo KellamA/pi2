@@ -528,12 +528,13 @@ final class PhoneConnection: @unchecked Sendable {
 	/// counts what it refuses. Passed as `remote.presenceKey` with exactly the offer and the binding pi² Remote computed
 	/// for this channel, never one the phone gave. The engine's answer opens no session: `waiting` is told the phone as
 	/// `refused` `presence`, `accepted` as `presenceKeyAccepted`, a refusal by its fixed word or `bye` alone, and the
-	/// channel ends. The offered key never goes on pi² Remote's list here: only the engine's `presenceKey` event, once the
-	/// person accepted it on the Mac, puts it there (`Remote.presenceKeyAccepted`).
+	/// channel ends. The offered key never goes on pi² Remote's list here: only the engine, once the person accepted it on
+	/// the Mac, puts it there, by its `presenceKey` event or at the next `start` (`Remote.presenceKeyAccepted`, `start`).
 	///
 	/// How many an offer costs the engine: one `remote.attachBegin` and one `remote.presenceKey` for each channel, since a
-	/// channel carries one first line and ends after the answer; and a device has at most six handshakes a minute
-	/// (`Admission.handshakesPerDevicePerMinute`), a first message seen before none, as for attaches.
+	/// channel carries one first line and ends after the answer; and a device has at most six handshakes a minute on
+	/// each path's limits (`Admission.handshakesPerDevicePerMinute`: one for home and direct, one for the relay, so twelve
+	/// in all), a first message seen before none, as for attaches.
 	private func offer(_ offer: PresenceKeyOffer, channel: Channel, challenge: Data, pairing: PairingID, device: DeviceID, listed: ListedDevice) {
 		do {
 			try offer.verifyDevice(deviceKey: listed.deviceKey, pairing: pairing, device: device, binding: channel.handshakeHash)

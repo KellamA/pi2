@@ -2515,11 +2515,12 @@ try {
 	await app.call("engine.info");
 	assert.equal(recordOf().suspendedAt, null, "five offers from a build too old do not suspend the device");
 	assert.equal(await refusedOffers(), beforeUpdate, "nor are they logged");
-	// Another key while one waits: `presence`, counted and logged as before.
+	// Another key while one waits: no reason, never `presence`, since the key that waits is not this phone's; counted and
+	// logged as before.
 	const waitingKey = p256();
 	assert.deepEqual((await offer(waitingKey)).result, { waiting: true });
 	const beforeSecond = await refusedOffers();
-	assert.deepEqual(offerRefusal(await offer(p256())), [PRESENCE_KEY_ALREADY_WAITS, "presence"], "a second key while one waits is told presence");
+	assert.deepEqual(offerRefusal(await offer(p256())), [PRESENCE_KEY_ALREADY_WAITS, undefined], "a second key while one waits is told no reason");
 	assert.equal(await refusedOffers(), beforeSecond + 1, "and logged as refused");
 	assert.deepEqual(await app.call("devices.refusePresenceKey", { device: phone.id }), {});
 	// Other refusals still carry no reason.
@@ -2543,7 +2544,7 @@ try {
 	assert.equal(await refusedOffers(), beforeSuspended, "neither is logged");
 	await app.call("devices.resume", { device: phone.id });
 	await app.until("the device resumed", () => recordOf().suspendedAt === null);
-	step("an offer's refusals carry the attach's reasons: update and suspended uncounted, clock and a second key (presence) counted, the same words and log, and no reason for any other");
+	step("an offer's refusals carry the attach's reasons: update and suspended uncounted, clock counted, the same words and log; a second key while one waits counted with no reason, and no reason for any other");
 
 	// ---- pi² Remote stopping, then revocation (3.6)
 	const later = await attach();
