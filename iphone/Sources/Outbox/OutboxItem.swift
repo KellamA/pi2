@@ -109,6 +109,8 @@ extension OutboxItem {
             guard text.count <= longestMessage else {
                 return .failure(.because("While your Mac can't be reached, a message can be at most \(longestMessage.formatted()) characters. Shorten it, or send it once your Mac is back."))
             }
+            // Characters as Swift counts them can each be many bytes: the engine's own limit, in bytes (#924).
+            if let tooLong = TypedTextLimit.refusal(text) { return .failure(.because(tooLong)) }
             // The engine knows a message by its request id: one is given now if the client gave none.
             if (params["requestId"] as? String)?.isEmpty != false { params["requestId"] = UUID().uuidString }
             kind = .message
@@ -126,10 +128,12 @@ extension OutboxItem {
             if decision == "always" || decision == "rule" { widens = true }
         case "inbox.answer":
             guard params["id"] is String, let text = params["text"] as? String, !text.isEmpty else { return .failure(.notKept) }
+            if let tooLong = TypedTextLimit.refusal(text, answer: true) { return .failure(.because(tooLong)) }
             kind = .answer
             summary = text
         case "needs.answer":
             guard params["id"] is String, let answer = params["answer"] as? [String: Any] else { return .failure(.notKept) }
+            if let text = answer["text"] as? String, let tooLong = TypedTextLimit.refusal(text, answer: true) { return .failure(.because(tooLong)) }
             kind = .answer
             (summary, widens) = Self.words(answer: answer, widens: widens)
         default:

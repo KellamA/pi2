@@ -45,7 +45,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import type { Socket } from "node:net";
 import { join } from "node:path";
-import { allowsHiddenApproval, type DevicePath, deviceLogged, deviceMay, forTheHelper, HIDDEN_FROM_THE_PHONE, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID } from "./answers.ts";
+import { allowsHiddenApproval, type DevicePath, deviceLogged, deviceMay, forTheHelper, HIDDEN_FROM_THE_PHONE, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID, typedRefusal } from "./answers.ts";
 import { isPicture } from "./attachments.ts";
 import { type Client, clients, send, type Wire } from "./clients.ts";
 import {
@@ -919,15 +919,22 @@ function withPicture(out: string, data: string): string {
  * `DEVICE_LINE_FAILED`'s words.
  */
 async function deviceRequest(device: Device, path: DevicePath, client: Client, method: string, params: Params, reply: (body: Record<string, unknown>, picture?: string) => void): Promise<"done" | "failed" | "refused"> {
+	// A typed text over 1 MB first (#924), measured in place: nothing below reads or copies it before it is refused.
+	const tooLong = typedRefusal(method, params as Params);
 	const gate = { path, approvalSwitch, approvalHidden };
-	const answer = deviceMay(method, params as Params, gate);
+	const answer = tooLong === null ? deviceMay(method, params as Params, gate) : "no";
 	// The log's own names (a pairing, an offer of a Face ID key) are the engine's to write: a device's are "unknown" (#786).
 	const summary = summarize(requestLogged(method), params as Params);
-	if (DEVICE_FAULT !== undefined && method === DEVICE_FAULT) throw new Error("PI2_DEVICE_FAULT: the device's line");
 	const record = (outcome: "done" | "refused" | "failed", why?: string) =>
 		void logDevice({ device: device.id, path, method: requestLogged(method), summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }).catch((error) =>
 			log("devices: the log could not be written:", error instanceof Error ? error.message : error),
 		);
+	if (tooLong !== null) {
+		reply({ error: tooLong });
+		record("refused", tooLong);
+		return "refused";
+	}
+	if (DEVICE_FAULT !== undefined && method === DEVICE_FAULT) throw new Error("PI2_DEVICE_FAULT: the device's line");
 	if (answer === "no" || !Object.hasOwn(handlers, method)) {
 		const why = answer !== "no" ? `Unknown method: ${method}` : allowsHiddenApproval(method, params as Params, gate) ? HIDDEN_FROM_THE_PHONE : ONLY_ON_THE_MAC;
 		reply({ error: why });
