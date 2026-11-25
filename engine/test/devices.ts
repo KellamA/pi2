@@ -2659,6 +2659,48 @@ try {
 	assert.equal(recordOf().suspendedAt, null, "and the device is not suspended");
 	step("a new Face ID key waits, signs nothing and is told to the app alone; a second cannot replace it; a device cannot accept or refuse one; accepting replaces the key, tells pi² Remote, then ends the session; refusing drops it; the log has each");
 
+	// ---- An offer's refusals carry the reasons an attach's would (#891), with the same words, counting and log
+	const offerRefusal = (reply: any) => [reply.error, reply.data?.reason];
+	// Refused offers in the log, the same refusal again counted in its entry (`count`).
+	const refusedOffers = async () =>
+		((await app.call("devices.log", { device: phone.id })).entries as any[]).filter((entry) => entry.method === "presenceKey" && entry.outcome === "refused").reduce((sum, entry) => sum + (entry.count ?? 1), 0);
+	// A build below the minimum: `update`, not counted (five do not suspend), not logged.
+	const beforeUpdate = await refusedOffers();
+	for (let i = 0; i < 5; i++) assert.deepEqual(offerRefusal(await offer(p256(), { build: "0" })), ["This build of pi² for iPhone is too old for this Mac. Update it.", "update"], "a build below the minimum is told update");
+	await app.call("engine.info");
+	assert.equal(recordOf().suspendedAt, null, "five offers from a build too old do not suspend the device");
+	assert.equal(await refusedOffers(), beforeUpdate, "nor are they logged");
+	// Another key while one waits: no reason, never `presence`, since the key that waits is not this phone's; counted and
+	// logged as before.
+	const waitingKey = p256();
+	assert.deepEqual((await offer(waitingKey)).result, { waiting: true });
+	const beforeSecond = await refusedOffers();
+	assert.deepEqual(offerRefusal(await offer(p256())), [PRESENCE_KEY_ALREADY_WAITS, undefined], "a second key while one waits is told no reason");
+	assert.equal(await refusedOffers(), beforeSecond + 1, "and logged as refused");
+	assert.deepEqual(await app.call("devices.refusePresenceKey", { device: phone.id }), {});
+	// Other refusals still carry no reason.
+	const usedChallenge = (await remote.call("remote.attachBegin")).result.challenge;
+	await offer(p256(), { challenge: usedChallenge, at: Date.now() - 3 * 60_000 });
+	const noReason = await offer(p256(), { challenge: usedChallenge });
+	assert.match(noReason.error, /challenge is not one this Mac issued, or was used/);
+	assert.equal(noReason.data, undefined, "a used challenge is told no reason");
+	assert.equal((await offer(p256(), { device: p256().privateKey })).data, undefined, "nor an offer a stranger signed");
+	await app.call("devices.resume", { device: phone.id });
+	// A clock more than two minutes off: `clock`, counted as before; five, with the two above resumed away, suspend.
+	for (let i = 0; i < 5; i++) {
+		assert.deepEqual(offerRefusal(await offer(p256(), { at: Date.now() + 3 * 60_000 })), ["The offer's time is more than two minutes from the Mac's.", "clock"], "a clock three minutes off is told clock");
+	}
+	await app.until("five offers with the wrong clock suspend the device", () => recordOf().suspendedAt !== null);
+	// Suspended: `suspended` for an offer the device key signed, none for one it did not; neither counted nor logged.
+	const beforeSuspended = await refusedOffers();
+	assert.deepEqual(offerRefusal(await offer(p256())), ["This device is suspended. Resume it on the Mac's Devices page.", "suspended"], "a suspended device's offer is told suspended");
+	const strangers = await offer(p256(), { device: p256().privateKey });
+	assert.deepEqual([strangers.error, strangers.data], ["This device is suspended. Resume it on the Mac's Devices page.", undefined], "one the device key did not sign is told no reason");
+	assert.equal(await refusedOffers(), beforeSuspended, "neither is logged");
+	await app.call("devices.resume", { device: phone.id });
+	await app.until("the device resumed", () => recordOf().suspendedAt === null);
+	step("an offer's refusals carry the attach's reasons: update and suspended uncounted, clock counted, the same words and log; a second key while one waits counted with no reason, and no reason for any other");
+
 	// ---- pi² Remote stopping, then revocation (3.6)
 	const later = await attach();
 	const session3 = later.reply.result.session as string;

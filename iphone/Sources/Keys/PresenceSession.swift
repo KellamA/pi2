@@ -108,17 +108,27 @@ final class PresenceSession: PresenceSigning {
         case .failed(let failure):
             state = .failed(failure)
         case .passed(let passed):
-            // A different hash of the enrolled faces means Face ID was enrolled again: `biometryCurrentSet` has made
-            // the presence key and the cache key unusable for good. 3.2: a new key, used once the Mac accepts it.
+            // A different hash of the enrolled faces means Face ID was enrolled again. Only a presence key that no
+            // longer signs is replaced (#891): `biometryCurrentSet` invalidated it with the enrolment it was made for, and
+            // 3.2 then makes a new key, used once the Mac accepts it, which the connection offers at the next session
+            // under a Face ID evaluated after the key was made. A key that still signs is kept, with the new hash.
             if let current = passed.stateHash, let made = (try? keys.presenceFaceIDState()) ?? nil, current != made {
-                passed.invalidate()
-                do {
-                    _ = try keys.replacePresenceKey(faceIDState: current)
-                    state = .failed(.faceIDSetUpAgain)
-                } catch {
-                    state = .failed(.keysGone)
+                switch try? keys.presenceKeyInvalidated(context: passed.context) {
+                case true?:
+                    passed.invalidate()
+                    do {
+                        _ = try keys.replacePresenceKey(faceIDState: current)
+                        state = .failed(.faceIDSetUpAgain)
+                    } catch {
+                        state = .failed(.keysGone)
+                    }
+                    return
+                case false?:
+                    try? keys.keepFaceIDState(current)
+                case nil:
+                    // It could not tell: the session opens, and the next one asks again.
+                    break
                 }
-                return
             }
             pass = passed
             awaySince = nil
@@ -184,6 +194,14 @@ final class PresenceSession: PresenceSigning {
 
     nonisolated func signPresence(_ data: Data) async throws -> Data {
         try await sign(data)
+    }
+
+    nonisolated func presenceKeyWaits() throws -> Bool {
+        try keys.presenceKeyIsWaiting()
+    }
+
+    nonisolated func presenceKeyWasAccepted() throws {
+        try keys.presenceKeyAccepted()
     }
 
     private func sign(_ data: Data) async throws -> Data {

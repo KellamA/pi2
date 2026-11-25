@@ -127,6 +127,24 @@ enum PresenceSignatures {
             deviceKey: try DeviceStatementSigner(deviceKey), presenceKey: Signed(text: text, signature: signature, publicKey: presenceKey))
     }
 
+    /// The offer of the presence key that waits to be accepted on the Mac (3.2, #891), signed by the device key and by
+    /// the offered key itself, asked of the session as an attach's presence signature is: under the context Face ID
+    /// evaluated when this session opened, after the key was made. The text is RemoteKit's (`PresenceKeyOffer.signedText`),
+    /// exactly what the engine reads, and is signed before the offer is made with that signature.
+    static func offer(
+        pairing: PairingID, device: DeviceID, binding: Data, challenge: Data, build: String, at date: Date, deviceKey: any DeviceKeySigning,
+        presence: any PresenceSigning
+    ) async throws -> PresenceKeyOffer {
+        guard let offered = PublicKeys.signingKey(fromBase64URL: Base64URL.encode(try presence.presencePublicKeyDER() ?? Data())) else {
+            throw KeysError.missing("Face ID key")
+        }
+        let text = Data(PresenceKeyOffer.signedText(pairing: pairing, device: device, binding: binding, challenge: challenge, presenceKey: offered, build: build, at: date).utf8)
+        let signature = try await presence.signPresence(text)
+        return try PresenceKeyOffer.make(
+            pairing: pairing, device: device, binding: binding, challenge: challenge, build: build, at: date, deviceKey: try DeviceStatementSigner(deviceKey),
+            offeredKey: Signed(text: text, signature: signature, publicKey: offered))
+    }
+
     /// A signature made already, given for exactly the text it was made over.
     private struct Signed: StatementSigner {
         let text: Data
@@ -135,7 +153,7 @@ enum PresenceSignatures {
 
         func sign(_ data: Data) throws -> Data {
             guard data == text, let ecdsa = try? P256.Signing.ECDSASignature(rawRepresentation: signature), publicKey.isValidSignature(ecdsa, for: data) else {
-                throw RemoteKitError("attach", "the presence signature is not over this text by the presence key")
+                throw RemoteKitError("presence key", "the presence signature is not over this text by the presence key")
             }
             return signature
         }

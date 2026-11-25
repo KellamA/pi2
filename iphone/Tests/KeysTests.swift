@@ -99,6 +99,9 @@ final class FakePresenceKeys: PresenceKeyHolding, @unchecked Sendable {
     var present = true
     var madeFor: Data? = Data("faces-1".utf8)
     var reuseHolds = true
+    /// Whether Face ID's new enrolment invalidated the key (`biometryCurrentSet`): only then is it replaced (#891).
+    var invalidated = false
+    var waiting = false
     private(set) var replaced = 0
     private(set) var signatures = 0
     /// The pass each signature was made under, by its identity: a stand-in pass has no LAContext.
@@ -122,10 +125,16 @@ final class FakePresenceKeys: PresenceKeyHolding, @unchecked Sendable {
     func replacePresenceKey(faceIDState: Data?) throws -> Data {
         replaced += 1
         madeFor = faceIDState
+        invalidated = false
+        waiting = true
         return key.publicKey.derRepresentation
     }
 
     func cacheKey(context: LAContext?) throws -> SymmetricKey? { SymmetricKey(size: .bits256) }
+    func presenceKeyInvalidated(context: LAContext?) throws -> Bool { invalidated }
+    func keepFaceIDState(_ state: Data?) throws { madeFor = state }
+    func presenceKeyIsWaiting() throws -> Bool { waiting }
+    func presenceKeyAccepted() throws { waiting = false }
 }
 
 /// A clock the test moves by hand.
@@ -501,8 +510,9 @@ struct PresenceSessionTests {
         #expect(faceID.checks == 0)
     }
 
-    @Test func faceIDSetUpAgainMakesANewKeyForTheMacToAccept() async {
+    @Test func faceIDSetUpAgainMakesANewKeyForTheMacToAccept() async throws {
         let keys = FakePresenceKeys()
+        keys.invalidated = true
         let faceID = FakeFaceID()
         faceID.stateHash = Data("faces-2".utf8)
         let session = session(keys, faceID)
@@ -511,10 +521,53 @@ struct PresenceSessionTests {
         #expect(keys.replaced == 1)
         #expect(keys.madeFor == Data("faces-2".utf8))
         #expect(faceID.passes.first?.invalidated == true)
-        // Asked again, it opens with the new key.
+        #expect(try session.presenceKeyWaits(), "the new key waits to be accepted on the Mac: the connection offers it (#891)")
+        // Asked again, it opens with the new key, under a Face ID evaluated after the key was made.
         await session.open()
         #expect(session.state == .open)
         #expect(keys.replaced == 1)
+        #expect(faceID.passes.count == 2 && faceID.passes.last?.invalidated == false)
+    }
+
+    @Test func aNewHashOfTheFacesWithAKeyThatStillSignsKeepsTheKey() async throws {
+        // Face ID's hash changed, but the key was not invalidated: no new key, nothing to accept on the Mac, and the
+        // session opens with the key it has (#891: offer only when the key was invalidated).
+        let keys = FakePresenceKeys()
+        let faceID = FakeFaceID()
+        faceID.stateHash = Data("faces-2".utf8)
+        let session = session(keys, faceID)
+        await session.open()
+        #expect(session.state == .open)
+        #expect(keys.replaced == 0)
+        #expect(try session.presenceKeyWaits() == false)
+        #expect(keys.madeFor == Data("faces-2".utf8), "the new hash is kept beside the key, so that the next session asks nothing")
+    }
+
+    @Test func onceANewKeyIsMadeEveryPresenceSignatureIsItsOwn() throws {
+        // The new key is written in place of the old one, so that any attach the phone makes while it waits (or after it
+        // was accepted) carries the waiting key's signature, the one the engine leaves uncounted (#891), and none can be
+        // signed by the old key.
+        let keys = PhoneKeys(keychain: MemoryKeychain(), secureEnclave: false)
+        _ = try keys.makeDeviceKey()
+        let old = try keys.makePairingKeys(faceIDState: Data("faces-1".utf8)).presence
+        let new = try keys.replacePresenceKey(faceIDState: Data("faces-2".utf8))
+        let current = try keys.presencePublicKey()
+        let waits = try keys.presenceKeyIsWaiting()
+        #expect(new != old && current == new && waits)
+        let text = Data(#"{"v":2,"kind":"attach"}"#.utf8)
+        let signature = try keys.signPresence(text, context: nil)
+        #expect(try verifies(signature, text, new), "signed by the waiting key")
+        #expect(try !verifies(signature, text, old), "and not by the old one")
+    }
+
+    @Test func aKeyInSoftwareIsNeverInvalidated() throws {
+        // The simulator's keys are in software and always sign: no new key is ever made for a changed enrolment there.
+        let keys = PhoneKeys(keychain: MemoryKeychain(), secureEnclave: false)
+        _ = try keys.makeDeviceKey()
+        _ = try keys.makePairingKeys(faceIDState: Data("faces-1".utf8))
+        #expect(try keys.presenceKeyInvalidated(context: nil) == false)
+        try keys.keepFaceIDState(Data("faces-2".utf8))
+        #expect(try keys.presenceFaceIDState() == Data("faces-2".utf8))
     }
 
     @Test func aFaceIDThatAnswersAfterTheSessionEndedIsDropped() async {
