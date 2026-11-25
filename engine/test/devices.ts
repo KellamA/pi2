@@ -379,18 +379,34 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	assert.equal(maskKeys(`x ${value.slice(0, 8)}${"?".repeat(value.length - 5)}`), `x ${SECRET_HIDDEN}???`, "the value's length, no more");
 	assert.equal(maskKeys(`${"?".repeat(value.length - 5)}${value.slice(-8)} x`), `???${SECRET_HIDDEN} x`, "and back from its last 8");
 	// A background command's output read from any offset (#894): masked over the whole of it, then cut, so that a phone
-	// walking the offset through a value reads no 8 characters of it, nor do two answers either side of any split.
-	const output = `building\nDEPLOY_TOKEN=${value} deployed\n`;
+	// walking the offset reads no 8 characters of what it hides, nor do two answers either side of any split. With a
+	// known value, a key's shape (hidden by its prefix, which a cut after it takes away) and a known value whose last 8
+	// characters are too plain to stand for it (hidden by its first 8 alone): cutting first, then masking, would show
+	// the last two, as the walk checks too.
+	const partsOf = (text: string, of: string) => Array.from({ length: of.length - LEAST_SECRET + 1 }, (_, i) => of.slice(i, i + LEAST_SECRET)).filter((part) => text.includes(part));
+	const shapedKey = `${"ghp"}_abcdefghijklmnopqrstuvwxyz0123456789AB`;
+	const padded = "padded-id-x7Q-00000000";
+	knowSecrets("variables/agent-b", [padded]);
+	const output = `building\nDEPLOY_TOKEN=${value} GH_TOKEN=${shapedKey} ID=${padded} deployed\n`;
+	const shownOf = (text: string) => [...partsOf(text, value), ...partsOf(text, shapedKey.slice(4)), ...partsOf(text, padded)];
 	const walked: string[] = [];
+	let cutFirstShows = 0;
 	for (let from = 0; from <= output.length; from++) {
 		const answer = maskKeysFrom(output, from);
 		const before = maskKeys(output.slice(0, from));
 		walked.push(answer, before);
-		assert.deepEqual([eight(answer), eight(before), eight(before + answer)], [[], [], []], `split at ${from}: ${JSON.stringify([before, answer])}`);
+		// The answer before, as the output stood then, may end inside the key, which a key's shape shows until it is long
+		// enough to be one (as a streamed answer always has): only the values are held to it there.
+		const valuesOf = (text: string) => [...partsOf(text, value), ...partsOf(text, padded)];
+		assert.deepEqual([shownOf(answer), valuesOf(before), valuesOf(before + answer)], [[], [], []], `split at ${from}: ${JSON.stringify([before, answer])}`);
+		if (shownOf(maskKeys(output.slice(from))).length > 0) cutFirstShows++;
 	}
-	assert.deepEqual(eight(walked.join("")), [], "the whole walk");
-	assert.equal(maskKeysFrom(output, output.indexOf(value) + 3), `${SECRET_HIDDEN} deployed\n`, "from inside it: its mark first");
-	assert.equal(maskKeysFrom(output, 2), `ilding\nDEPLOY_TOKEN=${SECRET_HIDDEN} deployed\n`);
+	assert.deepEqual(shownOf(walked.filter((_, i) => i % 2 === 0).join("")), [], "the whole walk's answers");
+	assert.ok(cutFirstShows > 20, `cut first, then masked, ${cutFirstShows} offsets would show part of the key or the plain-ended value`);
+	assert.equal(maskKeysFrom(output, output.indexOf(value) + 3), `${SECRET_HIDDEN} GH_TOKEN=${KEY_HIDDEN} ID=${SECRET_HIDDEN} deployed\n`, "from inside it: its mark first");
+	assert.equal(maskKeysFrom(output, output.indexOf(shapedKey) + 3), `${KEY_HIDDEN} ID=${SECRET_HIDDEN} deployed\n`, "from inside the key");
+	assert.equal(maskKeysFrom(output, output.indexOf(padded) + 3), `${SECRET_HIDDEN} deployed\n`, "from inside the plain-ended value");
+	assert.equal(maskKeysFrom(output, 2), `ilding\nDEPLOY_TOKEN=${SECRET_HIDDEN} GH_TOKEN=${KEY_HIDDEN} ID=${SECRET_HIDDEN} deployed\n`);
 	// An approval with one in its call is marked shown in part, as for a key's shape, by the channel and the gate alike.
 	const inbox = JSON.parse(sentOf({ event: "inbox", items: [{ id: "a", kind: "approval", tool: "bash", arguments: { command: "ls" } }, { id: "b", kind: "approval", tool: "bash", arguments: { command: `curl -u me:${value} https://x.invalid` } }] }));
 	assert.deepEqual(inbox.items.map((item: any) => item[PART_HIDDEN] === true), [false, true]);
@@ -1762,7 +1778,7 @@ try {
 
 	// ---- What an agent writes of a secret the engine knows is masked, on the channel and in pushes (#894)
 	// The values have no shape of a key's: only the engine's knowing them hides them. The Mac's app sees each whole.
-	const known = { ...secrets, unshaped: "cerebras-key-with-no-known-prefix-894", rotated: "rotated-variable-value-894" };
+	const known = { ...secrets, unshaped: "cerebras-key-with-no-known-prefix-894", rotated: "rotated-variable-value-894", padded: "padded-id-x7Q-00000000" };
 	await app.call("providers.setKey", { id: "cerebras", key: known.unshaped });
 	const phoneCopyOf = (id: string) =>
 		until(`the phone's copy of ${id}`, () => remote.sessionLines.get(session)?.findLast((line) => line.event === "inbox" && line.items.some((item: any) => item.id === id))?.items.find((item: any) => item.id === id));
@@ -1800,10 +1816,15 @@ try {
 	assert.deepEqual([rotatedCopy.arguments.command, rotatedCopy[PART_HIDDEN]], [`echo ${SECRET_HIDDEN}`, true]);
 	assert.equal((await pushOf(rotatedAsk.id)).body.body, `bash: echo ${SECRET_HIDDEN}`);
 	assert.deepEqual((await ask("inbox.decide", { id: rotatedAsk.id, decision: "deny" })).result, {});
-	// A background command's output, read by the phone from every offset: never 8 characters of the value (#894's
-	// security read). What a phone may ask from is its own choice, so the output is masked whole, then cut.
+	// A background command's output, read by the phone from every offset: never 8 characters of a known value, of a
+	// key's shape, or of a known value whose last 8 characters are too plain to stand for it (#894's security reads).
+	// What a phone may ask from is its own choice, so the output is masked whole, then cut: cut first, the key (whose
+	// prefix a cut takes away) and the plain-ended value (found by its first 8 alone) would show, as checked below.
 	const windows = (text: string, value: string) => Array.from({ length: value.length - LEAST_SECRET + 1 }, (_, i) => value.slice(i, i + LEAST_SECRET)).filter((part) => text.includes(part));
-	void app.call("submit", { id: plain, text: `/background printf 'start DEPLOY_TOKEN=%s end\\n' '${known.rotated}'; sleep 120` });
+	const shapedKey = `${"ghp"}_abcdefghijklmnopqrstuvwxyz0123456789AB`;
+	await app.call("variables.set", { agentId: "forge", name: "PADDED_ID", value: known.padded });
+	const hiddenIn = (text: string) => [...windows(text, known.rotated), ...windows(text, shapedKey.slice(4)), ...windows(text, known.padded)];
+	void app.call("submit", { id: plain, text: `/background printf 'start DEPLOY_TOKEN=%s GH_TOKEN=%s ID=%s end\\n' '${known.rotated}' '${shapedKey}' '${known.padded}'; sleep 120` });
 	const started = await app.until("the background command's approval", () => app.events.inbox?.items?.find((item: any) => item.conversationId === plain && item.kind === "approval" && !seen.includes(item.id)));
 	seen.push(started.id);
 	await app.call("inbox.decide", { id: started.id, decision: "once" });
@@ -1814,14 +1835,21 @@ try {
 		whole = await app.call("background.output", { id: running.id, from: whole.total, wait: 5 });
 		whole = await app.call("background.output", { id: running.id });
 	}
-	assert.ok(whole.output.includes(known.rotated), `the Mac's app reads it whole: ${JSON.stringify(whole.output.replace(known.rotated, "<value>"))}`);
+	assert.ok([known.rotated, shapedKey, known.padded].every((one) => whole.output.includes(one)), "the Mac's app reads it whole");
 	const walk: string[] = [];
+	let cutFirstShows = 0;
+	// This test's own process masks as the engine does once it knows the same values.
+	knowSecrets("variables/forge", [known.rotated, known.padded]);
 	for (let from = 0; from <= whole.total; from++) {
 		const part = (await ask("background.output", { id: running.id, from })).result;
-		assert.deepEqual(windows(part.output, known.rotated), [], `from ${from}: ${JSON.stringify(part.output)}`);
+		assert.deepEqual(hiddenIn(part.output), [], `from ${from}: ${JSON.stringify(part.output)}`);
 		walk.push(part.output);
+		// What the phone would have been sent had the output been cut first, then masked as any line is.
+		if (hiddenIn(JSON.parse(forDevice(JSON.stringify({ id: 1, result: { output: whole.output.slice(from) } }))!).result.output).length > 0) cutFirstShows++;
 	}
-	assert.deepEqual(windows(walk.join(""), known.rotated), [], "nor the whole walk");
+	assert.deepEqual(hiddenIn(walk.join("")), [], "nor the whole walk");
+	assert.ok(cutFirstShows > 20, `cut first, ${cutFirstShows} offsets would have shown part of them`);
+	forgetEverySecret();
 	await app.call("background.stop", { id: running.id });
 	// Search from the phone matches and cuts on the text as it is sent: whatever the guess, the same answer; the text after
 	// a value comes back masked. From the Mac's app, as before.

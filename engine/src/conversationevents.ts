@@ -287,7 +287,7 @@ async function subscribe(client: Client, id: number, newestFirst = false, tail =
 	}
 }
 
-/** The most characters of entries masked for one search from a paired device: some 0.3 s of the engine's time. */
+/** The most characters of entries one search from a paired device looks at, masked or not: masked all, some 0.3 s. */
 export const SEARCH_MASKED_CHARS = 64 * 1024 * 1024;
 
 export const conversationRequests: Record<string, (params: Params, client: Client) => Promise<unknown>> = {
@@ -324,8 +324,8 @@ export const conversationRequests: Record<string, (params: Params, client: Clien
 	 * device, matched and cut on the text as the device is sent it, masked (`maskKeys`, devices.ts, #894): matched on the
 	 * text as it is, whether a query finds an entry would tell a phone what its copy hides, a character a query. An entry
 	 * whose text, as it is, does not hold the query cannot hold it masked, but for a query with a mark's characters in it,
-	 * so only the others are masked; and at most SEARCH_MASKED_CHARS of text are masked for one search, which then ends
-	 * with what it found.
+	 * so only the others are masked; and one search looks at most at SEARCH_MASKED_CHARS of entries' text, counted
+	 * whether masked or not, then ends with what it found: where it ends depends on how long the entries are, never on what they hold.
 	 */
 	search: async (params, client) => {
 		const query = text(params, "query").trim().toLowerCase();
@@ -353,9 +353,10 @@ export const conversationRequests: Record<string, (params: Params, client: Clien
 					if (message?.role !== "user" && message?.role !== "assistant") continue;
 					let body = textOf(message.content, false);
 					if (device) {
-						if (!meetsMark && !body.toLowerCase().includes(query)) continue;
+						// Every entry looked at counts, masked or not, so that where the search stops says nothing of the text.
 						masked += body.length;
 						if (masked > SEARCH_MASKED_CHARS) break;
+						if (!meetsMark && !body.toLowerCase().includes(query)) continue;
 						body = maskKeys(body);
 					}
 					const at = body.toLowerCase().indexOf(query);
