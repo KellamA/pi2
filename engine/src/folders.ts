@@ -24,19 +24,40 @@
 // of its agent's answers links to the file (a Markdown link or picture, or a `file:` address in angle brackets, outside
 // code, as the conversation's page draws a file link: markdown.js, `fileTarget`); by its text, and then once links are
 // followed, the file is under the folder; it is not inside a `.git`, nor in pi²'s data folder or a scratch folder (but
-// the conversation's own worktree, there, is its folder); it is a regular file; git does not ignore it, and, in a
-// folder that is no git repository, no name on its path from the folder begins with a dot (`.env`, `.ssh/…`); it has
-// no other name (a hard link could make a file from anywhere on the volume look as if it were in the folder); it is at
+// the worktree pi² made for this very conversation, or for the one a sub-chat works for, is its folder: not any other
+// in the data folder, #902); it is a regular file; git does not ignore it, and, in a folder that is no git repository,
+// no name on its path begins with a dot (`.env`, `.ssh/…`), the conversation's folder's own path included (a
+// conversation working in `~/.ssh` is shown none of it, #902); it has no other name (a hard link could make a file
+// from anywhere on the volume look as if it were in the folder); it is at
 // most 256 KB; and it is UTF-8 text with no NUL. No refusal's words hold a path. The check and the read are of the same file: it is opened with no link followed anywhere
 // on its path (O_NOFOLLOW_ANY on macOS; on Linux the opened descriptor's own path is read back), without waiting on a
 // pipe, and the opened file must be the one checked (device and inode), so a file swapped for a link, or for another
 // file, between the check and the read is refused.
+//
+// Bounds on the work a phone, or anything on the socket, can ask for again and again (#902). What either reads is kept
+// a while, and never shown again once the rules would refuse it now (`keepFolders`, for the engine itself):
+// - Each conversation's folder, read from its AgentDoc once and then kept up to date from the documents' commits: a
+//   commit that changes the AgentDoc gives the new one, a retirement or a copy forgets it, and a read a commit
+//   overtook is not kept.
+// - The last answer of `projects.folders`, for OFFERED_MS, while what it was made of is the same: the folders used
+//   (projects', agents' and the recent conversations', each with when) and the projects' names and repositories, all
+//   in memory. A project deleted or renamed, an agent removed, a conversation deleted, moved or used, and the key
+//   differs. Before it is given again, each folder used that it offers is checked to have the real path it had, and
+//   each folder it offers to be a folder still (a system call each): one gone, moved behind a link, or a link pointed
+//   elsewhere makes it read everything again. What can be stale is only a repository's name read from `.git/config`,
+//   for OFFERED_MS.
+// - The files each conversation links to, by its folder and its newest entry: entries never change once committed, so
+//   while the newest is the same, so is what the transcript links to. A new entry, or another folder, reads the
+//   transcript again. Only which files are linked is kept: every other check (git's ignore rules among them) runs at
+//   each request, so a file that became ignored, or moved out, is refused at once.
+// And a device may ask for at most PREVIEWS_PER_MINUTE files a minute: each runs git, and each is logged.
 
 import { constants, lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname } from "node:path";
 import { AgentDoc, type ConversationId } from "@earendil-works/pi-durable";
+import type { Client } from "./clients.ts";
 import { commandEnvironment } from "./environment.ts";
 import type { Engine, Feature } from "./features.ts";
 import { offerFolders } from "./answers.ts";
@@ -46,6 +67,7 @@ import { runOffThread } from "./offthread.ts";
 import { allProjects, wireOfferedFolder } from "./projects.ts";
 import { scratchRoot } from "./scratch.ts";
 import { toItem } from "./transcript.ts";
+import { allWorktrees } from "./worktrees.ts";
 
 /** The most folders offered at once. */
 export const MAX_FOLDERS = 50;
@@ -53,6 +75,12 @@ export const MAX_FOLDERS = 50;
 export const RECENT_CONVERSATIONS = 200;
 /** The largest file shown on a phone, in bytes (5.7). */
 export const MAX_PREVIEW = 256 * 1024;
+/** How long an answer of `projects.folders` is given again while nothing it was made of changed (#902). */
+export const OFFERED_MS = 5_000;
+/** How many conversations' linked files are kept (#902). */
+export const LINKED_KEPT = 32;
+/** How many files a device may be shown in a minute (#902): a person tapping links, never a script reading a folder. */
+export const PREVIEWS_PER_MINUTE = 30;
 
 // What a phone is told, and why.
 export const NOT_OFFERED = "That folder is not one your Mac offers for a new project. Choose one it offers, or make the project on the Mac.";
@@ -72,6 +100,7 @@ export const IGNORED = "git ignores that file, so it is not shown on the phone: 
 export const GIT_UNKNOWN = "pi² could not tell whether git ignores that file, so it is not shown on the phone.";
 export const NOT_TEXT = "That file is not text: only UTF-8 text is shown on the phone.";
 export const CHANGED = "That file changed while pi² read it. Try again.";
+export const TOO_MANY_PREVIEWS = `This phone asked for more than ${PREVIEWS_PER_MINUTE} files in a minute. Wait a minute, then try again.`;
 export const tooLarge = (size: number) => `That file is too large to show on the phone: ${Math.ceil(size / 1024)} KB, of at most ${MAX_PREVIEW / 1024} KB.`;
 
 export type OfferedFolder = { path: string; name: string; where?: string; project?: string; repository?: string };
@@ -80,6 +109,83 @@ export type OfferedFolder = { path: string; name: string; where?: string; projec
 const O_NOFOLLOW_ANY = 0x20000000;
 
 let wired: Engine | undefined;
+
+/** What is kept for one engine between requests (#902; see the top of this file). */
+type Kept = {
+	now: () => number;
+	/** Each conversation's folder by its AgentDoc (null for none), kept up to date from the documents' commits. */
+	cwds: Map<number, string | null>;
+	/** The reads of a conversation's AgentDoc under way: a commit to it marks them overtaken, and they are not kept. */
+	reading: Map<number, Set<{ overtaken: boolean }>>;
+	/** The last answer, what it was made of, and the folders used that it offers, each by the real path it had then. */
+	offered?: { key: string; at: number; folders: OfferedFolder[]; sources: [string, string][] };
+	/** By conversation, the files its transcript links to, as of its newest entry, read with its folder then. */
+	linked: Map<number, { folder: string; newest: unknown; paths: Set<string> }>;
+};
+const kept = new WeakMap<Engine, Kept>();
+const AGENT_DOC = AgentDoc.definition.kind;
+
+/** A conversation's folder as its AgentDoc gives it: null for none. */
+const cwdIn = (doc: unknown): string | null => {
+	const cwd = (doc as { cwd?: unknown } | undefined)?.cwd;
+	return typeof cwd === "string" ? cwd : null;
+};
+
+/**
+ * Keep what `projects.folders` and `files.preview` read for `engine`, from now until its documents' session ends (see
+ * the top of this file). The feature calls it as the engine starts; a test, with a stand-in engine and clock.
+ */
+export function keepFolders(engine: Engine, now: () => number = Date.now): void {
+	if (kept.has(engine)) return;
+	const state: Kept = { now, cwds: new Map(), reading: new Map(), linked: new Map() };
+	kept.set(engine, state);
+	engine.harness().observeCommits({
+		advance: ({ changes }) => {
+			for (const change of changes) {
+				if ((change.type !== "document" && change.type !== "document.copy") || change.record.kind !== AGENT_DOC || change.conversationId === undefined) continue;
+				const id = Number(change.conversationId);
+				for (const read of state.reading.get(id) ?? []) read.overtaken = true;
+				// The value is the whole document as committed; a copy carries none, and is read again when asked for.
+				if (change.type === "document" && change.kind === "change" && state.cwds.has(id)) state.cwds.set(id, cwdIn(change.value));
+				else state.cwds.delete(id);
+			}
+		},
+		// Nothing more is seen of the documents, so nothing kept could be trusted.
+		end: () => void kept.delete(engine),
+	});
+}
+
+/** Conversation `id`'s folder: kept, or read from its AgentDoc and kept unless a commit overtook the read. */
+async function folderOf(engine: Engine, id: number, keeping: Kept | undefined): Promise<string | null | undefined> {
+	if (keeping?.cwds.has(id)) return keeping.cwds.get(id);
+	const read = { overtaken: false };
+	const reads = keeping?.reading.get(id) ?? new Set();
+	reads.add(read);
+	keeping?.reading.set(id, reads);
+	try {
+		const cwd = cwdIn(await engine.harness().snapshot(AgentDoc, id as unknown as ConversationId, engine.context()));
+		if (keeping !== undefined && !read.overtaken) keeping.cwds.set(id, cwd);
+		return cwd;
+	} catch {
+		// A conversation that cannot be read lends no folder.
+		return undefined;
+	} finally {
+		reads.delete(read);
+		if (reads.size === 0) keeping?.reading.delete(id);
+	}
+}
+
+/**
+ * Whether what an answer offered is still as it was: each folder used that it offers has the real path it had then (a
+ * folder moved behind a link, or a link pointed elsewhere, has not), and each folder it offers is still a folder.
+ */
+function stillThere(last: NonNullable<Kept["offered"]>): boolean {
+	try {
+		return last.sources.every(([path, found]) => real(path) === found) && last.folders.every((folder) => statSync(folder.path).isDirectory());
+	} catch {
+		return false;
+	}
+}
 
 const real = (path: string): string | null => {
 	try {
@@ -138,16 +244,27 @@ export async function offeredFolders(engine: Engine | undefined = wired): Promis
 		.filter(([, meta]) => meta.deleted !== true && meta.parent === undefined && meta.chat !== true && !(meta.projectId !== undefined && deleted.has(meta.projectId)))
 		.sort(([, a], [, b]) => b.updatedAt - a.updatedAt)
 		.slice(0, RECENT_CONVERSATIONS);
-	for (const [id, meta] of started) {
-		try {
-			const doc = await engine.harness().snapshot(AgentDoc, Number(id) as unknown as ConversationId, engine.context());
-			use((doc as { cwd?: string | null } | undefined)?.cwd, meta.updatedAt);
-		} catch {
-			// A conversation that cannot be read lends no folder.
-		}
+	const keeping = kept.get(engine);
+	for (const [id, meta] of started) use(await folderOf(engine, Number(id), keeping), meta.updatedAt);
+	// Folders of conversations no longer among the newest are forgotten now and then: read again should they come back.
+	if (keeping !== undefined && keeping.cwds.size > 2 * RECENT_CONVERSATIONS) {
+		const recent = new Set(started.map(([id]) => Number(id)));
+		for (const id of keeping.cwds.keys()) if (!recent.has(id)) keeping.cwds.delete(id);
+	}
+	// The last answer again, while it was made of the same, each folder used that it offers still has the real path it had,
+	// and each folder it offers is still a folder.
+	const key = JSON.stringify([
+		[...used],
+		projects.filter((project) => project.folder !== null).map((project) => [project.folder, project.name, project.repository?.owner ?? null, project.repository?.name ?? null]),
+	]);
+	const last = keeping?.offered;
+	if (keeping !== undefined && last !== undefined && last.key === key && keeping.now() - last.at < OFFERED_MS && stillThere(last)) {
+		offerFolders(last.folders.map((folder) => folder.path));
+		return last.folders.map((folder) => ({ ...folder }));
 	}
 	const own = [real(engine.home) ?? engine.home, real(scratchRoot(engine.home)) ?? scratchRoot(engine.home)];
 	const byReal = new Map<string, number>();
+	const resolved = new Map<string, string>();
 	for (const [path, at] of used) {
 		const found = real(path);
 		// Never in pi²'s own folders, nor holding one (the home folder, `~/Library`, `/`).
@@ -158,6 +275,7 @@ export async function offeredFolders(engine: Engine | undefined = wired): Promis
 			continue;
 		}
 		byReal.set(found, Math.max(byReal.get(found) ?? 0, at));
+		resolved.set(path, found);
 	}
 	// A project's folder by its real path too, should it have become a link since it was set.
 	const projectOf = new Map(projects.filter((project) => project.folder !== null).map((project) => [real(project.folder!) ?? project.folder!, project]));
@@ -174,6 +292,11 @@ export async function offeredFolders(engine: Engine | undefined = wired): Promis
 		};
 	});
 	offerFolders(offered.map((folder) => folder.path));
+	if (keeping !== undefined) {
+		const paths = new Set(offered.map((folder) => folder.path));
+		const sources = [...resolved].filter(([, found]) => paths.has(found));
+		keeping.offered = { key, at: keeping.now(), folders: offered.map((folder) => ({ ...folder })), sources };
+	}
 	return offered;
 }
 
@@ -277,6 +400,62 @@ async function gitIgnores(folder: string, path: string): Promise<"ignored" | "ke
 	return "unknown";
 }
 
+type Conversation = NonNullable<Awaited<ReturnType<ReturnType<Engine["harness"]>["conversation"]>>>;
+
+/**
+ * The files conversation `id`'s agent's answers link to, each by the path its target names read against `folder`. Kept
+ * by the folder and the conversation's newest entry: entries never change once committed, so the same newest entry
+ * means the same transcript; a new one, or another folder, reads it all again.
+ */
+async function linkedFiles(engine: Engine, id: number, conv: Conversation, folder: string): Promise<ReadonlySet<string>> {
+	const keeping = kept.get(engine);
+	let newest: unknown;
+	if (keeping !== undefined) {
+		newest = (await conv.entries({ order: "descending" }, 1, undefined, engine.context())).items[0]?.id;
+		const known = keeping.linked.get(id);
+		if (known !== undefined && newest !== undefined && known.newest === newest && known.folder === folder) return known.paths;
+	}
+	const paths = new Set<string>();
+	let cursor: unknown;
+	for (;;) {
+		const batch = await conv.entries({ order: "ascending" }, 500, cursor as never, engine.context());
+		for (const entry of batch.items) {
+			const item = toItem(entry);
+			if (item?.kind !== "assistant") continue;
+			for (const target of linkTargets(item.text)) {
+				const path = linkPath(target, folder);
+				if (path !== null) paths.add(path);
+			}
+		}
+		cursor = (batch as { next?: unknown }).next;
+		if (cursor === undefined || batch.items.length === 0) break;
+	}
+	if (keeping !== undefined && newest !== undefined) {
+		// The conversation asked last goes to the end; past LINKED_KEPT, the one asked longest ago is forgotten.
+		keeping.linked.delete(id);
+		keeping.linked.set(id, { folder, newest, paths });
+		if (keeping.linked.size > LINKED_KEPT) keeping.linked.delete(keeping.linked.keys().next().value!);
+	}
+	return paths;
+}
+
+/**
+ * Whether `folder` (a real path) is in the worktree pi² made for conversation `id`, or, for a sub-chat, for the
+ * conversation it works for, whose folder it joins: by pi²'s record of each, never by where the folder is (#902).
+ */
+async function inOwnWorktree(engine: Engine, id: number, folder: string, data: string): Promise<boolean> {
+	const conversations = engine.library().conversations;
+	const made = await allWorktrees(engine.harness(), engine.context());
+	let at: number | undefined = id;
+	for (let hops = 0; at !== undefined && hops < 16; hops++) {
+		const worktree = made[String(at)];
+		const path = typeof worktree?.path === "string" ? real(worktree.path) : null;
+		if (path !== null && path.startsWith(`${data}/worktrees/`) && within(folder, path)) return true;
+		at = conversations[String(at)]?.parent;
+	}
+	return false;
+}
+
 /**
  * `files.preview { id, path }`: the text of a file conversation `id` links to, and its size in bytes; see the top of
  * this file. `between` runs after the checks and before the read: the test swaps the file there.
@@ -296,18 +475,7 @@ export async function previewFile(params: Record<string, unknown>, engine: Engin
 	// Linked from one of its agent's answers, by the same reading of a target.
 	const conv = await engine.harness().conversation(id as unknown as ConversationId, engine.context());
 	if (conv === undefined) throw new Error(`Unknown conversation: ${String(id)}`);
-	let linked = false;
-	let cursor: unknown;
-	while (!linked) {
-		const batch = await conv.entries({ order: "ascending" }, 500, cursor as never, engine.context());
-		for (const entry of batch.items) {
-			const item = toItem(entry);
-			if (item?.kind === "assistant" && linkTargets(item.text).some((target) => linkPath(target, folder) === asked)) linked = true;
-		}
-		cursor = (batch as { next?: unknown }).next;
-		if (cursor === undefined || batch.items.length === 0) break;
-	}
-	if (!linked) throw new Error(NOT_LINKED);
+	if (!(await linkedFiles(engine, id as number, conv, folder)).has(asked)) throw new Error(NOT_LINKED);
 
 	// Under the folder: by its text first, so that a link out tells nothing of what is there; then once links are
 	// followed. Then what it is: pi²'s own and git's own are refused before anything is said of the file itself.
@@ -321,18 +489,20 @@ export async function previewFile(params: Record<string, unknown>, engine: Engin
 	const relative = realFolder === "/" ? file.slice(1) : file.slice(realFolder.length + 1);
 	if (relative.split("/").includes(".git")) throw new Error(IN_GIT);
 	// pi²'s data folder (its settings, endpoints and MCP servers' command lines, 5.7) and the scratch folders, but for the
-	// conversation's own worktree there, which is its folder.
+	// conversation's own worktree there, which is its folder: never another conversation's, nor a folder holding several.
 	const data = real(engine.home) ?? engine.home;
 	const pi2Own = [data, real(scratchRoot(engine.home)) ?? scratchRoot(engine.home)];
-	const ownWorktree = within(realFolder, `${data}/worktrees`) && realFolder !== `${data}/worktrees`;
-	if (!ownWorktree && pi2Own.some((own) => within(file, own))) throw new Error(IN_PI2);
+	if (pi2Own.some((own) => within(file, own)) && !(await inOwnWorktree(engine, id as number, realFolder, data))) throw new Error(IN_PI2);
 	const checked = lstatSync(file, { bigint: true });
 	if (!checked.isFile()) throw new Error(NOT_A_FILE);
 	// git before the size and the other name, so that nothing is said of a file git ignores.
 	const git = await gitIgnores(realFolder, relative);
 	if (git === "ignored") throw new Error(IGNORED);
 	if (git === "unknown") throw new Error(GIT_UNKNOWN);
-	if (git === "no repository" && relative.split("/").some((name) => name.startsWith("."))) throw new Error(DOT_OUTSIDE_GIT);
+	// The conversation's folder's own names too, by its text and once links are followed: one working in `~/.ssh`, or
+	// through a link to it, is shown nothing there.
+	const dotted = (path: string) => path.split("/").some((name) => name.startsWith("."));
+	if (git === "no repository" && (dotted(relative) || dotted(realFolder) || dotted(folderText))) throw new Error(DOT_OUTSIDE_GIT);
 	if (checked.nlink > 1n) throw new Error(HARD_LINK);
 	if (checked.size > BigInt(MAX_PREVIEW)) throw new Error(tooLarge(Number(checked.size)));
 
@@ -375,15 +545,38 @@ export async function previewFile(params: Record<string, unknown>, engine: Engin
 	}
 }
 
+/** When each device was last shown files, the last minute's, by device. */
+const previewsBy = new Map<string, number[]>();
+
+/**
+ * Counts one `files.preview` from `device`, or refuses it, in words the phone shows, when it asked for
+ * PREVIEWS_PER_MINUTE in the last minute. Counted before any of the work, whether it is then shown or refused; one
+ * refused here is not counted, so a phone that keeps asking is shown files again a minute after its last one shown.
+ */
+export function previewCounted(device: string, now = Date.now()): void {
+	const recent = (previewsBy.get(device) ?? []).filter((at) => now - at < 60_000);
+	if (recent.length >= PREVIEWS_PER_MINUTE) {
+		previewsBy.set(device, recent);
+		throw new Error(TOO_MANY_PREVIEWS);
+	}
+	recent.push(now);
+	previewsBy.set(device, recent);
+}
+
 export const folders: Feature = (_host, engine) => {
 	wired = engine;
 	wireOfferedFolder(offeredFolder);
 	return {
+		start: async () => keepFolders(engine),
 		handlers: {
 			/** `{}`: `{ folders: [{ path, name, where?, project?, repository? }] }`, the folders offered for a new project. */
 			"projects.folders": async () => ({ folders: await offeredFolders(engine) }),
-			/** `{ id, path }`: `{ text, size }` of a text file the conversation links to, under its folder. */
-			"files.preview": async (params) => previewFile(params, engine),
+			/** `{ id, path }`: `{ text, size }` of a text file the conversation links to, under its folder; a device's counted. */
+			"files.preview": async (params, connection) => {
+				const device = (connection as Client | undefined)?.device?.id;
+				if (device !== undefined) previewCounted(device);
+				return previewFile(params, engine);
+			},
 		},
 	};
 };
