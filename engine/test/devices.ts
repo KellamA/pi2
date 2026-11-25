@@ -39,7 +39,7 @@ const pad = (text: string) => text + "A".repeat((4 - (text.length % 4)) % 4);
 import { offerFolders } from "../src/answers.ts";
 import { SETTINGS_ONLY_IN_THE_APP } from "../src/answers.ts";
 import { deviceRequestsListed, MAX_OTHER_FROM_A_DEVICE } from "../src/answers.ts";
-import { PRESENTING_NOT_YET } from "../src/presented.ts";
+import { NOT_PRESENTED } from "../src/presented.ts";
 import { DatabaseSync } from "node:sqlite";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
@@ -2319,6 +2319,34 @@ try {
 		step("a picture whose base64 holds a key-shaped run comes back to the phone byte for byte from conversation.image, as to the Mac's app; the same run typed is still masked");
 	}
 
+	// ---- A presented picture whose base64 holds a key-shaped run comes to the phone whole too (#946, PICTURE_ANSWERS)
+	{
+		// A PNG's signature and header (33 bytes) and three more, so that what follows starts a base64 group of its own.
+		const header = Buffer.concat([Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"), Buffer.from([0, 0, 0, 8, 0, 0, 0, 8, 8, 2, 0, 0, 0]), Buffer.alloc(4), Buffer.alloc(3)]);
+		const bytes = Buffer.concat([header, Buffer.from(pad(AIZA_RUN), "base64"), randomBytes(3000)]);
+		const data = bytes.toString("base64");
+		assert.ok(data.includes(pad(AIZA_RUN)), "the run is in the picture's base64");
+		const file = join(work, "presented-noise.png");
+		writeFileSync(file, bytes);
+		const { id: shown } = await app.call("conversation.create", { agentId: "forge" });
+		await app.call("conversation.open", { id: shown });
+		const tools = () => app.conversations.get(shown)?.items.filter((item: any) => item.kind === "tool" && item.name === "present") ?? [];
+		await app.call("submit", { id: shown, text: `/tool present ${JSON.stringify({ title: "Noise", items: [{ path: file, caption: `caption ${AIZA_RUN}` }] })}` });
+		const result = await app.until("the presentation", () => tools()[0]);
+		assert.equal(result.isError, false, result.text);
+		const picture = { id: shown, presentation: "p1", version: 1, item: 0 };
+		const before = remote.sessionLines.get(session)!.length;
+		const got = await ask("presented.picture", picture);
+		assert.equal(got.result.mimeType, "image/png");
+		assert.ok(got.result.data === data, `byte for byte: ${got.result.data.length} characters of ${data.length}`);
+		assert.deepEqual(await app.call("presented.picture", picture), { mimeType: "image/png", data }, "as the Mac's app gets it");
+		// What is not such a picture is masked as any answer: the item's caption, in what the phone is sent of the call.
+		await ask("conversation.open", { id: shown });
+		const line = await until("the presentation in the phone's transcript", () => remote.sessionLines.get(session)!.slice(before).find((one) => one.event === "conversation" && one.id === shown && JSON.stringify(one).includes("caption ")));
+		assert.ok(JSON.stringify(line).includes(`caption ${KEY_HIDDEN}`) && !JSON.stringify(line).includes(AIZA_RUN), "the caption's run is masked");
+		step("a presented picture whose base64 holds a key-shaped run comes to the phone byte for byte from presented.picture, as to the Mac's app; its caption's run is masked");
+	}
+
 	// ---- A typed text over 64 MiB (#919), which since #924 only the Mac's own app may send: taken, and its echo to a
 	// phone's session that has the conversation open never written to pi² Remote, which takes 64 MiB at most
 	{
@@ -2488,18 +2516,48 @@ try {
 		step("from the phone: the folders offered, a project made from one by its exact text, refused by the device row from any other (a link to one, a parent) and by the handler from one gone since, a linked file shown masked, and logged");
 	}
 
-	// ---- Presenting's requests from the phone (#963): presented.picture passes the device row to the stub; the others
-	// are refused before any handler, with the words every request kept to the Mac gets, and logged as refused.
+	// ---- Presenting's requests from the phone (#963, #946): presented.picture passes the device row to its handler, which
+	// answers as it answers the app (a conversation it does not know); the others are refused before any handler, with the
+	// words every request kept to the Mac gets, and logged as refused. engine/test/presented.ts has what the handlers do.
 	{
-		const picture = { id: 1, presentation: "p", version: 1, item: 0 };
-		assert.equal((await ask("presented.picture", picture)).error, PRESENTING_NOT_YET, "presented.picture reaches its handler");
+		const picture = { id: 99_999, presentation: "p1", version: 1, item: 0 };
+		assert.equal((await ask("presented.picture", picture)).error, "Unknown conversation: 99999", "presented.picture reaches its handler");
+		assert.equal((await ask("presented.picture", { ...picture, id: plain })).error, NOT_PRESENTED, "and is refused by that conversation's record");
 		const macOnly = ["present.register", "present.drawn", "presented.list", "presented.file", "presented.network"];
 		for (const method of macOnly) assert.equal((await ask(method, { ...picture, path: "index.html", allow: true, requestId: "r", ok: true })).error, ONLY_ON_THE_MAC, method);
-		for (const method of ["presented.picture", ...macOnly]) await assert.rejects(app.call(method, picture), new RegExp(PRESENTING_NOT_YET), `${method} from the app reaches the stub`);
+		for (const method of ["presented.picture", "presented.list", "presented.file", "presented.network"]) {
+			await assert.rejects(app.call(method, { ...picture, path: "index.html", allow: true }), /^Error: Unknown conversation: 99999$/, `${method} from the app reaches its handler`);
+		}
+		assert.deepEqual(await app.call("present.drawn", { requestId: "r", ok: true }), { answered: false }, "present.drawn from the app reaches its handler: no draw was asked for");
+		assert.deepEqual(await app.call("present.register"), {}, "and present.register");
 		const logged = (await app.call("devices.log", { device: phone.id })).entries;
 		for (const method of macOnly) assert.ok(logged.some((entry: any) => entry.method === method && entry.outcome === "refused" && entry.why === ONLY_ON_THE_MAC), `${method} logged as refused`);
 		assert.ok(!logged.some((entry: any) => entry.method === "presented.picture"), "presented.picture is reading, and not logged");
-		step("from the phone: presented.picture passes its row to the stub, unlogged; present.register, present.drawn, presented.list, presented.file and presented.network are refused as the Mac's, and logged; the app reaches the stub with all six");
+		// Left in the mailbox, it is refused by its row: reading needs a channel.
+		const mailed = phone.item(remote.pairing, "presented.picture", { ...picture, id: plain });
+		const beforeMailed = remote.events.length;
+		assert.deepEqual((await remote.call("remote.mailboxIn", { device: phone.id, id: JSON.parse(mailed.signed).nonce, item: mailed })).result, { taken: true, outcome: "refused" }, "presented.picture by mailbox");
+		const mailedReceipt = await remote.event("mailboxOut", beforeMailed);
+		assert.deepEqual([mailedReceipt.item.body.method, mailedReceipt.item.body.outcome, mailedReceipt.item.body.why], ["presented.picture", "refused", ONLY_ON_THE_MAC]);
+		step("from the phone: presented.picture passes its row to its handler, unlogged, and is refused by the record; by mailbox, by its row; present.register, present.drawn, presented.list, presented.file and presented.network are refused as the Mac's, and logged; the app reaches all six handlers");
+
+		// A present question's answer in words from the phone goes through needs.answer or inbox.answer, and so through
+		// #924's 1 MB check before any handler; under it, the record's own bound of 20,000 characters still holds.
+		const shot = join(work, "question.png");
+		writeFileSync(shot, Buffer.concat([Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"), Buffer.from([0, 0, 0, 8, 0, 0, 0, 8, 8, 2, 0, 0, 0]), Buffer.alloc(4)]));
+		const { id: asking } = await app.call("conversation.create", { agentId: "forge" });
+		await app.call("conversation.open", { id: asking });
+		void app.call("submit", { id: asking, text: `/tool present ${JSON.stringify({ title: "Pick", items: [{ path: shot }, { path: shot }], question: "Which one?" })}` });
+		const question = await app.until("the present question under Needs you", () => app.events.needs?.items?.find((item: any) => item.kind === "decision" && item.question === "Which one?" && item.presentation !== undefined));
+		const overByte = `${"é".repeat((MAX_TYPED_FROM_A_DEVICE - 2) / 2)}ttt`;
+		assert.equal(Buffer.byteLength(overByte), MAX_TYPED_FROM_A_DEVICE + 1);
+		const tooLong = "An answer from a phone can carry at most 1 MB of typed text; this one has just over 1 MB. Shorten it, or answer on the Mac.";
+		assert.equal((await ask("needs.answer", { id: question.id, answer: { kind: "decision", text: overByte } })).error, tooLong, "needs.answer in words, a byte over 1 MB");
+		assert.equal((await ask("inbox.answer", { id: question.id, text: overByte })).error, tooLong, "inbox.answer, a byte over 1 MB");
+		assert.match((await ask("needs.answer", { id: question.id, answer: { kind: "decision", text: "w".repeat(20_001) } })).error, /An answer can be 20,000 characters at most/, "under it, the record's bound");
+		assert.deepEqual((await ask("needs.answer", { id: question.id, answer: { kind: "decision", text: "The first" } })).result, {}, "and an answer in words within both is taken");
+		await app.until("the question answered", () => app.conversations.get(asking)?.items.some((item: any) => item.kind === "tool" && item.name === "present" && /The person answered: The first$/.test(item.text)));
+		step("from the phone: a present question's answer in words a byte over 1 MB is refused by needs.answer and inbox.answer with #924's sentence; under it, the record's 20,000 characters; within both, taken");
 	}
 
 	// ---- Resume, refusals, suspension (3.4, 3.6, 5.8)

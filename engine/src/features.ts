@@ -6,7 +6,7 @@
 
 import type { Context } from "@earendil-works/chord/context";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { ConversationId, ConversationView, Harness, HookRegistration, PromptSection, ToolRegistration, Tx, Wrap } from "@earendil-works/pi-durable";
+import type { Conversation, ConversationId, ConversationView, Harness, HookRegistration, PromptSection, ToolRegistration, Tx, Wrap } from "@earendil-works/pi-durable";
 import type { Host } from "./extensions.ts";
 import type { ChatSettings } from "./chat.ts";
 import type { Providers } from "./providers.ts";
@@ -68,6 +68,8 @@ export type Engine = {
 	log(...args: unknown[]): void;
 	agents(): Record<string, AgentProfile>;
 	library(): { conversations: Record<string, Meta> };
+	/** A conversation the app names by its id, as `conversation.image` finds it: a chat's version shown (main.ts). Throws for one it does not know. */
+	conversation(id: unknown): Promise<Conversation>;
 	/** Chat mode's settings as they are now (chat.ts). */
 	chatSettings(): ChatSettings;
 	/** The person's choice for Make pictures, across chats and agents. Null lets pi² choose. */
@@ -198,6 +200,11 @@ export type FeatureParts = {
 	 */
 	made?(id: number): Promise<void>;
 	/**
+	 * `conversation.fork` made `fork` from `source`, as the app names it (a chat's id for a chat): told once its documents
+	 * are copied, before `made`. Presenting clones the source's files (presented.ts).
+	 */
+	forked?(source: number, fork: number): Promise<void>;
+	/**
 	 * An agent was duplicated: copy person-set feature settings, never its history. Carrying over (carryover.ts,
 	 * `applyProject`) copies templates into projects inside its own commits and does not call this: it does there what
 	 * knowledge.ts's and variables.ts's hooks do (the memory switch, the variables' names). A feature that adds this hook
@@ -292,7 +299,7 @@ export const FEATURES: Feature[] = [
 	carryOver,
 	// What a paired phone may see of the Mac's folders and files (#698): requests only, with no greeting of its own.
 	folders,
-	// Presenting's requests (#963): named in answers.ts's lists, each answered "not available yet" until #946's piece 2.
+	// Presenting (#946): the `present` tool, `pi2.presented` and its files, drawing pages through the app, and its requests.
 	presented,
 	// The projects epic (docs/projects.md). Their greetings go to an app in this order (4.4).
 	projects,

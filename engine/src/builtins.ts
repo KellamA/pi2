@@ -71,6 +71,13 @@ export const BUILT_IN_TOOLS: readonly BuiltInTool[] = [
 		needs: "browser",
 	},
 	{
+		key: "present",
+		tools: ["present"],
+		title: "Present pictures and mockups",
+		detail: "Shows you pictures and mockup pages it made in a card of their own, with a window to see them large, and can ask you to pick one. Without it, an agent can only name the files.",
+		needs: "files",
+	},
+	{
 		key: "pictures",
 		tools: ["make_picture"],
 		title: "Make pictures",

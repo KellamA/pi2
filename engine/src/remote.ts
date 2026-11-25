@@ -880,9 +880,11 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
  * from the entry's own image block (`imagesOf`, transcript.ts) and sends only once `isPicture` (attachments.ts) finds
  * it base64 of a picture of its `mimeType`, one of PICTURE_TYPES. Masking would break the picture (a run of base64
  * can look like a key) and would hide nothing a person reads: a picture shows a key as pixels, if it shows one, and no
- * mask ever looked at those.
+ * mask ever looked at those. And `presented.picture`'s (#946, presented.ts), `{ mimeType, data }` too: a presented
+ * PNG, JPEG, GIF or WebP, or a page's PNG snapshot, read from the copy the engine kept and checked by its first bytes;
+ * an SVG item is refused to a device before any answer, and its type is not in PICTURE_TYPES either.
  */
-export const PICTURE_ANSWERS: ReadonlySet<string> = new Set(["conversation.image"]);
+export const PICTURE_ANSWERS: ReadonlySet<string> = new Set(["conversation.image", "presented.picture"]);
 
 /**
  * The picture types whose bytes go to a device unmasked, fixed here on the owner's path: a type that attachments.ts

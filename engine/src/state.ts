@@ -302,6 +302,12 @@ export type InboxItem = {
 	 * only Allow Once or Deny, and Allow everything does not answer it.
 	 */
 	projectSwitch?: SwitchName;
+	/**
+	 * For a `present` question (presented.ts, #946): the choices it offers as buttons, and what it is about. Needs you
+	 * sends it as a decision that blocks (needs.ts); an answer in words is always taken too.
+	 */
+	choices?: { id: string; label: string }[];
+	presentation?: { conversationId: number; presentation: string; version: number };
 	createdAt: number;
 };
 
