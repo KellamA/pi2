@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { type ProviderLimits } from "../src/limits.ts";
 import { GONE } from "../src/needs.ts";
+import { localMidnight, uncovered } from "../src/projectlimits.ts";
 import { defaultProjectSettings, type LimitReading } from "../src/projects.ts";
 import { conversationSpend } from "../src/projectspend.ts";
 import { EngineClient, standInApp, stop } from "./patience.ts";
@@ -77,6 +78,29 @@ class Client extends EngineClient {
 	}
 }
 
+// What a confirmed reading covers for its one start (#953), case by case, without an engine.
+{
+	const now = Date.now();
+	const midnight = localMidnight(now);
+	const spend = (used: number, max = 5, resetsAt = midnight): Omit<LimitReading, "id"> => ({ limit: "dailySpend", provider: null, window: null, used, max, resetsAt, reason: "spent" });
+	const share = (window: string, used: number, max = 90, resetsAt = reset): Omit<LimitReading, "id"> => ({ limit: "planShare", provider: "demo", window, used, max, resetsAt, reason: "used" });
+	const card = (...readings: Omit<LimitReading, "id">[]) => readings.map((reading, index) => ({ ...reading, id: `r${index}` }));
+	assert.equal(uncovered([spend(5.5)], card(spend(5.2))), undefined, "more spent the same day, under the same limit");
+	assert.equal(uncovered([spend(5.1)], card(spend(5.2))), undefined, "less spent than the card read");
+	assert.equal(uncovered([spend(9, 8)], card(spend(5.2))), undefined, "a looser limit since");
+	assert.deepEqual(uncovered([spend(5.5, 4)], card(spend(5.2))), spend(5.5, 4), "a tighter limit since");
+	assert.deepEqual(uncovered([spend(0.2, 5, localMidnight(midnight + 1))], card(spend(5.2))), spend(0.2, 5, localMidnight(midnight + 1)), "a new day");
+	assert.deepEqual(uncovered([share("5h", 95), spend(5.5)], card(spend(5.2))), share("5h", 95), "the plan's share, which the card did not name");
+	assert.equal(uncovered([share("5h", 99)], card(share("5h", 92))), undefined, "the same window used more");
+	assert.deepEqual(uncovered([share("5h", 99, 85)], card(share("5h", 92))), share("5h", 99, 85), "the plan's share made tighter");
+	assert.deepEqual(uncovered([share("5h", 92, 90, reset + 1)], card(share("5h", 92))), share("5h", 92, 90, reset + 1), "the window reset and filled again");
+	assert.equal(uncovered([share("5h", 91)], card(share("7d", 97))), undefined, "a lower window of the same plan");
+	assert.deepEqual(uncovered([share("5h", 98)], card(share("7d", 97))), share("5h", 98), "a higher window of the same plan");
+	assert.deepEqual(uncovered([share("7d", 97), share("5h", 91)], card(share("7d", 97))), share("5h", 91), "one reading covers one breach");
+	assert.deepEqual(uncovered([spend(5.5)], []), spend(5.5), "nothing confirmed");
+	console.log("ok  a confirmed reading covers its own limit however much more is spent; tighter, another limit or a new day does not");
+}
+
 const cid = (reply: { id: number }) => reply.id;
 engine = startEngine();
 let c = await Client.connect(engine, home);
@@ -109,10 +133,11 @@ try {
 	let refusal = await c.refused("conversation.create", make);
 	assert.deepEqual({ ...refusal, reason: null, id: null }, { id: null, limit: "planShare", reason: null, provider: "demo", window: "5h", used: 90, max: 90, resetsAt: reset });
 	await c.refused("conversation.create", { agentId: row.orchestratorId, model: demo, confirmLimit: refusal.id });
+	// The same window, used more since the reading was confirmed, is still the start the person confirmed (#953).
 	plan(93);
-	refusal = await c.refused("conversation.create", { ...make, confirmLimit: refusal.id });
-	assert.equal(refusal.used, 93);
+	assert.equal(typeof (await c.call("conversation.create", { ...make, confirmLimit: refusal.id })).id, "number");
 	plan(91);
+	refusal = await c.refused("conversation.create", make);
 	second = await Client.connect(engine, home);
 	const same = { ...make, confirmLimit: refusal.id };
 	const retries = await Promise.allSettled([c.call("conversation.create", same), second.call("conversation.create", same)]);
@@ -124,7 +149,7 @@ try {
 	const secondWindow = await c.refused("conversation.create", { ...make, confirmLimit: firstWindow.id });
 	assert.notEqual(firstWindow.window, secondWindow.window);
 	assert.equal(typeof (await c.call("conversation.create", { ...make, confirmLimit: secondWindow.id })).id, "number");
-	console.log("ok  structured error, exact start, newer reading, both windows, and a confirmation used only once");
+	console.log("ok  structured error, exact start, the same window used more, both windows, and a confirmation used only once");
 
 	const task = "Keep this exact task.\nSecond line.";
 	const handoff = { agent: "Worker", title: "The held task", task, worktree: "held-464", from: "test-base", wait: true };
@@ -237,6 +262,41 @@ try {
 	assert.equal(unaffected.note, undefined);
 	assert.equal(typeof unaffected.id, "number");
 	console.log("ok  project daily spending, and ordinary person turns");
+
+	// #953: one press of Start Anyway starts what the card holds, though the project spent more under the same limit since.
+	const grew = await delegate({ agent: "Worker", title: "Spend grew", task: "Start after more was spent", wait: false });
+	assert.match(grew.text, /Not started:/);
+	const spendCard = await c.until("the daily-spend card", () => c.cards().find((row) => row.start.title === "Spend grew"));
+	assert.equal(spendCard.limit.limit, "dailySpend");
+	const spent = c.items(root, "assistant").length;
+	await c.call("submit", { id: root, text: "Spend a little more today" });
+	await c.until("that turn finished", () => !c.conversations.get(root)?.state.busy && c.items(root, "assistant").length > spent);
+	await c.until("more spent than the card read", () => c.events.usage?.projects?.find((row: any) => row.id === project && row.today.cost > spendCard.limit.used));
+	assert.deepEqual(await answer(c, spendCard.id), {});
+	await c.until("the held start ran", () => c.children(root).find((each) => each.title === "Spend grew"));
+	await c.until("the card taken off the list", () => !c.cards().some((row) => row.id === spendCard.id) || undefined);
+	console.log("ok  Start Anyway on a daily-spend card starts it once, though spend grew since the card");
+
+	// What is still a new decision: held again, the card kept with the new reading, and the answer says so.
+	const heldAgain = async (title: string, change: () => Promise<unknown>, kind: string) => {
+		assert.match((await delegate({ agent: "Worker", title, task: `${title}.`, wait: false })).text, /Not started:/);
+		const held = await c.until(`the card for ${title}`, () => c.cards().find((row) => row.start.title === title));
+		await change();
+		const result = await answer(c, held.id);
+		assert.equal(result.held, true);
+		assert.equal(result.limit.limit, kind);
+		assert.notEqual(result.limit.id, held.limit.id);
+		await c.until(`the card for ${title} with its new reading`, () => c.cards().find((row) => row.id === held.id && row.limit.id === result.limit.id));
+		assert.equal(c.children(root).some((each) => each.title === title), false);
+		return held;
+	};
+	const tighter = await heldAgain("Tighter limit", () => set({ limits: { planShare: null, dailySpend: 0.005 } }), "dailySpend");
+	assert.deepEqual(await answer(c, tighter.id), {});
+	await c.until("the start under the tighter limit ran", () => c.children(root).find((each) => each.title === "Tighter limit"));
+	const other = await heldAgain("Another limit", async () => { plan(95); await set({ limits: { planShare: 90, dailySpend: 0.005 } }); }, "planShare");
+	assert.deepEqual(await answer(c, other.id), {});
+	await c.until("the start past both limits ran", () => c.children(root).find((each) => each.title === "Another limit"));
+	console.log("ok  a tighter limit, or another limit the card did not name, holds it again with a distinct answer");
 } finally {
 	c.close(); second?.close();
 	await stop(engine);
