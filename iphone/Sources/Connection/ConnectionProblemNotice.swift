@@ -37,7 +37,7 @@ struct ConnectionProblemNotice: View {
         case .presence, .faceID: "faceid"
         case .clock: "clock.badge.exclamationmark"
         case .macNotProved: "exclamationmark.shield"
-        case .presenceKeyWaits, .presenceKeyNotTaken: "person.badge.key"
+        case .presenceKeyWaits, .presenceKeyNotTaken, .presenceKeyNoAnswer: "person.badge.key"
         case .relaySaid: "cloud"
         }
     }
@@ -45,7 +45,7 @@ struct ConnectionProblemNotice: View {
     /// Whether trying again is the person's to ask: after the refusals that stop the phone trying by itself.
     private var waitsForThePerson: Bool {
         switch problem {
-        case .clock, .suspended, .presence, .faceID(.faceIDNotPassed), .presenceKeyWaits, .presenceKeyNotTaken: true
+        case .clock, .suspended, .presence, .faceID(.faceIDNotPassed), .presenceKeyWaits, .presenceKeyNotTaken, .presenceKeyNoAnswer: true
         default: false
         }
     }
