@@ -81,12 +81,16 @@ struct DevicesEvent: Decodable, Equatable {
         var retryAt: Double?
         /// The relay's word that another copy of pi² Remote tried to connect as this Mac, and when (3.4).
         var anotherMacAt: Double?
+        /// Where this Mac's pairing is registered beside the relay's address now set (`here`, `another-relay`, `none`),
+        /// and that address (#1013): what decides whether the engine opens a pairing code.
+        var registered: String?
+        var address: String?
 
         /// This Mac's pairing cannot use the relay now set, and only a new one can (#917): it belongs to another relay,
         /// or to none (made with the relay off). The page offers to start again.
         var pairingElsewhere: Bool { state == .unavailable && (reason == "another-relay" || reason == "unregistered") }
 
-        private enum CodingKeys: String, CodingKey { case available, state, why, reason, retryAt, anotherMacAt }
+        private enum CodingKeys: String, CodingKey { case available, state, why, reason, retryAt, anotherMacAt, registered, address }
 
         init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -108,6 +112,8 @@ struct DevicesEvent: Decodable, Equatable {
             reason = (try? container.decodeIfPresent(String.self, forKey: .reason)) ?? nil
             retryAt = (try? container.decodeIfPresent(Double.self, forKey: .retryAt)) ?? nil
             anotherMacAt = (try? container.decodeIfPresent(Double.self, forKey: .anotherMacAt)) ?? nil
+            registered = (try? container.decodeIfPresent(String.self, forKey: .registered)) ?? nil
+            address = (try? container.decodeIfPresent(String.self, forKey: .address)) ?? nil
         }
     }
     /// A device attached now, by the path its channel came over.
@@ -330,8 +336,8 @@ enum RelaySample {
         let json: String? = switch name {
         case "off": #"{"available":false,"state":"off","why":"Reach through pi²'s relay is off: home and private networks only."}"#
         case "unavailable": #"{"available":false,"state":"unavailable","why":"the relay key for this address could not be read or made; the relay path is off, home and direct carry on","reason":"key"}"#
-        case "another-relay": #"{"available":false,"state":"unavailable","why":"this Mac's pairing belongs to another relay: it was not registered at this relay by pi² Remote, and is shown to no other relay; home and direct carry on","reason":"another-relay"}"#
-        case "unregistered": #"{"available":false,"state":"unavailable","why":"this Mac's pairing is registered at no relay (it was made for the home path alone), and was not registered at this relay by pi² Remote; home and direct carry on","reason":"unregistered"}"#
+        case "another-relay": #"{"available":false,"state":"unavailable","why":"this Mac's pairing belongs to another relay: it was not registered at this relay by pi² Remote, and is shown to no other relay; home and direct carry on","reason":"another-relay","registered":"another-relay"}"#
+        case "unregistered": #"{"available":false,"state":"unavailable","why":"this Mac's pairing is registered at no relay (it was made for the home path alone), and was not registered at this relay by pi² Remote; home and direct carry on","reason":"unregistered","registered":"none"}"#
         case "no-pairing": #"{"available":false,"state":"unavailable","why":"no pairing yet: one is registered at the relay when the first iPhone pairs","reason":"no-pairing"}"#
         case "connecting": #"{"available":false,"state":"connecting"}"#
         case "ready": #"{"available":true,"state":"ready"}"#
@@ -664,6 +670,17 @@ struct DevicesSettings: View {
         return switches.on ? "\(paired) Reachable while pi² runs on this Mac." : "\(paired) Off: paired devices stay paired and can do nothing until it is on again."
     }
 
+    /// Why no pairing code can be made now, as the engine would refuse one (#1013): a code names the pairing with the
+    /// relay's address now set, and the phone tries that relay at once. Nil when one can, or pi² Remote has not said.
+    private var pairBlocked: String? {
+        guard let relayPath, relayPath.address == nil || relayPath.address == state?.relay else { return nil }
+        if relayPath.registered == "another-relay" {
+            return switches.relay ? "Start again at this relay first" : "This Mac’s pairing belongs to another relay: set its address back"
+        }
+        if relayPath.registered == "none" && switches.relay { return "Start again at this relay first" }
+        return nil
+    }
+
     /// What pi² Remote last said of the relay path (6.5, #916), or a development build's stand-in for it (`RelaySample`).
     private var relayPath: DevicesEvent.RelayPath? {
         if let sample = RelaySample.asked { return sample }
@@ -754,9 +771,9 @@ struct DevicesSettings: View {
             }
             HStack {
                 Button("Pair an iPhone…") { pairing = true }
-                    .disabled(!store.remoteOn || store.active.count >= 5)
+                    .disabled(!store.remoteOn || store.active.count >= 5 || pairBlocked != nil)
                 Spacer()
-                Text(!switches.on ? "Turn on Reach from an iPhone to pair" : store.active.count >= 5 ? "5 devices are paired: revoke one first" : "up to 5 devices")
+                Text(!switches.on ? "Turn on Reach from an iPhone to pair" : pairBlocked ?? (store.active.count >= 5 ? "5 devices are paired: revoke one first" : "up to 5 devices"))
                     .font(.caption).foregroundStyle(Theme.tx3)
             }
         } header: {

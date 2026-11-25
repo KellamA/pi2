@@ -179,6 +179,7 @@ export function wireRemote(parts: RemoteParts): void {
 			if (record !== undefined) for (const session of sessions.values()) if (session.device === device) send(session.client, deviceEvent(record));
 		},
 		addresses: () => (helper?.hello == null ? null : helper.hello.addresses),
+		relayWord,
 	} satisfies typeof remoteHooks);
 	reconsider();
 }
@@ -590,7 +591,9 @@ const RELAY_REASONS = ["address", "key", "no-pairing", "unregistered", "another-
 function relayState(value: unknown): Record<string, unknown> | null {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
 	const given = value as Record<string, unknown>;
-	if (Object.keys(given).some((key) => !["available", "state", "why", "reason", "retryAt", "anotherMacAt"].includes(key))) return null;
+	if (Object.keys(given).some((key) => !["available", "state", "why", "reason", "retryAt", "anotherMacAt", "registered", "address"].includes(key))) return null;
+	if (given.registered !== undefined && !["here", "another-relay", "none"].includes(given.registered as string)) return null;
+	if (given.address !== undefined && (typeof given.address !== "string" || given.address.length > 2048)) return null;
 	if (typeof given.available !== "boolean") return null;
 	if (given.state !== undefined && !RELAY_STATES.includes(given.state as string)) return null;
 	if (given.reason !== undefined && (given.state !== "unavailable" || !RELAY_REASONS.includes(given.reason as string))) return null;
@@ -603,7 +606,27 @@ function relayState(value: unknown): Record<string, unknown> | null {
 		...(given.reason === undefined ? {} : { reason: given.reason }),
 		...(given.retryAt === undefined ? {} : { retryAt: given.retryAt }),
 		...(given.anotherMacAt === undefined ? {} : { anotherMacAt: given.anotherMacAt }),
+		...(given.registered === undefined ? {} : { registered: given.registered }),
+		...(given.address === undefined ? {} : { address: given.address }),
 	};
+}
+
+/**
+ * What pi² Remote last said of the relay path, once it is about the relay's address now set (`address`, #1013), from a
+ * pi² Remote that said hello; null if none says it within `within` ms. It says it after every hello, and again whenever
+ * the address or where the pairing is registered changes, so a word about another address is one still on its way.
+ */
+function relayWord(within: number): Promise<Record<string, unknown> | null> {
+	const deadline = Date.now() + within;
+	return new Promise((resolve) => {
+		const look = () => {
+			const relay = helper?.hello != null ? helper.relay : null;
+			if (relay !== null && relay.address === devicesState().relay) return resolve(relay);
+			if (Date.now() >= deadline) return resolve(null);
+			setTimeout(look, 50).unref();
+		};
+		look();
+	});
 }
 
 // ---- The mailbox (5.3, 4.3; #678, #806)

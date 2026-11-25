@@ -153,6 +153,11 @@ export type RemoteHooks = {
 	recordChanged: (device: string) => void;
 	/** The Mac's addresses as the running pi² Remote said them, or null when none has said hello. */
 	addresses: () => string[] | null;
+	/**
+	 * What pi² Remote says of the relay path once it is about the relay's address now set (#1013), or null if it does not
+	 * say it within `within` ms.
+	 */
+	relayWord: (within: number) => Promise<Record<string, unknown> | null>;
 };
 
 let harness: Harness;
@@ -180,6 +185,9 @@ export const remoteHooks: RemoteHooks = {
 	helper: () => ({ running: false, stoppedInLastHour: 0 }),
 	recordChanged: () => {},
 	addresses: () => null,
+	// The tests that play no pi² Remote: a pairing registered here. An engine's own is remote.ts's (`wireRemote`), and
+	// without one `ready` refuses before any pairing opens.
+	relayWord: async () => ({ registered: "here", address: state.relay }),
 };
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -1075,6 +1083,10 @@ async function pairStart(): Promise<{ payload: string; expires: number }> {
 	remoteHooks.changed();
 	try {
 		const { addresses } = await remoteHooks.ready();
+		if (state.pairing !== null) {
+			const refused = pairingElsewhere(await remoteHooks.relayWord(RELAY_WORD_WAIT_MS));
+			if (refused !== null) throw new Error(refused);
+		}
 		if (state.pairing === null) {
 			remoteHooks.toHelper({ kind: "register", relay: state.relay });
 			await waitForPairing();
@@ -1102,6 +1114,29 @@ async function pairStart(): Promise<{ payload: string; expires: number }> {
 		if (window?.secret === secret) closeWindow(null);
 		throw error;
 	}
+}
+
+/** How long `pairStart` waits for pi² Remote's word about the relay's address now set (#1013). */
+const RELAY_WORD_WAIT_MS = 15_000;
+export const PAIRING_AT_ANOTHER_RELAY = "This Mac's pairing belongs to another relay. Start again at this relay first, or set the relay's address back.";
+export const PAIRING_AT_ANOTHER_RELAY_OFF = "This Mac's pairing belongs to another relay. Set the relay's address back, or turn on Reach through pi²'s relay and start again at this relay.";
+export const PAIRING_AT_NO_RELAY = "This Mac's pairing was made with the relay off, and no relay knows it. Start again at this relay first, or turn Reach through pi²'s relay off.";
+export const RELAY_WORD_MISSING = "pi² Remote has not said whether this Mac's pairing belongs to the relay now set. Try again in a moment.";
+
+/**
+ * Why no pairing may open now, or null (#1013): a pairing code names the pairing's id with the relay's address now set,
+ * and the phone tries that relay at once, so a code for a pairing registered at another relay would show its id to this
+ * one, which #678's security read rules out; whatever the relay switch says, since the phone does not know it. One made
+ * with the relay off (`none`) is registered nowhere: its code may name it to a relay while the switch is off, as its
+ * first did; with the switch on the page offers to start again instead, and so does the engine. A word not said within
+ * the wait refuses too: nothing opens on a guess.
+ */
+function pairingElsewhere(word: Record<string, unknown> | null): string | null {
+	if (word === null) return RELAY_WORD_MISSING;
+	if (word.registered === "another-relay") return state.remote.relay ? PAIRING_AT_ANOTHER_RELAY : PAIRING_AT_ANOTHER_RELAY_OFF;
+	if (word.registered === "none" && state.remote.relay) return PAIRING_AT_NO_RELAY;
+	if (word.registered !== "here" && word.registered !== "none") return RELAY_WORD_MISSING;
+	return null;
 }
 
 /** Waits for pi² Remote to report the pairing the relay gave it, after `register`. */

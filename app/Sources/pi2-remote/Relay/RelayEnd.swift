@@ -48,7 +48,10 @@ enum RelayPathState: Equatable {
 	/// The client stopped on a refusal trying again would not change, if the relay says true.
 	case stopped(String)
 
-	func json(anotherMacAt: Int64?) -> JSONValue {
+	/// `registered` and `address` (#1013): where this Mac's pairing is registered beside the relay's address now set, and
+	/// that address, whatever the state, so that the engine opens no pairing whose code would name the pairing to
+	/// another relay, and knows the word is about the address it has.
+	func json(anotherMacAt: Int64?, registered: String? = nil, address: String? = nil) -> JSONValue {
 		var members: [(String, JSONValue)]
 		switch self {
 		case .off: members = [("available", .bool(false)), ("state", .string("off")), ("why", .string("Reach through pi²'s relay is off: home and private networks only."))]
@@ -59,6 +62,8 @@ enum RelayPathState: Equatable {
 		case let .stopped(why): members = [("available", .bool(false)), ("state", .string("stopped")), ("why", .string(why))]
 		}
 		if let anotherMacAt { members.append(("anotherMacAt", .integer(anotherMacAt))) }
+		if let registered { members.append(("registered", .string(registered))) }
+		if let address { members.append(("address", .string(address))) }
 		return .object(members)
 	}
 
@@ -136,6 +141,8 @@ final class RelayEnd: @unchecked Sendable {
 	private var generation = 0
 	private(set) var isReady = false
 	private var reported: RelayPathState?
+	/// The `registered` and `address` last said with it.
+	private var reportedWhere: (registered: String?, address: String)?
 	private var anotherMacAt: Int64?
 	private var registering = false
 
@@ -192,6 +199,8 @@ final class RelayEnd: @unchecked Sendable {
 	/// Starts, keeps or stops the client as the switches, the relay's address, its key and the pairing say. Called once
 	/// the engine has taken `remote.hello`, and whenever one of them changes.
 	func reconsider() {
+		// A new address or registration is said even when the state stays the same (#1013).
+		defer { if let reported { report(reported) } }
 		switch wanted() {
 		case let .failure(state):
 			stopClient()
@@ -229,9 +238,22 @@ final class RelayEnd: @unchecked Sendable {
 	}
 
 	private func report(_ state: RelayPathState, force: Bool = false) {
-		guard force || state != reported else { return }
+		let registered = registeredWord
+		let address = remote.relay
+		let same = reportedWhere.map { $0.registered == registered && $0.address.utf8.elementsEqual(address.utf8) } ?? false
+		guard force || state != reported || !same else { return }
 		reported = state
-		remote.engine.request("remote.state", .object([("relay", state.json(anotherMacAt: anotherMacAt))]))
+		reportedWhere = (registered, address)
+		remote.engine.request("remote.state", .object([("relay", state.json(anotherMacAt: anotherMacAt, registered: registered, address: address))]))
+	}
+
+	/// Where this Mac's pairing is registered, beside the relay's address now set, whatever the switches say (#1013):
+	/// `here`, at `another-relay`, or at `none` (its id made here, for the home path alone); nil with no pairing. A
+	/// pairing code names the pairing and this address together, and the phone tries the relay at it at once.
+	private var registeredWord: String? {
+		guard let pairing = remote.pairing else { return nil }
+		guard let registration = remote.registration, registration.pairing == pairing else { return "none" }
+		return registration.relay.utf8.elementsEqual(remote.relay.utf8) ? "here" : "another-relay"
 	}
 
 	// ---- The client

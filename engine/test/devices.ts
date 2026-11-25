@@ -39,7 +39,7 @@ const pad = (text: string) => text + "A".repeat((4 - (text.length % 4)) % 4);
 import { offerFolders } from "../src/answers.ts";
 import { SETTINGS_ONLY_IN_THE_APP } from "../src/answers.ts";
 import { forTheHelper } from "../src/answers.ts";
-import { helperReported } from "../src/devices.ts";
+import { devicesEvent, helperReported, PAIRING_AT_ANOTHER_RELAY, PAIRING_AT_ANOTHER_RELAY_OFF, PAIRING_AT_NO_RELAY, RELAY_WORD_MISSING } from "../src/devices.ts";
 import { helperRequests } from "../src/remote.ts";
 import { PRESENTING_NOT_YET } from "../src/presented.ts";
 import { DatabaseSync } from "node:sqlite";
@@ -1219,8 +1219,36 @@ console.log(JSON.stringify(outcome));
 	await helperReported({ pairing: old });
 	assert.equal(devicesState().pairing, fresh, "nor put in place of the new one");
 	await deviceRequests["devices.pairCancel"]!({}, client);
+
+	// A pairing code names the pairing with the relay's address now set, and the phone tries that relay at once (#1013):
+	// no code opens for a pairing registered at another relay, whatever the switch; nor, with the relay on, for one made
+	// with it off; nor on no word about this address.
+	const address = devicesState().relay;
+	const opens = async (word: Record<string, unknown> | null, relaySwitch = true) => {
+		remoteHooks.relayWord = async () => word;
+		await harness.commit(async (tx) => void ((await tx.doc(Devices)).remote.relay = relaySwitch), context);
+		await wireDevices({ harness, context, log: () => {}, release: false, names: { conversation: () => undefined, project: () => undefined } });
+		told.length = 0;
+		try {
+			const { payload } = (await deviceRequests["devices.pairStart"]!({}, client)) as { payload: string };
+			await deviceRequests["devices.pairCancel"]!({}, client);
+			return new URL(payload).searchParams.get("p");
+		} catch (error) {
+			assert.ok(!told.some((event) => event.kind === "openJoin" || event.kind === "register"), "no window opened and nothing registered");
+			assert.equal(devicesEvent().pairingWindow, null, "and no window is left open");
+			return (error as Error).message;
+		}
+	};
+	assert.equal(await opens({ state: "unavailable", reason: "another-relay", registered: "another-relay", address }), PAIRING_AT_ANOTHER_RELAY, "registered at another relay");
+	assert.equal(await opens({ state: "off", registered: "another-relay", address }, false), PAIRING_AT_ANOTHER_RELAY_OFF, "and with the relay switch off");
+	assert.equal(await opens({ state: "unavailable", reason: "unregistered", registered: "none", address }), PAIRING_AT_NO_RELAY, "made with the relay off, the relay now on");
+	assert.equal(await opens(null), RELAY_WORD_MISSING, "no word about this address within the wait");
+	assert.equal(await opens({ state: "ready", address }), RELAY_WORD_MISSING, "a word that says nothing of the pairing");
+	assert.equal(await opens({ state: "off", registered: "none", address }, false), fresh, "made with the relay off, the relay still off: as its first code did");
+	assert.equal(await opens({ state: "ready", registered: "here", address }), fresh, "registered at this relay");
 	Object.assign(remoteHooks, saved);
 	await harness.close(context);
+	step("devices.pairStart opens no code for a pairing registered at another relay (relay switch on or off), for one made with the relay off once it is on, nor without pi² Remote's word about this address (#1013)");
 	step("devices.startAgain, for a pairing at another relay: the window closed, every active device revoked and the pairing forgotten in one commit, pi² Remote told each revocation and then forgetPairing, nothing registered by itself; the old pairing never taken back; the next pairing registers anew");
 }
 
@@ -1467,7 +1495,12 @@ class Remote {
 		if (message.event === "remote") {
 			this.events.push(message);
 			// As pi² Remote does: say hello at the start, and register with the relay when asked.
-			if (message.kind === "start") void this.call("remote.hello", { macKeys: this.macKeys, pairing: message.pairing, addresses: ["127.0.0.1:4242"] });
+			// Then, as pi² Remote does after every hello, where the pairing is registered beside the relay's address (#1013).
+			if (message.kind === "start") {
+				void this.call("remote.hello", { macKeys: this.macKeys, pairing: message.pairing, addresses: ["127.0.0.1:4242"] }).then(() =>
+					this.call("remote.state", { relay: { available: false, state: "off", why: "the check's", registered: "here", address: message.relay } }),
+				);
+			}
 			if (message.kind === "register") void this.call("remote.state", { pairing: this.pairing });
 		} else if (typeof message.session === "string") {
 			this.sessionLines.set(message.session, [...(this.sessionLines.get(message.session) ?? []), message.message]);

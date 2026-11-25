@@ -66,6 +66,20 @@ enum StartAgain {
 			}
 			return revoked.compactMap(\.stringValue)
 		}
+		/// A pairing code refused in `words` (#1013); had one been made, the check uses it as a phone does, joining the relay
+		/// it names at once, so that what crosses the front shows it too.
+		func refused(_ words: String, _ what: String) {
+			switch app.call("devices.pairStart", within: 180) {
+			case let .failure(why):
+				Check.expect(why.description.contains(words), "no pairing code \(what)", why.description)
+			case let .success(window):
+				Check.expect(false, "no pairing code \(what)", window["payload"]?.stringValue.map { _ in "a code was made" } ?? "")
+				if let text = window["payload"]?.stringValue, let payload = try? PairingPayload.parse(text), let relay = URL(string: payload.relay) {
+					_ = Relayed.join(relay, pairing: payload.pairing, secret: payload.secret, keys: PhoneKeys())
+				}
+				_ = app.call("devices.pairCancel")
+			}
+		}
 		func pairing() -> String? {
 			guard case let .success(event) = app.call("devices.watch") else { return nil }
 			return event["pairing"]?.stringValue
@@ -84,6 +98,7 @@ enum StartAgain {
 		Check.expect(unregistered?["why"]?.stringValue?.contains("not registered at this relay") == true, "the relay switch on: the relay path is unavailable, reason unregistered, for the pairing made at home", unregistered.map(JSON.text) ?? "nothing")
 		usleep(1_000_000)
 		Check.expect(pairing() == homeOnly.pairing.text && Relayed.kept(home)?.registration == nil, "and nothing is registered by itself")
+		refused("made with the relay off, and no relay knows it", "while the pairing made with the relay off would be named to the relay now on")
 
 		guard let firstRevoked = startAgain("for the pairing made at home") else { return }
 		Check.expect(firstRevoked == [firstDevice.text], "starting again revokes the one phone paired", "\(firstRevoked)")
@@ -105,10 +120,16 @@ enum StartAgain {
 
 		// The relay's address changed: the pairing is shown to no other relay, and the page is told why.
 		guard case .success = app.call("devices.set", .object([("relayAddress", .string(front.url.absoluteString))])) else { return Check.expect(false, "the relay's address changed") }
+		// At once, before pi² Remote has said anything of the new address: the engine waits for its word (#1013).
+		refused("belongs to another relay. Start again at this relay first", "for the pairing registered at the old address, asked at once after the change")
 		let elsewhere = relayState("another-relay")
 		Check.expect(elsewhere?["why"]?.stringValue?.contains("not registered at this relay") == true, "another relay's address: unavailable, reason another-relay", elsewhere.map(JSON.text) ?? "nothing")
 		usleep(1_000_000)
 		Check.expect(pairing() == atRelay.pairing.text, "nothing is forgotten or registered by itself")
+		guard case .success = app.call("devices.set", .object([("relay", .bool(false))])) else { return Check.expect(false, "the relay switch turned off") }
+		refused("belongs to another relay. Set the relay's address back", "with the relay switch off either: the phone tries the code's relay whatever the switch")
+		guard case .success = app.call("devices.set", .object([("relay", .bool(true))])) else { return Check.expect(false, "the relay switch turned on again") }
+		_ = relayState("another-relay")
 		guard let secondRevoked = startAgain("at another relay's address") else { return }
 		Check.expect(secondRevoked == [secondDevice.text], "starting again revokes the phone paired", "\(secondRevoked)")
 		told = false
@@ -161,7 +182,7 @@ enum StartAgain {
 			seen.range(of: Data(pairing.text.utf8)) != nil || Base64URL.decode(pairing.text, count: 16).map { seen.range(of: $0) != nil } == true
 		}
 		Check.expect(front.connections >= 3 && crossed(atFront.pairing), "the front saw the new pairing's traffic: the Mac's registration and socket, the phone's join and socket", "\(front.connections) connections, \(seen.count) bytes")
-		Check.expect(!crossed(atRelay.pairing), "the pairing registered at the old address never crossed the new relay's wire, as text or as its bytes")
+		Check.expect(!crossed(atRelay.pairing), "the pairing registered at the old address never crossed the new relay's wire, as text or as its bytes, by pi² Remote or by a pairing code")
 		Check.expect(!crossed(homeOnly.pairing), "nor the one made at home")
 		guard case .success = app.call("devices.set", .object([("on", .bool(false))])) else { return Check.expect(false, "remote access turned off") }
 	}
