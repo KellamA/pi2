@@ -410,8 +410,11 @@ package final class Remote: @unchecked Sendable {
 	/// after each frame is held, so it is passed by one frame at most, for a moment.
 	package var lineBudget = 256 * 1024 * 1024
 	/// How long an unfinished line may go with nothing more of it coming, on `lineClock`: a phone that lost its network
-	/// halfway through a message frees what it sent within this and a sixth of it more (the watch's step).
-	package var lineStalledAfter: Duration = .seconds(30)
+	/// halfway through a message frees what it sent within this and a sixth of it more (the watch's step). Changed (by
+	/// the check alone), the watch takes its new step at once.
+	package var lineStalledAfter: Duration = .seconds(30) {
+		didSet { lineWatch?.schedule(deadline: .now() + lineWatchStep) }
+	}
 	/// The slowest link a line may come by, in bytes a second: a line may take `lineStalledAfter`, and as long again as
 	/// what it holds takes at this rate, so that a piece every few seconds cannot keep a line held for ever. 64 KiB a
 	/// second, about half a megabit: ten pictures (67 MiB) in about 18 minutes; a line of 72 MiB held 20 minutes at most.

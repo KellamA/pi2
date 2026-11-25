@@ -83,15 +83,20 @@ enum Unfinished {
 		}
 		Check.expect(engine.sessionLine(within: 10)?.1 == carried(slowLine, session: "u_honest") && !honest.closed, "a phone sending a line slowly but steadily, a piece every tenth of a second, is not cut: the line reaches the engine whole", String(format: "in %.1f s", Date().timeIntervalSince(began)))
 
-		// A stalled line, while phones are held back and after.
+		// A stalled line, while phones are held back and after. Phones are held back by a line of 10 MiB the engine (this
+		// check) does not read, all of it but its last frame sent before the stalled line begins, so that the stalled
+		// line's clock runs as little as can be before they are; the stall is a minute until they are, on a loaded Mac.
+		queue.sync { remote.lineStalledAfter = .seconds(60) }
 		guard let stalled = attach(3, "u_stalled") else { return Check.expect(false, "a second phone attaches") }
+		let flood = line(frames: 160, id: "flood")
+		let floodMessages = try! honest.channel!.seal(line: flood)
+		for message in floodMessages.dropLast() { honest.send(message) }
 		let stalledMessages = try! stalled.channel!.seal(line: line(frames: 16, id: "stalled"))
 		for message in stalledMessages.dropLast() { stalled.send(message) }
-		Check.expect(until { $0.linesHeld == 16 * frame }, "a phone sends 16 frames of a line and stops: pi² Remote holds them")
-		// The honest phone sends 10 MiB the engine (this check) does not read: phones are held back.
-		let flood = line(frames: 160, id: "flood")
-		honest.sendLine(flood)
-		Check.expect(until { $0.phonesPaused }, "a line of 10 MiB the engine does not read holds every attached phone back")
+		Check.expect(until { $0.linesHeld == 176 * frame }, "a phone sends 16 frames of a line and stops: pi² Remote holds them, and 160 of another's")
+		honest.send(floodMessages.last!)
+		Check.expect(until { $0.phonesPaused }, "the other's line of 10 MiB, finished, the engine does not read: every attached phone is held back")
+		queue.sync { remote.lineStalledAfter = .seconds(1.5) }
 		Check.expect(stalled.message(within: 2) == nil && !stalled.closed && queue.sync(execute: { remote.linesHeld }) == 16 * frame, "while phones are held back, the stalled line's clock stands still: 2 seconds on, it is held and its connection open")
 		Check.expect(engine.sessionLine(within: 30)?.1 == carried(flood, session: "u_honest"), "the engine reads the 10 MiB line")
 		let drained = Date()
