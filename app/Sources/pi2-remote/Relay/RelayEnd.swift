@@ -229,7 +229,7 @@ final class RelayEnd: @unchecked Sendable {
 		}
 		guard let pairing = remote.pairing else { return .failure(Unwanted(state: .unavailable("no pairing yet: one is registered at the relay when the first iPhone pairs", reason: .noPairing))) }
 		guard let registration = remote.registration, registration.pairing == pairing else {
-			return .failure(Unwanted(state: .unavailable("this Mac's pairing is registered at no relay (it was made for the home path alone), and was not registered at this relay by pi² Remote; home and direct carry on", reason: .unregistered)))
+			return .failure(Unwanted(state: .unavailable("this Mac's pairing is registered at no relay pi² Remote knows of, and was not registered at this relay by pi² Remote; home and direct carry on", reason: .unregistered)))
 		}
 		guard registration.relay.utf8.elementsEqual(remote.relay.utf8) else {
 			return .failure(Unwanted(state: .unavailable("this Mac's pairing belongs to another relay: it was not registered at this relay by pi² Remote, and is shown to no other relay; home and direct carry on", reason: .anotherRelay)))

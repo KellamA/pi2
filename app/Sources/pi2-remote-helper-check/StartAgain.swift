@@ -9,7 +9,9 @@ import pi2_remote
 /// phone (told so on the home path, signed) and registers a new pairing at the new address, through which a phone pairs
 /// and attaches. The new address is a front of the check's own on 127.0.0.1 (`RecordingFront`) that passes every byte
 /// on to the same relay and keeps what passed, read as the relay reads it (the request's head and each WebSocket
-/// frame's payload, unmasked): neither earlier pairing's id, as text or as its bytes, ever crosses it.
+/// frame's payload, unmasked). It takes `Sec-WebSocket-Extensions` out of every request head, so that no
+/// `permessage-deflate` is agreed, and the check asserts that no compressed frame (RSV1) crossed: every frame is read as
+/// it is. Neither earlier pairing's id, as text or as its bytes, ever crosses it, in a head or in a frame.
 enum StartAgain {
 	static func run(engineMain: String, helper: URL, root: URL, relay: URL) {
 		Check.section("through a real engine and the relay on this computer: the pairing started again at the relay now set (#917)")
@@ -98,7 +100,7 @@ enum StartAgain {
 		Check.expect(unregistered?["why"]?.stringValue?.contains("not registered at this relay") == true, "the relay switch on: the relay path is unavailable, reason unregistered, for the pairing made at home", unregistered.map(JSON.text) ?? "nothing")
 		usleep(1_000_000)
 		Check.expect(pairing() == homeOnly.pairing.text && Relayed.kept(home)?.registration == nil, "and nothing is registered by itself")
-		refused("made with the relay off, and no relay knows it", "while the pairing made with the relay off would be named to the relay now on")
+		refused("pairing is registered at no relay. Start again at this relay first", "while the pairing made with the relay off would be named to the relay now on")
 
 		guard let firstRevoked = startAgain("for the pairing made at home") else { return }
 		Check.expect(firstRevoked == [firstDevice.text], "starting again revokes the one phone paired", "\(firstRevoked)")
@@ -181,25 +183,82 @@ enum StartAgain {
 		func crossed(_ pairing: PairingID) -> Bool {
 			seen.range(of: Data(pairing.text.utf8)) != nil || Base64URL.decode(pairing.text, count: 16).map { seen.range(of: $0) != nil } == true
 		}
+		Check.expect(front.offersTaken >= front.connections && front.connections >= 3, "every connection's offer of permessage-deflate was taken out of its request head", "\(front.offersTaken) of \(front.connections)")
+		Check.expect(front.compressed == 0 && seen.range(of: Data("sec-websocket-extensions".utf8)) == nil && String(decoding: seen, as: UTF8.self).lowercased().contains("sec-websocket-extensions") == false,
+		             "no compressed frame crossed the front, and no extension was agreed: every frame's payload is read as it is", "\(front.compressed) compressed")
+		Check.expect(front.frames.range(of: Data(atFront.pairing.text.utf8)) != nil, "the front saw the new pairing's id inside frames, not only in a request head (its hello)", "\(front.frames.count) bytes of frames")
 		Check.expect(front.connections >= 3 && crossed(atFront.pairing), "the front saw the new pairing's traffic: the Mac's registration and socket, the phone's join and socket", "\(front.connections) connections, \(seen.count) bytes")
 		Check.expect(!crossed(atRelay.pairing), "the pairing registered at the old address never crossed the new relay's wire, as text or as its bytes, by pi² Remote or by a pairing code")
 		Check.expect(!crossed(homeOnly.pairing), "nor the one made at home")
+
+		// No phone paired and the pairing kept (#1013's case, the security read's M1): pi² Remote is not running, the
+		// address changes, a code is refused, and starting again still works, waiting for pi² Remote's word as pairStart does.
+		guard case .success = app.call("devices.revoke", .object([("device", .string(device.text))])) else { return Check.expect(false, "the last phone revoked") }
+		func helperRunning() -> Bool? {
+			guard case let .success(event) = app.call("devices.watch") else { return nil }
+			return event["helper"]?["running"]?.boolValue
+		}
+		func registeredNow() -> String? {
+			guard case let .success(event) = app.call("devices.watch") else { return nil }
+			return event["pairingRegistered"]?.stringValue
+		}
+		var stopped = false
+		for _ in 0 ..< 150 where !stopped {
+			stopped = helperRunning() == false
+			if !stopped { usleep(100_000) }
+		}
+		Check.expect(stopped && pairing() == atFront.pairing.text, "with no phone paired, pi² Remote stops, and the pairing is kept")
+		guard case .success = app.call("devices.set", .object([("relayAddress", .string(relay.absoluteString))])) else { return Check.expect(false, "the relay's address changed back") }
+		Check.expect(registeredNow() == nil, "a word about another address is not taken for this one")
+		refused("belongs to another relay. Start again at this relay first", "with no phone paired, for the pairing registered at the front's address")
+		usleep(4_000_000)
+		Check.expect(helperRunning() == false && registeredNow() == "another-relay", "pi² Remote stopped again, and the engine keeps its word: the page goes on offering to start again", "running \(String(describing: helperRunning())), registered \(registeredNow() ?? "none")")
+		if case let .success(answer) = app.call("devices.startAgain", within: 120), case let .array(revoked)? = answer["revoked"] {
+			Check.expect(revoked.isEmpty && pairing() == nil, "starting again works with no phone paired and pi² Remote stopped: it is started, and its word awaited")
+		} else {
+			Check.expect(false, "starting again works with no phone paired and pi² Remote stopped")
+		}
+		guard let atLast = opened("after starting again with no phone") else { return }
+		Check.expect(atLast.pairing != atFront.pairing && atLast.relay == relay.absoluteString && Relayed.kept(home)?.registration == RelayRegistration(pairing: atLast.pairing, relay: relay.absoluteString), "the next code names a new pairing, registered at the relay now set")
+		let lastKeys = PhoneKeys()
+		if let lastLink = Relayed.join(relay, pairing: atLast.pairing, secret: atLast.secret, keys: lastKeys) {
+			let lastWire = RelayWire(link: lastLink)
+			let lastPhone = Phone(relay: lastWire)
+			let paired = lastPhone.pair(payload: atLast, keys: lastKeys, team: RealEngine.team).flatMap { confirm(atLast, $0.binding) }
+			let told = lastPhone.line().flatMap { try? ControlLine.parse($0) }
+			if case .paired? = told, paired != nil {
+				Check.expect(true, "and a phone pairs through the relay with it")
+			} else {
+				Check.expect(false, "and a phone pairs through the relay with it")
+			}
+			lastWire.close()
+		} else {
+			Check.expect(false, "a phone joins the relay's window with the new pairing")
+		}
 		guard case .success = app.call("devices.set", .object([("on", .bool(false))])) else { return Check.expect(false, "remote access turned off") }
 	}
 }
 
 /// A front on 127.0.0.1 for a relay on this computer: every byte passed on unchanged, each way, and kept as the relay
 /// reads it, so that the check can say what crossed this address: the request's head, then each WebSocket frame's
-/// payload, unmasked (RFC 6455 5.2). Plain BSD sockets and a thread for each direction of each connection.
+/// payload, unmasked (RFC 6455 5.2). The client's offer of extensions is taken out of its head, so frames are never
+/// compressed; a compressed frame (RSV1) is counted, never read, and the check wants none. Plain BSD sockets and a
+/// thread for each direction of each connection.
 final class RecordingFront: @unchecked Sendable {
 	private let listener: Int32
 	private let upstream: UInt16
 	let url: URL
-	private let state = Locked<(seen: Data, connections: Int, open: [Int32])>((Data(), 0, []))
+	private let state = Locked<(seen: Data, frames: Data, connections: Int, open: [Int32], compressed: Int, offersTaken: Int)>((Data(), Data(), 0, [], 0, 0))
 	private let stopped = Locked(false)
 
 	var seen: Data { state.get().seen }
+	/// The frames' payloads alone, as the relay read them: what the heads do not hold.
+	var frames: Data { state.get().frames }
 	var connections: Int { state.get().connections }
+	/// Frames with RSV1 set, compressed by `permessage-deflate`, which the front cannot read: there must be none.
+	var compressed: Int { state.get().compressed }
+	/// Request heads whose `Sec-WebSocket-Extensions` offer the front took out before the relay saw them.
+	var offersTaken: Int { state.get().offersTaken }
 
 	init?(to relay: URL) {
 		guard relay.host == "127.0.0.1", let port = relay.port, let upstream = UInt16(exactly: port) else { return nil }
@@ -255,32 +314,63 @@ final class RecordingFront: @unchecked Sendable {
 				close(relay)
 			}
 			Thread { [self] in
-				pump(from: client, to: relay)
+				pump(from: client, to: relay, request: true)
 				finish()
 			}.start()
 			Thread { [self] in
-				pump(from: relay, to: client)
+				pump(from: relay, to: client, request: false)
 				finish()
 			}.start()
 		}
 	}
 
 	/// Passes `from`'s bytes to `to` until either ends, keeping what the relay reads of them.
-	private func pump(from: Int32, to: Int32) {
+	/// The client's request head is held until it is whole and passed on without its `Sec-WebSocket-Extensions` lines,
+	/// so that no `permessage-deflate` is agreed and every frame stays readable here (the local relay, workerd, accepts it
+	/// when offered); what is kept is what the relay reads.
+	private func pump(from: Int32, to: Int32, request: Bool) {
 		var reader = Frames()
+		var head: Data? = request ? Data() : nil
 		var buffer = [UInt8](repeating: 0, count: 65536)
+		func send(_ bytes: Data) -> Bool {
+			var sent = 0
+			while sent < bytes.count {
+				let wrote = bytes.withUnsafeBytes { write(to, $0.baseAddress! + sent, bytes.count - sent) }
+				guard wrote > 0 else { return false }
+				sent += wrote
+			}
+			return true
+		}
 		while true {
 			let count = read(from, &buffer, buffer.count)
 			guard count > 0 else { break }
-			var sent = 0
-			while sent < count {
-				let wrote = buffer.withUnsafeBytes { write(to, $0.baseAddress! + sent, count - sent) }
-				guard wrote > 0 else { break }
-				sent += wrote
+			var bytes = Data(buffer[0 ..< count])
+			if var held = head {
+				held.append(bytes)
+				guard let end = held.range(of: Data("\r\n\r\n".utf8)) else {
+					head = held
+					continue
+				}
+				let text = String(decoding: held[held.startIndex ..< end.lowerBound], as: UTF8.self)
+				let lines = text.components(separatedBy: "\r\n")
+				let kept = lines.filter { !$0.lowercased().hasPrefix("sec-websocket-extensions:") }
+				if kept.count != lines.count { state.update { $0.offersTaken += 1 } }
+				bytes = Data((kept.joined(separator: "\r\n") + "\r\n\r\n").utf8) + held[end.upperBound...]
+				head = nil
 			}
-			let read = reader.take(Data(buffer[0 ..< count]))
-			if !read.isEmpty { state.update { $0.seen.append(read) } }
-			guard sent == count else { break }
+			let readHere = reader.take(bytes)
+			if !readHere.isEmpty || reader.compressed > 0 {
+				let compressed = reader.compressed
+				let payloads = reader.payloads
+				reader.compressed = 0
+				reader.payloads = Data()
+				state.update {
+					$0.seen.append(readHere)
+					$0.frames.append(payloads)
+					$0.compressed += compressed
+				}
+			}
+			guard send(bytes) else { break }
 		}
 		shutdown(to, SHUT_WR)
 		shutdown(from, SHUT_RD)
@@ -290,6 +380,10 @@ final class RecordingFront: @unchecked Sendable {
 	private struct Frames {
 		private var held = Data()
 		private var headDone = false
+		/// Whole frames with RSV1 set (compressed) since last asked.
+		var compressed = 0
+		/// The frames' payloads alone since last asked, each followed by a zero byte.
+		var payloads = Data()
 
 		/// What `more` completes: the head's text, and each whole frame's payload unmasked, each followed by a zero byte.
 		mutating func take(_ more: Data) -> Data {
@@ -306,6 +400,7 @@ final class RecordingFront: @unchecked Sendable {
 				let bytes = [UInt8](held)
 				guard bytes.count >= 2 else { break }
 				let masked = bytes[1] & 0x80 != 0
+				let deflated = bytes[0] & 0x40 != 0
 				var length = Int(bytes[1] & 0x7F)
 				var at = 2
 				if length == 126 {
@@ -322,8 +417,11 @@ final class RecordingFront: @unchecked Sendable {
 				guard bytes.count >= at + length else { break }
 				var payload = Array(bytes[at ..< at + length])
 				if masked, key.count == 4 { for index in payload.indices { payload[index] ^= key[index % 4] } }
+				if deflated { compressed += 1 }
 				out.append(contentsOf: payload)
 				out.append(0)
+				payloads.append(contentsOf: payload)
+				payloads.append(0)
 				held = Data(bytes[(at + length)...])
 			}
 			return out

@@ -180,6 +180,10 @@ export function wireRemote(parts: RemoteParts): void {
 		},
 		addresses: () => (helper?.hello == null ? null : helper.hello.addresses),
 		relayWord,
+		lastRelayWord: () => {
+			const now = devicesState();
+			return lastWord !== null && lastWord.relay.address === now.relay && lastWord.pairing === now.pairing ? lastWord.relay : null;
+		},
 	} satisfies typeof remoteHooks);
 	reconsider();
 }
@@ -499,6 +503,7 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 			const relay = relayState(params.relay);
 			if (relay === null) throw new Error("The relay's state is not one pi² Remote reports.");
 			current.relay = relay;
+			lastWord = { relay, pairing: devicesState().pairing };
 			sessionsChanged();
 		}
 		if (params.addresses !== undefined) {
@@ -610,6 +615,14 @@ function relayState(value: unknown): Record<string, unknown> | null {
 		...(given.address === undefined ? {} : { address: given.address }),
 	};
 }
+
+/**
+ * pi² Remote's last word of the relay path, with the pairing the engine had when it came (#917, #1013): kept when pi²
+ * Remote stops, as it does with no device paired, so that the Devices page goes on offering to start again. It holds
+ * only while the address and the pairing are those now set: `registered` changes only with the pairing (register,
+ * forgetPairing) or the address, and both pass through the engine.
+ */
+let lastWord: { relay: Record<string, unknown>; pairing: string | null } | null = null;
 
 /**
  * What pi² Remote last said of the relay path, once it is about the relay's address now set (`address`, #1013), from a
