@@ -31,8 +31,19 @@ final class PullRequestStore {
     private(set) var pending: [Key: String] = [:]
     /// The engine's words when it refused what was asked, by pull request, until the next request for it.
     private(set) var problems: [Key: String] = [:]
+    /// What was done, by pull request, until the next request for it: a write whose result the listing does not show
+    /// (a pull request sent back is still open, and its reason is a comment, not a finding).
+    private(set) var dones: [Key: String] = [:]
     /// The writes being settled, by intent.
     private(set) var settling: Set<String> = []
+    /// A closed pull request being read whole (`github.show`), or the engine's words when it would not: the answer
+    /// itself comes in the `github` event, which then lists it whole.
+    private(set) var wholes: [Key: WholeRead] = [:]
+
+    enum WholeRead: Equatable {
+        case reading
+        case refused(String)
+    }
     /// The diffs being read now.
     @ObservationIgnored private var reading: Set<Key> = []
 
@@ -66,17 +77,32 @@ final class PullRequestStore {
         }
     }
 
-    /// Sends `request` for one pull request, shown as `word` until the engine answers. `failed` runs with the refusal,
-    /// after it is kept to show.
-    func send(_ request: PullRequestRequest, for key: Key, shown word: String, through engine: EngineSession<MessageField>,
-              failed: @escaping @MainActor (String) -> Void = { _ in }) {
+    /// Asks the engine to read a closed pull request whole, unless it is being read; once a page open.
+    func readWhole(_ key: Key, through engine: EngineSession<MessageField>) {
+        guard wholes[key] != .reading else { return }
+        wholes[key] = .reading
+        Task {
+            switch await PullRequestRequest.show(project: key.project, number: key.number).send(through: engine) {
+            case .success: wholes[key] = nil
+            case .failure(let refusal): wholes[key] = .refused(refusal.words)
+            }
+        }
+    }
+
+    /// Sends `request` for one pull request, shown as `word` until the engine answers, then `done`, if given, once it
+    /// is done. `failed` runs with the refusal, after it is kept to show.
+    func send(_ request: PullRequestRequest, for key: Key, shown word: String, done: String? = nil,
+              through engine: EngineSession<MessageField>, failed: @escaping @MainActor (String) -> Void = { _ in }) {
         guard pending[key] == nil else { return }
         pending[key] = word
         problems[key] = nil
+        dones[key] = nil
         Task {
             let outcome = await request.send(through: engine)
             pending[key] = nil
-            if case .failure(let refusal) = outcome {
+            switch outcome {
+            case .success: dones[key] = done
+            case .failure(let refusal):
                 problems[key] = refusal.words
                 failed(refusal.words)
             }
