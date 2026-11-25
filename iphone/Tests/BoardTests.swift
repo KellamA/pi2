@@ -29,10 +29,11 @@ struct BoardTests {
         return session
     }
 
-    /// Records every request the client sends and refuses each, so that a test can see what was sent; it answers
-    /// nothing else.
+    /// Records every request the client sends and refuses each, but those `answers` holds a result for, so that a test
+    /// can see what was sent; it answers nothing else.
     private final class RecordingTransport: EngineTransport {
         var sent: [(method: String, params: [String: Any])] = []
+        var answers: [String: Any] = [:]
         private var handler: (@MainActor (EngineTransportEvent) -> Void)?
 
         func start(_ handler: @escaping @MainActor (EngineTransportEvent) -> Void) {
@@ -44,7 +45,8 @@ struct BoardTests {
             guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let id = object["id"] as? Int, let method = object["method"] as? String else { return }
             sent.append((method, object["params"] as? [String: Any] ?? [:]))
-            var reply = (try? JSONSerialization.data(withJSONObject: ["id": id, "error": "Refused in the test."])) ?? Data()
+            let answer: [String: Any] = answers[method].map { ["id": id, "result": $0] } ?? ["id": id, "error": "Refused in the test."]
+            var reply = (try? JSONSerialization.data(withJSONObject: answer)) ?? Data()
             reply.append(0x0A)
             Task { @MainActor [weak self] in self?.handler?(.received(reply)) }
         }
@@ -304,6 +306,31 @@ struct BoardTests {
         #expect(groups[0].worktrees == 1)
         #expect(data.branchSummary("p") == "4 conversations in git · 1 in a worktree of its own")
         #expect(data.branchGroups("other").isEmpty)
+    }
+
+    /// Against a copy, the branch the engine suggested came after the alert had opened, and the alert's field, which shows
+    /// what it holds as it opens, stayed empty: the question now opens once the suggestion has come, with it in the field.
+    @Test func aNewWorktreeIsAskedWithTheEnginesSuggestion() async throws {
+        let (engine, transport) = try await recordingEngine()
+        transport.answers["worktree.suggest"] = ["branch": "pi2/check-the-sample-build"]
+        #expect(await BoardWorktreeAsk.opening(engine, conversation: 17) == BoardWorktreeAsk(conversation: 17, branch: "pi2/check-the-sample-build"))
+        let asked = try #require(transport.sent.last)
+        #expect(asked.method == "worktree.suggest" && asked.params["id"] as? Int == 17)
+        // With no suggestion the field opens empty, which leaves the branch to the engine.
+        transport.answers = [:]
+        #expect(await BoardWorktreeAsk.opening(engine, conversation: 17) == BoardWorktreeAsk(conversation: 17, branch: ""))
+    }
+
+    /// A branch as a copy's engine sent it (#696, part 2), with the nulls the recording never had, reads as the Mac's.
+    @Test func theEnginesBranchEventIsRead() throws {
+        let status = try JSONDecoder().decode(BranchStatus.self, from: Data("""
+            {"repo":"demo-project","root":"/tmp/demo-project","branch":"main","head":"8168b3a","worktree":false,"managed":false,
+             "upstream":null,"ahead":0,"behind":0,"base":null,"unmerged":null,"defaultBranch":null,"unmergedDefault":null,
+             "changes":0,"conflicts":0,"operation":null,"added":0,"removed":0,"state":"clean"}
+            """.utf8))
+        #expect(status.boardName == "main" && status.boardStateTitle == "clean")
+        #expect(status.boardKind(shared: false) == "main checkout")
+        #expect(status.boardFacts == ["Not pushed anywhere yet"])
     }
 
     @Test func branchStatesReadAsTheMacSaysThem() {

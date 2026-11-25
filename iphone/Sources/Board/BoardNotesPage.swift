@@ -126,7 +126,7 @@ struct BoardNotesPage: View {
         }
     }
 
-    private func share(_ note: BoardNote) {
+    func share(_ note: BoardNote) {
         let engine = session.engine
         send(note, { await BoardRequests.shareNote(engine, project: project.id, note: note.id) }, failed: "Not shared")
     }
@@ -157,6 +157,10 @@ struct BoardNotesPage: View {
     /// For `BoardDebugAct`: what a tap would do.
     func debugAdd(_ text: String) { newNote = text; add() }
     func debugEdit(_ note: BoardNote) { editing = note }
+    func debugSave(_ note: BoardNote, text: String) {
+        let engine = session.engine
+        send(note, { await BoardRequests.editNote(engine, project: project.id, note: note.id, text: text) }, failed: "Not saved")
+    }
     #endif
 }
 
