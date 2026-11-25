@@ -195,6 +195,68 @@ struct ConversationTests {
         #expect(status.waiting.map(\.text) == ["Forge needs approval: Run npm test"])
     }
 
+    /// New Chat makes a chat titled "" with no agent (`conversation.create { chat: true }`): its screen said nothing in
+    /// its header beside an empty mark, and "Write to the agent below" over "Message the agent…" (#981). It is "New
+    /// chat", as the Mac and the phone's lists call it, with pi²'s mark, and speaks of pi²'s assistant.
+    @Test func anUntitledChatIsANewChatWithPiSquaredsAssistant() throws {
+        let chatAgent = #""agent":{"model":{"provider":"demo","modelId":"demo-1"},"thinkingLevel":null,"cwd":"/c","access":"ask","agentId":null,"parent":null}"#
+        let row = try decode(ConversationSummary.self, #"{"id":223,"title":"","updatedAt":0,"busy":false,"agentId":null,"parent":null,"chat":true}"#)
+        let idle = try state("\(chatAgent),\"chat\":true")
+        let header = ConversationNames.header(
+            conversationID: 223, summary: row, archived: nil, state: idle, agent: nil, model: "scripted", project: nil, busy: false
+        )
+        #expect(header.name == "New chat")
+        #expect(header.chat)
+        #expect(header.subtitle == "pi²’s assistant · scripted")
+        // A title of spaces names nothing either; the state alone says it is a chat before the library has come.
+        let spaces = try decode(ConversationSummary.self, #"{"id":223,"title":"  \n","updatedAt":0,"busy":false,"agentId":null,"parent":null,"chat":true}"#)
+        #expect(ConversationNames.header(conversationID: 223, summary: spaces, archived: nil, state: nil, agent: nil, model: "", project: nil, busy: false).name == "New chat")
+        #expect(ConversationNames.header(conversationID: 223, summary: nil, archived: nil, state: idle, agent: nil, model: "", project: nil, busy: false).name == "New chat")
+        let archived = try decode(ArchivedConversation.self, #"{"id":223,"title":"","archivedAt":0,"agentId":null,"subChats":0,"parent":null,"parentTitle":null,"chat":true}"#)
+        #expect(ConversationNames.header(conversationID: 223, summary: nil, archived: archived, state: nil, agent: nil, model: "", project: nil, busy: false).name == "New chat")
+        let titled = try decode(ConversationSummary.self, #"{"id":223,"title":"Trip ideas","updatedAt":0,"busy":false,"agentId":null,"parent":null,"chat":true}"#)
+        #expect(ConversationNames.header(conversationID: 223, summary: titled, archived: nil, state: idle, agent: nil, model: "", project: nil, busy: false).name == "Trip ideas")
+
+        let empty = ConversationNames.emptyWords(chat: true, agentName: nil)
+        #expect(empty.title == "What can I help with?")
+        #expect(!empty.text.contains("agent"))
+        #expect(ConversationNames.emptyWords(chat: false, agentName: "Forge").text == "Write to Forge below. It works on your Mac.")
+
+        // The field's words are the Mac's chat mode's; nothing is steered, and no line says what waits for what.
+        let status = ConversationStatus.make(
+            conversationID: 223, state: idle, agentName: nil, outgoing: [], connected: true, inbox: [], needs: [],
+            archivedInLibrary: false, models: [], chat: true
+        )
+        #expect(status.isChat)
+        #expect(status.placeholder(steer: true) == "Ask anything")
+        let busy = ConversationStatus.make(
+            conversationID: 223, state: try state("\(chatAgent),\"chat\":true,\"busy\":true,\"messageWaits\":{\"holds\":[],\"ends\":[]}"), agentName: nil,
+            outgoing: [], connected: true, inbox: [], needs: [], archivedInLibrary: false, models: []
+        )
+        #expect(busy.isChat)
+        #expect(busy.placeholder(steer: true) == "Write your next message…")
+        #expect(busy.arrivalSteered == nil && busy.arrivalQueued == nil)
+        #expect(!busy.agentName.contains("agent"))
+    }
+
+    /// An agent's conversation keeps its agent's name; one with no agent the screen knows and no title yet is a "New
+    /// conversation", as on the Mac, not an empty header.
+    @Test func anAgentsConversationIsNamedByItsAgent() throws {
+        let agent = try decode(AgentProfile.self, #"{"id":"a1","name":"Forge","description":"","color":"green","instructions":"","access":"full","delegates":[],"createdAt":0}"#)
+        let row = try decode(ConversationSummary.self, #"{"id":30,"title":"","updatedAt":0,"busy":false,"agentId":"a1","parent":null}"#)
+        let header = ConversationNames.header(
+            conversationID: 30, summary: row, archived: nil, state: try state(""), agent: agent, model: "scripted", project: "Demo project", busy: true
+        )
+        #expect(header.name == "Forge")
+        #expect(!header.chat)
+        #expect(header.color == "green")
+        #expect(header.subtitle == "scripted · Demo project")
+        #expect(ConversationNames.header(conversationID: 30, summary: row, archived: nil, state: nil, agent: nil, model: "", project: nil, busy: false).name == "New conversation")
+        #expect(ConversationNames.header(conversationID: 30, summary: nil, archived: nil, state: nil, agent: nil, model: "", project: nil, busy: false).name == "Conversation 30")
+        let titled = try decode(ConversationSummary.self, #"{"id":30,"title":"Fix the fold","updatedAt":0,"busy":false,"agentId":"a1","parent":null}"#)
+        #expect(ConversationNames.header(conversationID: 30, summary: titled, archived: nil, state: nil, agent: agent, model: "", project: nil, busy: false).subtitle == "Fix the fold")
+    }
+
     // MARK: Requests, through the session (the recording refuses them)
 
     @Test func requestsAreMadeAndTheirRefusalShown() async throws {
@@ -214,6 +276,37 @@ struct ConversationTests {
         #expect(await requests.withdraw(41) == "Not taken back. The recorded session (PI2_TRANSPORT=replay) does not answer withdraw.")
         #expect(await requests.carryOn() == "Not continued. The recorded session (PI2_TRANSPORT=replay) does not answer continue.")
         #expect(await requests.restore(9) == "Not restored. The recorded session (PI2_TRANSPORT=replay) does not answer conversation.unarchive.")
+    }
+
+    /// A message from the phone carries at most 1 MB of typed text (#924), counted in UTF-8 bytes as the engine counts
+    /// it: the composer says so in the engine's words, and a send over it is refused before any request, so the text goes
+    /// back in the field.
+    @Test func aMessageOverOneMegabyteIsHeldBackInTheEnginesWords() async throws {
+        let head = "/work 0 1000 "
+        let exactly = head + String(repeating: "t", count: TypedTextLimit.bytes - head.utf8.count)
+        let overByOne = head + String(repeating: "é", count: (TypedTextLimit.bytes - head.utf8.count - 1) / 2) + "tt"
+        #expect(exactly.utf8.count == 1_048_576 && overByOne.utf8.count == 1_048_577)
+        #expect(overByOne.count < 600_000, "far under the limit counted in characters")
+        #expect(TypedTextLimit.refusal(exactly) == nil)
+        // The engine's sentences, as engine/test/devices.ts holds them.
+        #expect(TypedTextLimit.refusal(overByOne) == "A message from a phone can carry at most 1 MB of typed text; this one has just over 1 MB. Shorten it, or send it from the Mac.")
+        #expect(TypedTextLimit.refusal(String(repeating: "t", count: 1_258_292)) == "A message from a phone can carry at most 1 MB of typed text; this one has 1.2 MB. Shorten it, or send it from the Mac.")
+        #expect(TypedTextLimit.refusal(overByOne, answer: true) == "An answer from a phone can carry at most 1 MB of typed text; this one has just over 1 MB. Shorten it, or answer on the Mac.")
+        #expect(TypedTextLimit.sizeText(66 * 1024 * 1024 + 13) == "66.0 MB")
+        // A half rounds up, as JavaScript's toFixed(1) does: 1.25 and 1.75 MB.
+        #expect(TypedTextLimit.sizeText(1_310_720) == "1.3 MB" && TypedTextLimit.sizeText(1_835_008) == "1.8 MB")
+
+        let transport = RecordingTransport()
+        let session = AppSession()
+        session.start(transport, as: .connected(.home))
+        #expect(try await eventually { session.engine.status == .connected })
+        let requests = ConversationRequests(engine: session.engine, conversationID: 9)
+        let outcome = await requests.send(overByOne, pictures: [], steer: false)
+        #expect(outcome == .refused("Not sent. A message from a phone can carry at most 1 MB of typed text; this one has just over 1 MB. Shorten it, or send it from the Mac."))
+        #expect(transport.params(of: "submit") == nil, "no request is made")
+        #expect(session.engine.outgoing[9] == nil)
+        _ = await requests.send(exactly, pictures: [], steer: false)
+        #expect(transport.params(of: "submit")?["text"] as? String == exactly, "exactly 1 MB goes")
     }
 
     @Test func sendingAPicturePutsItInTheRequest() async throws {

@@ -44,23 +44,36 @@ struct HubChatTab: View {
                 description: Text("This project is archived, and has no conversation with its orchestrator.")
             )
         } else {
+            let live = HubRequests.isLive(session)
             ContentUnavailableView {
                 Label(problem == nil ? "Starting the conversation" : "The conversation did not start", systemImage: "bubble.left.and.bubble.right")
             } description: {
                 if let problem {
                     Text(problem)
-                } else {
+                } else if live {
                     Text("This project has no conversation with its orchestrator yet. Your Mac is starting one.")
+                } else {
+                    Text("This project has no conversation with its orchestrator yet. Your Mac starts one once it is reached.")
                 }
             } actions: {
                 if problem != nil {
                     Button("Try Again") { start() }
                         .buttonStyle(.bordered)
-                        .disabled(starting)
+                        .disabled(starting || !live)
                 }
             }
-            .task(id: project.id) { start() }
+            // Asked for once the Mac is reached, and again each time it is: tried against a copy (#688), a hub opened while
+            // the phone still showed its store's last state was refused there ("can't be reached") and asked no more.
+            .task(id: "\(project.id) \(live)") {
+                if Self.startsNow(project, live: live, starting: starting) { start() }
+            }
         }
+    }
+
+    /// Whether the Chat tab asks the Mac to start the orchestrator's conversation now: the project has none and is not
+    /// archived, the phone reaches the Mac, and no start is under way.
+    static func startsNow(_ project: ProjectRow, live: Bool, starting: Bool) -> Bool {
+        project.conversation == nil && project.archivedAt == nil && live && !starting
     }
 
     private func start() {

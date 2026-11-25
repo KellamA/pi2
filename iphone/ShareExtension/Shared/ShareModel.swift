@@ -85,6 +85,11 @@ final class ShareModel {
             sendProblem = "Nothing here can be sent."
             return false
         }
+        // The message's words are held to the engine's 1 MB from a phone (#924), in its words; the page stays open.
+        if let tooLong = TypedTextLimit.refusal(message.text) {
+            sendProblem = tooLong
+            return false
+        }
         let draft = ShareDraft(writtenAt: now(), destination: choice, text: message.text, attachments: message.attachments)
         guard draft.encodedSize <= ShareLimits.messageBytes else {
             sendProblem = "This is too large to send in one message. Share less of it at a time."

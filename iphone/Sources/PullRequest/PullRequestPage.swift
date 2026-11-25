@@ -206,8 +206,8 @@ struct PullRequestPage: View {
         return lines
     }
 
-    /// The conversation that opened it through pi², as the session knows it: "sub-chat 166", "Orchestrator's
-    /// conversation", or "conversation 9".
+    /// The conversation that opened it through pi², as the session knows it: "sub-chat 166", "the orchestrator's
+    /// conversation", "Forge's conversation", or "conversation 9".
     private var opener: String? {
         pull.openedBy.map { PullRequestLook.opener($0, conversations: session.engine.conversations, agents: session.engine.allAgents) }
     }
@@ -694,12 +694,19 @@ enum PullRequestLook {
         return "The diff is longer than 2 MB, so your Mac sent its first 2 MB: \(last)any file after it is not listed. GitHub and the Mac show all of it."
     }
 
-    /// The conversation that opened a pull request through pi² (its `openedBy`), named as the person knows it: a
-    /// sub-chat by its number, an agent's own conversation by the agent (an orchestrator opens pull requests too, in
-    /// its own conversation), and one the session does not list by its number.
+    /// The conversation that opened a pull request through pi² (its `openedBy`), named as the person knows it, from the
+    /// library's row: a sub-chat by its number, the project's conversation with its orchestrator as that (an orchestrator
+    /// opens pull requests too, in its own conversation, whatever it is named), another agent's own conversation by the
+    /// agent, and one the session does not list (not loaded yet, archived, deleted) by its number alone, which claims
+    /// nothing it cannot know.
     static func opener(_ id: Int, conversations: [ConversationSummary], agents: [AgentProfile]) -> String {
         guard let conversation = conversations.first(where: { $0.id == id }) else { return "conversation \(id)" }
         if conversation.parent != nil { return "sub-chat \(id)" }
+        switch conversation.orchestrator {
+        case "current": return "the orchestrator's conversation"
+        case "earlier": return "an earlier conversation with the orchestrator"
+        default: break
+        }
         if let agentID = conversation.runsAs ?? conversation.agentId, let agent = agents.first(where: { $0.id == agentID }) {
             return "\(agent.name)'s conversation"
         }
