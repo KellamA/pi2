@@ -745,7 +745,7 @@ export class AppCheck {
 				unchecked(error instanceof Error ? error.message : String(error));
 				return;
 			} finally {
-				// libuv (1.53, Node 26's) starts the helper with posix_spawn, on macOS and on Linux alike, and first clears
+				// libuv (1.53, Node 26's) starts the helper with posix_spawn, on macOS and, where it can, on Linux, and first clears
 				// O_NONBLOCK on each descriptor it hands over, in this process: on the open file description the connection is,
 				// so this end of it too (#927). Left so, the next write to an app that is not reading would hold the engine's one
 				// thread until it read. It is set back before spawn's caller goes on: nothing else of the engine's runs in
