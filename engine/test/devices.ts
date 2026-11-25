@@ -24,13 +24,15 @@ import { createModels } from "@earendil-works/pi-ai";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { allowsHiddenApproval, checkDeviceLists, deviceLogged, HIDDEN_FROM_THE_PHONE, deviceMay, devicePlacement, type DeviceSession, MAX_TYPED_FROM_A_DEVICE, ONLY_FROM_THE_HELPER, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID, PERSON_REQUESTS, typedRefusal } from "../src/answers.ts";
-import { APPROVAL_DEPTH, checkRequestItem, type Device, deviceRequests, DeviceLog, Devices, devicesState, flushDeviceLog, fromBase64url, helperWanted, hidesSomething, logDevice, macNameNow, maskValue, NOT_KEPT, pairClaim, PART_HIDDEN, remoteHooks, revokedWatchers, shownName, summarize, TOO_DEEP, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
+import { APPROVAL_DEPTH, checkRequestItem, type Device, deviceRequests, DeviceLog, Devices, devicesState, flushDeviceLog, fromBase64url, helperWanted, hidesSomething, LEAVE_NOT_SIGNED, logDevice, macNameNow, maskValue, NOT_A_LEAVE, NOT_KEPT, pairClaim, PART_HIDDEN, remoteHooks, revokedWatchers, shownName, summarize, TOO_DEEP, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
 import type { Client } from "../src/clients.ts";
 import { attachChallenge, checkAttach, offerPresenceKey, PRESENCE_KEY_ALREADY_WAITS, PRESENCE_KEY_CHANGED, PRESENCE_KEY_WAITS } from "../src/devices.ts";
 import { personOnly } from "../src/answers.ts";
 import { ANSWER_NOT_SENT, DEVICE_LINE_FAILED, forDevice, MAX_HELPER_LINE, MAX_LINE_TO_HELPER, MAX_PHONE_LINE, restartWait, RUN_THAT_LASTED, SESSION_OVER, sessionLine } from "../src/remote.ts";
 import { NOT_LINKED, NOT_OFFERED } from "../src/folders.ts";
 import { offerFolders } from "../src/answers.ts";
+import { SETTINGS_ONLY_IN_THE_APP } from "../src/answers.ts";
+import { PRESENTING_NOT_YET } from "../src/presented.ts";
 import { DatabaseSync } from "node:sqlite";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
 
@@ -214,6 +216,26 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	for (const method of ["devices.acceptPresenceKey", "devices.refusePresenceKey"]) assert.ok(personOnly(method, { device: "dev_x" }) !== undefined, `${method} on the socket is the app's alone`);
 	assert.equal(deviceMay("remote.presenceKey", {}, relay), "no");
 	step("a new Face ID key is accepted or refused on the Mac alone, by any path, and offered through pi² Remote alone");
+
+	// Presenting's requests (#963, design/presenting.md): a phone reads presented.picture alone, as conversation.image,
+	// with a channel and unlogged; the app's host role, the network switch, the window's list and a page's files are
+	// the Mac's by every path. On the socket, the host role and the switch are the app's alone, the three reads open.
+	const picture = { id: 1, presentation: "p", version: 1, item: 0 };
+	assert.deepEqual(devicePlacement("presented.picture"), { list: "FROM_A_DEVICE", why: "reading: a picture an agent presented, or a page's snapshot, as conversation.image is (#946)" });
+	for (const path of ["relay", "home", "direct"] as const) assert.equal(deviceMay("presented.picture", picture, { ...relay, path }), "yes", `presented.picture by ${path}`);
+	assert.equal(deviceMay("presented.picture", picture, { ...relay, path: "mailbox" }), "no", "reading needs a channel");
+	assert.equal(deviceLogged("presented.picture", picture), false, "reading is not logged");
+	assert.equal(personOnly("presented.picture", picture), undefined);
+	const presentingMacOnly = { "present.register": "the app's host role", "present.drawn": "the app's host role", "presented.list": "presenting's window, the Mac's for now", "presented.file": "a presented page's files, the Mac's for now", "presented.network": "a presented page's network switch, the person's setting at the Mac" };
+	for (const [method, why] of Object.entries(presentingMacOnly)) {
+		assert.deepEqual(devicePlacement(method), { list: "MAC_ONLY", why }, method);
+		for (const path of ["relay", "home", "direct", "mailbox"] as const) {
+			for (const params of [{}, { ...picture, path: "index.html", allow: true, ok: true, requestId: "r" }]) assert.equal(deviceMay(method, params, { ...relay, path }), "no", `${method} by ${path}`);
+		}
+	}
+	for (const method of ["present.register", "present.drawn", "presented.network"]) assert.equal(personOnly(method, { ...picture, allow: false }), SETTINGS_ONLY_IN_THE_APP, `${method} on the socket is the app's alone`);
+	for (const method of ["presented.list", "presented.file"]) assert.equal(personOnly(method, picture), undefined, `${method} on the socket is open to any, as reading`);
+	step("presenting's requests: a phone may send presented.picture alone, with a channel, as reading; the other five are the Mac's by every path, and three the app's alone on the socket");
 }
 
 // ---- Readers, masking, what a device is sent
@@ -943,6 +965,17 @@ console.log(JSON.stringify(outcome));
 	step("a log line is made of whatever a device sends (null, an object for a string) and never throws: at worst it is the method's name");
 }
 
+// ---- A log line shows what a device sent as it reads (#902): nothing invisible, nothing turned around
+
+{
+	assert.equal(summarize("files.preview", { path: "notes\u202Etxt.md" }), "Showed the file “notestxt.md”", "a right-to-left override");
+	assert.equal(summarize("files.preview", { path: "a\u2066b\u2069\u200Bc\u200D\uFEFF\u061C\u2060.md" }), "Showed the file “abc.md”", "isolates, zero-width characters, marks");
+	assert.equal(summarize("conversation.rename", { title: "one\ntwo\u0000\uD800" }), "Renamed a conversation to “one two ”", "a line break, a NUL, half a character");
+	const split = "sk-ant-api03-aKeyShapedString\u200BSplitByAZeroWidthSpace0123456789";
+	assert.equal(summarize("conversation.rename", { title: split }), `Renamed a conversation to “${KEY_HIDDEN}”`, "nothing invisible splits a key out of the masks' sight");
+	step("a log line has right-to-left overrides, other direction controls, zero-width characters and half characters taken out, before the masks");
+}
+
 // ---- A revocation reaches pi² Remote and the device's sessions whatever its watchers do (#895)
 
 {
@@ -1168,7 +1201,7 @@ try {
 	await assert.rejects(app.call("devices.pairStart"), /Turn on Reach from an iPhone first/);
 	await app.call("devices.set", { on: true });
 	await assert.rejects(app.call("devices.pairStart"), /Turn on Reach from an iPhone first/, "remote access on, the preview off");
-	for (const method of ["remote.attach", "remote.attachBegin", "remote.pairClaim", "remote.pairRefused", "remote.pairUnkept", "remote.hello", "remote.sessionEnd", "remote.pushRefused"]) {
+	for (const method of ["remote.attach", "remote.attachBegin", "remote.pairClaim", "remote.pairRefused", "remote.pairUnkept", "remote.hello", "remote.sessionEnd", "remote.pushRefused", "remote.left"]) {
 		await assert.rejects(app.call(method, {}), (error: Error) => error.message === ONLY_FROM_THE_HELPER, `${method} on the socket, from a process PeerKit takes for the app`);
 	}
 	assert.ok(!childrenOf(engine.pid!).some((command) => command.includes(standIn)), "no pi² Remote, and no socket pair, was made");
@@ -1871,12 +1904,29 @@ try {
 		const shown = (await ask("files.preview", { id: linking, path: "notes.md" })).result;
 		assert.equal(shown.text, `notes, and ${KEY_HIDDEN}\n`, "masked, as everything sent to a phone is");
 		assert.equal((await ask("files.preview", { id: linking, path: "other.md" })).error, NOT_LINKED);
+		assert.equal((await ask("files.preview", { id: linking, path: "evil\u202Etxt.md" })).error, NOT_LINKED);
 		const logged = (await app.call("devices.log", { device: phone.id })).entries;
+		assert.ok(logged.some((entry: any) => entry.method === "files.preview" && entry.summary.startsWith("Showed the file “evilt")), "a path with a right-to-left override is logged without it (#902)");
+		assert.ok(!JSON.stringify(logged).includes("\\u202e") && !logged.some((entry: any) => /[\u202A-\u202E]/.test(entry.summary)), "anywhere in the log");
 		assert.ok(logged.some((entry: any) => entry.method === "files.preview" && entry.outcome === "done" && entry.summary.startsWith("Showed the file “notes.md”")), "a file shown is logged, by its path from the folder");
 		assert.ok(logged.some((entry: any) => entry.method === "projects.create" && entry.outcome === "refused" && entry.why === ONLY_ON_THE_MAC), "a folder refused by the table");
 		assert.ok(logged.some((entry: any) => entry.method === "projects.create" && entry.outcome === "failed" && entry.why === NOT_OFFERED), "and one refused as it was made");
 		assert.ok(!logged.some((entry: any) => entry.method === "projects.folders"), "asking for the folders is reading");
 		step("from the phone: the folders offered, a project made from one by its exact text, refused by the device row from any other (a link to one, a parent) and by the handler from one gone since, a linked file shown masked, and logged");
+	}
+
+	// ---- Presenting's requests from the phone (#963): presented.picture passes the device row to the stub; the others
+	// are refused before any handler, with the words every request kept to the Mac gets, and logged as refused.
+	{
+		const picture = { id: 1, presentation: "p", version: 1, item: 0 };
+		assert.equal((await ask("presented.picture", picture)).error, PRESENTING_NOT_YET, "presented.picture reaches its handler");
+		const macOnly = ["present.register", "present.drawn", "presented.list", "presented.file", "presented.network"];
+		for (const method of macOnly) assert.equal((await ask(method, { ...picture, path: "index.html", allow: true, requestId: "r", ok: true })).error, ONLY_ON_THE_MAC, method);
+		for (const method of ["presented.picture", ...macOnly]) await assert.rejects(app.call(method, picture), new RegExp(PRESENTING_NOT_YET), `${method} from the app reaches the stub`);
+		const logged = (await app.call("devices.log", { device: phone.id })).entries;
+		for (const method of macOnly) assert.ok(logged.some((entry: any) => entry.method === method && entry.outcome === "refused" && entry.why === ONLY_ON_THE_MAC), `${method} logged as refused`);
+		assert.ok(!logged.some((entry: any) => entry.method === "presented.picture"), "presented.picture is reading, and not logged");
+		step("from the phone: presented.picture passes its row to the stub, unlogged; present.register, present.drawn, presented.list, presented.file and presented.network are refused as the Mac's, and logged; the app reaches the stub with all six");
 	}
 
 	// ---- Resume, refusals, suspension (3.4, 3.6, 5.8)
@@ -2127,6 +2177,64 @@ try {
 	assert.match((await third3.call("remote.pairUnkept", { device: phone2.id })).error ?? "", /may take back only the device it was last sent paired for/, "after pi² Remote restarted");
 	assert.ok(app.devicesEvents.at(-1).devices.some((one: any) => one.id === phone2.id && one.revokedAt === null), "and the device is kept");
 	step("a revoked device's key cannot pair again; a claim whose pi² Remote stopped closes the window, and nothing is saved; a pi² Remote started since takes back no pairing");
+
+	// ---- A phone's leave, passed on by the relay (3.6, #929): the device revoked on its own device key's notice alone
+	// Kit pairs, then unpairs on the phone; Robin's stays paired. The engine takes the identity key the running pi² Remote
+	// said hello with.
+	const leaver = new Phone("Kit's iPhone");
+	const kitClaim = await claimIn(leaver, {}, () => {}, third3);
+	({ device: leaver.id } = await app.call("devices.pairConfirm", { digits: kitClaim.digits }));
+	await app.until("the identity key of pi² Remote number 3", () => app.devicesEvents.at(-1)?.macKeys?.identity === third3.macKeys.identity);
+	const leaveText = (fields: { pairing?: string; device?: string; mac?: string; at?: number } = {}) =>
+		JSON.stringify({ v: 2, kind: "leave", pairing: fields.pairing ?? remote.pairing, device: fields.device ?? leaver.id, mac: fields.mac ?? third3.macKeys.identity, at: fields.at ?? Date.now() });
+	const leave = (text: string, key: KeyObject = leaver.device.privateKey, extra: Record<string, unknown> = {}) =>
+		third3.call("remote.left", { device: JSON.parse(text).device, at: JSON.parse(text).at, notice: signText(text, key), ...extra });
+	const leaverPaired = () => app.devicesEvents.at(-1).devices.some((one: any) => one.id === leaver.id && one.revokedAt === null);
+	const beforeLeave = third3.events.length;
+	const refusedLeaves: [any, RegExp, string][] = [
+		[await third3.call("remote.left", {}), new RegExp(NOT_A_LEAVE.replace(/[().]/g, "\\$&")), "nothing"],
+		[await leave(leaveText(), leaver.device.privateKey, { deviceKey: spki(p256().publicKey) }), /takes a device, its time and its notice/, "a key named beside it, as a relay could"],
+		[await third3.call("remote.left", { device: leaver.id, at: Date.now(), notice: b64url(randomBytes(63)) }), /takes a device/, "a notice of 63 bytes"],
+		[await third3.call("remote.left", { device: leaver.id, at: String(Date.now()), notice: b64url(randomBytes(64)) }), /takes a device/, "a time that is text"],
+		[await third3.call("remote.left", { device: leaver.id, at: 0, notice: b64url(randomBytes(64)) }), /takes a device/, "no time"],
+		[await leave(leaveText({ device: "dev_none" })), /No such device is paired/, "a device never paired"],
+		[await leave(leaveText(), p256().privateKey), new RegExp(LEAVE_NOT_SIGNED), "a stranger's key"],
+		[await leave(leaveText(), phone2.device.privateKey), new RegExp(LEAVE_NOT_SIGNED), "another paired device's key, Robin's"],
+		[await leave(leaveText({ device: phone2.id }), leaver.device.privateKey), new RegExp(LEAVE_NOT_SIGNED), "Robin's leave signed by Kit's key"],
+		[await leave(leaveText(), phone.device.privateKey), new RegExp(LEAVE_NOT_SIGNED), "a revoked device's key, Alex's"],
+		[await leave(leaveText({ mac: remote.macKeys.identity })), new RegExp(LEAVE_NOT_SIGNED), "a leave for another Mac"],
+		[await leave(leaveText({ pairing: b64url(randomBytes(16)) })), new RegExp(LEAVE_NOT_SIGNED), "another pairing"],
+		[await leave(leaveText({ at: Date.now() + 11 * 60_000 })), /more than ten minutes ahead/, "eleven minutes ahead of the Mac's clock"],
+	];
+	for (const [reply, expected, what] of refusedLeaves) assert.match(reply.error ?? JSON.stringify(reply), expected, what);
+	// What is signed must be what is checked: a notice over one time, given with another.
+	const signedAt = leaveText({ at: Date.now() - 1_000 });
+	assert.match((await third3.call("remote.left", { device: leaver.id, at: Date.now(), notice: signText(signedAt, leaver.device.privateKey) })).error, new RegExp(LEAVE_NOT_SIGNED), "another time");
+	assert.ok(leaverPaired() && app.devicesEvents.at(-1).devices.some((one: any) => one.id === phone2.id && one.revokedAt === null), "none of these revokes a device");
+	assert.ok(!third3.events.slice(beforeLeave).some((event) => event.kind === "revoke"), "nor tells pi² Remote to");
+	assert.ok(!(await app.call("devices.log", { device: leaver.id })).entries.some((entry: any) => entry.method === "leave"), "nor logs a leave");
+	// The genuine leave, a hundred days old (a relay keeps it for a Mac that is away), given at once in both forms of its
+	// ECDSA signature, s and n − s, which verify alike: the device is revoked once.
+	const genuine = leaveText({ at: Date.now() - 100 * 86_400_000 });
+	const low = Buffer.from(signText(genuine, leaver.device.privateKey), "base64url");
+	const order = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
+	const high = Buffer.concat([low.subarray(0, 32), Buffer.from((order - BigInt(`0x${low.subarray(32).toString("hex")}`)).toString(16).padStart(64, "0"), "hex")]);
+	const beforeGenuine = app.devicesEvents.length;
+	const both = await Promise.all([high, low].map((notice) => third3.call("remote.left", { device: leaver.id, at: JSON.parse(genuine).at, notice: b64url(notice) })));
+	assert.deepEqual(both.map((reply) => reply.result?.revoked).sort(), [false, true], `the leave in both forms at once: revoked once, the other answered as a repeat (${JSON.stringify(both)})`);
+	assert.deepEqual((await third3.call("remote.left", { device: leaver.id, at: JSON.parse(genuine).at, notice: b64url(low) })).result, { revoked: false }, "and again, a repeat the relay may send, harmlessly");
+	const leftRecord = app.devicesEvents.at(-1).devices.find((one: any) => one.id === leaver.id);
+	assert.ok(leftRecord.revokedAt !== null && leftRecord.deviceKey === "" && leftRecord.channelKey === "", "the device is revoked, its keys forgotten, and the Devices page told (devices)");
+	assert.ok(app.devicesEvents.length > beforeGenuine, "by a devices event");
+	assert.equal(third3.events.slice(beforeLeave).filter((event) => event.kind === "revoke" && event.device === leaver.id).length, 1, "pi² Remote is told to revoke it, once");
+	const leftLog = (await app.call("devices.log", { device: leaver.id })).entries.filter((entry: any) => entry.method === "leave");
+	assert.deepEqual(
+		leftLog.map((entry: any) => [entry.path, entry.summary, entry.outcome]),
+		[["relay", "Unpaired itself on the phone", "done"]],
+		"the log says once that the phone unpaired itself, by the relay",
+	);
+	assert.ok(onDisk((entry) => entry.method === "leave" && entry.device === leaver.id), "stored at once");
+	step("a phone's leave revokes its device only with its own device key's notice for this pairing and this Mac, at most ten minutes ahead and however old; refused with another device's key, a stranger's, a key named beside it, another Mac's or pairing, or another time; once, whichever form of the signature, and a repeat harmlessly; logged as unpaired on the phone");
 
 	// ---- Turning remote access off stops pi² Remote; the devices event went to the app alone
 	await app.call("devices.set", { on: false });

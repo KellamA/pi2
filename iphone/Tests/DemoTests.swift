@@ -58,6 +58,8 @@ enum DemoScreens {
             ("The archive (#698)", .archive),
             ("Background commands (#698)", .backgroundCommands()),
             ("New project, from a folder the Mac offers (#698)", .newProject),
+            // The demo's agents link to no file: the screen says why the Mac does not show it.
+            ("A file a conversation links to (#698)", .filePreview(conversation: agent, path: "notes/plan.md")),
             // A command's output needs a command, and the demo's agents start none.
             // The demo's projects keep their work in pi², with no repository: the page says it has no pull requests, and
             // asks the demo nothing.
@@ -183,8 +185,9 @@ struct DemoTests {
         #expect(items[items.count - 2].kind == "user")
         #expect(items[items.count - 2].text == "Plan the launch")
         #expect(items.last?.text == DemoReplies.answer(to: "Plan the launch"))
-        #expect(engine.projects.first { $0.conversation == id }?.lastWords?.text == DemoReplies.answer(to: "Plan the launch"))
-        #expect(engine.activity.allSatisfy { $0.conversationId != id })
+        // The activity and the project's last words come in events of their own, after the conversation's (#926).
+        #expect(try await eventually { engine.projects.first { $0.conversation == id }?.lastWords?.text == DemoReplies.answer(to: "Plan the launch") })
+        #expect(try await eventually { engine.activity.allSatisfy { $0.conversationId != id } })
         #expect(transport.world.unanswered.isEmpty)
 
         // Two messages at once: the second waits its turn, and is answered after the first.
@@ -370,7 +373,8 @@ extension DemoTests {
             #expect(engine.needs.count == all - 1)
             #expect(engine.hubNeeds(project).count == inProject - 1)
             #expect(HomeLists.projects(engine).first { $0.id == project }?.needs == listed.map { $0 - 1 })
-            #expect(!engine.inbox.contains { $0.id == need.id })
+            // The inbox comes in an event of its own, after the needs (#926).
+            #expect(try await eventually { !engine.inbox.contains { $0.id == need.id } })
         }
 
         // A question, in the person's words: the orchestrator is told.
@@ -390,7 +394,7 @@ extension DemoTests {
         engine.openConversation(approval.conversationId)
         try await answer(.decide(.once), approval)
         #expect(try await eventually { engine.open[approval.conversationId]?.state?.busy == false })
-        #expect(!engine.hubRuns(approval.projectId ?? "").contains { $0.conversationId == approval.conversationId })
+        #expect(try await eventually { !engine.hubRuns(approval.projectId ?? "").contains { $0.conversationId == approval.conversationId } })
 
         // An approval the second project's fileWork switch asked for: once or deny only; allowed, the work is filed.
         let held = try #require(engine.needs.first { $0.projectSwitch == "fileWork" })
@@ -464,7 +468,7 @@ extension DemoTests {
         let asked = try #require(engine.needs.first { $0.conversationId == waiting.conversationId })
         #expect(await HubRequests.stop(engine, conversation: waiting.conversationId) == nil)
         #expect(try await eventually { !engine.needs.contains { $0.id == asked.id } && !engine.inbox.contains { $0.id == asked.id } })
-        #expect(!engine.hubRuns(project.id).contains { $0.conversationId == waiting.conversationId })
+        #expect(try await eventually { !engine.hubRuns(project.id).contains { $0.conversationId == waiting.conversationId } })
 
         // A message from the Dashboard's field: the orchestrator's answer comes, and is the project's last words.
         let orchestrator = try #require(project.conversation)

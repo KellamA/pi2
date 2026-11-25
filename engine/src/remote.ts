@@ -28,9 +28,10 @@
 // (a pairing pi² Remote could not keep, taken back, #887), `remote.attachBegin` and `remote.attach` (3.4: an attach or
 // a resume, signed by the device key and the presence key; a refusal may carry a reason for the phone, #818), and
 // `remote.sessionEnd` (the phone's session ended, 4.5), `remote.presenceKey` (a phone's offer of a new Face ID key, signed
-// as an attach is, 3.2, #786), `remote.pushRefused` (the relay refused a push, pushes.ts), and `remote.mailboxIn` (#678,
+// as an attach is, 3.2, #786), `remote.pushRefused` (the relay refused a push, pushes.ts), `remote.mailboxIn` (#678,
 // P10: a request a phone left in the relay's mailbox, checked again with `checkRequestItem` in devices.ts and handled on
-// the path `mailbox`). `remote.state` also carries what pi² Remote can do with the relay (`relay`, 6.5), which the
+// the path `mailbox`), and `remote.left` (#929: a phone's leave the relay passed on, its notice checked again with
+// `deviceLeft` in devices.ts, which revokes the device). `remote.state` also carries what pi² Remote can do with the relay (`relay`, 6.5), which the
 // Devices page is told (`helper.relay`). The event's `mailboxOut` asks pi² Remote to leave a sealed item for a phone (a
 // receipt, 5.3).
 //
@@ -57,6 +58,7 @@ import {
 	attachTaken,
 	checkAttach,
 	type Device,
+	deviceLeft,
 	devicesState,
 	fromBase64url,
 	helperReported,
@@ -567,6 +569,11 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 		if (pushes?.refused(params.id, params.why) !== true) log("remote: pi² Remote answered for a push the engine does not know, or no longer remembers");
 		return {};
 	},
+	/**
+	 * `{ device, at, notice }`: a phone's leave the relay passed on, which pi² Remote verified (3.6, #929). devices.ts
+	 * checks the notice again against the device key in its own record: what pi² Remote says alone revokes nothing.
+	 */
+	"remote.left": async (_current, params) => deviceLeft(params),
 };
 
 /** What pi² Remote may say of the relay path (6.5): none wanted, why it cannot run, or how it runs. */

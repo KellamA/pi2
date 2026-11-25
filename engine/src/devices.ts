@@ -688,8 +688,19 @@ function summaryLine(given: string, params: Params): string {
 		attach: () => "Attached",
 		resume: () => "Resumed",
 		suspend: () => "Suspended",
+		leave: () => "Unpaired itself on the phone",
 	};
-	return clip(maskKeys(lines[method]?.() ?? `${method}${inConversation}${inProject}`), MAX_SUMMARY);
+	return clip(maskKeys(unhidden(lines[method]?.() ?? `${method}${inConversation}${inProject}`)), MAX_SUMMARY);
+}
+
+/**
+ * `text` with nothing in it that the log would show other than as it reads (#902): a right-to-left override or another
+ * bidirectional control, which could make a path a phone sent read as another (U+202E then "txt.md" shows "dm.txt"),
+ * a zero-width character or another invisible format character, and half a character are taken out; a control
+ * character (a line break) is a space. Before the masks, so that nothing invisible can split a key out of their sight.
+ */
+export function unhidden(text: string): string {
+	return text.replace(/[\p{Cf}\p{Cs}]/gu, "").replace(/\p{Cc}/gu, " ");
 }
 
 /** A value a device gave, as words: an object or an array as "?", since `String` of one can throw (`{"toString": 1}`). */
@@ -718,7 +729,7 @@ function previewedPath(path: unknown): string {
 const clip = (text: string, max: number) => (text.length <= max ? text : `${text.slice(0, max - 1)}…`);
 
 /** What the log may name, beside the requests the device lists place. */
-const LOG_OWN = new Set(["pair", "attach", "resume", "suspend", "presenceKey", "unknown"]);
+const LOG_OWN = new Set(["pair", "attach", "resume", "suspend", "presenceKey", "leave", "unknown"]);
 /**
  * The entries one device's flood cannot push out: they stay their 90 days. A new Face ID key's offer and the person's
  * answer to it among them: one key waits at a time, so there are never many.
@@ -812,7 +823,7 @@ export async function logDevice(entry: Omit<DeviceLogEntry, "at"> & { at?: numbe
 	if (unreadable !== null) return;
 	const at = entry.at ?? Date.now();
 	const method = loggedMethod(entry.method);
-	const why = entry.why === undefined ? undefined : clip(maskKeys(entry.why), MAX_WHY);
+	const why = entry.why === undefined ? undefined : clip(maskKeys(unhidden(entry.why)), MAX_WHY);
 	const made: DeviceLogEntry = { ...entry, at, method, summary: clip(maskKeys(entry.summary), MAX_SUMMARY), ...(why === undefined ? {} : { why }) };
 	const key = JSON.stringify([made.device, made.path, made.method, made.why ?? null]);
 	const known = made.outcome === "refused" ? refusalsMade.get(key) : undefined;
@@ -1356,6 +1367,58 @@ async function revoke(id: string): Promise<void> {
 	// next would otherwise have ended (3.6).
 	remoteHooks.toHelper({ kind: "revoke", device: id });
 	remoteHooks.closeSessions(id, "revoked");
+}
+
+// ---- A phone's leave, passed on by the relay (3.6; #813, #929)
+
+/** How far ahead of the Mac's clock a leave may be dated: RemoteKit's `RelayLeaveNotice.aheadAtMost`. */
+const LEAVE_AHEAD = 10 * 60_000;
+/** The latest time the relay and RemoteKit read (`RelayLimits.maxTime`, the year 2286). */
+const LATEST_TIME = 9_999_999_999_999;
+export const NOT_A_LEAVE = "remote.left takes a device, its time and its notice (64 bytes).";
+export const LEAVE_NOT_SIGNED = "The leave is not signed by the device key for this pairing and this Mac.";
+/** Devices whose leave is being taken: a repeat meanwhile is answered as one, and the device revoked once. */
+const leaving = new Set<string>();
+
+/**
+ * A phone's leave (`remote.left { device, at, notice }`): the person unpaired the phone on the phone itself, which
+ * signed with its device key the leave text for this Mac, and the relay passed it on. pi² Remote checked the notice
+ * against the device key on its own list (`RelayLeft.verified`); it is checked again here, against the device key in
+ * this record, with this record's pairing and the identity key pi² Remote reported, as a mailbox item is: so a faulty or
+ * replaced pi² Remote can revoke a device this way only with its phone's own notice, which the phone signs only as it
+ * unpairs and deletes its keys. The device is revoked as `devices.forgetSelf` revokes it, and the log says the phone
+ * unpaired itself.
+ *
+ * Once per device: a repeat (the relay passing it on again, now or at the next `ready`, or in the other form of the
+ * same ECDSA signature, s or n − s, which verifies as well) finds the device revoked, or being revoked, and is
+ * answered `{ revoked: false }`, with nothing done or logged. Its age is not bounded (remotekit.md, "The leave
+ * notice"): only a time ahead of the Mac's clock by more than ten minutes is refused.
+ */
+export async function deviceLeft(params: Params): Promise<{ revoked: boolean }> {
+	const { device, at, notice } = params;
+	if (Object.keys(params).some((key) => key !== "device" && key !== "at" && key !== "notice") || typeof device !== "string") throw new Error(NOT_A_LEAVE);
+	if (typeof at !== "number" || !Number.isSafeInteger(at) || at < 1 || at > LATEST_TIME || fromBase64url(notice, 64) === null) throw new Error(NOT_A_LEAVE);
+	const record = state.devices.find((one) => one.id === device);
+	if (record === undefined) throw new Error("No such device is paired.");
+	if (record.revokedAt !== null || leaving.has(record.id)) return { revoked: false };
+	if (at > Date.now() + LEAVE_AHEAD) throw new Error("The leave is dated more than ten minutes ahead of the Mac's clock.");
+	const key = p256Key(record.deviceKey);
+	const identity = state.macKeys?.identity;
+	if (key === null || state.pairing === null || identity === undefined) throw new Error(LEAVE_NOT_SIGNED);
+	const text = JSON.stringify({ v: 2, kind: "leave", pairing: state.pairing, device: record.id, mac: identity, at });
+	if (!signedBy(text, notice, key)) throw new Error(LEAVE_NOT_SIGNED);
+	leaving.add(record.id);
+	try {
+		await revoke(record.id);
+	} finally {
+		leaving.delete(record.id);
+	}
+	log("devices: a phone unpaired itself: its leave, signed by its device key and passed on by the relay, was checked, and the device revoked");
+	// The device is revoked whatever the log's write does: a failure to write it is said in engine.log, not to pi² Remote.
+	await logDevice({ device: record.id, path: "relay", method: "leave", summary: summarize("leave", {}), presence: false, outcome: "done" }, true).catch((error) =>
+		log("devices: the log could not be written:", error instanceof Error ? error.message : error),
+	);
+	return { revoked: true };
 }
 
 // ---- Attach and resume (3.4, 4.3, 5.8)

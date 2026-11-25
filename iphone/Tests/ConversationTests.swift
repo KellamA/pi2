@@ -47,6 +47,8 @@ struct ConversationTests {
             (.picture(entry: 5, index: 0), .ignore),
             (.older, .loadOlder),
             (.fileMenu(path: "/x", code: false), .ignore),
+            // A file link opens the file's screen, which asks the engine for it (#698, `files.preview`).
+            (.showFile("notes/plan.md"), .previewFile("notes/plan.md")),
         ]
         for (action, expected) in cases {
             #expect(ConversationPagePolicy.response(to: action, subChats: [12], items: pictured) == expected, "\(action)")
@@ -57,7 +59,7 @@ struct ConversationTests {
             .answerNeed(id: "n1", answer: .reach(allow: true)), .undo(change: 3), .fork(entry: 2),
             .retry(entry: 2, model: nil), .edit(entry: 2, text: "x"), .version(after: nil, index: 1),
             .save(text: "x", name: "a.txt"), .savePicture(entry: 2, index: 0), .openDocument(entry: 2),
-            .saveDocument(entry: 2), .showFile("/tmp/a"), .output("bg-3"),
+            .saveDocument(entry: 2), .output("bg-3"),
         ]
         for action in acting {
             guard case .notice = ConversationPagePolicy.response(to: action, subChats: [12]) else {

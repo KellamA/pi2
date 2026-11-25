@@ -134,6 +134,9 @@ const FOR_THE_PERSON_SETTINGS: Record<string, (params: Record<string, unknown>) 
 	"computer.result": () => true, // the app's half of computer use
 	"browser.register": () => true, // as with the computer
 	"browser.result": () => true, // as above
+	"present.register": () => true, // as with the browser: a command that registered would be sent presented pages to draw (#946)
+	"present.drawn": () => true, // as above: what a page drawn showed, stored as the app's finding
+	"presented.network": () => true, // whether a page an agent presented may reach the network: the person's setting
 	"mcp.save": () => true, // MCP servers and their settings
 	"mcp.reconnect": () => true, // starts the configured program or reconnects using stored credentials
 	"mcp.delete": () => true, // as above
@@ -223,6 +226,9 @@ const OPEN_TO_ANY = new Set([
 	"projects.list",
 	"projects.folders", // the folders offered for a new project: those already used with pi², never a listing (folders.ts)
 	"files.preview", // reads one text file a conversation links to, under its folder; agents read files themselves
+	"presented.list", // reads what agents presented in a conversation (#946); it changes nothing
+	"presented.picture", // reads a presented picture or a page's snapshot, as conversation.image does
+	"presented.file", // reads one file of a presented page, by its manifest's path, which the engine copied
 	"projects.carryOver", // a dry run alone since carrying over runs by itself at the update (#715): it changes nothing
 	"reports.wake", // waking never widens; the limits bound it
 	"wakes.cancel",
@@ -395,6 +401,7 @@ const FROM_A_DEVICE: Record<string, DeviceRow> = {
 	"local.status": { why: "reading", reading: true },
 	"projects.folders": { why: "reading: the folders the Mac offers for a new project, those already used with pi², never a listing of the disk (folders.ts)", reading: true },
 	"files.preview": { why: "reading a text file the conversation links to, under its folder, not ignored by git, at most 256 KB; logged, since it copies a file out (4.4, 5.7)" },
+	"presented.picture": { why: "reading: a picture an agent presented, or a page's snapshot, as conversation.image is (#946)", reading: true },
 	// Messages, starts and stops.
 	submit: {
 		why: "a message, as the person sends one at the Mac",
@@ -603,6 +610,12 @@ const MAC_ONLY: Record<string, string> = {
 	"computer.result": "the app's host role",
 	"browser.register": "the app's host role",
 	"browser.result": "the app's host role",
+	"present.register": "the app's host role",
+	"present.drawn": "the app's host role",
+	// Presenting (#946): the phone reads presented.picture alone (FROM_A_DEVICE), for now.
+	"presented.network": "a presented page's network switch, the person's setting at the Mac",
+	"presented.list": "presenting's window, the Mac's for now",
+	"presented.file": "a presented page's files, the Mac's for now",
 	// The Mac's upkeep.
 	"backup.create": "the Mac's upkeep",
 	"priority.set": "the Mac's upkeep",
@@ -634,7 +647,7 @@ const MAC_ONLY: Record<string, string> = {
  * pi² Remote's own requests, taken only on the connection the engine made for the helper it started (5.5), never on
  * its listening socket and never in a device session; remote.mailboxIn (#678, P10) among them.
  */
-const FOR_THE_HELPER: ReadonlySet<string> = new Set(["remote.hello", "remote.state", "remote.pairClaim", "remote.pairWrong", "remote.pairRefused", "remote.pairUnkept", "remote.attachBegin", "remote.attach", "remote.sessionEnd", "remote.presenceKey", "remote.mailboxIn", "remote.pushRefused"]);
+const FOR_THE_HELPER: ReadonlySet<string> = new Set(["remote.hello", "remote.state", "remote.pairClaim", "remote.pairWrong", "remote.pairRefused", "remote.pairUnkept", "remote.attachBegin", "remote.attach", "remote.sessionEnd", "remote.presenceKey", "remote.mailboxIn", "remote.pushRefused", "remote.left"]);
 
 export function forTheHelper(method: string): boolean {
 	return FOR_THE_HELPER.has(method);
@@ -741,11 +754,17 @@ export class AppCheck {
 	verdict(socket: Socket): Promise<Verdict> {
 		const known = this.#verdicts.get(socket);
 		if (known !== undefined) return known;
-		const asked = this.#ask(socket).then(({ verdict, lasting }) => {
-			if (!lasting) this.#verdicts.delete(socket);
-			this.#log("answers:", verdict.why, verdict.app ? "(may answer for the person)" : "(may not answer for the person)");
-			return verdict;
-		});
+		// Nothing in a check is meant to throw; should something (#932), the connection is not the app's, and is asked again.
+		const asked = this.#ask(socket)
+			.catch((error: unknown) => ({
+				verdict: { app: false, why: `the connection could not be checked: ${error instanceof Error ? error.message : String(error)}` },
+				lasting: false,
+			}))
+			.then(({ verdict, lasting }) => {
+				if (!lasting) this.#verdicts.delete(socket);
+				this.#log("answers:", verdict.why, verdict.app ? "(may answer for the person)" : "(may not answer for the person)");
+				return verdict;
+			});
 		this.#verdicts.set(socket, asked);
 		return asked;
 	}
@@ -782,26 +801,40 @@ export class AppCheck {
 				unchecked(error instanceof Error ? error.message : String(error));
 				return;
 			} finally {
-				// On macOS libuv starts the helper with posix_spawn, and first clears O_NONBLOCK on each descriptor it hands over,
-				// in this process: on the open file description the connection is, so this end of it too (#927). Left so, the
-				// next write to an app that is not reading would hold the engine's one thread until it read. It is set back
-				// before spawn's caller goes on: nothing else of the engine's runs in between, so nothing can write to it
-				// blocking. A duplicate would share the flag, and the helper only asks the socket about its other end.
+				// libuv (1.53, Node 26's) starts the helper with posix_spawn, on macOS and, where it can, on Linux, and first clears
+				// O_NONBLOCK on each descriptor it hands over, in this process: on the open file description the connection is,
+				// so this end of it too (#927). Left so, the next write to an app that is not reading would hold the engine's one
+				// thread until it read. It is set back before spawn's caller goes on: nothing else of the engine's runs in
+				// between, so nothing can write to it blocking. But for a synchronous subscriber to Node's
+				// `tracing:child_process.spawn:end` or `:error` diagnostics channel, which runs inside spawn after libuv: one
+				// that wrote to a connection would do so blocking. The engine subscribes only to `:start` (processes.ts), which
+				// runs before. A duplicate would share the flag, and the helper only asks the socket about its other end.
 				// Should that fail, the connection is closed rather than kept blocking; the app connects again.
 				if ((socket as unknown as { _handle?: { setBlocking?: (blocking: boolean) => number } })._handle?.setBlocking?.(false) !== 0) {
 					this.#log("answers: a connection could not be made non-blocking again after its check, so it is closed");
 					socket.destroy();
 				}
 			}
-			const timer = setTimeout(() => {
-				child.kill("SIGKILL");
-				unchecked(`${helper} did not answer within ${this.#patienceMs / 1000} seconds`, true);
-			}, this.#patienceMs);
-			child.stdout!.setEncoding("utf8").on("data", (text: string) => (output += text));
+			// Out of descriptors, Node's spawn returns a child with no stdout, and emits `error` on the next tick (#932). It is
+			// listened to before anything else, so that nothing can leave it to end the engine as an uncaught exception.
+			let timer: ReturnType<typeof setTimeout> | undefined;
 			child.once("error", (error) => {
 				clearTimeout(timer);
 				unchecked(error.message);
 			});
+			try {
+				timer = setTimeout(() => {
+					child.kill("SIGKILL");
+					unchecked(`${helper} did not answer within ${this.#patienceMs / 1000} seconds`, true);
+				}, this.#patienceMs);
+				// No stdout: the `error` above says why, and the timer stands in should it not come.
+				child.stdout?.setEncoding("utf8").on("data", (text: string) => (output += text));
+			} catch (error) {
+				clearTimeout(timer);
+				unchecked(error instanceof Error ? error.message : String(error));
+				child.kill("SIGKILL");
+				return;
+			}
 			child.once("close", (code) => {
 				clearTimeout(timer);
 				try {
