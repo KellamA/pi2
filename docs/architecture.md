@@ -214,6 +214,7 @@ A development build measures this when asked: see [Measuring the app's speed](de
 | `src/rules.ts` | Allowed commands: reading a command line, matching, refusing. See [allowed-commands.md](allowed-commands.md) |
 | `src/features.ts` | The list of features that live in one file each, and what such a file can add |
 | `src/folders.ts` | What a paired phone may see of the Mac's folders and files (#698, [iphone.md](iphone.md#42-what-a-device-may-send) 4.2 and 5.7): `projects.folders`, the folders already used with pi² offered for a new project, the check of the folder a phone gives `projects.create`, and `files.preview`, a text file a conversation links to, read with no link followed |
+| `src/presented.ts` | Presenting's requests (#963, [design/presenting.md](design/presenting.md#events-and-requests-for-the-app-and-the-phone)): `present.*` and `presented.*`, named in `answers.ts`'s lists, each answered "Presenting is not available yet." by one stub until the engine's part is built |
 | `src/builtins.ts` | The built-in tools an agent's settings list, and which of them an agent leaves out, and the chat assistant's fixed set. See [Built-in tools](#built-in-tools) |
 | `src/chat.ts` | Chat mode's built-in assistant: its settings, the folder its documents go in, and what it is told. See [chat.md](chat.md) |
 | `src/handover.ts` | Continue with an Agent (#289): what an agent is given of a chat, as a Markdown file with the chat's own pictures and files beside it, and what is left out. See [chat.md](chat.md#continue-with-an-agent) |
