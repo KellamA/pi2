@@ -1,6 +1,27 @@
 import AppKit
 import SwiftUI
 
+/// A presented picture's bytes made into an image, by the kind the engine says it is and only so: PNG, JPEG, GIF and
+/// WebP by ImageIO (`NSBitmapImageRep`), and an SVG by AppKit's SVG representation alone, which draws shapes and runs
+/// nothing. Bytes that are not what they are said to be (a PDF said to be an SVG, an SVG said to be a PNG) make no
+/// image, rather than whatever `NSImage` would make of them.
+enum PresentedPicture {
+    static let raster: Set<String> = ["image/png", "image/jpeg", "image/gif", "image/webp"]
+
+    static func image(_ data: Data, mimeType: String) -> NSImage? {
+        if raster.contains(mimeType) {
+            guard let rep = NSBitmapImageRep(data: data), rep.pixelsWide > 0, rep.pixelsHigh > 0 else { return nil }
+            let image = NSImage(size: rep.size)
+            image.addRepresentation(rep)
+            return image
+        }
+        guard mimeType == "image/svg+xml", data.first(where: { ![0x20, 0x09, 0x0A, 0x0D, 0xEF, 0xBB, 0xBF].contains($0) }) == UInt8(ascii: "<"),
+              let image = NSImage(data: data), image.isValid,
+              image.representations.count == 1, String(describing: type(of: image.representations[0])).contains("SVG") else { return nil }
+        return image
+    }
+}
+
 /// How a picture is sized in its window: fit to the stage, at its actual size (one of its pixels to one of the screen's),
 /// or at a magnification the person chose (a pinch, ⌘+ or ⌘−).
 enum PictureZoom: Hashable {
@@ -15,8 +36,8 @@ enum PictureBackground: String, CaseIterable {
 }
 
 /// A presented picture, drawn natively: an `NSImageView` in a scroll view that magnifies (docs/design/presenting.md, "The
-/// window, in the app"). The picture is an `NSImage` made from the bytes `presented.picture` sent. A raster picture is
-/// decoded by ImageIO; an SVG by AppKit's own SVG image representation (`_NSSVGImageRep`, CoreSVG), which draws the
+/// window, in the app"). The picture is made from the bytes `presented.picture` sent by `PresentedPicture`: a raster
+/// picture by ImageIO, an SVG by AppKit's own SVG image representation (`_NSSVGImageRep`, CoreSVG), which draws the
 /// shapes and runs nothing: no script, and no load of any address, whether `http:`, `file:` or another picture's (an
 /// `<image href>`, `<use href>` or CSS `@import` of one is left undrawn). It never goes near a web view.
 struct PictureStage: NSViewRepresentable {

@@ -178,8 +178,7 @@ final class PresentationWindowModel {
     // MARK: Pictures
 
     /// Fetches the picture of an item once, from a view's task: a picture's own bytes, or a page's snapshot (for the
-    /// strip) once it is drawn. A raster picture is decoded by ImageIO and an SVG by AppKit's SVG representation, which
-    /// runs nothing and loads nothing (`PictureStage`).
+    /// strip) once it is drawn, made into an image only as the kind it is (`PresentedPicture`).
     func load(_ key: ItemKey) async {
         guard pictures[key] == nil, !fetching.contains(key), pictureProblems[key] == nil else { return }
         guard let entry = record?.version(key.version)?.items[safe: key.item] else { return }
@@ -188,8 +187,8 @@ final class PresentationWindowModel {
         defer { fetching.remove(key) }
         do {
             let bytes = try await feed.picture(key.version, key.item)
-            // Only the kinds a picture is presented as are made into one; anything else is not drawn at all.
-            guard Self.drawable.contains(bytes.mimeType), let image = NSImage(data: bytes.data), image.isValid else {
+            // Only the kinds a picture is presented as are made into one, each only as that kind.
+            guard let image = PresentedPicture.image(bytes.data, mimeType: bytes.mimeType) else {
                 pictureProblems[key] = "This picture could not be read."
                 return
             }
@@ -199,7 +198,6 @@ final class PresentationWindowModel {
         }
     }
 
-    static let drawable: Set<String> = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"]
 
     // MARK: Pages
 

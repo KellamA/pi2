@@ -95,7 +95,7 @@ private struct NeedPresentationThumb: View {
         guard image == nil, let conversation = ref.conversation else { return }
         if item.kind == .page, item.snapshot?.isDrawn != true { return }
         guard let bytes = try? await engine.presentedPicture(conversation: conversation, presentation: ref.presentation, version: version, item: index),
-              PresentationWindowModel.drawable.contains(bytes.mimeType), let picture = NSImage(data: bytes.data), picture.isValid else { return }
+              let picture = PresentedPicture.image(bytes.data, mimeType: bytes.mimeType) else { return }
         image = Self.small(picture)
     }
 
