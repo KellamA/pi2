@@ -221,6 +221,11 @@ public final class Channel: Sendable, CustomStringConvertible, CustomDebugString
 		set { state.withLock { $0.assembler.maxLength = newValue } }
 	}
 
+	/// How much of a line from the other side it holds, begun and not finished, in bytes: zero between lines. What the
+	/// other side makes this end keep until its line is whole; pi² Remote counts it across its phones' channels and
+	/// times it (#908). A `ping` does not change it; a frame refused for the limit is not held.
+	public var unfinishedLineLength: Int { state.withLock { $0.assembler.unfinishedLength } }
+
 	public func isExpired(at instant: ContinuousClock.Instant = .now) -> Bool { instant - openedAt >= Self.lifetime }
 
 	/// Whether it has ended, with `bye` either way, or failed.

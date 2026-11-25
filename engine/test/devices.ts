@@ -23,12 +23,18 @@ import { createModels } from "@earendil-works/pi-ai";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { allowsHiddenApproval, checkDeviceLists, deviceLogged, HIDDEN_FROM_THE_PHONE, deviceMay, devicePlacement, type DeviceSession, ONLY_FROM_THE_HELPER, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID, PERSON_REQUESTS } from "../src/answers.ts";
-import { APPROVAL_DEPTH, checkRequestItem, type Device, deviceRequests, DeviceLog, Devices, devicesState, flushDeviceLog, fromBase64url, helperWanted, hidesSomething, LEAVE_NOT_SIGNED, logDevice, macNameNow, maskValue, NOT_A_LEAVE, NOT_KEPT, pairClaim, PART_HIDDEN, remoteHooks, revokedWatchers, shownName, summarize, TOO_DEEP, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
+import { APPROVAL_DEPTH, checkRequestItem, type Device, deviceRequests, DeviceLog, Devices, devicesState, flushDeviceLog, fromBase64url, helperWanted, hidesSomething, LEAVE_NOT_SIGNED, logDevice, macNameNow, maskValue, NOT_A_LEAVE, NOT_KEPT, pairClaim, PART_HIDDEN, remoteHooks, revokedWatchers, shownName, summarize, TOO_DEEP, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, maskKeysFrom, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
 import type { Client } from "../src/clients.ts";
 import { attachChallenge, checkAttach, offerPresenceKey, PRESENCE_KEY_ALREADY_WAITS, PRESENCE_KEY_CHANGED, PRESENCE_KEY_WAITS } from "../src/devices.ts";
 import { personOnly } from "../src/answers.ts";
-import { ANSWER_NOT_SENT, DEVICE_LINE_FAILED, forDevice, MAX_HELPER_LINE, MAX_LINE_TO_HELPER, MAX_PHONE_LINE, restartWait, RUN_THAT_LASTED, SESSION_OVER, sessionLine } from "../src/remote.ts";
+import { ANSWER_NOT_SENT, DEVICE_LINE_FAILED, forDevice, MAX_HELPER_LINE, MAX_LINE_TO_HELPER, MAX_PHONE_LINE, PICTURE_TYPES, pictureAnswer, restartWait, RUN_THAT_LASTED, SESSION_OVER, sessionLine } from "../src/remote.ts";
 import { NOT_LINKED, NOT_OFFERED } from "../src/folders.ts";
+import { forgetEverySecret, forgetSecrets, knowSecrets, LEAST_SECRET, RETIRED_KEPT, SECRET_HIDDEN, secretCount, secretSpans } from "../src/secrets.ts";
+
+/** A run of base64 a picture's bytes can hold that is shaped as a key (#956): `AIza` and 35 letters and digits. */
+const AIZA_RUN = `${"AIza"}SyD3noiseNoiseNoise0123456789abcdefg`;
+/** `text` made a whole number of base64's four characters. */
+const pad = (text: string) => text + "A".repeat((4 - (text.length % 4)) % 4);
 import { offerFolders } from "../src/answers.ts";
 import { SETTINGS_ONLY_IN_THE_APP } from "../src/answers.ts";
 import { NOT_PRESENTED } from "../src/presented.ts";
@@ -355,6 +361,196 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	assert.deepEqual(providers.providers[0].ask, { can: true, url: null });
 	assert.equal(forDevice('{"id":3,"result":{"key":"sk-ant-api03-abcdefghijklmnopqrstuvwxyz"}}'), `{"id":3,"result":{"key":"${KEY_HIDDEN}"}}`);
 	step("what a device is sent: only the events named for it, endpoints by name only, and no key-shaped string wherever it stands; a line that cannot be masked is dropped");
+}
+
+// ---- The values of the secrets the engine knows (#894): masked wherever they stand, as a key's shape is
+
+{
+	const sentOf = (message: unknown) => forDevice(JSON.stringify(message))!;
+	// No shape of a key's: only knowing it finds it.
+	const value = "correct-horse-battery-894";
+	knowSecrets("variables/agent-a", [value, "short7!", `  ${"x".repeat(20)}  `, "ab".repeat(10), ""]);
+	assert.equal(secretCount(), 1, `only a value of ${LEAST_SECRET} characters or more, and not one or two characters over and over`);
+	for (const text of [`DEPLOY_TOKEN=${value} ./deploy`, `line one\n${value}`, `\t${value}`, `\u001b[32m${value}\u001b[0m`, `${value}${value}`, value]) {
+		const sent = sentOf({ event: "conversation", items: [[{ text }]] });
+		assert.ok(!sent.includes(value) && JSON.parse(sent).items[0][0].text.includes(SECRET_HIDDEN), `${JSON.stringify(text)}: ${sent}`);
+	}
+	assert.equal(maskKeys(`DEPLOY_TOKEN=${value} ./deploy`), `DEPLOY_TOKEN=${SECRET_HIDDEN} ./deploy`);
+	assert.equal(maskKeys(`${value}${value}`), `${SECRET_HIDDEN}${SECRET_HIDDEN}`, "two side by side, each hidden");
+	assert.ok(!sentOf({ event: "conversation", items: { [value]: 1 } }).includes(value), "as an object's key");
+	assert.equal(maskKeys("short7! and xxxxxxxxxxxxxxxxxxxx and abababababababababab"), "short7! and xxxxxxxxxxxxxxxxxxxx and abababababababababab", "what is too short or too plain is not looked for");
+	// A value is found by its ends, its first 8 characters and its last 8, never compared whole (secrets.ts). An answer
+	// still coming, sent whole so far each time: hidden once it holds the first 8.
+	assert.deepEqual([maskKeys(`token: ${value.slice(0, 7)}`), maskKeys(`token: ${value.slice(0, 8)}`), maskKeys(`token: ${value.slice(0, 20)}`)], [`token: ${value.slice(0, 7)}`, `token: ${SECRET_HIDDEN}`, `token: ${SECRET_HIDDEN}`]);
+	assert.equal(maskKeys(`${value.slice(0, 20)} and on`), `${SECRET_HIDDEN}on`, "from its first 8, the value's length is hidden, whatever follows");
+	// A text that begins inside one (a background command's kept output, a snippet): hidden up to its last 8.
+	for (let cut = 1; cut < value.length; cut++) {
+		const masked = maskKeys(`${value.slice(cut)} rest`);
+		assert.equal(masked, value.length - cut >= LEAST_SECRET ? `${SECRET_HIDDEN} rest` : `${value.slice(cut)} rest`, `cut ${cut} characters in`);
+		assert.equal(maskKeys(`…${value.slice(cut)} rest`), value.length - cut >= LEAST_SECRET ? `${SECRET_HIDDEN} rest` : `…${value.slice(cut)} rest`, `after an ellipsis, cut ${cut} in`);
+	}
+	// Cut in its middle, as run_code's "characters left out" does: each part hidden by the end it holds.
+	const eight = (text: string) => Array.from({ length: value.length - LEAST_SECRET + 1 }, (_, i) => value.slice(i, i + LEAST_SECRET)).filter((part) => text.includes(part));
+	for (let cut = 1; cut < value.length; cut++) {
+		const middle = maskKeys(`a ${value.slice(0, cut)}\n[… 99 characters left out …]\n${value.slice(cut)} b`);
+		assert.deepEqual(eight(middle), [], `cut at ${cut}: ${middle}`);
+	}
+	// What follows the first 8, or comes before the last 8, is never compared: a phone that reads back text of its own
+	// masked or not learns whether 8 characters begin or end a value, and its length, never a value a character at a time.
+	for (const rest of [value.slice(8, 15), "?".repeat(value.length - 9), "?".repeat(value.length - 8), ""]) assert.equal(maskKeys(`x ${value.slice(0, 8)}${rest}`), `x ${SECRET_HIDDEN}`, JSON.stringify(rest));
+	assert.equal(maskKeys(`x ${value.slice(0, 8)}${"?".repeat(value.length - 5)}`), `x ${SECRET_HIDDEN}???`, "the value's length, no more");
+	assert.equal(maskKeys(`${"?".repeat(value.length - 5)}${value.slice(-8)} x`), `???${SECRET_HIDDEN} x`, "and back from its last 8");
+	// A background command's output read from any offset (#894): masked over the whole of it, then cut, so that a phone
+	// walking the offset reads no 8 characters of what it hides, nor do two answers either side of any split. With a
+	// known value, a key's shape (hidden by its prefix, which a cut after it takes away) and a known value whose last 8
+	// characters are too plain to stand for it (hidden by its first 8 alone): cutting first, then masking, would show
+	// the last two, as the walk checks too.
+	const partsOf = (text: string, of: string) => Array.from({ length: of.length - LEAST_SECRET + 1 }, (_, i) => of.slice(i, i + LEAST_SECRET)).filter((part) => text.includes(part));
+	const shapedKey = `${"ghp"}_abcdefghijklmnopqrstuvwxyz0123456789AB`;
+	const padded = "padded-id-x7Q-00000000";
+	knowSecrets("variables/agent-b", [padded]);
+	const output = `building\nDEPLOY_TOKEN=${value} GH_TOKEN=${shapedKey} ID=${padded} deployed\n`;
+	const shownOf = (text: string) => [...partsOf(text, value), ...partsOf(text, shapedKey.slice(4)), ...partsOf(text, padded)];
+	const walked: string[] = [];
+	let cutFirstShows = 0;
+	for (let from = 0; from <= output.length; from++) {
+		const answer = maskKeysFrom(output, from);
+		const before = maskKeys(output.slice(0, from));
+		walked.push(answer, before);
+		// The answer before, as the output stood then, may end inside the key, which a key's shape shows until it is long
+		// enough to be one (as a streamed answer always has): only the values are held to it there.
+		const valuesOf = (text: string) => [...partsOf(text, value), ...partsOf(text, padded)];
+		assert.deepEqual([shownOf(answer), valuesOf(before), valuesOf(before + answer)], [[], [], []], `split at ${from}: ${JSON.stringify([before, answer])}`);
+		if (shownOf(maskKeys(output.slice(from))).length > 0) cutFirstShows++;
+	}
+	assert.deepEqual(shownOf(walked.filter((_, i) => i % 2 === 0).join("")), [], "the whole walk's answers");
+	assert.ok(cutFirstShows > 20, `cut first, then masked, ${cutFirstShows} offsets would show part of the key or the plain-ended value`);
+	assert.equal(maskKeysFrom(output, output.indexOf(value) + 3), `${SECRET_HIDDEN} GH_TOKEN=${KEY_HIDDEN} ID=${SECRET_HIDDEN} deployed\n`, "from inside it: its mark first");
+	assert.equal(maskKeysFrom(output, output.indexOf(shapedKey) + 3), `${KEY_HIDDEN} ID=${SECRET_HIDDEN} deployed\n`, "from inside the key");
+	assert.equal(maskKeysFrom(output, output.indexOf(padded) + 3), `${SECRET_HIDDEN} deployed\n`, "from inside the plain-ended value");
+	assert.equal(maskKeysFrom(output, 2), `ilding\nDEPLOY_TOKEN=${SECRET_HIDDEN} GH_TOKEN=${KEY_HIDDEN} ID=${SECRET_HIDDEN} deployed\n`);
+	// An approval with one in its call is marked shown in part, as for a key's shape, by the channel and the gate alike.
+	const inbox = JSON.parse(sentOf({ event: "inbox", items: [{ id: "a", kind: "approval", tool: "bash", arguments: { command: "ls" } }, { id: "b", kind: "approval", tool: "bash", arguments: { command: `curl -u me:${value} https://x.invalid` } }] }));
+	assert.deepEqual(inbox.items.map((item: any) => item[PART_HIDDEN] === true), [false, true]);
+	assert.equal(inbox.items[1].arguments.command, `curl -u me:${SECRET_HIDDEN} https://x.invalid`);
+	assert.ok(hidesSomething({ id: "b", kind: "approval", arguments: { command: `echo ${value}` } }));
+	// Where a key's shape and a known value overlap, the run they cover is hidden once.
+	const key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789";
+	knowSecrets("credential:anthropic", [key]);
+	assert.equal(maskKeys(`x ${key} y`), `x ${KEY_HIDDEN} y`);
+	assert.equal(maskKeys(`x ${key}:${value} y`), `x ${KEY_HIDDEN}:${SECRET_HIDDEN} y`, "side by side, each its own");
+	assert.equal(maskKeys(`x ${key.slice(0, 20)}${value}`), `x ${KEY_HIDDEN}`, "a key's run that goes on into a value hides both, once");
+	assert.equal(maskKeys(`x ${key.slice(0, 20)} y`), `x ${SECRET_HIDDEN}`, "a text that ends less than a value's length after its first 8 characters is hidden to its end");
+	// A value of several lines: whole, and line by line; and as JSON writes it inside a string.
+	knowSecrets("mcp-variables/server-a", ["first-line-of-it-894\nsecond-line-of-it-894", 'pass"word\\894-x']);
+	assert.ok(!maskKeys("cat: second-line-of-it-894").includes("second-line"), "a line of it alone");
+	assert.equal(maskKeys(JSON.stringify({ a: 'pass"word\\894-x' })), `{"a":"${SECRET_HIDDEN}"}`);
+	assert.equal(maskKeys('pass"word\\894-x'), SECRET_HIDDEN);
+	// A value that changes: the new one is looked for from then on, and the old one still, as one removed is (transcripts
+	// still hold them), the latest RETIRED_KEPT, the oldest forgotten first.
+	const rotated = "rotated-horse-battery-894";
+	knowSecrets("variables/agent-a", [rotated]);
+	assert.deepEqual([maskKeys(rotated), maskKeys(value)], [SECRET_HIDDEN, SECRET_HIDDEN]);
+	for (const source of ["variables/agent-a", "credential:anthropic", "mcp-variables/server-a"]) forgetSecrets(source);
+	assert.deepEqual([maskKeys(rotated), maskKeys(key)], [SECRET_HIDDEN, KEY_HIDDEN], "forgotten, still looked for");
+	forgetEverySecret();
+	const old = (i: number) => `${String(i).padStart(4, "0")}-refreshed-${String(i).padStart(4, "0")}`;
+	for (let i = 0; i <= RETIRED_KEPT + 1; i++) knowSecrets("credential:oauth", [old(i)]);
+	assert.equal(secretCount(), RETIRED_KEPT + 1, "the one held, and RETIRED_KEPT before it");
+	assert.deepEqual([maskKeys(old(0)), maskKeys(old(1)), maskKeys(old(2)), maskKeys(old(RETIRED_KEPT + 1))], [old(0), SECRET_HIDDEN, SECRET_HIDDEN, SECRET_HIDDEN], "the oldest forgotten first");
+	forgetEverySecret();
+	assert.deepEqual([secretCount(), maskKeys(rotated)], [0, rotated]);
+
+	// The search finds what `indexOf` finds of each value's ends: few letters, so that values overlap, share ends and
+	// pieces, and have ends too plain to stand for them (compared whole then), and many values, so that pieces collide.
+	let seed = 894;
+	const random = (below: number) => {
+		seed = (Math.imul(seed, 1_103_515_245) + 12_345) >>> 0;
+		return (seed >>> 8) % below;
+	};
+	const word = (length: number) => Array.from({ length }, () => "abcde"[random(5)]).join("");
+	const plainEnd = (text: string) => new Set(text).size < 4;
+	for (let round = 0; round < 40; round++) {
+		forgetEverySecret();
+		const values = [...new Set(Array.from({ length: 1 + random(200) }, () => word(LEAST_SECRET + random(12))))].filter((one) => new Set(one).size >= 4);
+		knowSecrets("round", values);
+		let text = word(random(4000));
+		for (let i = 0; i < 30; i++) {
+			const at = random(text.length + 1);
+			text = text.slice(0, at) + values[random(values.length)] + text.slice(at);
+		}
+		// Ending part way into one, and beginning part way into one, as often as not.
+		const last = values[random(values.length)]!;
+		if (random(2) === 0) text += last.slice(0, random(last.length));
+		const first = values[random(values.length)]!;
+		if (random(2) === 0) text = first.slice(random(first.length)) + text;
+		const longest = new Map<string, number>();
+		for (const one of values) {
+			for (const [kind, end] of [["head", one.slice(0, LEAST_SECRET)], ["foot", one.slice(-LEAST_SECRET)]] as const) {
+				if (!plainEnd(end)) longest.set(`${kind} ${end}`, Math.max(longest.get(`${kind} ${end}`) ?? 0, one.length));
+			}
+		}
+		const hidden = new Uint8Array(text.length);
+		for (const [key, length] of longest) {
+			const [kind, end] = key.split(" ") as ["head" | "foot", string];
+			for (let at = text.indexOf(end); at !== -1; at = text.indexOf(end, at + 1)) {
+				if (kind === "head") hidden.fill(1, at, at + length);
+				else hidden.fill(1, Math.max(0, at + LEAST_SECRET - length), at + LEAST_SECRET);
+			}
+		}
+		for (const one of values) {
+			if (!plainEnd(one.slice(0, LEAST_SECRET)) || !plainEnd(one.slice(-LEAST_SECRET))) continue;
+			for (let at = text.indexOf(one); at !== -1; at = text.indexOf(one, at + 1)) hidden.fill(1, at, at + one.length);
+		}
+		const found = new Uint8Array(text.length);
+		for (const [from, to] of secretSpans(text)) found.fill(1, from, to);
+		assert.deepEqual(found, hidden, `round ${round}: ${values.length} values`);
+	}
+	forgetEverySecret();
+	// What it costs, in processor time: a line of 8 MiB with none, 10 and 200 values; and the worst a text can do, 8 MiB
+	// of the start 200 values share (an OAuth sign-in's tokens refreshed and retired share theirs), which costs no more,
+	// since one entry stands for every value of a head.
+	const big = "the build passed; src/devices.ts at a1b2c3d4e5f6 ".repeat(Math.ceil((8 << 20) / 49)).slice(0, 8 << 20);
+	const sharedStart = "github_pat_11A";
+	const shared = sharedStart.repeat(Math.ceil((8 << 20) / sharedStart.length)).slice(0, 8 << 20);
+	const costs: string[] = [];
+	const spent = (work: () => void) => {
+		const began = process.cpuUsage();
+		work();
+		const used = process.cpuUsage(began);
+		return Math.round((used.user + used.system) / 1000);
+	};
+	for (const count of [0, 10, 200]) {
+		knowSecrets("cost", Array.from({ length: count }, (_, i) => `known-value-${i}-${"q".repeat(i % 20)}z`));
+		costs.push(`${count}: ${spent(() => assert.equal(secretSpans(big).length, 0))} ms`);
+	}
+	knowSecrets("cost", Array.from({ length: 200 }, () => `${sharedStart}${randomBytes(30).toString("base64url")}`));
+	costs.push(`200 sharing their start, on 8 MiB of it: ${spent(() => assert.deepEqual(secretSpans(shared), [[0, shared.length]]))} ms`);
+	forgetEverySecret();
+	console.log(`    the known values looked for in 8 MiB (processor time): ${costs.join(", ")}`);
+
+	// A picture's bytes (#956): left as they are only where the engine fills them with a picture it checked by type,
+	// `conversation.image`'s answer; the same run anywhere else is masked as before.
+	const noisy = pad(`iVBORw0KGgoAAAANSUhEUg/${AIZA_RUN}+7m8yD7`);
+	assert.deepEqual(pictureAnswer({ data: noisy, mimeType: "image/png" }), { data: noisy, mimeType: "image/png" });
+	for (const [what, result] of [
+		["another member", { data: noisy, mimeType: "image/png", note: "x" }],
+		["another type than its bytes", { data: noisy, mimeType: "image/jpeg" }],
+		["a type no picture is", { data: noisy, mimeType: "text/plain" }],
+		["text that is no base64", { data: `iVBORw0KGgo ${AIZA_RUN}`, mimeType: "image/png" }],
+		["base64 of no picture", { data: pad(`QUJDREVGR0hJSktM${AIZA_RUN}`), mimeType: "image/png" }],
+		["a list", [noisy, "image/png"]],
+		["a fifth type, text", { data: Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg"><text>${AIZA_RUN}</text></svg>`).toString("base64"), mimeType: "image/svg+xml" }],
+	] as const) {
+		assert.equal(pictureAnswer(result), undefined, what);
+	}
+	// The four types, fixed on the owner's path: one attachments.ts takes later does not reach the exemption.
+	assert.deepEqual([...PICTURE_TYPES].sort(), ["image/gif", "image/jpeg", "image/png", "image/webp"]);
+	assert.equal(JSON.parse(sentOf({ id: 1, result: { data: noisy, mimeType: "image/png" } })).result.data.includes(KEY_HIDDEN), true, "forDevice itself never leaves a field out, whatever its name");
+	assert.ok(JSON.parse(sentOf({ event: "inbox", items: [{ id: "p", kind: "approval", tool: "bash", arguments: { command: `echo ${noisy} | base64 -d > x.png` } }] })).items[0].arguments.command.includes(KEY_HIDDEN), "the same run in an approval's command");
+	const dataAddress = sentOf({ event: "conversation", items: [{ id: 3, kind: "assistant", text: `Here: ![shot](data:image/png;base64,${noisy})` }] });
+	assert.ok(!dataAddress.includes(AIZA_RUN) && dataAddress.includes(KEY_HIDDEN), "and in a data: address an agent wrote in its answer");
+	step("the values of the secrets the engine knows are masked wherever they stand, and an approval holding one marked; too short or too plain is not looked for; a value that changes is looked for from then on; the search finds what indexOf finds");
 }
 
 // ---- A phone's longest line, here and in pi² Remote (#904)
@@ -1121,9 +1317,12 @@ const nextRemote = (count: number) => until(`pi² Remote number ${count}`, () =>
 
 class App extends EngineClient {
 	readonly devicesEvents: any[] = [];
+	/** Every conversation event as JSON text, for what the Mac's app is shown of a transcript (#894). */
+	readonly conversationText: string[] = [];
 	override receive(message: any): void {
 		super.receive(message);
 		if (message.event === "devices") this.devicesEvents.push(message);
+		if (message.event === "conversation") this.conversationText.push(JSON.stringify(message));
 	}
 	notice(kind: string, after = 0): Promise<any> {
 		return this.until(`a notice of ${kind}`, () => this.devicesEvents.slice(after).find((event) => event.notice?.kind === kind)?.notice);
@@ -1610,6 +1809,105 @@ try {
 	assert.ok(app.events.providers.providers.some((one: any) => one.endpoint?.baseUrl?.includes(secrets.endpoint)), "the app is sent the endpoint whole");
 	step("with a provider's key, an agent's variable and an endpoint's token set, none reaches a device; a key-shaped string typed is masked");
 
+	// ---- What an agent writes of a secret the engine knows is masked, on the channel and in pushes (#894)
+	// The values have no shape of a key's: only the engine's knowing them hides them. The Mac's app sees each whole.
+	const known = { ...secrets, unshaped: "cerebras-key-with-no-known-prefix-894", rotated: "rotated-variable-value-894", padded: "padded-id-x7Q-00000000" };
+	await app.call("providers.setKey", { id: "cerebras", key: known.unshaped });
+	const phoneCopyOf = (id: string) =>
+		until(`the phone's copy of ${id}`, () => remote.sessionLines.get(session)?.findLast((line) => line.event === "inbox" && line.items.some((item: any) => item.id === id))?.items.find((item: any) => item.id === id));
+	// In an approval's command: masked, marked, never allowed from the phone; its push the same.
+	const pasted = await askApproval(`/bash curl -H "Authorization: Bearer ${secrets.variable}" https://deploy.invalid`, seen);
+	seen.push(pasted.id);
+	assert.ok(pasted.arguments.command.includes(secrets.variable), "the Mac's app sees the call whole");
+	const pastedCopy = await phoneCopyOf(pasted.id);
+	assert.deepEqual([pastedCopy.arguments.command, pastedCopy[PART_HIDDEN]], [`curl -H "Authorization: Bearer ${SECRET_HIDDEN}" https://deploy.invalid`, true]);
+	const pastedPush = await pushOf(pasted.id);
+	assert.deepEqual([pastedPush.body.partHidden, pastedPush.body.whole], [true, false]);
+	assert.ok(pastedPush.body.body.includes(SECRET_HIDDEN) && !JSON.stringify(pastedPush).includes(secrets.variable), pastedPush.body.body);
+	assert.equal((await ask("inbox.decide", { id: pasted.id, decision: "once" })).error, HIDDEN_FROM_THE_PHONE, "never allowed from the phone");
+	assert.deepEqual((await ask("inbox.decide", { id: pasted.id, decision: "deny" })).result, {});
+	// In a question's text: masked on the phone and in its push.
+	void app.call("submit", { id: plain, text: `/ask Shall I use ${known.unshaped}?` });
+	const question = await app.until("the question", () => app.events.inbox?.items?.find((item: any) => item.conversationId === plain && item.kind === "question"));
+	assert.ok(question.question.includes(known.unshaped), "the Mac's app sees the question whole");
+	const questionCopy = await phoneCopyOf(question.id);
+	assert.equal(questionCopy.question, `Shall I use ${SECRET_HIDDEN}?`);
+	const questionPush = await pushOf(question.id);
+	assert.deepEqual([questionPush.body.body, questionPush.body.partHidden, questionPush.body.whole], [`Shall I use ${SECRET_HIDDEN}?`, true, false]);
+	await app.call("inbox.answer", { id: question.id, text: "no" });
+	// In an agent's last words, and the person's own message: masked in the phone's transcript, whole in the app's.
+	const saidLine = (lines: any[] | undefined) => lines?.some((line) => line.event === "conversation" && JSON.stringify(line).includes("You said") && JSON.stringify(line).includes(`with ${SECRET_HIDDEN} at hand`));
+	await app.call("conversation.open", { id: conversation });
+	await ask("submit", { id: conversation, text: `Carry on with ${known.unshaped} at hand` });
+	await until("the demo model's answer, masked, on the phone", () => saidLine(remote.sessionLines.get(session)));
+	await app.until("the answer whole in the app", () => app.conversationText.some((text) => text.includes("You said") && text.includes(`with ${known.unshaped} at hand`)) || undefined);
+	// A value that changes: masked from then on.
+	await app.call("variables.set", { agentId: "forge", name: "DEPLOY_TOKEN", value: known.rotated });
+	const rotatedAsk = await askApproval(`/bash echo ${known.rotated}`, seen);
+	seen.push(rotatedAsk.id);
+	const rotatedCopy = await phoneCopyOf(rotatedAsk.id);
+	assert.deepEqual([rotatedCopy.arguments.command, rotatedCopy[PART_HIDDEN]], [`echo ${SECRET_HIDDEN}`, true]);
+	assert.equal((await pushOf(rotatedAsk.id)).body.body, `bash: echo ${SECRET_HIDDEN}`);
+	assert.deepEqual((await ask("inbox.decide", { id: rotatedAsk.id, decision: "deny" })).result, {});
+	// A background command's output, read by the phone from every offset: never 8 characters of a known value, of a
+	// key's shape, or of a known value whose last 8 characters are too plain to stand for it (#894's security reads).
+	// What a phone may ask from is its own choice, so the output is masked whole, then cut: cut first, the key (whose
+	// prefix a cut takes away) and the plain-ended value (found by its first 8 alone) would show, as checked below.
+	const windows = (text: string, value: string) => Array.from({ length: value.length - LEAST_SECRET + 1 }, (_, i) => value.slice(i, i + LEAST_SECRET)).filter((part) => text.includes(part));
+	const shapedKey = `${"ghp"}_abcdefghijklmnopqrstuvwxyz0123456789AB`;
+	await app.call("variables.set", { agentId: "forge", name: "PADDED_ID", value: known.padded });
+	const hiddenIn = (text: string) => [...windows(text, known.rotated), ...windows(text, shapedKey.slice(4)), ...windows(text, known.padded)];
+	void app.call("submit", { id: plain, text: `/background printf 'start DEPLOY_TOKEN=%s GH_TOKEN=%s ID=%s end\\n' '${known.rotated}' '${shapedKey}' '${known.padded}'; sleep 120` });
+	const started = await app.until("the background command's approval", () => app.events.inbox?.items?.find((item: any) => item.conversationId === plain && item.kind === "approval" && !seen.includes(item.id)));
+	seen.push(started.id);
+	await app.call("inbox.decide", { id: started.id, decision: "once" });
+	const running = await app.until("the background command", () => app.events.background?.commands?.find((one: any) => one.conversationId === plain));
+	let whole = await app.call("background.output", { id: running.id, wait: 5 });
+	for (const deadline = Date.now() + PATIENT_MS; !whole.output.includes(" end"); await new Promise((resolve) => setTimeout(resolve, 50))) {
+		assert.ok(Date.now() < deadline, `its output, whole on the Mac: ${JSON.stringify(whole.output)}`);
+		whole = await app.call("background.output", { id: running.id, from: whole.total, wait: 5 });
+		whole = await app.call("background.output", { id: running.id });
+	}
+	assert.ok([known.rotated, shapedKey, known.padded].every((one) => whole.output.includes(one)), "the Mac's app reads it whole");
+	const walk: string[] = [];
+	let cutFirstShows = 0;
+	// This test's own process masks as the engine does once it knows the same values.
+	knowSecrets("variables/forge", [known.rotated, known.padded]);
+	for (let from = 0; from <= whole.total; from++) {
+		const part = (await ask("background.output", { id: running.id, from })).result;
+		assert.deepEqual(hiddenIn(part.output), [], `from ${from}: ${JSON.stringify(part.output)}`);
+		walk.push(part.output);
+		// What the phone would have been sent had the output been cut first, then masked as any line is.
+		if (hiddenIn(JSON.parse(forDevice(JSON.stringify({ id: 1, result: { output: whole.output.slice(from) } }))!).result.output).length > 0) cutFirstShows++;
+	}
+	assert.deepEqual(hiddenIn(walk.join("")), [], "nor the whole walk");
+	assert.ok(cutFirstShows > 20, `cut first, ${cutFirstShows} offsets would have shown part of them`);
+	forgetEverySecret();
+	await app.call("background.stop", { id: running.id });
+	// Search from the phone matches and cuts on the text as it is sent: whatever the guess, the same answer; the text after
+	// a value comes back masked. From the Mac's app, as before.
+	const guesses = [..."abcdefghijklmnopqrstuvwxyz0123456789-"];
+	const fromPhone = new Set<string>();
+	let fromMac = 0;
+	for (const guess of guesses) {
+		const query = `carry on with ${guess}`;
+		fromPhone.add(JSON.stringify((await ask("search", { query })).result));
+		if ((await app.call("search", { query })).results.length > 0) fromMac += 1;
+	}
+	assert.deepEqual([fromPhone.size, fromMac], [1, 1], "the phone's answer is the same whatever the guess; the Mac's app finds the right one");
+	const after = (await ask("search", { query: "at hand" })).result.results.filter((one: any) => one.conversationId === conversation);
+	assert.ok(after.length > 0 && after.every((one: any) => windows(one.snippet, known.unshaped).length === 0), JSON.stringify(after));
+	assert.deepEqual((await ask("search", { query: known.unshaped.slice(4, 30) })).result.results, [], "a part of the value finds nothing from the phone");
+	assert.ok((await app.call("search", { query: known.unshaped.slice(4, 30) })).results.some((one: any) => one.snippet.includes(known.unshaped)), "and finds it from the Mac");
+	// Nothing of the set in anything a device was sent or pushed, nor in the devices' log.
+	const toTheDevice = JSON.stringify([...remote.sessionLines.values(), remote.events]);
+	const deviceLog = JSON.stringify((await app.call("devices.log", { device: phone.id })).entries);
+	for (const [what, value] of Object.entries(known)) {
+		assert.ok(!toTheDevice.includes(value), `the ${what} value is in nothing a device was sent or pushed`);
+		assert.ok(!deviceLog.includes(value), `nor in the devices' log (${what})`);
+	}
+	step("a known secret's value an agent writes, in an approval's command, a question, its last words, is masked on the phone and in its push, the approval marked partHidden and never allowed from the phone; the Mac's app sees it whole; a value that changes is masked from then on; none is in the devices' log");
+
 	// ---- What a message on the Mac may carry, from a phone (#904): ten pictures of 5 MiB, near the 72 MiB a line may be
 	const picture = Buffer.alloc(5 * 1024 * 1024, 0x5a);
 	picture.set([0xff, 0xd8, 0xff, 0xe0]);
@@ -1628,6 +1926,59 @@ try {
 	const longestBack = Math.max(...remote.sessionLines.get(session)!.slice(linesBefore).map((line) => JSON.stringify(line).length));
 	assert.ok(longestBack < 1024 * 1024, `what the device is sent back names the pictures, without them: its longest line is ${longestBack} characters`);
 	step(`a phone's message of ten pictures of 5 MiB (${(tenLine.length / 1024 / 1024).toFixed(1)} MiB) is taken from pi² Remote in ${tenTook} ms, and what goes back to the device names them without carrying them`);
+
+	// ---- A picture whose base64 holds a key-shaped run comes back to the phone byte for byte (#956)
+	{
+		// Noise, as a photo's base64 is, around `AIza` and 35 letters and digits (3 bytes to 4 characters: no padding).
+		{
+			const noise = randomBytes(3 * 90_000).toString("base64");
+			const data = pad(`iVBORw0KGgoAAAANSUhEUg${noise.slice(0, 1000)}/${AIZA_RUN}+${noise.slice(1000)}`);
+			const { id: noisyChat } = (await ask("conversation.create", { model: { provider: "demo", modelId: "demo-1" } })).result;
+			await ask("conversation.open", { id: noisyChat });
+			const before = remote.sessionLines.get(session)!.length;
+			assert.ok((await ask("submit", { id: noisyChat, text: "A noisy picture", attachments: [{ kind: "image", name: "noise.png", mimeType: "image/png", data }] })).result !== undefined);
+			const entry = await until("the picture's entry on the phone", () =>
+				remote.sessionLines.get(session)!.slice(before).flatMap((line) => (line.event === "conversation" && line.id === noisyChat ? line.items : [])).find((item: any) => item.kind === "user" && item.images === 1),
+			);
+			const shown = await ask("conversation.image", { id: noisyChat, entryId: entry.id, index: 0 });
+			assert.equal(shown.result.mimeType, "image/png");
+			assert.ok(shown.result.data === data, `byte for byte: ${shown.result.data.length} characters of ${data.length}`);
+			assert.deepEqual(await app.call("conversation.image", { id: noisyChat, entryId: entry.id, index: 0 }), { data, mimeType: "image/png" }, "as the Mac's app gets it");
+			// The same run typed into a command is still masked, on the same session.
+			await ask("submit", { id: noisyChat, text: `echo ${AIZA_RUN}` });
+			await until("the typed run, masked", () => remote.sessionLines.get(session)!.slice(before).some((line) => line.event === "conversation" && line.id === noisyChat && JSON.stringify(line).includes(`echo ${KEY_HIDDEN}`)));
+			assert.ok(!JSON.stringify(remote.sessionLines.get(session)!.slice(before).filter((line) => line.event === "conversation")).includes(AIZA_RUN), "never whole in a transcript line");
+		}
+		step("a picture whose base64 holds a key-shaped run comes back to the phone byte for byte from conversation.image, as to the Mac's app; the same run typed is still masked");
+	}
+
+	// ---- A presented picture whose base64 holds a key-shaped run comes to the phone whole too (#946, PICTURE_ANSWERS)
+	{
+		// A PNG's signature and header (33 bytes) and three more, so that what follows starts a base64 group of its own.
+		const header = Buffer.concat([Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"), Buffer.from([0, 0, 0, 8, 0, 0, 0, 8, 8, 2, 0, 0, 0]), Buffer.alloc(4), Buffer.alloc(3)]);
+		const bytes = Buffer.concat([header, Buffer.from(pad(AIZA_RUN), "base64"), randomBytes(3000)]);
+		const data = bytes.toString("base64");
+		assert.ok(data.includes(pad(AIZA_RUN)), "the run is in the picture's base64");
+		const file = join(work, "presented-noise.png");
+		writeFileSync(file, bytes);
+		const { id: shown } = await app.call("conversation.create", { agentId: "forge" });
+		await app.call("conversation.open", { id: shown });
+		const tools = () => app.conversations.get(shown)?.items.filter((item: any) => item.kind === "tool" && item.name === "present") ?? [];
+		await app.call("submit", { id: shown, text: `/tool present ${JSON.stringify({ title: "Noise", items: [{ path: file, caption: `caption ${AIZA_RUN}` }] })}` });
+		const result = await app.until("the presentation", () => tools()[0]);
+		assert.equal(result.isError, false, result.text);
+		const picture = { id: shown, presentation: "p1", version: 1, item: 0 };
+		const before = remote.sessionLines.get(session)!.length;
+		const got = await ask("presented.picture", picture);
+		assert.equal(got.result.mimeType, "image/png");
+		assert.ok(got.result.data === data, `byte for byte: ${got.result.data.length} characters of ${data.length}`);
+		assert.deepEqual(await app.call("presented.picture", picture), { mimeType: "image/png", data }, "as the Mac's app gets it");
+		// What is not such a picture is masked as any answer: the item's caption, in what the phone is sent of the call.
+		await ask("conversation.open", { id: shown });
+		const line = await until("the presentation in the phone's transcript", () => remote.sessionLines.get(session)!.slice(before).find((one) => one.event === "conversation" && one.id === shown && JSON.stringify(one).includes("caption ")));
+		assert.ok(JSON.stringify(line).includes(`caption ${KEY_HIDDEN}`) && !JSON.stringify(line).includes(AIZA_RUN), "the caption's run is masked");
+		step("a presented picture whose base64 holds a key-shaped run comes to the phone byte for byte from presented.picture, as to the Mac's app; its caption's run is masked");
+	}
 
 	// ---- A phone's typed text over 64 MiB (#919): taken, its echo never written to pi² Remote, which takes 64 MiB at most
 	{
@@ -2136,7 +2487,7 @@ try {
 	await other.call("engine.info");
 	assert.equal(other.events.devices, undefined, "a connection that did not ask is sent no devices event");
 	other.close();
-	for (const [what, value] of Object.entries({ s: secret.toString("base64url"), "the s in hex": secret.toString("hex"), typed, ...secrets })) {
+	for (const [what, value] of Object.entries({ s: secret.toString("base64url"), "the s in hex": secret.toString("hex"), typed, ...known })) {
 		assert.ok(!engineLog.includes(value), `engine.log holds no ${what}`);
 	}
 	assert.ok(!engineLog.includes("deeper than APPROVAL_DEPTH"), "no line a device was sent held an approval deeper than the gate judges (#881)");

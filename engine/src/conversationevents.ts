@@ -12,6 +12,7 @@ import { linesOf } from "./changes.ts";
 import { isChat } from "./chat.ts";
 import { type Client, send, type Subscription } from "./clients.ts";
 import { compactionErrorText } from "./compaction.ts";
+import { KEY_HIDDEN, maskKeys } from "./devices.ts";
 import type { Host } from "./extensions.ts";
 import { agents, chatOf, library, versions } from "./indexes.ts";
 import { storedNeeds } from "./needs.ts";
@@ -20,6 +21,7 @@ import { preparePlan } from "./plan.ts";
 import type { Providers } from "./providers.ts";
 import { type Params, text } from "./requests.ts";
 import { runningCommands } from "./running.ts";
+import { SECRET_HIDDEN } from "./secrets.ts";
 import { agentOf, type Meta, type ModelRef } from "./state.ts";
 import { type AssistantLike, answeredNeeds, assistantParts, imagesOf, type Item, textOf, toItem, wakeLabel } from "./transcript.ts";
 import { type UsageDocShape, type UsageJson, usageTotals } from "./usage.ts";
@@ -285,6 +287,9 @@ async function subscribe(client: Client, id: number, newestFirst = false, tail =
 	}
 }
 
+/** The most characters of entries one search from a paired device looks at, masked or not: masked all, some 0.3 s. */
+export const SEARCH_MASKED_CHARS = 64 * 1024 * 1024;
+
 export const conversationRequests: Record<string, (params: Params, client: Client) => Promise<unknown>> = {
 	/**
 	 * `{ id, newestFirst?, tail? }`: send the app the conversation, and keep sending it as it changes. With `newestFirst`,
@@ -314,9 +319,21 @@ export const conversationRequests: Record<string, (params: Params, client: Clien
 		await subscription?.stop();
 		return {};
 	},
-	search: async (params) => {
+	/**
+	 * `{ query }`: the entries whose text holds it, newest first, at most 40, each with a snippet around it. From a paired
+	 * device, matched and cut on the text as the device is sent it, masked (`maskKeys`, devices.ts, #894): matched on the
+	 * text as it is, whether a query finds an entry would tell a phone what its copy hides, a character a query. An entry
+	 * whose text, as it is, does not hold the query cannot hold it masked, but for a query with a mark's characters in it,
+	 * so only the others are masked; and one search looks at most at SEARCH_MASKED_CHARS of entries' text, counted
+	 * whether masked or not, then ends with what it found: where it ends depends on how long the entries are, never on what they hold.
+	 */
+	search: async (params, client) => {
 		const query = text(params, "query").trim().toLowerCase();
 		if (query.length < 2) return { results: [] };
+		const device = (client as Client | undefined)?.device !== undefined;
+		// A query that can meet a mark: in it, or inside one.
+		const meetsMark = [...`${KEY_HIDDEN}${SECRET_HIDDEN}`].some((character) => !/[a-z ]/.test(character) && query.includes(character)) || KEY_HIDDEN.includes(query);
+		let masked = 0;
 		const results: { conversationId: number; title: string; entryId: number; role: string; snippet: string; archived: boolean; chat: boolean }[] = [];
 		// Archived conversations are searched too: finding something again is what they are kept for.
 		const ids = Object.entries(library.conversations)
@@ -334,7 +351,14 @@ export const conversationRequests: Record<string, (params: Params, client: Clien
 				for (const entry of batch.items) {
 					const message = entry.model?.[0] as { role?: string; content?: unknown } | undefined;
 					if (message?.role !== "user" && message?.role !== "assistant") continue;
-					const body = textOf(message.content, false);
+					let body = textOf(message.content, false);
+					if (device) {
+						// Every entry looked at counts, masked or not, so that where the search stops says nothing of the text.
+						masked += body.length;
+						if (masked > SEARCH_MASKED_CHARS) break;
+						if (!meetsMark && !body.toLowerCase().includes(query)) continue;
+						body = maskKeys(body);
+					}
 					const at = body.toLowerCase().indexOf(query);
 					if (at === -1) continue;
 					const start = Math.max(0, at - 40);
@@ -343,9 +367,9 @@ export const conversationRequests: Record<string, (params: Params, client: Clien
 					if (results.length >= 40) break;
 				}
 				cursor = (batch as { next?: unknown }).next;
-				if (cursor === undefined) break;
+				if (cursor === undefined || masked > SEARCH_MASKED_CHARS) break;
 			}
-			if (results.length >= 40) break;
+			if (results.length >= 40 || masked > SEARCH_MASKED_CHARS) break;
 		}
 		return { results };
 	},
