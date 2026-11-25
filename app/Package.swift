@@ -89,6 +89,9 @@ let package = Package(
         .executableTarget(name: "pi2-file-link-check", dependencies: ["FileLinkKit"], path: "Sources/pi2-file-link-check"),
         // Checks TranscriptKit: pages loaded ahead and handed over, in off-screen windows of its own (#441).
         .executableTarget(name: "pi2-transcript-check", dependencies: ["TranscriptKit"], path: "Sources/pi2-transcript-check"),
+        // Checks TranscriptKit's PresentedPageView, the sandboxed view an agent's page is drawn in (#964), against hostile
+        // pages it writes into a temporary folder: offscreen windows of its own, listeners on 127.0.0.1 alone.
+        .executableTarget(name: "pi2-presented-check", dependencies: ["TranscriptKit"], path: "Sources/pi2-presented-check"),
         // The engine's helper that answers whether a connection is the app's (#504). build.sh copies it into the app as
         // Contents/MacOS/pi2-peer, where the engine finds it.
         .executableTarget(name: "pi2-peer", dependencies: ["PeerKit"], path: "Sources/pi2-peer"),
