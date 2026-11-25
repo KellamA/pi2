@@ -29,7 +29,7 @@ The actions are: list the apps it may use, open an app, look at a window, click,
 
 With **Ask before each action** on, which is the default, every click, keystroke and menu command waits for you. The request says what will happen in words, such as "Click the “Send” button in Mail". You can allow once, allow that app for the rest of the conversation, or deny. Looking is never asked about.
 
-A click or a context menu at a point in the picture, rather than on a listed control, acts on what the request named. If what is at that point changed while the request waited for you, the action is refused and the agent is told to look again; it never presses something the request did not name (#770).
+A click or a context menu at a point in the picture, rather than on a listed control, acts on what the request named. If what is at that point changed while the request waited for you, or since the agent last looked, the action is refused and the agent is told to look again; it never presses something the request did not name (#770). A control the request named counts as still there only while it is among the window's controls read again then, since a control the app has taken away, such as one on a tab switched away, can go on answering at its old place (#955). Where such a control does not answer through accessibility, no real click is sent to the point in its place.
 
 An agent with [Allow everything](allow-everything.md) on is asked about no action, may use any app, not only the ones listed, and may control browsers. The other limits below still hold, and System Settings stays look-only.
 

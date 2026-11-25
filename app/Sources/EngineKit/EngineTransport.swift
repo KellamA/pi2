@@ -21,4 +21,9 @@ public enum EngineTransportEvent {
     case failed(String)
     /// The other end closed it, or reading from it failed: why, for the host's log.
     case closed(String)
+    /// Requests it sent, by their ids, that may never have reached the engine, while the connection itself goes on: on
+    /// the phone, those the Mac had not counted when a channel dropped and the session resumed on a new one (docs/iphone.md
+    /// 5.8). Each call still waiting on one fails as unanswered, so that a message is sent again with its request id, as
+    /// after a reconnect. The Mac's socket never says it.
+    case cut([Int])
 }

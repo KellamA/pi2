@@ -1378,14 +1378,18 @@ public struct EngineError: LocalizedError, Sendable {
     /// No answer came: the engine was not connected, or the connection went before it answered. A request that is safe to
     /// send again (a message with its request id) can be sent again once the engine is back.
     public var unanswered = false
+    /// Unanswered because the request was cut on its way while the connection went on (`EngineTransportEvent.cut`): a
+    /// message is sent again a few times at most, since a connection that cuts it every time would never let it through.
+    public var cut = false
     /// What a refusal carries beside its message (docs/projects.md, 4.1): the new report of a plan that changed since the
     /// person looked, say. Nil for most refusals.
     public var data: [String: JSONValue]? = nil
     public var errorDescription: String? { message }
 
-    public init(message: String, unanswered: Bool = false, data: [String: JSONValue]? = nil) {
+    public init(message: String, unanswered: Bool = false, cut: Bool = false, data: [String: JSONValue]? = nil) {
         self.message = message
-        self.unanswered = unanswered
+        self.unanswered = unanswered || cut
+        self.cut = cut
         self.data = data
     }
 }
