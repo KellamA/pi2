@@ -50,6 +50,9 @@
 			else return null;
 		}
 		const drawn = isObject(item.drawn) ? item.drawn : null;
+		const lines = drawn && Array.isArray(drawn.console) ? drawn.console.filter((line) => typeof line === "string") : [];
+		// How many of the lines are errors, as the engine counted them; never more than the lines there are.
+		const errors = drawn && Number.isInteger(drawn.errors) && drawn.errors >= 0 && drawn.errors <= lines.length ? drawn.errors : undefined;
 		return {
 			label: item.label,
 			caption: str(item.caption),
@@ -62,7 +65,8 @@
 			snapshot,
 			drawn: drawn && {
 				blank: drawn.blank === true,
-				console: Array.isArray(drawn.console) ? drawn.console.filter((line) => typeof line === "string") : [],
+				console: lines,
+				...(errors === undefined ? {} : { errors }),
 				blocked: Array.isArray(drawn.blocked) ? drawn.blocked.filter((line) => typeof line === "string") : [],
 			},
 		};
