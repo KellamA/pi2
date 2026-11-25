@@ -86,7 +86,13 @@ final class PhoneLink {
     /// actor ran what the stop queued), its `.outOfReach` with the store not yet open would put the client on the
     /// channel, and the carrier set then would keep `sessionOpened` from starting the connection (#899).
     @ObservationIgnored private var startedInSession = false
-    @ObservationIgnored private var watched: RemoteConnection?
+    /// Which watch of the connection is current (#907). `sessionOpened` starts a new one; an unpairing and the end of the
+    /// pairing end it. A watch registers again after a change only while it is current, so a session adds no watch to
+    /// those before it. The end of a session keeps it: it mirrors the stopped connection's state, and it takes a
+    /// revocation, which ends the session (`keyring.wipe()`) before the watch hears of `unpaired`.
+    @ObservationIgnored private var watchGeneration = 0
+    /// How many times the connection's state was followed: once a change, however many sessions came before (#907).
+    @ObservationIgnored private(set) var followed = 0
     @ObservationIgnored private let log = Logger(subsystem: "dev.pi2.ios", category: "link")
 
     init(
@@ -156,7 +162,7 @@ final class PhoneLink {
     /// the connection, or by the flow next), the store wiped.
     private func unpairBeforeReplacing() async {
         // Not the Mac's revocation: the connection's `unpaired` is not to be taken for one.
-        watched = nil
+        watchGeneration += 1
         await connection?.unpairHere()
         forget(.unpaired)
     }
@@ -167,7 +173,7 @@ final class PhoneLink {
         if carrier == .live, session.engine.status == .connected {
             _ = try? await session.engine.call("devices.forgetSelf", [:])
         }
-        watched = nil
+        watchGeneration += 1
         if let connection {
             await connection.unpairHere()
         } else {
@@ -245,15 +251,19 @@ final class PhoneLink {
 
     // MARK: - The connection
 
-    /// Follows the connection's state and its revocation, while it is the current one.
+    /// Follows the connection's state and its revocation, in a watch of its own: the one before ends at its next change.
     private func watch(_ connection: RemoteConnection) {
-        watched = connection
+        watchGeneration += 1
+        watch(connection, generation: watchGeneration)
+    }
+
+    private func watch(_ connection: RemoteConnection, generation: Int) {
         let (state, unpaired) = withObservationTracking {
             (connection.connection, connection.unpaired)
         } onChange: { [weak self] in
             Task { @MainActor in
-                guard let self, self.watched === connection else { return }
-                self.watch(connection)
+                guard let self, self.watchGeneration == generation else { return }
+                self.watch(connection, generation: generation)
             }
         }
         if unpaired {
@@ -266,6 +276,7 @@ final class PhoneLink {
     /// Mirrors the connection's state into the session, and puts the client on the channel or on the store's last state:
     /// only once this session has started the connection (`startedInSession`).
     private func follow(_ state: AppSession.Connection) {
+        followed += 1
         guard paired else { return }
         guard keyring.session.state == .open, startedInSession, let connection else {
             session.connection = state
@@ -345,7 +356,7 @@ final class PhoneLink {
         step(.wiped(reason))
         unsent = left.filter(\.isPending)
         ended = ending
-        watched = nil
+        watchGeneration += 1
         connection = nil
         paired = false
         attachedInSession = false
