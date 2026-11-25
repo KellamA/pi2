@@ -27,9 +27,14 @@ import { APPROVAL_DEPTH, checkRequestItem, type Device, deviceRequests, DeviceLo
 import type { Client } from "../src/clients.ts";
 import { attachChallenge, checkAttach, offerPresenceKey, PRESENCE_KEY_ALREADY_WAITS, PRESENCE_KEY_CHANGED, PRESENCE_KEY_WAITS } from "../src/devices.ts";
 import { personOnly } from "../src/answers.ts";
-import { ANSWER_NOT_SENT, DEVICE_LINE_FAILED, forDevice, MAX_HELPER_LINE, MAX_LINE_TO_HELPER, MAX_PHONE_LINE, restartWait, RUN_THAT_LASTED, SESSION_OVER, sessionLine } from "../src/remote.ts";
+import { ANSWER_NOT_SENT, DEVICE_LINE_FAILED, forDevice, MAX_HELPER_LINE, MAX_LINE_TO_HELPER, MAX_PHONE_LINE, pictureAnswer, restartWait, RUN_THAT_LASTED, SESSION_OVER, sessionLine } from "../src/remote.ts";
 import { NOT_LINKED, NOT_OFFERED } from "../src/folders.ts";
 import { forgetSecrets, knowSecrets, LEAST_SECRET, SECRET_HIDDEN, secretCount, secretSpans } from "../src/secrets.ts";
+
+/** A run of base64 a picture's bytes can hold that is shaped as a key (#956): `AIza` and 35 letters and digits. */
+const AIZA_RUN = `${"AIza"}SyD3noiseNoiseNoise0123456789abcdefg`;
+/** `text` made a whole number of base64's four characters. */
+const pad = (text: string) => text + "A".repeat((4 - (text.length % 4)) % 4);
 import { offerFolders } from "../src/answers.ts";
 import { DatabaseSync } from "node:sqlite";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
@@ -428,6 +433,25 @@ const PERSON_REQUESTS_A_DEVICE_MAY_SEND: Record<string, [reason: string, widens:
 	}
 	forgetSecrets("cost");
 	console.log(`    the known values looked for in 8 MiB, by how many are known (processor time): ${costs.join(", ")}`);
+
+	// A picture's bytes (#956): left as they are only where the engine fills them with a picture it checked by type,
+	// `conversation.image`'s answer; the same run anywhere else is masked as before.
+	const noisy = pad(`iVBORw0KGgoAAAANSUhEUg/${AIZA_RUN}+7m8yD7`);
+	assert.deepEqual(pictureAnswer({ data: noisy, mimeType: "image/png" }), { data: noisy, mimeType: "image/png" });
+	for (const [what, result] of [
+		["another member", { data: noisy, mimeType: "image/png", note: "x" }],
+		["another type than its bytes", { data: noisy, mimeType: "image/jpeg" }],
+		["a type no picture is", { data: noisy, mimeType: "text/plain" }],
+		["text that is no base64", { data: `iVBORw0KGgo ${AIZA_RUN}`, mimeType: "image/png" }],
+		["base64 of no picture", { data: pad(`QUJDREVGR0hJSktM${AIZA_RUN}`), mimeType: "image/png" }],
+		["a list", [noisy, "image/png"]],
+	] as const) {
+		assert.equal(pictureAnswer(result), undefined, what);
+	}
+	assert.equal(JSON.parse(sentOf({ id: 1, result: { data: noisy, mimeType: "image/png" } })).result.data.includes(KEY_HIDDEN), true, "forDevice itself never leaves a field out, whatever its name");
+	assert.ok(JSON.parse(sentOf({ event: "inbox", items: [{ id: "p", kind: "approval", tool: "bash", arguments: { command: `echo ${noisy} | base64 -d > x.png` } }] })).items[0].arguments.command.includes(KEY_HIDDEN), "the same run in an approval's command");
+	const dataAddress = sentOf({ event: "conversation", items: [{ id: 3, kind: "assistant", text: `Here: ![shot](data:image/png;base64,${noisy})` }] });
+	assert.ok(!dataAddress.includes(AIZA_RUN) && dataAddress.includes(KEY_HIDDEN), "and in a data: address an agent wrote in its answer");
 	step("the values of the secrets the engine knows are masked wherever they stand, and an approval holding one marked; too short or too plain is not looked for; a value that changes is looked for from then on; the search finds what indexOf finds");
 }
 
@@ -1743,6 +1767,31 @@ try {
 	const longestBack = Math.max(...remote.sessionLines.get(session)!.slice(linesBefore).map((line) => JSON.stringify(line).length));
 	assert.ok(longestBack < 1024 * 1024, `what the device is sent back names the pictures, without them: its longest line is ${longestBack} characters`);
 	step(`a phone's message of ten pictures of 5 MiB (${(tenLine.length / 1024 / 1024).toFixed(1)} MiB) is taken from pi² Remote in ${tenTook} ms, and what goes back to the device names them without carrying them`);
+
+	// ---- A picture whose base64 holds a key-shaped run comes back to the phone byte for byte (#956)
+	{
+		// Noise, as a photo's base64 is, around `AIza` and 35 letters and digits (3 bytes to 4 characters: no padding).
+		{
+			const noise = randomBytes(3 * 90_000).toString("base64");
+			const data = pad(`iVBORw0KGgoAAAANSUhEUg${noise.slice(0, 1000)}/${AIZA_RUN}+${noise.slice(1000)}`);
+			const { id: noisyChat } = (await ask("conversation.create", { model: { provider: "demo", modelId: "demo-1" } })).result;
+			await ask("conversation.open", { id: noisyChat });
+			const before = remote.sessionLines.get(session)!.length;
+			assert.ok((await ask("submit", { id: noisyChat, text: "A noisy picture", attachments: [{ kind: "image", name: "noise.png", mimeType: "image/png", data }] })).result !== undefined);
+			const entry = await until("the picture's entry on the phone", () =>
+				remote.sessionLines.get(session)!.slice(before).flatMap((line) => (line.event === "conversation" && line.id === noisyChat ? line.items : [])).find((item: any) => item.kind === "user" && item.images === 1),
+			);
+			const shown = await ask("conversation.image", { id: noisyChat, entryId: entry.id, index: 0 });
+			assert.equal(shown.result.mimeType, "image/png");
+			assert.ok(shown.result.data === data, `byte for byte: ${shown.result.data.length} characters of ${data.length}`);
+			assert.deepEqual(await app.call("conversation.image", { id: noisyChat, entryId: entry.id, index: 0 }), { data, mimeType: "image/png" }, "as the Mac's app gets it");
+			// The same run typed into a command is still masked, on the same session.
+			await ask("submit", { id: noisyChat, text: `echo ${AIZA_RUN}` });
+			await until("the typed run, masked", () => remote.sessionLines.get(session)!.slice(before).some((line) => line.event === "conversation" && line.id === noisyChat && JSON.stringify(line).includes(`echo ${KEY_HIDDEN}`)));
+			assert.ok(!JSON.stringify(remote.sessionLines.get(session)!.slice(before).filter((line) => line.event === "conversation")).includes(AIZA_RUN), "never whole in a transcript line");
+		}
+		step("a picture whose base64 holds a key-shaped run comes back to the phone byte for byte from conversation.image, as to the Mac's app; the same run typed is still masked");
+	}
 
 	// ---- A phone's typed text over 64 MiB (#919): taken, its echo never written to pi² Remote, which takes 64 MiB at most
 	{
