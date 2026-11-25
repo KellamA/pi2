@@ -14,7 +14,13 @@ import SwiftUI
 ///   `only:` before it (`only:hidden,long`), the recording's own cards are left out.
 /// - `PI2_NEEDS_OPEN=<need id>` opens that card on a screen of its own once it is shown.
 /// - `PI2_NEEDS_PRESS=<need id>` presses the card's first answer once it is shown (`<need id>:edit` starts editing a
-///   proposed rule instead), so that the card's state after it can be pictured with no tap.
+///   proposed rule instead), so that the card's state after it can be pictured with no tap. `<need id>:<answer>` sends
+///   that answer instead (`NeedsSamples.reply`): `once`, `deny`, `always`, `rule`; `text:<words>`, `choice:<id>`;
+///   `allow`, `refuse`, `accept`, `start`, `leave`. It is sent even where the card draws no such button (Allow once on
+///   a call partly hidden from the phone), so that the engine's refusal of it can be seen on the card. It is pressed once
+///   the session reaches the Mac, so that the engine takes or refuses it; `PI2_NEEDS_PRESS_WHEN=now` presses at once,
+///   before the channel has attached, which keeps the answer in the Outbox. With `PI2_NEEDS_OPEN`, the opened card is
+///   the one pressed: the list draws only the cards on screen, so open one further down to press it.
 /// - `PI2_NEEDS_SCROLL=bottom` opens the list scrolled to its end, for a picture of what is below the screen.
 struct NeedsSamples {
     let only: Bool
@@ -32,10 +38,35 @@ struct NeedsSamples {
 
     static let open: String? = ProcessInfo.processInfo.environment["PI2_NEEDS_OPEN"]
     static let press: String? = ProcessInfo.processInfo.environment["PI2_NEEDS_PRESS"]
+    static let pressNow = ProcessInfo.processInfo.environment["PI2_NEEDS_PRESS_WHEN"] == "now"
     static let bottom = ProcessInfo.processInfo.environment["PI2_NEEDS_SCROLL"] == "bottom"
     /// Whether `press` was done, and `open`: each once a launch.
     @MainActor static var pressed = false
     @MainActor static var opened = false
+
+    /// The answer `press` names for `need`, as the card's own button would send it: nil when `press` is not
+    /// `<need id>:<answer>` for this need, or names no answer its kind takes. `held`: a question an agent waits on that
+    /// the Inbox holds, answered as the Inbox's card answers it.
+    static func reply(_ press: String, to need: NeedItem, held: Bool) -> NeedReply? {
+        guard let colon = press.firstIndex(of: ":"), press[..<colon] == need.id else { return nil }
+        let answer = String(press[press.index(after: colon)...])
+        let (word, rest) = answer.firstIndex(of: ":").map { (String(answer[..<$0]), String(answer[answer.index(after: $0)...])) } ?? (answer, "")
+        switch (need.kind, word) {
+        case ("approval", _):
+            guard let decision = NeedReply.Decision(rawValue: word), rest.isEmpty else { return nil }
+            return need.projectSwitch != nil ? .switchApproval(decision) : .decide(decision)
+        case ("question", "text") where !rest.isEmpty: return held ? .answerInbox(rest) : .question(rest)
+        case ("decision", "text") where !rest.isEmpty: return .decisionWords(rest)
+        case ("decision", "choice") where !rest.isEmpty: return .choice(rest)
+        case ("reach", "allow"): return .reach(allow: true)
+        case ("reach", "refuse"): return .reach(allow: false)
+        case ("rule", "accept"): return .acceptRule()
+        case ("rule", "refuse"): return .refuseRule
+        case ("limit", "start"): return .limit(start: true)
+        case ("limit", "leave"): return .limit(start: false)
+        default: return nil
+        }
+    }
 
     /// What the screen says while samples are shown.
     @MainActor @ViewBuilder

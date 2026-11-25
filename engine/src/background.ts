@@ -23,6 +23,8 @@ import { sep } from "node:path";
 import { awaitWithContext, type Context } from "@earendil-works/chord/context";
 import { type ConversationId, defineDoc, defineTool, section, type ToolExecutionApi, type ToolExecutionResult, type ToolRegistration } from "@earendil-works/pi-durable";
 import { int, num, obj, opt, str } from "@earendil-works/pi-schema";
+import type { Client } from "./clients.ts";
+import { maskKeysFrom } from "./devices.ts";
 import { commandEnvironment } from "./environment.ts";
 import type { Engine, Feature } from "./features.ts";
 import { forAgent } from "./priority.ts";
@@ -644,8 +646,11 @@ const count = (n: number) => `${n.toLocaleString("en-US")} character${n === 1 ? 
  * A command and the output of it that is kept, from character `from` on (counted from the first character it printed),
  * for the person to read in the app. At most the last `KEEP_CHARS`: the buffer holds up to twice that before it is cut.
  * It leaves what counts as read for the agent as it was: the person looking does not pass anything over for the agent.
+ * To a paired device (`masked`), the output is masked over all that is kept and cut at `from` only then
+ * (`maskKeysFrom`, devices.ts), so that a key or a secret's value that `from` falls inside is hidden in what follows it
+ * too, wherever a phone asks from (#894).
  */
-function forThePerson(command: Command, from: number) {
+function forThePerson(command: Command, from: number, masked = false) {
 	const first = command.total - command.output.length;
 	const asked = Math.min(from, command.total);
 	let begin = Math.max(asked, first, command.total - KEEP_CHARS);
@@ -671,7 +676,7 @@ function forThePerson(command: Command, from: number) {
 		from: begin,
 		// Printed after `from` but let go before it could be shown.
 		dropped: Math.max(0, begin - asked),
-		output: command.output.slice(begin - first),
+		output: masked ? maskKeysFrom(command.output, begin - first) : command.output.slice(begin - first),
 	};
 }
 
@@ -923,7 +928,7 @@ export const background: Feature = (_host, running) => {
 			 * (seconds), a request that finds nothing new waits for more output or the end, up to `APP_WAIT_SECONDS`, so the
 			 * app sees output as it arrives without asking over and over.
 			 */
-			"background.output": async (params) => {
+			"background.output": async (params, client) => {
 				const command = typeof params.id === "string" ? commands.get(idOf(params.id)) : undefined;
 				if (command === undefined) {
 					throw new Error(`pi² no longer has this command's output. While its engine runs, it keeps the output of the commands running and of the last ${ENDED_KEPT} that ended.`);
@@ -945,7 +950,7 @@ export const background: Feature = (_host, running) => {
 						if (waiter !== undefined) command.waiters.delete(waiter);
 					}
 				}
-				return forThePerson(command, from);
+				return forThePerson(command, from, (client as Client | undefined)?.device !== undefined);
 			},
 			/** The person stops one from Activity. */
 			"background.stop": async (params) => {

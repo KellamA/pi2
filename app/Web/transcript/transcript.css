@@ -1624,6 +1624,254 @@ pre.card-diff {
 	cursor: pointer;
 }
 
+/*
+ * MARK: - Presentations (#946)
+ *
+ * A `present` call's card, in look A, Gallery (docs/design/presenting/mockups.html#take=A): the items side by side
+ * in equal columns, each labelled in a corner and captioned under it, the question at the foot; the call's own row
+ * folded under the card. Each frame keeps its picture's proportions (`--ratio`, set by presented.js) before it comes.
+ */
+
+.present-call {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+
+.present .card-head {
+	align-items: center;
+}
+
+.present .card-title {
+	font-size: 13.5px;
+	min-width: 0;
+}
+
+.present .card-head .link-button.expand {
+	margin-left: 4px;
+}
+
+.pa-grid {
+	display: grid;
+	gap: 12px;
+	margin-top: 2px;
+}
+
+/* One item alone: as wide as the column allows, but no wider than itself or than about two thirds of the pane is tall. */
+.pa-grid.n1 {
+	grid-template-columns: minmax(0, 560px);
+}
+
+.pa-grid.n1 .pa-frame {
+	width: min(100%, var(--own-width, 100%), calc(66vh * var(--ratio, 1.6)));
+}
+
+.pa-grid.n2,
+.pa-grid.n4 {
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.pa-grid.n3,
+.pa-grid.n5,
+.pa-grid.n6 {
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.pa-item {
+	margin: 0;
+	min-width: 0;
+}
+
+.pa-frame {
+	position: relative;
+	display: block;
+	width: 100%;
+	aspect-ratio: var(--ratio, 1.6);
+	padding: 0;
+	border: 1px solid var(--line2);
+	border-radius: 8px;
+	background: var(--sunken);
+	overflow: hidden;
+	cursor: zoom-in;
+}
+
+.pa-frame img {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: contain;
+}
+
+/* A page's snapshot shows its top, as a window would, however long the page is. */
+.pa-frame.page img {
+	object-fit: cover;
+	object-position: top;
+}
+
+.pa-frame.loading img,
+.pa-frame.failed img {
+	visibility: hidden;
+}
+
+.pa-frame.loading {
+	background: linear-gradient(90deg, var(--card) 0%, var(--card2) 50%, var(--card) 100%);
+	background-size: 250% 100%;
+	animation: shimmer 1.4s linear infinite;
+	cursor: default;
+}
+
+.pa-frame.failed {
+	cursor: default;
+}
+
+.pa-status {
+	position: absolute;
+	inset: 0;
+	display: grid;
+	place-items: center;
+	padding: 8px;
+	font-size: 11px;
+	color: var(--tx3);
+	text-align: center;
+}
+
+.pa-status:empty {
+	display: none;
+}
+
+.pa-label {
+	position: absolute;
+	left: 7px;
+	top: 7px;
+	display: grid;
+	place-items: center;
+	min-width: 22px;
+	max-width: calc(100% - 14px);
+	height: 22px;
+	padding: 0 6px;
+	border-radius: 6px;
+	background: var(--acc);
+	color: var(--on-acc);
+	font-size: 12px;
+	font-weight: 700;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+/* Drawn over the page's own colours, so it keeps its own. */
+.page-mark {
+	position: absolute;
+	right: 8px;
+	bottom: 8px;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 2px 7px 2px 5px;
+	border-radius: 6px;
+	background: rgba(20, 21, 26, 0.78);
+	color: rgb(236, 236, 241);
+	font-size: 10.5px;
+	font-weight: 500;
+	line-height: 1.5;
+	white-space: nowrap;
+}
+
+.mark-glyph {
+	width: 12px;
+	height: 12px;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 1.4;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+.pa-item figcaption {
+	margin-top: 6px;
+	font-size: 12px;
+	line-height: 1.45;
+	color: var(--tx2);
+	white-space: pre-wrap;
+}
+
+.pa.one .pa-item figcaption {
+	max-width: 560px;
+}
+
+.pa-tabs {
+	display: flex;
+	gap: 4px;
+	margin: 2px 0 10px;
+	padding: 3px;
+	border-radius: 9px;
+	background: var(--sunken);
+}
+
+.pa-tabs button {
+	flex: 1;
+	min-width: 0;
+	min-height: 32px;
+	padding: 0 6px;
+	border: 0;
+	border-radius: 7px;
+	background: transparent;
+	color: var(--tx2);
+	font-size: 12.5px;
+	font-weight: 500;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	cursor: pointer;
+}
+
+.pa-tabs button.on {
+	background: var(--card2);
+	color: var(--tx);
+	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+}
+
+.pa .dots {
+	display: flex;
+	justify-content: center;
+	gap: 6px;
+	margin-top: 8px;
+}
+
+.pa .dots i {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--line2);
+}
+
+.pa .dots i.on {
+	background: var(--acc);
+}
+
+.present-ask {
+	margin-top: 12px;
+	padding-top: 11px;
+	border-top: 1px solid var(--line);
+}
+
+.present-ask .card-answer {
+	margin-top: 8px;
+}
+
+.present-answer {
+	margin: 0;
+	color: var(--tx2);
+	white-space: pre-wrap;
+}
+
+.present-newer {
+	margin: 10px 0 0;
+	font-size: 11.5px;
+	color: var(--tx3);
+}
+
 /* MARK: - Working */
 
 .spinner {
@@ -1835,6 +2083,22 @@ html.narrow .card-buttons .btn code {
 
 html.narrow #lightbox {
 	padding: 12px;
+}
+
+/* A presentation's head keeps Expand at its end while the note goes under the title. */
+html.narrow .present .card-head {
+	position: relative;
+	padding-right: 84px;
+}
+
+html.narrow .present .card-head .link-button.expand {
+	position: absolute;
+	right: -6px;
+	top: 0;
+}
+
+html.narrow .pa-item figcaption {
+	font-size: 13px;
 }
 
 html.narrow #notice {

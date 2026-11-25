@@ -10,16 +10,19 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { appendFileSync, linkSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { AgentDoc } from "@earendil-works/pi-durable";
 import { folderOffered } from "../src/answers.ts";
 import type { Engine } from "../src/features.ts";
 import {
 	CHANGED,
 	DOT_OUTSIDE_GIT,
+	folders,
 	GIT_UNKNOWN,
 	HARD_LINK,
 	IGNORED,
 	IN_GIT,
 	IN_PI2,
+	keepFolders,
 	linkPath,
 	linkTargets,
 	MAX_FOLDERS,
@@ -30,9 +33,13 @@ import {
 	NOT_A_PATH,
 	NOT_LINKED,
 	NOT_TEXT,
+	OFFERED_MS,
 	OUTSIDE,
 	offeredFolders,
+	PREVIEWS_PER_MINUTE,
+	previewCounted,
 	previewFile,
+	TOO_MANY_PREVIEWS,
 	tooLarge,
 } from "../src/folders.ts";
 import { scratchRoot } from "../src/scratch.ts";
@@ -227,6 +234,173 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd,
 	step("a file in a scratch folder is not shown, whatever the conversation's folder");
 }
 
+// ---- What is kept between requests, and what makes it stale (#902), with a stand-in engine and clock
+
+{
+	const at = (name: string) => {
+		const path = join(work, "kept", name);
+		mkdirSync(path, { recursive: true });
+		return path;
+	};
+	const [first, second, third, linkedTo, retargeted, movedTo] = ["first", "second", "third", "linked-to", "retargeted", "moved-to"].map(at);
+	git(first, "init", "-q");
+	git(first, "remote", "add", "origin", "git@github.com:example/first.git");
+	const meta = (updatedAt: number) => ({ title: "", createdAt: 0, updatedAt, access: "read" }) as Record<string, unknown>;
+	const conversations: Record<string, Record<string, unknown>> = { "1": meta(30), "2": meta(20), "3": meta(10) };
+	const cwds: Record<string, string> = { "1": first, "2": second, "3": third };
+	let clock = 1_000_000;
+	let snapshots = 0;
+	let during: (() => void) | undefined;
+	let observer: { advance(publication: unknown, context: unknown): void } | undefined;
+	const stand = {
+		home: standHome,
+		agents: () => ({}),
+		library: () => ({ conversations }),
+		context: () => ({}),
+		harness: () => ({
+			snapshot: async (_doc: unknown, id: number) => {
+				snapshots++;
+				const cwd = cwds[String(id)];
+				const then = during;
+				during = undefined;
+				then?.();
+				return { cwd };
+			},
+			observeCommits: (given: typeof observer) => {
+				observer = given;
+				return { detach() {} };
+			},
+		}),
+	} as unknown as Engine;
+	keepFolders(stand, () => clock);
+	const offered = async () => (await offeredFolders(stand)).map((folder) => (folder.repository === undefined ? folder.path : `${folder.path} ${folder.repository}`));
+	const commit = (id: number, change: Record<string, unknown>) =>
+		observer!.advance({ seq: 1, changes: [{ type: "document", record: { kind: "pi.agent" }, conversationId: id, ...change }] }, {});
+
+	assert.deepEqual(await offered(), [`${first} example/first`, second, third]);
+	assert.equal(snapshots, 3, "each conversation's document read once");
+	git(first, "remote", "set-url", "origin", "git@github.com:example/renamed.git");
+	assert.deepEqual(await offered(), [`${first} example/first`, second, third], "the same answer: .git/config not read again");
+	assert.equal(snapshots, 3, "and no document read again");
+	clock += OFFERED_MS;
+	assert.deepEqual(await offered(), [`${first} example/renamed`, second, third], "made again once its time is up");
+	assert.equal(snapshots, 3, "with each conversation's folder as the commits left it, not read again");
+	step("projects.folders: a second call within the cache's life reads no document and no .git/config again; the folders are kept from the documents' commits after that");
+
+	rmSync(third, { recursive: true });
+	assert.deepEqual(await offered(), [`${first} example/renamed`, second], "a folder removed a moment ago is not offered");
+	renameSync(second, `${second}-was`);
+	symlinkSync(linkedTo, second);
+	assert.deepEqual(await offered(), [`${first} example/renamed`, linkedTo], "nor one that is now a link: its real path is");
+	rmSync(second);
+	symlinkSync(retargeted, second);
+	assert.deepEqual(await offered(), [`${first} example/renamed`, retargeted], "nor, once the link points elsewhere, where it pointed, though that is still there");
+	commit(1, { kind: "change", value: { cwd: movedTo } });
+	assert.deepEqual(await offered(), [movedTo, retargeted], "a conversation moved by a commit lends its new folder, not its old");
+	assert.equal(snapshots, 3, "from the commit itself");
+	commit(2, { kind: "retire" });
+	assert.deepEqual(await offered(), [movedTo, retargeted]);
+	assert.equal(snapshots, 4, "a document retired is read again");
+	conversations["1"]!.deleted = true;
+	assert.deepEqual(await offered(), [retargeted], "a conversation deleted a moment ago lends none");
+	// A read a commit overtook is not kept: read again next time.
+	commit(2, { kind: "retire" });
+	during = () => commit(2, { kind: "change", value: { cwd: movedTo } });
+	await offered();
+	assert.equal(snapshots, 5);
+	assert.deepEqual(await offered(), [retargeted]);
+	assert.equal(snapshots, 6, "the read the commit overtook was not kept");
+	await offered();
+	assert.equal(snapshots, 6, "the next one is");
+	step("projects.folders never offers from what it kept a folder removed or turned into a link, where a link pointed before, a conversation's old folder after a commit moved it, or a deleted conversation's; a retired document, or a read a commit overtook, is read again");
+}
+
+{
+	const folder = join(work, "kept", "linking");
+	const elsewhere = join(work, "kept", "linking-elsewhere");
+	mkdirSync(folder, { recursive: true });
+	mkdirSync(elsewhere, { recursive: true });
+	writeFileSync(join(folder, "a.md"), "a here\n");
+	writeFileSync(join(folder, "b.md"), "b here\n");
+	writeFileSync(join(elsewhere, "a.md"), "a elsewhere\n");
+	const answer = (id: number, text: string) => ({ id, kind: "message", model: [{ role: "assistant", content: [{ type: "text", text }] }] });
+	const items = [answer(1, "[a](a.md)")];
+	let cwd = folder;
+	let scans = 0;
+	const conversations: Record<string, Record<string, unknown>> = { "1": { title: "", createdAt: 0, updatedAt: 0, access: "read" } };
+	const stand = {
+		home: standHome,
+		library: () => ({ conversations }),
+		context: () => ({}),
+		harness: () => ({
+			snapshot: async () => ({ cwd }),
+			observeCommits: () => ({ detach() {} }),
+			conversation: async () => ({
+				entries: async (query: { order: string }, limit: number) => {
+					if (query.order === "descending") return { items: items.slice(-limit).reverse() };
+					scans++;
+					return { items };
+				},
+			}),
+		}),
+	} as unknown as Engine;
+	keepFolders(stand);
+	const preview = (path: string) => previewFile({ id: 1, path }, stand).then((shown) => shown.text, (error: Error) => error.message);
+	assert.equal(await preview("a.md"), "a here\n");
+	assert.equal(scans, 1);
+	assert.equal(await preview("a.md"), "a here\n");
+	assert.equal(await preview("b.md"), NOT_LINKED);
+	assert.equal(scans, 1, "the transcript is not read again while its newest entry is the same");
+	items.push(answer(2, "[b](b.md)"));
+	assert.equal(await preview("b.md"), "b here\n", "a new entry: read again");
+	assert.equal(scans, 2);
+	cwd = elsewhere;
+	assert.equal(await preview("a.md"), "a elsewhere\n", "another folder: the links read against it");
+	assert.equal(await preview(`${folder}/a.md`), NOT_LINKED, "and no longer against the old one");
+	assert.equal(await preview("b.md"), MISSING);
+	assert.equal(scans, 3);
+	conversations["1"]!.deleted = true;
+	assert.equal(await preview("a.md"), "Unknown conversation: 1", "a conversation deleted shows nothing it linked");
+	step("files.preview reads a transcript's links again only for a new entry or another folder, and never shows from what it kept a file the folder no longer links to");
+
+	// At most PREVIEWS_PER_MINUTE a minute from a device, in words the phone shows; the Mac's app is not counted.
+	conversations["1"]!.deleted = false;
+	const handler = folders({} as never, stand).handlers!["files.preview"]!;
+	const from = (device?: string) => handler({ id: 1, path: "unlinked.md" }, device === undefined ? {} : { device: { id: device, session: "s" } }).then(() => "shown", (error: Error) => error.message);
+	for (let n = 0; n < PREVIEWS_PER_MINUTE; n++) assert.equal(await from("phone"), NOT_LINKED);
+	assert.equal(await from("phone"), TOO_MANY_PREVIEWS, "one more in the same minute");
+	assert.ok(!TOO_MANY_PREVIEWS.includes("/"));
+	assert.equal(await from("another phone"), NOT_LINKED, "each device has its own");
+	assert.equal(await from(), NOT_LINKED, "the app is not counted");
+	assert.doesNotThrow(() => previewCounted("phone", Date.now() + 60_000), "a minute later, it may again");
+	step(`files.preview: at most ${PREVIEWS_PER_MINUTE} a minute from each device, then refused in words the phone shows`);
+}
+
+{
+	// The worktree pi² made for a conversation is its folder, and its sub-chats', which join it; no other conversation's.
+	const worktree = join(standHome, "worktrees", "repo-1", "branch");
+	mkdirSync(worktree, { recursive: true });
+	writeFileSync(join(worktree, "notes.md"), "in its worktree\n");
+	const meta = (extra: Record<string, unknown> = {}) => ({ title: "", createdAt: 0, updatedAt: 0, access: "read", ...extra });
+	const stand = {
+		home: standHome,
+		library: () => ({ conversations: { "1": meta(), "2": meta({ parent: 1 }), "3": meta({ parent: 2 }), "4": meta() } }),
+		context: () => ({}),
+		harness: () => ({
+			snapshot: async (doc: unknown) => (doc === AgentDoc ? { cwd: worktree } : { conversations: { "1": { path: worktree } } }),
+			conversation: async () => ({
+				entries: async () => ({ items: [{ id: 1, kind: "message", model: [{ role: "assistant", content: [{ type: "text", text: "[n](notes.md)" }] }] }] }),
+			}),
+		}),
+	} as unknown as Engine;
+	const preview = (id: number) => previewFile({ id, path: "notes.md" }, stand).then((shown) => shown.text, (error: Error) => error.message);
+	assert.equal(await preview(1), "in its worktree\n", "the conversation's own");
+	assert.equal(await preview(2), "in its worktree\n", "its sub-chat's");
+	assert.equal(await preview(3), "in its worktree\n", "and that one's");
+	assert.equal(await preview(4), IN_PI2, "not another conversation's, working in it");
+	step("the worktree pi² made for a conversation is its folder and its sub-chats', and no other conversation's");
+}
+
 // ---- A real engine
 
 const repo = join(work, "repo");
@@ -343,13 +517,51 @@ async function conversationIn(folder: string | null, text?: string): Promise<num
 	writeFileSync(join(home, "a-file-of-pi2s.json"), '{"command":"server --token t0p"}\n');
 	const holding = await conversationIn(work, "[l](home/a-file-of-pi2s.json)");
 	await refused("home/a-file-of-pi2s.json", IN_PI2, holding);
+	// Only the worktree pi² made for the conversation (#902): a folder made by hand where worktrees are, or the folder
+	// holding them, is pi²'s data.
 	const worktree = join(home, "worktrees", "agent-1", "branch");
 	mkdirSync(worktree, { recursive: true });
 	writeFileSync(join(worktree, "notes.md"), "in a worktree\n");
 	const inWorktree = await conversationIn(worktree, "[n](notes.md)");
-	assert.deepEqual(await preview("notes.md", inWorktree), { text: "in a worktree\n", size: 14 });
+	await refused("notes.md", IN_PI2, inWorktree);
+	const holdingWorktrees = await conversationIn(join(home, "worktrees"), "[n](agent-1/branch/notes.md)");
+	await refused("agent-1/branch/notes.md", IN_PI2, holdingWorktrees);
+	const checkout = join(work, "checkout");
+	mkdirSync(checkout);
+	git(checkout, "init", "-q", "-b", "main");
+	writeFileSync(join(checkout, "notes.md"), "in a worktree\n");
+	git(checkout, "add", "notes.md");
+	git(checkout, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-q", "-m", "notes");
+	const owner = await conversationIn(checkout, "[n](notes.md)");
+	const made = await client.call("worktree.create", { id: owner });
+	assert.ok(made.path.startsWith(`${home}/worktrees/`), made.path);
+	assert.deepEqual(await preview("notes.md", owner), { text: "in a worktree\n", size: 14 }, "a conversation's own worktree is its folder");
+	const visitor = await conversationIn(made.path, "[n](notes.md)");
+	await refused("notes.md", IN_PI2, visitor);
+	// A conversation working in a dot-folder outside a repository, or through a link to one (#902).
+	const dotted = join(work, ".dotted");
+	mkdirSync(dotted);
+	writeFileSync(join(dotted, "notes.md"), "dotted notes\n");
+	symlinkSync(dotted, join(work, "to-dotted"));
+	await refused("notes.md", DOT_OUTSIDE_GIT, await conversationIn(dotted, "[n](notes.md)"));
+	await refused("notes.md", DOT_OUTSIDE_GIT, await conversationIn(join(work, "to-dotted"), "[n](notes.md)"));
 	for (const words of [OUTSIDE, IN_PI2, DOT_OUTSIDE_GIT, IGNORED, GIT_UNKNOWN, NOT_LINKED, MISSING]) assert.ok(!words.includes("/"), `no path in: ${words}`);
-	step("files.preview shows a linked text file under the folder, and refuses one not linked, outside the folder by its text or after links, git's own, ignored (before its size), one git cannot judge, too large, not text, not a file, a hard link, missing, a dot-file outside a repository, pi²'s data, and a conversation with no folder; a worktree in the data folder is its conversation's");
+	step("files.preview shows a linked text file under the folder, and refuses one not linked, outside the folder by its text or after links, git's own, ignored (before its size), one git cannot judge, too large, not text, not a file, a hard link, missing, a dot-file outside a repository or in a dot-folder that is the conversation's own, pi²'s data, and a conversation with no folder; only the worktree pi² made for a conversation is its folder");
+
+	// What is kept never shows what the rules refuse now (#902): a file that became ignored, a conversation moved
+	// elsewhere or deleted, each a moment after it was shown.
+	assert.deepEqual(await preview("notes.md"), { text: "# Notes\nhello\n", size: 14 });
+	appendFileSync(join(repo, ".gitignore"), "notes.md\n");
+	await refused("notes.md", IGNORED);
+	writeFileSync(join(repo, ".gitignore"), ".env\nsecret/\n*.secret\n");
+	const moving = await conversationIn(repo, "[n](notes.md) [whole](<" + `${repo}/notes.md` + ">)");
+	assert.deepEqual(await preview("notes.md", moving), { text: "# Notes\nhello\n", size: 14 });
+	await client.call("conversation.configure", { id: moving, cwd: plain });
+	assert.deepEqual(await preview("notes.md", moving), { text: "plain notes\n", size: 12 }, "its link read against its new folder");
+	await refused(`${repo}/notes.md`, OUTSIDE, moving);
+	await client.call("conversation.delete", { id: moving });
+	await refused("notes.md", `Unknown conversation: ${moving}`, moving);
+	step("files.preview, a moment after showing a file: refuses it once git ignores it, reads a moved conversation's links against its new folder, and shows nothing of a deleted one");
 }
 
 {
@@ -391,6 +603,25 @@ async function conversationIn(folder: string | null, text?: string): Promise<num
 	assert.equal(paths[0], recent, "the folder used last comes first");
 	const firstTaken = folders.findIndex((one: any) => one.project !== undefined);
 	assert.ok(firstTaken > 0 && folders.slice(firstTaken).every((one: any) => one.project !== undefined), "then the projects' folders");
+	// What is kept never offers what the rules refuse now (#902): a project deleted, a folder removed, a conversation moved,
+	// each a moment after it was offered.
+	const offeredNow = async () => (await client.call("projects.folders")).folders.map((one: any) => one.path) as string[];
+	const keptFolder = folder("kept-project");
+	const keptProject = await client.call("projects.create", { folder: keptFolder, name: "Kept" });
+	assert.ok((await offeredNow()).includes(keptFolder));
+	await client.call("projects.delete", { id: keptProject.id });
+	assert.ok(!(await offeredNow()).includes(keptFolder), "a project deleted a moment ago");
+	const leaving = folder("leaving");
+	await conversationIn(leaving);
+	assert.ok((await offeredNow()).includes(leaving));
+	rmSync(leaving, { recursive: true });
+	assert.ok(!(await offeredNow()).includes(leaving), "a folder removed a moment ago");
+	const [before, after] = [folder("before"), folder("after")];
+	const mover = await conversationIn(before);
+	assert.ok((await offeredNow()).includes(before));
+	await client.call("conversation.configure", { id: mover, cwd: after });
+	const moved = await offeredNow();
+	assert.ok(moved.includes(after) && !moved.includes(before), "a conversation moved a moment ago lends its new folder, not its old");
 	for (let n = 0; n < MAX_FOLDERS; n++) await conversationIn(folder(`many/${n}`));
 	assert.equal((await client.call("projects.folders")).folders.length, MAX_FOLDERS, `at most ${MAX_FOLDERS}`);
 	assert.ok(!(await client.call("projects.folders")).folders.some((one: any) => one.path === join(work, "many")), "never a parent of one");

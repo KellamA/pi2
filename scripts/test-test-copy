@@ -73,6 +73,11 @@ expect "is too long" reopen test-7-with-a-suffix-much-too-long-for-a-socket
 expect "--show needs what to open on" reopen test-7 --show
 expect "--show takes one line" reopen test-7 --show $'one\ntwo'
 expect "unknown option --bogus" reopen test-7 --bogus
+expect "a suffix is required" remote-off
+expect "is not a suffix" remote-on ../pi2
+expect "'dev' is the suffix every development build has" remote-on dev
+expect "use: scripts/test-copy remote-off test-7" remote-off test-7 extra
+expect "use: scripts/test-copy remote-on test-7" remote-on test-7 --bogus
 for command in show size sidebar choose answer fill answer-of can-click pair attach; do
 	expect "a suffix is required" "$command"
 	expect "is not a suffix" "$command" ../pi2
@@ -246,6 +251,8 @@ expect "no copy named test-7 was started from this checkout" stop test-7
 expect "no copy named test-7 was started from this checkout" status test-7
 expect "no copy named test-7 was started from this checkout" can-click test-7
 expect "no copy named test-7 was started from this checkout" pair test-7
+expect "no copy named test-7 was started from this checkout" remote-off test-7
+expect "no copy named test-7 was started from this checkout" remote-on test-7
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" pair test-7 --sim pi2-7 --show home --env PI2_HUB_ACT=send:Hello
 expect "no copy named test-7 was started from this checkout" attach test-7
 expect "no copy named test-7 was started from this checkout" call test-7 engine.info
@@ -384,6 +391,109 @@ else
 	echo "FAIL: pair on sockets all on 127.0.0.1: $out"
 	failures=$((failures + 1))
 fi
+
+# remote-on (#951) finds pi² Remote's new port from its listening socket, and forwards the port the phone knows to it
+# only when they differ: its functions, as test-copy has them, on a stand-in lsof and forwarder.
+remote_on_functions=$(sed -n '/^helper_port() {$/,/^}$/p; /^forward_phone_address() {$/,/^}$/p' "$script")
+# port_of <what the stand-in lsof prints>: what helper_port says.
+port_of() {
+	(
+		LSOF_OUT=$1
+		helper_pids() { echo 4242; }
+		lsof() { printf '%s\n' "$LSOF_OUT"; }
+		eval "$remote_on_functions"
+		helper_port
+	) 2>&1
+}
+listen_line="pi2      4242 me     5u  IPv4 0x1      0t0  TCP 127.0.0.1:55161 (LISTEN)"
+connection_line="pi2      4242 me     6u  IPv4 0x2      0t0  TCP 127.0.0.1:55161->127.0.0.1:50002 (ESTABLISHED)"
+if [[ -n $remote_on_functions && $(port_of "$lsof_header"$'\n'"$connection_line"$'\n'"$listen_line") == 55161 &&
+	-z $(port_of "$lsof_header"$'\n'"$connection_line") && -z $(port_of "$lsof_header") &&
+	-z $(port_of "$lsof_header"$'\n'"pi2      4242 me     5u  IPv4 0x1      0t0  TCP *:55161 (LISTEN)") ]]; then
+	echo "ok: remote-on takes pi² Remote's port from its socket listening on 127.0.0.1, and none from anything else"
+else
+	echo "FAIL: remote-on's helper_port"
+	failures=$((failures + 1))
+fi
+# forward <the address the phone knows> <pi² Remote's port>: what forward_phone_address says, with a stand-in
+# forwarder that fails, and a record of what it was asked in $T/forward-asked.
+mkdir -p "$T/forward-root/scripts"
+printf '%s\n' "import { appendFileSync } from 'node:fs';" \
+	"appendFileSync('$T/forward-asked', process.argv.slice(3, 5).join(' ') + '\\n');" \
+	"console.error('test-copy-forward: could not listen on 127.0.0.1:' + process.argv[3]); process.exit(1);" \
+	>"$T/forward-root/scripts/test-copy-forward.mjs"
+forward() {
+	rm -f "$T/forward-asked"
+	(
+		PHONE_ADDRESS=$1 ROOT=$T/forward-root DIR=$T SUFFIX=test-7 FORWARD_PID=""
+		die() { echo "test-copy: $*"; exit 1; }
+		save_state() { echo saved; }
+		eval "$remote_on_functions"
+		eval "$(sed -n '/^stop_forward() {$/,/^}$/p' "$script")"
+		forward_phone_address "$2"
+		echo "went on"
+	) 2>&1
+}
+if [[ $(forward 127.0.0.1:49284 49284) == "went on" && ! -e $T/forward-asked &&
+	$(forward "" 55161) == "went on" && ! -e $T/forward-asked ]]; then
+	echo "ok: remote-on forwards nothing when pi² Remote is back on the port the phone knows, or no phone knows one"
+else
+	echo "FAIL: remote-on started a forwarder it did not need"
+	failures=$((failures + 1))
+fi
+out=$(forward 127.0.0.1:49284 55161)
+if [[ $out == *"could not forward 127.0.0.1:49284, which the phone knows, to pi² Remote's new port 55161"*"Pair the phone again"* &&
+	$out != *"went on"* && $(cat "$T/forward-asked" 2>/dev/null) == "49284 55161" ]]; then
+	echo "ok: remote-on forwards the port the phone knows to pi² Remote's new one, and says plainly when it cannot"
+else
+	echo "FAIL: remote-on's forward_phone_address: $out; the forwarder was asked: $(cat "$T/forward-asked" 2>/dev/null)"
+	failures=$((failures + 1))
+fi
+rm -rf -- "$T/forward-root" "$T/forward-asked"
+
+# attach and remote-on take the phone as attached when the copy's engine has a new session for it, or, if the session
+# was over before they looked, an attach of it the devices' log has since the launch (#984): attach_phone, as
+# test-copy has it, on a stand-in engine and iphone-sim, with the copy's own from_json.
+attach_functions=$(sed -n '/^attach_phone() {$/,/^}$/p; /^from_json() {$/,/^}$/p' "$script")
+mkdir -p "$T/attach-root/scripts"
+printf '%s\n' '#!/bin/bash' 'exit 0' >"$T/attach-root/scripts/iphone-sim"
+chmod +x "$T/attach-root/scripts/iphone-sim"
+# attach_with <devices.watch's sessions> <devices.log's entries>: what attach_phone says, waiting for a session other
+# than s1, for an attach since 5000, and no longer than one look.
+attach_with() {
+	(
+		SESSIONS=$1 ENTRIES=$2 ROOT=$T/attach-root SIM=pi2-7 NAME='pi² test-7' DATA=$T PHONE_DEVICE=dev_phone
+		die() { echo "test-copy: $*"; exit 1; }
+		tidy() { printf '%s' "$1"; }
+		sleep() { :; }
+		engine_call() {
+			case $1 in
+				devices.watch) printf '{"id":1,"result":{"sessions":%s}}\n' "$SESSIONS" ;;
+				devices.log) [[ $2 == '{"device":"dev_phone"}' ]] && printf '{"id":1,"result":{"entries":%s}}\n' "$ENTRIES" ;;
+			esac
+		}
+		eval "$attach_functions"
+		attach_phone 0 s1 5000
+	) 2>&1
+}
+attach_entry() { printf '{"at":%s,"device":"%s","path":"home","method":"%s","outcome":"%s"}' "$@"; }
+for case in \
+	"[{\"session\":\"s1\",\"device\":\"dev_phone\",\"path\":\"home\"},{\"session\":\"s2\",\"device\":\"dev_phone\",\"path\":\"home\"}]|[]|is attached to pi² test-7 over the home path (session s2)|a new session" \
+	"[]|[$(attach_entry 6000 dev_phone attach done)]|attached to pi² test-7 over the home path, and its session has already ended|an attach logged since the launch, its session over" \
+	"[]|[$(attach_entry 6000 dev_phone resume done)]|its session has already ended|a resume logged since the launch" \
+	"[{\"session\":\"s1\",\"device\":\"dev_phone\",\"path\":\"home\"}]|[$(attach_entry 4000 dev_phone attach done)]|did not attach within 0 seconds|only the session there before, and an attach before the launch" \
+	"[]|[$(attach_entry 6000 dev_phone attach refused)]|did not attach within 0 seconds|a refused attach" \
+	"[]|[$(attach_entry 6000 dev_phone pair done)]|did not attach within 0 seconds|a pairing but no attach"; do
+	IFS='|' read -r sessions entries want what <<<"$case"
+	out=$(attach_with "$sessions" "$entries")
+	if [[ -n $attach_functions && $out == *"$want"* ]]; then
+		echo "ok: attach_phone on $what ($want)"
+	else
+		echo "FAIL: attach_phone on $what: wanted $want, got: $out"
+		failures=$((failures + 1))
+	fi
+done
+rm -rf -- "$T/attach-root"
 
 # start --menu prints the file the app writes for PI2_MENU, by a name each keeps for itself.
 sources="$(dirname -- "$script")/../app/Sources/pi2"
@@ -638,6 +748,8 @@ printf '%s\n' "engine_pid=$$" "engine_start=$(LC_ALL=en_US.UTF-8 ps -o lstart= -
 # pair and attach need a copy started with --remote, attach a phone paired, and both a simulator iphone-sim made.
 HOME="$T/home" expect "was not started with --remote" pair test-7
 HOME="$T/home" expect "was not started with --remote" attach test-7
+HOME="$T/home" expect "no remote access to turn off or on" remote-off test-7
+HOME="$T/home" expect "no remote access to turn off or on" remote-on test-7
 printf '%s\n' remote=1 >>"$root/app/build/test-copies/test-7/state"
 HOME="$T/home" expect "no phone was paired with test-7" attach test-7
 HOME="$T/home" expect "no simulator to pair: make one with scripts/iphone-sim create pi2-7" pair test-7
@@ -983,7 +1095,7 @@ rm -rf -- "$data/test-copy-control"
 rmdir -- "$data"
 ln -s "$T" "$data"
 
-for test in test-test-copy-send.mjs test-test-copy-drive.mjs; do
+for test in test-test-copy-send.mjs test-test-copy-drive.mjs test-test-copy-forward.mjs; do
 	if ! node "$(dirname -- "$script")/$test"; then
 		failures=$((failures + 1))
 	fi

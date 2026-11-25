@@ -314,7 +314,9 @@ enum Sessions {
 				let over = try mac2.seal(line: Data(repeating: 0x61, count: Lines.firstLinesMaxLength + 1))
 				Check.that(over.count == 2, "a line of 64 KB and a byte goes in two frames")
 				Check.that(try phone2.open(over[0]) == nil, "the first frame is held: it is within the limit")
+				Check.that(phone2.unfinishedLineLength == Frame.maxBodyLength, "and the channel says it holds that frame's body of an unfinished line (#908)")
 				Check.refuses("a line over the limit, at the frame that would pass it") { _ = try phone2.open(over[1]) }
+				Check.that(phone2.unfinishedLineLength == Frame.maxBodyLength, "the frame that would pass the limit is not held")
 			}
 			phoneChannel.maxLineLength = Lines.defaultMaxLength
 			macChannel.maxLineLength = Lines.defaultMaxLength
@@ -330,8 +332,14 @@ enum Sessions {
 			let longMessages = try macChannel.seal(line: long)
 			Check.that(longMessages.count == 4, "a line longer than a frame goes as more frames and a data frame")
 			events = []
-			for message in longMessages { events.append(try phoneChannel.open(try wire.carry(message))) }
+			// What the receiving end holds of the line while it is unfinished, frame by frame (#908), and none once whole.
+			var unfinished: [Int] = []
+			for message in longMessages {
+				events.append(try phoneChannel.open(try wire.carry(message)))
+				unfinished.append(phoneChannel.unfinishedLineLength)
+			}
 			Check.that(events.dropLast().allSatisfy { $0 == nil } && events.last == .line(long), "the long line arrives whole, once")
+			Check.that(unfinished == [Frame.maxBodyLength, 2 * Frame.maxBodyLength, 3 * Frame.maxBodyLength, 0], "the channel says how much of the unfinished line it holds, frame by frame, and none once it is whole (#908)")
 			Check.that(try macChannel.open(try wire.carry(try phoneChannel.sealAck(2))) == .ack(2), "an ack carries its count")
 			Check.that(try phoneChannel.open(try wire.carry(try macChannel.sealPing())) == .ping, "a ping arrives")
 			Check.that(try ControlLine.parse(ControlLine.sessionEnd.line).line == ControlLine.sessionEnd.line, "sessionEnd reads back")

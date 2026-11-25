@@ -9,9 +9,9 @@
 // The shapes are RemoteKit's (docs/remotekit.md, #674): bytes in text are base64url without padding, written one way;
 // P-256 keys are SPKI DER; signatures are ECDSA P-256 over SHA-256 of the exact `signed` text, 64 raw bytes (r then s);
 // `signed` is compact JSON read strictly, every field present in order and none unknown. Every comparison of a secret,
-// a binding, a challenge or the digits takes a time that depends on the length alone. Nothing key-shaped goes into the
-// devices' log (`maskKeys`), and the pairing's secret `s` goes only into the answer to `devices.pairStart`, on the
-// app's own connection, and to pi² Remote, never into an event or a log (3.1).
+// a binding, a challenge or the digits takes a time that depends on the length alone. Nothing key-shaped, and no value
+// of a secret the engine knows (secrets.ts), goes into the devices' log (`maskKeys`), and the pairing's secret `s`
+// goes only into the answer to `devices.pairStart`, on the app's own connection, and to pi² Remote, never into an event or a log (3.1).
 
 import { createHash, createHmac, createPublicKey, type KeyObject, randomBytes, timingSafeEqual, verify } from "node:crypto";
 import { homedir, hostname } from "node:os";
@@ -21,6 +21,7 @@ import { type DevicePath, deviceMay, type DeviceSession, devicePlacement, ONLY_O
 import { AppAttestError, type AppAttestEnvironment, type AppAttestResult, verifyAttestation } from "./appattest.ts";
 import type { Client } from "./clients.ts";
 import { RequestError } from "./requesterror.ts";
+import { SECRET_HIDDEN, secretSpans } from "./secrets.ts";
 import { releaseEngine, testCopySuffix, testSwitch } from "./testswitches.ts";
 
 // ---- The records (3.2, 4.3, 4.4)
@@ -475,16 +476,30 @@ const PEM_BEGIN = /-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----/g;
 const PEM_END = /-----END [A-Z ]{0,40}PRIVATE KEY-----/y;
 export const KEY_HIDDEN = "[key hidden]";
 
-/** `text` with every key-shaped string in it replaced by KEY_HIDDEN. */
+/**
+ * `text` with every key-shaped string in it replaced by KEY_HIDDEN, and every value of a secret the engine knows
+ * (secrets.ts: agents' and MCP servers' variables, providers' keys and tokens) by SECRET_HIDDEN. Where the two overlap,
+ * the run they cover together is replaced once, by the mark of the one that starts first.
+ */
 export function maskKeys(text: string): string {
-	const spans: [number, number][] = [];
+	return maskKeysFrom(text, 0);
+}
+
+/**
+ * `text` from character `from` on, masked as `maskKeys` masks the whole of it: what is hidden is found in the whole text
+ * and only then cut, so that a key or a value that begins before `from` is hidden in the part after it too (a
+ * background command's output read from an offset a phone chooses, #894). A run hidden across `from` starts the part
+ * with its mark.
+ */
+export function maskKeysFrom(text: string, from: number): string {
+	const spans: [number, number, string][] = [];
 	for (const { start, run, least, keep } of KEY_SHAPES) {
 		start.lastIndex = 0;
 		for (let found = start.exec(text); found !== null; found = start.exec(text)) {
 			const after = found.index + found[0].length;
 			let end = after;
 			while (end < text.length && run(text.charCodeAt(end))) end++;
-			if (end - after >= least) spans.push([keep === true ? after : found.index, end]);
+			if (end - after >= least) spans.push([keep === true ? after : found.index, end, KEY_HIDDEN]);
 			start.lastIndex = Math.max(end, found.index + 1);
 		}
 	}
@@ -509,17 +524,26 @@ export function maskKeys(text: string): string {
 			if (to - from < 16) break;
 			end = to;
 		}
-		spans.push([found.index, end]);
+		spans.push([found.index, end, KEY_HIDDEN]);
 		PEM_BEGIN.lastIndex = end;
 	}
-	if (spans.length === 0) return text;
+	for (const [from, to] of secretSpans(text)) spans.push([from, to, SECRET_HIDDEN]);
+	if (spans.length === 0) return from === 0 ? text : text.slice(from);
+	// By where each starts; a key's shape before a known value at the same place (`sort` keeps the order of equals).
 	spans.sort((a, b) => a[0] - b[0]);
+	// Runs that overlap made one, marked as the first; runs that only touch keep a mark each.
+	const runs: [number, number, string][] = [];
+	for (const [start, end, mark] of spans) {
+		const last = runs[runs.length - 1];
+		if (last !== undefined && start < last[1]) last[1] = Math.max(last[1], end);
+		else runs.push([start, end, mark]);
+	}
 	let out = "";
-	let at = 0;
-	for (const [from, to] of spans) {
-		if (to <= at) continue;
-		if (from >= at) out += text.slice(at, from) + KEY_HIDDEN;
-		at = to;
+	let at = from;
+	for (const [start, end, mark] of runs) {
+		if (end <= from) continue;
+		out += (start < from ? "" : text.slice(at, start)) + mark;
+		at = end;
 	}
 	return out + text.slice(at);
 }
@@ -690,7 +714,17 @@ function summaryLine(given: string, params: Params): string {
 		suspend: () => "Suspended",
 		leave: () => "Unpaired itself on the phone",
 	};
-	return clip(maskKeys(lines[method]?.() ?? `${method}${inConversation}${inProject}`), MAX_SUMMARY);
+	return clip(maskKeys(unhidden(lines[method]?.() ?? `${method}${inConversation}${inProject}`)), MAX_SUMMARY);
+}
+
+/**
+ * `text` with nothing in it that the log would show other than as it reads (#902): a right-to-left override or another
+ * bidirectional control, which could make a path a phone sent read as another (U+202E then "txt.md" shows "dm.txt"),
+ * a zero-width character or another invisible format character, and half a character are taken out; a control
+ * character (a line break) is a space. Before the masks, so that nothing invisible can split a key out of their sight.
+ */
+export function unhidden(text: string): string {
+	return text.replace(/[\p{Cf}\p{Cs}]/gu, "").replace(/\p{Cc}/gu, " ");
 }
 
 /** A value a device gave, as words: an object or an array as "?", since `String` of one can throw (`{"toString": 1}`). */
@@ -813,7 +847,7 @@ export async function logDevice(entry: Omit<DeviceLogEntry, "at"> & { at?: numbe
 	if (unreadable !== null) return;
 	const at = entry.at ?? Date.now();
 	const method = loggedMethod(entry.method);
-	const why = entry.why === undefined ? undefined : clip(maskKeys(entry.why), MAX_WHY);
+	const why = entry.why === undefined ? undefined : clip(maskKeys(unhidden(entry.why)), MAX_WHY);
 	const made: DeviceLogEntry = { ...entry, at, method, summary: clip(maskKeys(entry.summary), MAX_SUMMARY), ...(why === undefined ? {} : { why }) };
 	const key = JSON.stringify([made.device, made.path, made.method, made.why ?? null]);
 	const known = made.outcome === "refused" ? refusalsMade.get(key) : undefined;

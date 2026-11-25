@@ -75,13 +75,16 @@ struct BackgroundCommandsOutputPage: View {
                 }
             }
         }
-        .task(id: id) {
-            #if DEBUG
-            if await ConversationsSample.take("stop") { stop() }
-            #endif
+        // Followed again when the client moves from the phone's last state, which refuses, to the Mac itself.
+        .task(id: ConversationsReach(session, for: id)) {
             guard !isSample else { return }
             await feed.follow(engine)
         }
+        #if DEBUG
+        .task(id: id) {
+            if await ConversationsSample.take("stop", in: session) { stop() }
+        }
+        #endif
     }
 
     private var header: some View {

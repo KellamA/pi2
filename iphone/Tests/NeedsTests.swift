@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import PiModels
 import SwiftUI
@@ -91,6 +92,89 @@ struct NeedsTests {
         let session = AppSession()
         let refused = await NeedAnswering.send(.reach(allow: true), to: "n", through: session.engine)
         #expect(refused != nil)
+    }
+
+    /// Against a copy, an answer pressed between Face ID and the channel's attaching went to the Outbox, and the card
+    /// said "Answered" although the Mac had not seen it and then refused it. The card is told it was kept, not taken.
+    @Test func anAnswerTheOutboxKeptIsNotTakenAsAnswered() async throws {
+        let folder = StoreFolder(FileManager.default.temporaryDirectory.appending(path: "pi2-test-\(UUID().uuidString)", directoryHint: .isDirectory))
+        defer { try? folder.remove() }
+        let store = PhoneStore(folder: folder)
+        store.open(key: SymmetricKey(size: .bits256))
+        let outbox = Outbox(store: store)
+        let session = AppSession()
+        session.start(CachedTransport(store.cache, outbox: outbox), as: .outOfReach(lastSeen: nil))
+        let end = Date(timeIntervalSinceNow: 30)
+        while session.engine.status != .connected, Date() < end { try await Task.sleep(for: .milliseconds(20)) }
+
+        #expect(await NeedAnswering.deliver(.decide(.once), to: "134", through: session.engine) == .kept)
+        #expect(outbox.items.map(\.method) == ["inbox.decide"])
+        // The answer the cards of the older form read: no refusal, as before.
+        #expect(await NeedAnswering.send(.question("Everyone"), to: "n1", through: session.engine) == nil)
+        #expect(outbox.items.count == 2)
+
+        // With no Outbox to keep it, it is refused in the cache's words.
+        let alone = AppSession()
+        alone.start(CachedTransport(store.cache), as: .outOfReach(lastSeen: nil))
+        while alone.engine.status != .connected, Date() < end { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(await NeedAnswering.deliver(.decide(.deny), to: "134", through: alone.engine) == .refused(CachedTransport.needsTheMac))
+        store.close()
+    }
+
+    /// Against a copy, Start anyway on a limit card whose project had spent more since was answered by the engine with
+    /// no refusal, and the card kept with its new reading; the phone's card said "Answered" and stayed so, its buttons
+    /// off, though nothing had started. A start still waiting after the engine took it is held again.
+    @Test func aStartTheEngineHeldAgainIsNotAnswered() throws {
+        let limit = try need("""
+        {"id":"n4","projectId":"p-1","kind":"limit","conversationId":9,"rootConversationId":9,"title":"T","rootTitle":"T",
+         "agentId":null,"agentName":"Orchestrator","blocking":false,"createdAt":1,
+         "start":{"agentName":"Atlas","title":null,"task":"Check the build"},"limit":{"reason":"the project has spent $3.00 today"}}
+        """)
+        #expect(NeedHeldAgain.isHeldAgain(.limit(start: true), need: "n4", waiting: [limit]))
+        // Started: the engine took it off the list.
+        #expect(!NeedHeldAgain.isHeldAgain(.limit(start: true), need: "n4", waiting: []))
+        // Left unstarted, or another kind's answer, is never held again.
+        #expect(!NeedHeldAgain.isHeldAgain(.limit(start: false), need: "n4", waiting: [limit]))
+        #expect(!NeedHeldAgain.isHeldAgain(.reach(allow: true), need: "n4", waiting: [limit]))
+        #expect(!NeedHeldAgain.isHeldAgain(.limit(start: true), need: "n5", waiting: [limit]))
+    }
+
+    /// Since #953 the engine says so itself: `{ held: true, limit }` for a start held again, `{}` for one taken.
+    @Test func theEnginesAnswerSaysWhetherTheStartWasHeldAgain() {
+        #expect(NeedAnswering.sent(.object(["held": .bool(true), "limit": .object(["id": .string("r2"), "limit": .string("dailySpend")])])) == .held)
+        #expect(NeedAnswering.sent(.object([:])) == .taken)
+        #expect(NeedAnswering.sent(.object(["held": .bool(false)])) == .taken)
+        #expect(NeedAnswering.sent(.object(["outbox": .string("o1")])) == .kept)
+    }
+
+    /// `PI2_NEEDS_PRESS=<need id>:<answer>`: the answer named, as the card's own button sends it, for each kind.
+    @Test func aPressNamesTheAnswerItsCardWouldSend() throws {
+        let approval = try need(id: "134", kind: "approval", at: 1)
+        #expect(NeedsSamples.reply("134:once", to: approval, held: false) == .decide(.once))
+        #expect(NeedsSamples.reply("134:always", to: approval, held: false) == .decide(.always))
+        #expect(NeedsSamples.reply("134:rule", to: approval, held: false) == .decide(.rule))
+        #expect(NeedsSamples.reply("134:deny", to: approval, held: false) == .decide(.deny))
+        #expect(NeedsSamples.reply("135:deny", to: approval, held: false) == nil)
+        #expect(NeedsSamples.reply("134", to: approval, held: false) == nil)
+        #expect(NeedsSamples.reply("134:start", to: approval, held: false) == nil)
+        let switched = try need("""
+        {"id":"257","projectId":"p-1","kind":"approval","conversationId":9,"rootConversationId":9,"title":"T","rootTitle":"T",
+         "agentId":null,"agentName":"Orchestrator","blocking":true,"createdAt":1,"tool":"project_agents","arguments":{},"projectSwitch":"makeAgents"}
+        """)
+        #expect(NeedsSamples.reply("257:once", to: switched, held: false) == .switchApproval(.once))
+        let question = try need(id: "n1", kind: "question", at: 1)
+        #expect(NeedsSamples.reply("n1:text:Everyone: the team", to: question, held: false) == .question("Everyone: the team"))
+        #expect(NeedsSamples.reply("n1:text:Mention it", to: question, held: true) == .answerInbox("Mention it"))
+        #expect(NeedsSamples.reply("n1:text:", to: question, held: false) == nil)
+        let decision = try need(id: "n2", kind: "decision", at: 1)
+        #expect(NeedsSamples.reply("n2:choice:c2", to: decision, held: false) == .choice("c2"))
+        #expect(NeedsSamples.reply("n2:text:Both", to: decision, held: false) == .decisionWords("Both"))
+        #expect(NeedsSamples.reply("n5:allow", to: try need(id: "n5", kind: "reach", at: 1), held: false) == .reach(allow: true))
+        #expect(NeedsSamples.reply("n5:refuse", to: try need(id: "n5", kind: "reach", at: 1), held: false) == .reach(allow: false))
+        #expect(NeedsSamples.reply("n3:accept", to: try need(id: "n3", kind: "rule", at: 1), held: false) == .acceptRule())
+        #expect(NeedsSamples.reply("n3:refuse", to: try need(id: "n3", kind: "rule", at: 1), held: false) == .refuseRule)
+        #expect(NeedsSamples.reply("n4:start", to: try need(id: "n4", kind: "limit", at: 1), held: false) == .limit(start: true))
+        #expect(NeedsSamples.reply("n4:leave", to: try need(id: "n4", kind: "limit", at: 1), held: false) == .limit(start: false))
     }
 
     // MARK: - The whole call
