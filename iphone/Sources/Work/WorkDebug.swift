@@ -9,8 +9,12 @@ import PiModels
 ///
 /// - `PI2_WORK_ACT=new`: opens New Work on the list. `new:<title>`: with that title, and adds it.
 ///   `give`: opens Give to an Agent for the first piece nobody has (on a piece's screen, for it). `give:<agent name>`:
-///   gives it to that agent. On a piece's screen, `edit` opens its editor, `note:<text>` adds a note, `close` closes it
-///   as done.
+///   gives it to that agent; `give-anyway:<agent name>`, on a piece's screen, gives it and, if the project's limit holds
+///   the start, answers Start Anyway. `refresh`: on a repository's list, reads it again, as pulling the list down does.
+///   `pull:<number>`: opens that pull request's row.
+///   On a piece's screen, `edit` opens its editor, `edit:<title>` saves that title in it; `note:<text>` adds a note;
+///   `close` closes it as done, `close:dropped` as dropped; `release`, `resume` and `reopen` do what their buttons do;
+///   `classify:local`, `classify:cloud` or `classify:none` chooses in Classify.
 /// - `PI2_WORK_FILTER=open|waiting|done`: the list's segment.
 enum WorkDebugAct {
     static let act = ProcessInfo.processInfo.environment["PI2_WORK_ACT"]
@@ -19,9 +23,14 @@ enum WorkDebugAct {
     /// Done once a launch, by the first view that shows.
     @MainActor private static var done: Set<String> = []
 
-    /// Whether `name` was asked for and not done yet; marks it done. `new-send` is `new:<title>`'s second step: adding it.
+    /// Whether `name` was asked for and not done yet; marks it done. `new-send` is `new:<title>`'s second step, adding it,
+    /// and `edit-send` `edit:<title>`'s, saving it.
     @MainActor static func take(_ name: String) -> Bool {
-        let asked = name == "new-send" ? argument("new") != nil : (act == name || act?.hasPrefix(name + ":") == true)
+        let asked = switch name {
+        case "new-send": argument("new") != nil
+        case "edit-send": argument("edit") != nil
+        default: act == name || act?.hasPrefix(name + ":") == true
+        }
         guard asked, !done.contains(name) else { return false }
         done.insert(name)
         return true
