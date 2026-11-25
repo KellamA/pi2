@@ -282,7 +282,7 @@ enum RelayPathWords {
     }
 
     /// The confirmation's message: exactly what starting again costs, by name.
-    static func startAgainCost(_ devices: [PairedDevice], host: String) -> String {
+    static func startAgainCost(_ devices: [PairedDevice], host: String, reason: String?) -> String {
         let relay = host.isEmpty ? "the relay now set" : host
         let unpaired: String
         switch devices.count {
@@ -293,8 +293,10 @@ enum RelayPathWords {
             let list = names.dropLast().joined(separator: ", ") + " and " + names.last!
             unpaired = "All \(devices.count) paired iPhones are unpaired at once, as Revoke does: \(list). Their keys are forgotten and their connections closed. Each must scan a new code to pair again."
         }
-        let told = devices.isEmpty ? nil : "An iPhone connected at home now is told at once; any other is told when it next reaches this Mac, and wipes what it kept. Their logs stay here for 90 days."
-        return join(unpaired, told, "This Mac then forgets its pairing, and the pairing code it shows next registers a new one at \(relay). The old relay is not told: it forgets the old pairing by itself.")
+        let told = devices.isEmpty ? nil : "An iPhone connected now, at home or directly, is told at once; any other is told when it next reaches this Mac, and wipes what it kept. Their logs stay here for 90 days."
+        // Only a pairing made at another relay has one to forget there; one made with the relay off has none.
+        let old = reason == "another-relay" ? "The old relay is not told: it forgets the old pairing by itself." : nil
+        return join(unpaired, told, "This Mac then forgets its pairing, and the pairing code it shows next registers a new one at \(relay).", old)
     }
 
     private static func join(_ parts: String?...) -> String { parts.compactMap { $0 }.joined(separator: " ") }
@@ -532,7 +534,7 @@ struct DevicesSettings: View {
             Button(store.active.isEmpty ? "Start Again" : store.active.count == 1 ? "Unpair 1 iPhone and Start Again" : "Unpair \(store.active.count) iPhones and Start Again", role: .destructive) { startAgain() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(RelayPathWords.startAgainCost(store.active, host: relayHost))
+            Text(RelayPathWords.startAgainCost(store.active, host: relayHost, reason: relayPath?.reason))
         }
         .onAppear { relayDraft = state?.relay ?? "" }
         .onChange(of: state?.relay) { _, relay in
@@ -545,6 +547,17 @@ struct DevicesSettings: View {
             guard let asked = SettingsLaunch.takeDevicesSheet() else { return }
             if asked == "pair" {
                 pairing = true
+                return
+            }
+            if asked == "start-again" {
+                // Only while the page offers it, as the button does: pi² Remote's word arrives a moment after the tab.
+                for _ in 0..<100 {
+                    if let relayPath, relayPath.pairingElsewhere, switches.on {
+                        startingAgain = true
+                        return
+                    }
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
                 return
             }
             let wanted = String(asked.dropFirst("log=".count))
