@@ -78,6 +78,12 @@ public enum PresentedPagePolicy {
     public static let contentSecurityPolicy =
         "default-src pi2-presented: data: blob: 'unsafe-inline' 'unsafe-eval'; connect-src pi2-presented:; form-action 'none'; base-uri 'none'"
 
+    /// The same with the person's "Allow network for this page" (a live view made with `network: true`): the page may also
+    /// load and connect over http, https and WebSockets. Forms still go nowhere and `<base>` still moves nothing, and the
+    /// network rule list below still refuses this Mac and the local network.
+    public static let contentSecurityPolicyWithNetwork =
+        "default-src pi2-presented: data: blob: https: http: 'unsafe-inline' 'unsafe-eval'; connect-src pi2-presented: https: http: wss: ws:; form-action 'none'; base-uri 'none'"
+
     /// The content rule list: every load is blocked but those of the scheme itself and of what is in the page already
     /// (`data:`, `blob:`, an empty frame's `about:`). A load of another presentation's origin goes to this view's own
     /// scheme handler, which serves its own origin alone. WebKit asks this list too before it looks up a name for
@@ -91,6 +97,44 @@ public enum PresentedPagePolicy {
           {"trigger": {"url-filter": "^about:"}, "action": {"type": "ignore-previous-rules"}}
         ]
         """
+
+    /// The hosts that are this Mac or the local network as an address is written, as pi²'s browser blocks them
+    /// (BrowserKit's `BrowserPolicy.contentRules`, which TranscriptKit, shared with the phone, does not depend on):
+    /// loopback, the private, shared and link-local ranges, and names only a local network answers.
+    static let privateHosts = [
+        "localhost", "[^/:]*\\.localhost", "[^/:]*\\.local", "[^/:]*\\.internal", "[^/:]*\\.lan", "[^/:]*\\.home\\.arpa", "[^/:.]+",
+        "0\\.[0-9.]+", "10\\.[0-9.]+", "127\\.[0-9.]+", "169\\.254\\.[0-9.]+", "192\\.168\\.[0-9.]+",
+        "172\\.1[6-9]\\.[0-9.]+", "172\\.2[0-9]\\.[0-9.]+", "172\\.3[01]\\.[0-9.]+",
+        "100\\.6[4-9]\\.[0-9.]+", "100\\.[7-9][0-9]\\.[0-9.]+", "100\\.1[01][0-9]\\.[0-9.]+", "100\\.12[0-7]\\.[0-9.]+",
+        "22[4-9]\\.[0-9.]+", "2[3-5][0-9]\\.[0-9.]+",
+        // IPv6: anything that begins with `::` (unspecified, loopback, an IPv4 address carried inside), unique local,
+        // link-local, multicast, and the IPv4 translation prefix.
+        "\\[::[0-9a-f:.]*\\]", "\\[f[cd][0-9a-f]*:[0-9a-f:.]*\\]", "\\[fe[89ab][0-9a-f]*:[0-9a-f:.]*\\]", "\\[ff[0-9a-f]*:[0-9a-f:.]*\\]",
+        "\\[64:ff9b::[0-9a-f:.]*\\]",
+        // A user or password before the host hides the host from the patterns above: refused whatever it is.
+        "[^/?#]*@[^/]*",
+    ]
+
+    /// The rule list of a live view whose page the person allowed the network: every load is still blocked but those of
+    /// the scheme itself, what is in the page already, and http, https and WebSockets; and of those, every one to this Mac
+    /// or the local network is blocked again. What the page could not do before (a `file:` address, another scheme, an
+    /// app's own scheme) it still cannot.
+    static let contentRulesWithNetwork: String = {
+        var rules: [[String: Any]] = [["trigger": ["url-filter": ".*"], "action": ["type": "block"]]]
+        for allowed in ["^pi2-presented:", "^data:", "^blob:", "^about:", "^https?://", "^wss?://"] {
+            rules.append(["trigger": ["url-filter": allowed], "action": ["type": "ignore-previous-rules"]])
+        }
+        // The pattern language has no "or", so each range and scheme is its own rule; after the ones above, so that they
+        // block again. An http address as WebKit gives it always has a port's colon or a slash after its host, and a name
+        // may end in a dot (`localhost.` is localhost).
+        for scheme in ["https?", "wss?"] {
+            for host in privateHosts {
+                rules.append(["trigger": ["url-filter": "^\(scheme)://\(host)\\.?[:/]"], "action": ["type": "block"]])
+            }
+        }
+        let data = (try? JSONSerialization.data(withJSONObject: rules)) ?? Data("[{\"trigger\": {\"url-filter\": \".*\"}, \"action\": {\"type\": \"block\"}}]".utf8)
+        return String(decoding: data, as: UTF8.self)
+    }()
 
     /// A new origin for one page as it is loaded: a name of letters and digits that nothing else has, so that two
     /// presentations, or two versions of one, never share an origin or what it stores.

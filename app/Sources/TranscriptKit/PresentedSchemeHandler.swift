@@ -15,9 +15,12 @@ final class PresentedSchemeHandler: NSObject, WKURLSchemeHandler {
     private var stopped: Set<ObjectIdentifier> = []
     /// A path asked for that was not served, as asked.
     var onNotFound: (String) -> Void = { _ in }
+    /// The Content-Security-Policy every response carries: the network-off one unless the view was made with the network.
+    let policy: String
 
-    init(page: PresentedPage, source: any PresentedFiles, origin: String) {
+    init(page: PresentedPage, source: any PresentedFiles, origin: String, policy: String = PresentedPagePolicy.contentSecurityPolicy) {
         self.origin = origin
+        self.policy = policy
         self.files = Dictionary(page.files.map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
         self.source = source
     }
@@ -58,7 +61,7 @@ final class PresentedSchemeHandler: NSObject, WKURLSchemeHandler {
         let headers = [
             "Content-Type": contentType,
             "Content-Length": String(body.count),
-            "Content-Security-Policy": PresentedPagePolicy.contentSecurityPolicy,
+            "Content-Security-Policy": policy,
             "X-Content-Type-Options": "nosniff",
             "Cache-Control": "no-store",
         ]

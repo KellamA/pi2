@@ -422,7 +422,10 @@ struct NeedCard: View {
     /// A decision: a button for each choice, and a field to answer in one's own words when it allows that.
     private var decisionCard: some View {
         own("decision") {
-            Text(need.question ?? "").textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            // A `present` question's pictures, small, under it; a click opens its window (#946).
+            NeedPresentationPictures(engine: engine, need: need) {
+                Text(need.question ?? "").textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }
             if let choices = need.choices {
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 8) {
