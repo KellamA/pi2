@@ -48,10 +48,16 @@ struct SchedulesView: View {
         }
         .listStyle(.insetGrouped)
         #if DEBUG
-        .onChange(of: groups.first?.schedules.first?.id, initial: true) { _, first in
-            if let first, source.connected, SettingsSamples.shouldPress("run") {
-                SettingsRequest.runSchedule(first).send(through: session.engine, row: "list", into: $problems)
-            }
+        // Once the Mac is reached as well as the schedule listed: drawn first from the phone's last state, a change would
+        // only be refused.
+        .task(id: source.connected ? groups.first?.schedules.first?.id : nil) {
+            guard source.connected, let first = groups.first?.schedules.first else { return }
+            let request: SettingsRequest? =
+                if SettingsSamples.shouldPress("run") { .runSchedule(first.id, title: first.title) }
+                else if SettingsSamples.shouldPress("pause") { .setSchedule(first, enabled: !first.enabled) }
+                else if SettingsSamples.shouldPress("delete") { .deleteSchedule(first.id, title: first.title) }
+                else { nil }
+            request?.send(through: session.engine, row: "list", into: $problems)
         }
         .onChange(of: book.everyAgent.isEmpty, initial: true) { _, empty in
             guard !empty, let open = SettingsSamples.open, !SettingsSamples.opened else { return }

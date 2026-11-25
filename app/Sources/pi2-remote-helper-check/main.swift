@@ -102,6 +102,8 @@ let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deleti
 if let relayURL {
 	// The relay path's own cases (#678), against the relay scripts/relay-protocol-test started; the rest runs without it.
 	Relayed.run(helper: bundled, home: home, relay: relayURL)
+	// The pushes' hand-over through each of the relay client's moments, on a relay of the check's own (#935).
+	RelayedPushes.dropsAndStops(helper: bundled, home: home)
 	// And a relay of the check's own that lies and floods, on 127.0.0.1 (#921's security read).
 	Relayed.flood(helper: bundled, home: home)
 	if let engineMain { RealEngine.run(engineMain: engineMain, helper: built, root: root, relay: relayURL) }

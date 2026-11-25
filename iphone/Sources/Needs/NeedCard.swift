@@ -523,8 +523,11 @@ struct NeedCard: View {
                 editingRule = false
                 if kept { UIAccessibility.post(notification: .announcement, argument: "Kept in the Outbox, for when your Mac can be reached.") }
                 // Start anyway past a limit that moved on: the engine answers it and keeps the card, with its new
-                // reading, rather than refusing it (`onAnswer("limit")`, engine/src/projectlimitstarts.ts).
+                // reading, rather than refusing it (`onAnswer("limit")`, engine/src/projectlimitstarts.ts). An engine
+                // from before #953 does not say so, but the card is still waiting.
                 if answered, NeedHeldAgain.isHeldAgain(reply, need: need.id, waiting: session.engine.needs) { holdAgain() }
+            case .held:
+                holdAgain()
             }
         }
     }
