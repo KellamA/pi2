@@ -30,6 +30,8 @@ struct BoardBranchesPage: View {
     @State private var problem: String?
     @State private var notice: String?
     @State private var creating: BoardWorktreeAsk?
+    /// The conversation whose branch suggestion is being asked for, before the alert opens.
+    @State private var suggesting: Int?
     @State private var removing: BoardWorktreeRemoval?
     @State private var refreshing = false
 
@@ -270,20 +272,24 @@ struct BoardBranchesPage: View {
 
     // MARK: - Requests
 
-    private func refresh() async {
+    func refresh() async {
         refreshing = true
         problem = await BoardRequests.refreshBranches(session.engine).map { "Not looked at again: \($0)" }
         refreshing = false
     }
 
+    /// Asks for the new worktree's branch, with the engine's suggestion already in the field. An alert's field shows what
+    /// it holds as the alert opens and does not follow a later change (against a copy, a suggestion that came after the
+    /// alert left the field empty), so the suggestion is asked for first and the alert opens with it, or empty when the
+    /// engine has none.
     func ask(_ conversation: Int) {
-        creating = BoardWorktreeAsk(conversation: conversation, branch: "")
+        guard suggesting == nil else { return }
+        suggesting = conversation
         let engine = session.engine
         Task {
-            if let suggested = await BoardRequests.suggestBranch(engine, conversation: conversation),
-               creating?.conversation == conversation, creating?.branch == "" {
-                creating?.branch = suggested
-            }
+            let ask = await BoardWorktreeAsk.opening(engine, conversation: conversation)
+            if suggesting == conversation { creating = ask }
+            suggesting = nil
         }
     }
 
@@ -309,6 +315,9 @@ struct BoardBranchesPage: View {
 
     #if DEBUG
     func debugRemove(_ conversation: Int, status: BranchStatus) { removing = BoardWorktreeRemoval(conversation: conversation, status: status) }
+    func debugRemove(_ removal: BoardWorktreeRemoval, force: Bool, deleteBranch: Bool) { remove(removal, force: force, deleteBranch: deleteBranch) }
+    var debugAsked: BoardWorktreeAsk? { creating }
+    func debugCreate() { create() }
     #endif
 }
 
@@ -316,6 +325,13 @@ struct BoardBranchesPage: View {
 struct BoardWorktreeAsk: Equatable {
     let conversation: Int
     var branch: String
+
+    /// The question as it opens: with the branch the engine suggests for the conversation, or empty when it suggests
+    /// none or cannot be asked, which leaves the choice to it.
+    @MainActor
+    static func opening(_ engine: BoardRequests.Engine, conversation: Int) async -> BoardWorktreeAsk {
+        BoardWorktreeAsk(conversation: conversation, branch: await BoardRequests.suggestBranch(engine, conversation: conversation) ?? "")
+    }
 }
 
 /// The worktree whose removal is being confirmed.

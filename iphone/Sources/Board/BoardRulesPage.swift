@@ -194,6 +194,11 @@ struct BoardRulesPage: View {
     /// For `BoardDebugAct`: what a tap would do.
     func debugAdd(_ text: String) { newText = text; add() }
     func debugEdit(_ rule: ProjectRule) { editing = rule }
+    func debugChange(_ rule: ProjectRule, text: String, binds: ProjectRule.Binds) {
+        Task { listProblem = await change(rule, text: text, binds: binds) }
+    }
+    func debugMoveLastToTop(_ rules: [ProjectRule]) { if rules.count > 1 { move(rules, from: [rules.count - 1], to: 0) } }
+    func debugAskRemove(_ rule: ProjectRule) { removing = rule }
     #endif
 }
 
@@ -235,6 +240,9 @@ struct BoardRuleProposal: View {
             if let problem { BoardProblem(problem) }
         }
         .padding(.vertical, 4)
+        #if DEBUG
+        .task { await BoardDebugAct.proposal(self) }
+        #endif
     }
 
     @ViewBuilder
@@ -253,6 +261,19 @@ struct BoardRuleProposal: View {
             answering = false
         }
     }
+
+    #if DEBUG
+    /// Whether this card is the page's first proposal, which `BoardDebugAct` answers, so that which card it answers does
+    /// not depend on which card's task runs first.
+    var debugIsFirst: Bool { session.boardData.proposals(need.projectId ?? "").first?.id == need.id }
+    /// For `BoardDebugAct`: what a tap would do.
+    func debugAnswer(_ accept: Bool) { answer(accept) }
+    func debugAccept(_ text: String) {
+        let engine = session.engine
+        let id = need.id
+        Task { problem = await BoardRequests.answerProposal(engine, need: id, accept: true, text: text, binds: need.binds).map { "Not answered: \($0)" } }
+    }
+    #endif
 }
 
 /// A rule's text and whom it binds, changed in a sheet: a rule being changed, or a proposal accepted with changes.
