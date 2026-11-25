@@ -12,7 +12,7 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
 import { restoreBackup } from "../src/backup.ts";
 import { GONE } from "../src/needs.ts";
@@ -22,6 +22,7 @@ import {
 	copyItem,
 	findItem,
 	isSvg,
+	pathFits,
 	NO_SVG_TO_A_DEVICE,
 	NOT_DRAWN,
 	NOT_PRESENTED,
@@ -140,6 +141,14 @@ const refusalOf = (run: () => unknown): string => {
 	assert.match(refused({ title: "t", items: Array.from({ length: 7 }, () => ({ path: "a.png" })) }), /give 6 at most/);
 	assert.deepEqual(taken({ title: "t", items: Array.from({ length: 6 }, () => ({ path: "a.png" })) }).items.map((item) => item.label), ["A", "B", "C", "D", "E", "F"]);
 	assert.match(refused({ title: "t", items: [{ path: " " }] }), /Item 1 has no path/);
+	// A path is 1,024 bytes at most, and each name in it 255, in UTF-8 (#994's read).
+	taken({ title: "t", items: [{ path: `${"d/".repeat(511)}ab` }] });
+	assert.match(refused({ title: "t", items: [{ path: `${"d/".repeat(511)}abc` }] }), /is 1,025 bytes, or has a name over 255: a path can be 1,024 bytes at most, and each name in it 255/);
+	assert.match(refused({ title: "t", items: [{ path: "é".repeat(513) }] }), /is 1,026 bytes/);
+	taken({ title: "t", items: [{ path: `x/${"n".repeat(255)}` }] });
+	assert.match(refused({ title: "t", items: [{ path: `x/${"n".repeat(256)}` }] }), /has a name over 255/);
+	assert.match(refused({ title: "t", items: [{ path: `${"./".repeat(100_000)}a.png` }] }), /is 200,005 bytes/, "the reader's path");
+	assert.ok(pathFits("a/b") && !pathFits("x".repeat(1025)) && !pathFits(`a/${"é".repeat(128)}`));
 	assert.match(refused({ title: "t", items: [{ path: "a.png", label: "x".repeat(13) }] }), /keep labels to 12/);
 	assert.equal(taken({ title: "t", items: [{ path: "a.png", label: "x".repeat(12) }] }).items[0]!.label, "x".repeat(12));
 	assert.match(refused({ title: "t", items: [{ path: "a.png", label: "Wide" }, { path: "b.png", label: "wide" }] }), /Two items are labelled “wide”/);
@@ -272,6 +281,57 @@ const refusalOf = (run: () => unknown): string => {
 	assert.match(refusalOf(() => walkPage(join(homedir(), "index.html"), "p")), /which holds far more than a mockup/);
 	assert.match(refusalOf(() => walkPage("/index.html", "p")), /which holds far more than a mockup/);
 	assert.match(refusalOf(() => walkPage(join(homedir(), "Library", "index.html"), "p")), /which holds far more than a mockup/);
+	// On real paths (#994's read): a link to a stand-in home, as the page's folder and one level above it, is the home
+	// folder, and nothing in it is read. HOME names the stand-in for these checks alone.
+	const fakeHome = mkdtempSync(join(work, "fake-home-"));
+	writeFileSync(join(fakeHome, "page.html"), "<p>");
+	writeFileSync(join(fakeHome, "notes.txt"), "private");
+	const realHome = process.env.HOME;
+	process.env.HOME = fakeHome;
+	try {
+		assert.equal(homedir(), fakeHome);
+		const links = mkdtempSync(join(work, "links-"));
+		symlinkSync(fakeHome, join(links, "toHome"));
+		assert.match(refusalOf(() => walkPage(join(links, "toHome", "page.html"), "p")), /which holds far more than a mockup/, "a link to the home folder");
+		symlinkSync(dirname(fakeHome), join(links, "toParent"));
+		assert.match(refusalOf(() => walkPage(join(links, "toParent", basename(fakeHome), "page.html"), "p")), /which holds far more than a mockup/, "a link above it");
+		assert.match(refusalOf(() => walkPage(join(links, "toParent", "page.html"), "p")), /which holds far more than a mockup/, "a link to a folder that holds it");
+	} finally {
+		process.env.HOME = realHome;
+	}
+	// A folder swapped for a link once its parent was listed, and a file reached through a folder swapped so, are refused.
+	const elsewhere = mkdtempSync(join(work, "elsewhere-"));
+	writeFileSync(join(elsewhere, "a.css"), "not the page's");
+	const swapped = (when: (folder: string, root: string) => boolean) => {
+		const root = realpathSync(mkdtempSync(join(work, "swap-")));
+		writeFileSync(join(root, "index.html"), "<p>");
+		mkdirSync(join(root, "sub"));
+		writeFileSync(join(root, "sub", "a.css"), "the page's");
+		return refusalOf(() =>
+			walkPage(join(root, "index.html"), "“index.html”", {
+				listed: (folder) => {
+					if (!when(folder, root)) return;
+					rmSync(join(root, "sub"), { recursive: true });
+					symlinkSync(elsewhere, join(root, "sub"));
+				},
+			}),
+		);
+	};
+	assert.match(swapped((folder, root) => folder === root), /The folder of “index\.html” changed while it was being copied/, "a subfolder that became a link before it was listed");
+	assert.match(swapped((folder, root) => folder === join(root, "sub")), /changed while it was being copied/, "a file reached through a folder that became a link");
+	// The page's own file a link out: never followed.
+	const linkedEntry = mkdtempSync(join(work, "entry-"));
+	symlinkSync(join(elsewhere, "a.css"), join(linkedEntry, "index.html"));
+	assert.match(refusalOf(() => walkPage(join(linkedEntry, "index.html"), "“index.html”")), /is a symbolic link, which present does not follow/);
+	// A page reached through a link to its folder is walked from its real folder, as the files there are.
+	const viaLink = join(mkdtempSync(join(work, "via-")), "page");
+	symlinkSync(page, viaLink);
+	assert.deepEqual([...walkPage(join(viaLink, "index.html"), "p").files.keys()].sort(), ["index.html", "style.css", "sub/pic.png"]);
+	// A file named __proto__ is a file of the manifest like any other.
+	const odd = mkdtempSync(join(work, "odd-"));
+	writeFileSync(join(odd, "index.html"), "<p>");
+	writeFileSync(join(odd, "__proto__"), "x");
+	assert.ok(Object.hasOwn(JSON.parse(copyItem(join(odd, "index.html"), "index.html").keep.at(-1)!.bytes.toString("utf8")).files, "__proto__"));
 	step("a page: its folder without links, hidden files or node_modules; its manifest; 500 files, 50 MB and 2,000 folders at their edge; the home folder refused unread");
 }
 
@@ -303,7 +363,8 @@ const refusalOf = (run: () => unknown): string => {
 	assert.deepEqual((checkDrawn({ ...good, console: ["line\nbreak\u0007"] }) as { console: string[] }).console, ["line break"], "a finding is one line");
 
 	const item = { label: "A", caption: null, kind: "picture" as const, name: "a.svg", mimeType: "image/svg+xml", sha256: "0".repeat(64), bytes: 1, files: 1, width: null, height: null, snapshot: null, drawn: null };
-	const doc = { next: 2, items: { p1: { id: "p1", network: false, versions: [{ version: 1, callId: "c", createdAt: 0, title: "t", question: null, items: [item] }] } } };
+	const network = { allowed: false, changes: [] };
+	const doc = { next: 2, items: { p1: { id: "p1", versions: [{ version: 1, callId: "c", createdAt: 0, title: "t", question: null, network, items: [item] }] } } };
 	assert.equal(findItem(doc, "p1", 1, 0).item, item);
 	for (const [presentation, version, index] of [
 		["p2", 1, 0],
@@ -334,7 +395,6 @@ const refusalOf = (run: () => unknown): string => {
 		items: {
 			p1: {
 				id: "p1",
-				network: false,
 				versions: [
 					{
 						version: 1,
@@ -342,6 +402,7 @@ const refusalOf = (run: () => unknown): string => {
 						createdAt: 0,
 						title: "t",
 						question: null,
+						network,
 						items: [
 							{ ...item, sha256: keepBlob(svgBytes) },
 							{ ...item, mimeType: "image/png", name: "a.png", sha256: keepBlob(pngBytes) },
@@ -580,7 +641,7 @@ try {
 	const listed = (await client.call("presented.list", { id: chat1 })).items;
 	assert.equal(listed.length, 1);
 	assert.deepEqual({ presentation: "p1", ...listed[0].versions[0] }, first.details, "the result's details are the stored version, with its presentation");
-	assert.equal(listed[0].network, false);
+	assert.deepEqual(listed[0].versions[0].network, { allowed: false, changes: [] }, "the network off");
 	await client.until("conversation.presented for p1", () => client.presented.some((event) => event.id === chat1 && event.record.id === "p1"));
 	step("presented with no app to draw: each file copied by its content, the page's manifest kept, the version stored and given in the result, the page pending, the event sent");
 
@@ -673,11 +734,20 @@ try {
 	const unknown = await client.call("conversation.image", { id: 99_999, entryId: 1 }).catch((error: Error) => error.message);
 	await assert.rejects(ask({ id: 99_999 }), (error: Error) => error.message === unknown, "an unknown conversation refused as conversation.image refuses it");
 	assert.deepEqual((await client.call("presented.list", { id: chat })).items, [], "a chat is its version shown, which presented nothing");
-	await client.call("presented.network", { id: chat1, presentation: "p1", allow: true });
-	await client.until("the network switch in conversation.presented", () => client.presented.some((event) => event.record.id === "p1" && event.record.network === true));
-	await assert.rejects(client.call("presented.network", { id: chat1, presentation: "p9", allow: true }), (error: Error) => error.message === NOT_PRESENTED);
-	await assert.rejects(client.call("presented.network", { id: chat1, presentation: "p1", allow: "yes" }), /allow must be true or false/);
-	step("the requests take whole numbers found in that conversation's record only, never a blob's name, the conversation as conversation.image finds it; the network switch stored and sent");
+	// Allow network is a version's: turned on for version 2, off and on again, each time written down; version 1 keeps it off.
+	for (const allow of [true, false, true]) await client.call("presented.network", { id: chat1, presentation: "p1", version: 2, allow });
+	const switched = await client.until("the network switch in conversation.presented", () => client.presented.filter((event) => event.record.id === "p1" && event.record.versions[1]?.network.changes.length === 3).at(-1));
+	assert.equal(switched.record.versions[1].network.allowed, true);
+	assert.deepEqual(switched.record.versions[1].network.changes.map((change: Event) => change.allow), [true, false, true]);
+	assert.ok(switched.record.versions[1].network.changes.every((change: Event) => typeof change.at === "number"), "with when");
+	assert.deepEqual(switched.record.versions[0].network, { allowed: false, changes: [] }, "version 1 keeps the network off");
+	await assert.rejects(client.call("presented.network", { id: chat1, presentation: "p9", version: 1, allow: true }), (error: Error) => error.message === NOT_PRESENTED);
+	await assert.rejects(client.call("presented.network", { id: chat1, presentation: "p1", version: 9, allow: true }), (error: Error) => error.message === NOT_PRESENTED);
+	await assert.rejects(client.call("presented.network", { id: chat1, presentation: "p1", allow: true }), /version must be a whole number/);
+	await assert.rejects(client.call("presented.network", { id: chat1, presentation: "p1", version: 2, allow: "yes" }), /allow must be true or false/);
+	const version3 = await client.present(chat1, { title: "Sign-in screen, three layouts", update: "p1", items: [{ path: "signin-a.png" }] });
+	assert.deepEqual(version3.details.network, { allowed: false, changes: [] }, "a new version starts with the network off, whatever an earlier one had");
+	step("the requests take whole numbers found in that conversation's record only, never a blob's name, the conversation as conversation.image finds it; Allow network is a version's, every change written down, and a new version starts with it off");
 
 	// ---- The question, waiting
 
@@ -702,6 +772,15 @@ try {
 	// In words, through the old route too; with choices of the agent's own.
 	const inWords = client.present(chat1, { title: "Pick", items: [{ path: "signin-a.png" }, { path: "signin-c.svg" }], question: "Which?", choices: ["Neither", "Both"] });
 	const asked = await client.until("the second decision", () => client.need((item) => item.kind === "decision" && item.blocking && item.question === "Which?"));
+	// Words are bounded on every route, the Mac's inbox.answer too, at Needs you's 20,000 characters (#994's read).
+	for (const [method, params] of [
+		["inbox.answer", { id: asked.id, text: "w".repeat(20_001) }],
+		["needs.answer", { id: asked.id, answer: { kind: "decision", text: "w".repeat(20_001) } }],
+		["needs.answer", { id: asked.id, answer: { kind: "question", text: "w".repeat(20_001) } }],
+	] as const) {
+		await assert.rejects(client.call(method, params), /An answer can be 20,000 characters at most; this one is 20,001/, method);
+	}
+	assert.ok(client.need((item) => item.id === asked.id), "and it still waits");
 	await client.call("inbox.answer", { id: asked.id, text: "B, but with the warning colour of A" });
 	assert.match((await inWords).text, /\n\nThe person answered: B, but with the warning colour of A$/);
 	const custom = client.present(chat1, { title: "Pick", items: [{ path: "signin-a.png" }, { path: "signin-c.svg" }], question: "Keep any?", choices: ["Neither", "Both"] });

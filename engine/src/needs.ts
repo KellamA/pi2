@@ -328,9 +328,10 @@ export function answersOf(item: InboxItem): ApprovalAnswer[] {
 function inboxAnswer(item: InboxItem, answer: NeedAnswer): string {
 	// A `present` question (#946): a decision on the wire, answered by a choice or in words; `inbox.answer`'s words too.
 	if (item.kind === "question" && item.choices !== undefined) {
-		if (answer.kind === "question") return JSON.stringify({ words: answer.text } satisfies PresentedAnswer);
+		// Words are bounded on every route, `inbox.answer`'s too, as `checkAnswer` bounds them: they are kept in the record.
+		if (answer.kind === "question") return JSON.stringify({ words: words(answer.text, "text") } satisfies PresentedAnswer);
 		if (answer.kind !== "decision") throw new Error(`This is ${NAMED.decision}, not ${NAMED[answer.kind]}`);
-		if ("text" in answer) return JSON.stringify({ words: answer.text } satisfies PresentedAnswer);
+		if ("text" in answer) return JSON.stringify({ words: words(answer.text, "text") } satisfies PresentedAnswer);
 		const chosen = item.choices.find((choice) => choice.id === answer.choice);
 		if (chosen === undefined) throw new Error(`There is no choice ${answer.choice} in this decision`);
 		return JSON.stringify({ chose: chosen.label, choice: chosen.id } satisfies PresentedAnswer);

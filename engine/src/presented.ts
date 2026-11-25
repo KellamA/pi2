@@ -28,7 +28,7 @@ import { awaitWithContext, type Context } from "@earendil-works/chord/context";
 import { AgentDoc, type CommitChange, type ConversationId, defineDoc, defineTool, type ToolExecutionApi, type ToolExecutionResult, type Tx } from "@earendil-works/pi-durable";
 import { arr, bool, obj, opt, str } from "@earendil-works/pi-schema";
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, constants, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmSync, type Stats, writeFileSync } from "node:fs";
+import { closeSync, constants, cpSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, realpathSync, renameSync, rmSync, type Stats, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -81,9 +81,15 @@ export type PresentedVersion = {
 	title: string;
 	items: PresentedItem[];
 	question: PresentedQuestion | null;
+	/**
+	 * The person's "Allow network for this page", for this version's pages alone: a new version starts with it off, so a page
+	 * the agent changes after the person allowed it does not inherit that (#994's read). `changes` is every time it was
+	 * turned on or off, the newest 100, so it can be seen afterwards.
+	 */
+	network: { allowed: boolean; changes: { allow: boolean; at: number }[] };
 };
 
-export type PresentationRecord = { id: string; versions: PresentedVersion[]; network: boolean };
+export type PresentationRecord = { id: string; versions: PresentedVersion[] };
 export type PresentedDocShape = { next: number; items: Record<string, PresentationRecord> };
 
 /** A conversation's presentations. Its current state goes with a fork, whose folder of files is cloned (`forked`). */
@@ -117,8 +123,11 @@ export const LIMITS = {
 	conversation: 500 * MB,
 	/** Folders a page's walk may open before it is refused as no mockup's: a guard against a page put in a big tree. */
 	pageFolders: 2_000,
-	/** The longest path of a file in a page's manifest, in characters. */
+	/** The longest path an item or a page's file may have, and the longest name in it, in bytes of UTF-8. */
 	path: 1_024,
+	name: 255,
+	/** How many changes of a version's network switch its record keeps: the newest. */
+	networkChanges: 100,
 	/** What `present.drawn` may carry: the findings' count and length, and the reason a page could not be drawn. */
 	console: 50,
 	consoleLine: 500,
@@ -187,9 +196,10 @@ export function resolveGiven(given: string, cwd: string): string {
 /**
  * A file's bytes, read once from one descriptor opened without following a link at its name: refused if it is not a
  * plain file, is larger than `max`, or changed while it was read (its size or time, or the bytes read not its size).
- * `between` runs after the check and before the read: a test changes the file there.
+ * `between` runs after the check and before the read: a test changes the file there. `opened` is told what was
+ * opened, before anything is read, and throws to refuse it (a page's file that is no longer under its folder).
  */
-export function readOnce(path: string, max: number, name: string, tooLarge: (bytes: number) => string, between?: () => void): Buffer {
+export function readOnce(path: string, max: number, name: string, tooLarge: (bytes: number) => string, between?: () => void, opened?: (stats: Stats) => void): Buffer {
 	let fd: number;
 	try {
 		fd = openSync(path, OPEN_FLAGS);
@@ -204,6 +214,7 @@ export function readOnce(path: string, max: number, name: string, tooLarge: (byt
 		const before = fstatSync(fd);
 		if (before.isDirectory()) throw new Refusal(`${name} is a folder. Present a picture file, or a page's HTML file.`);
 		if (!before.isFile()) throw new Refusal(`${name} is not a plain file. Present a picture file, or a page's HTML file.`);
+		opened?.(before);
 		if (before.size > max) throw new Refusal(tooLarge(before.size));
 		between?.();
 		const bytes = Buffer.alloc(before.size);
@@ -333,8 +344,11 @@ const pageType = (path: string) => PAGE_TYPES[extname(path).toLowerCase()] ?? "a
 /** Whether a name in a page's folder is left out: hidden (`.git`, `.env`) or `node_modules`. */
 const leftOutName = (name: string) => name.startsWith(".") || name === "node_modules";
 
-/** A manifest path the scheme handler can serve as it is: printable, no `.` or `..` part, not too long. */
-const servablePath = (path: string) => path.length > 0 && path.length <= LIMITS.path && !/[\u0000-\u001f\u007f\\]/.test(path) && path.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+/** Whether a path is within the bounds every path presenting keeps has: 1,024 bytes, and 255 a name, in UTF-8. */
+export const pathFits = (path: string, separator = "/") => Buffer.byteLength(path) <= LIMITS.path && path.split(separator).every((part) => Buffer.byteLength(part) <= LIMITS.name);
+
+/** A manifest path the scheme handler can serve as it is: printable, no `.` or `..` part, within the bounds. */
+const servablePath = (path: string) => path.length > 0 && pathFits(path) && !/[\u0000-\u001f\u007f\\]/.test(path) && path.split("/").every((part) => part !== "" && part !== "." && part !== "..");
 
 /** What a page's walk read: every file's bytes by its manifest path, and what it left out, by why. */
 type Walked = { files: Map<string, Buffer>; bytes: number; links: number; hidden: number; unservable: number };
@@ -343,14 +357,43 @@ type Walked = { files: Map<string, Buffer>; bytes: number; links: number; hidden
  * A page's folder: the HTML file's own folder and everything below it, walked with `lstat` and never through a link,
  * hidden files and folders and `node_modules` left out, each file read once (`readOnce`). Refused over 500 files or 50
  * MB, or over 2,000 folders; refused outright for the home folder, a folder that holds it, and `~/Library`, which hold
- * the person's whole Mac (and folders macOS asks before letting pi² read).
+ * the person's whole Mac (and folders macOS asks before letting pi² read). All of it on real paths: the folder is the
+ * real path of the HTML file's, compared with the home folder's real path, and walked from there; a folder that has
+ * become a link (or is no longer its real path) is refused before it is listed, and each file opened must be the file
+ * at its path, in a folder whose real path is under the page's. `hooks.listed` runs after each folder is listed: a test
+ * swaps a folder there.
  */
-export function walkPage(entry: string, name: string): Walked {
-	const root = dirname(entry);
-	const home = homedir();
-	if (root === home || home.startsWith(root.endsWith(sep) ? root : root + sep) || root === join(home, "Library")) {
+export function walkPage(entry: string, name: string, hooks: { listed?: (folder: string) => void } = {}): Walked {
+	// Judged on real paths: a link to the home folder, at the page's folder or above it, is the home folder (#994's read).
+	let root: string;
+	try {
+		root = realpathSync(dirname(entry));
+	} catch (error) {
+		throw new Refusal(`The folder of ${name} cannot be read: ${(error as Error).message}`);
+	}
+	let home: string;
+	try {
+		home = realpathSync(homedir());
+	} catch {
+		home = resolve(homedir());
+	}
+	const under = (path: string, folder: string) => path === folder || path.startsWith(folder.endsWith(sep) ? folder : folder + sep);
+	if (under(home, root) || root === join(home, "Library")) {
 		throw new Refusal(`${name} is in ${root}, which holds far more than a mockup. Put the page in a folder of its own, with only what it needs, and present it from there.`);
 	}
+	const changed = () => new Refusal(`The folder of ${name} changed while it was being copied: a folder in it became a link, or a file moved out of it. Present it again once it is written.`);
+	/** The file opened is the one at its path, and that path's folder, really, is under the page's. */
+	const stillInside = (path: string) => (stats: Stats) => {
+		let real: string;
+		let there: Stats | undefined;
+		try {
+			real = realpathSync(dirname(path));
+			there = lstatSync(path, { throwIfNoEntry: false });
+		} catch {
+			throw changed();
+		}
+		if (!under(real, root) || there === undefined || there.ino !== stats.ino || there.dev !== stats.dev) throw changed();
+	};
 	const walked: Walked = { files: new Map(), bytes: 0, links: 0, hidden: 0, unservable: 0 };
 	const tooMany = () => new Refusal(`The page's folder, ${root}, holds more than ${count(LIMITS.pageFiles)} files. Keep the folder to the mockup: only the page and what it loads.`);
 	const tooLarge = (bytes: number) => new Refusal(`The page's folder, ${root}, holds more than ${megabytes(LIMITS.pageBytes)} (${sizeText(bytes)} at least). Keep the folder to the mockup, with smaller pictures.`);
@@ -360,23 +403,32 @@ export function walkPage(entry: string, name: string): Walked {
 			return;
 		}
 		if (walked.files.size >= LIMITS.pageFiles) throw tooMany();
-		const bytes = readOnce(path, LIMITS.pageBytes - walked.bytes, `${relativePath} in the page's folder`, (size) => tooLarge(walked.bytes + size).message);
+		const bytes = readOnce(path, LIMITS.pageBytes - walked.bytes, `${relativePath} in the page's folder`, (size) => tooLarge(walked.bytes + size).message, undefined, stillInside(path));
 		walked.bytes += bytes.length;
 		walked.files.set(relativePath, bytes);
 	};
 	const entryName = basename(entry);
-	add(entry, entryName);
+	add(join(root, entryName), entryName);
 	const folders = [root];
 	let opened = 0;
 	while (folders.length > 0) {
 		const folder = folders.shift()!;
 		if (++opened > LIMITS.pageFolders) throw new Refusal(`The page's folder, ${root}, holds more than ${count(LIMITS.pageFolders)} folders. Keep the folder to the mockup.`);
+		// A folder found a folder when its parent was listed may be a link by now: it is not listed then.
+		let info: Stats | undefined;
+		let real: string | undefined;
+		try {
+			info = lstatSync(folder, { throwIfNoEntry: false });
+			real = realpathSync(folder);
+		} catch {}
+		if (info === undefined || info.isSymbolicLink() || !info.isDirectory() || real !== folder) throw changed();
 		let names: import("node:fs").Dirent[];
 		try {
 			names = readdirSync(folder, { withFileTypes: true });
 		} catch (error) {
 			throw new Refusal(`The page's folder ${folder} cannot be read: ${(error as Error).message}`);
 		}
+		hooks.listed?.(folder);
 		names.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 		for (const one of names) {
 			const path = join(folder, one.name);
@@ -608,6 +660,7 @@ export function checkGiven(args: Given, inAProject: boolean): Checked | string {
 	for (const [index, item] of args.items.entries()) {
 		const path = typeof item?.path === "string" ? item.path.trim() : "";
 		if (path === "") return `Item ${index + 1} has no path: give a picture file or a page's HTML file.`;
+		if (!pathFits(path)) return `The path of item ${index + 1} is ${count(Buffer.byteLength(path))} bytes, or has a name over ${LIMITS.name}: a path can be ${count(LIMITS.path)} bytes at most, and each name in it ${LIMITS.name}. Give a shorter one.`;
 		const given = (item.label ?? "").replace(/\s+/g, " ").trim();
 		const label = given === "" ? DEFAULT_LABELS[index]! : given;
 		if (label.length > LIMITS.label) return `The label “${label}” is ${label.length} characters; keep labels to ${LIMITS.label}, such as “Compact”.`;
@@ -650,7 +703,8 @@ export function copyItem(path: string, given: string): Copied {
 	const ending = extname(path).toLowerCase();
 	if (ending === ".html" || ending === ".htm") {
 		const walked = walkPage(path, name);
-		const files: PageManifest["files"] = {};
+		// No prototype: a file named `__proto__` is a file like any other.
+		const files: PageManifest["files"] = Object.create(null);
 		const keep: Copied["keep"] = [];
 		for (const [relativePath, bytes] of [...walked.files].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
 			files[relativePath] = { sha256: sha256(bytes), bytes: bytes.length, type: pageType(relativePath) };
@@ -955,7 +1009,7 @@ export const presented: Feature = (host: Host, engine: Engine) => {
 					if (earlier !== undefined) return earlier;
 					const id = checked.update ?? `p${doc.next}`;
 					if (checked.update === null) doc.next += 1;
-					if (!Object.hasOwn(doc.items, id)) doc.items[id] = { id, versions: [], network: false };
+					if (!Object.hasOwn(doc.items, id)) doc.items[id] = { id, versions: [] };
 					// Read back from the document, so that what is changed below is the stored record, not the object put in it.
 					const record = doc.items[id]!;
 					const number = (record.versions.at(-1)?.version ?? 0) + 1;
@@ -984,6 +1038,8 @@ export const presented: Feature = (host: Host, engine: Engine) => {
 						title: checked.title,
 						items: copied.map((one, index) => ({ ...one.item, label: checked.items[index]!.label, caption: checked.items[index]!.caption })),
 						question,
+						// Every version starts with the network off, whatever the person allowed an earlier one.
+						network: { allowed: false, changes: [] },
 					};
 					record.versions.push(version);
 					return { record: plain(record), version: plain(version) };
@@ -1234,23 +1290,30 @@ export const presented: Feature = (host: Host, engine: Engine) => {
 				const { item } = findItem(doc, params.presentation, params.version, params.item);
 				if (item.kind !== "page") throw new Error("That item is a picture, not a page: ask for it with presented.picture.");
 				const path = params.path;
-				if (typeof path !== "string" || path.length === 0 || path.length > LIMITS.path) throw new Error("path must be a file of the page, as its manifest names it");
+				if (typeof path !== "string" || path.length === 0 || !pathFits(path)) throw new Error("path must be a file of the page, as its manifest names it");
 				const manifest = JSON.parse(readKept(home, folder, "pages", item.sha256).toString("utf8")) as PageManifest;
 				const file = typeof manifest.files === "object" && manifest.files !== null && Object.hasOwn(manifest.files, path) ? manifest.files[path] : undefined;
 				if (file === undefined || typeof file.sha256 !== "string" || typeof file.type !== "string") throw new Error("The page has no such file.");
 				return { mimeType: file.type, data: readKept(home, folder, "blobs", file.sha256).toString("base64") };
 			},
-			/** `{ id, presentation, allow }`: the person's Allow network for this page, for every version. */
+			/**
+			 * `{ id, presentation, version, allow }`: the person's Allow network for that version's pages alone, written into
+			 * the record with when, and said in the engine's log.
+			 */
 			"presented.network": async (params) => {
 				if (typeof params.allow !== "boolean") throw new Error("allow must be true or false");
+				const allow = params.allow;
 				const { id, doc } = await conversationOf(params);
-				const presentation = params.presentation;
-				if (typeof presentation !== "string" || !PRESENTATION_ID.test(presentation) || doc === undefined || !Object.hasOwn(doc.items, presentation)) throw new Error(NOT_PRESENTED);
+				const { record, version } = findItem(doc, params.presentation, params.version, 0);
 				await engine.harness().commit(async (tx) => {
 					const stored = (await tx.doc(PresentedDoc, id as unknown as ConversationId)) as PresentedDocShape;
-					const record = Object.hasOwn(stored.items, presentation) ? stored.items[presentation] : undefined;
-					if (record !== undefined) record.network = params.allow as boolean;
+					const found = Object.hasOwn(stored.items, record.id) ? stored.items[record.id]?.versions.find((one) => one.version === version.version) : undefined;
+					if (found === undefined) return;
+					found.network.allowed = allow;
+					found.network.changes.push({ allow, at: Date.now() });
+					if (found.network.changes.length > LIMITS.networkChanges) found.network.changes.splice(0, found.network.changes.length - LIMITS.networkChanges);
 				}, engine.context());
+				engine.log(`present: the network was turned ${allow ? "on" : "off"} for ${record.id} version ${version.version} of conversation ${id}`);
 				return {};
 			},
 		},

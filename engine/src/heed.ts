@@ -189,7 +189,7 @@ export function messageWaits(view: ConversationView, conversationId: number, app
 		const own = args.get(slot.callId) ?? {};
 		// A call that only waits gives way, and one not yet started that only waits will not wait at all. `present` waits
 		// only with a question it waits on (presented.ts, #946), and then as `ask_user` does.
-		if (GIVES_WAY.has(slot.name) || (slot.name === "present" && typeof own.question === "string" && own.wait !== false)) {
+		if (GIVES_WAY.has(slot.name) || (slot.name === "present" && typeof own.question === "string" && own.question.trim() !== "" && own.wait !== false)) {
 			if (slot.status === "running") ends.push(giving(slot, own));
 			continue;
 		}
