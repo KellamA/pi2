@@ -1,2 +1,2 @@
 ### Fixed
-- The devices' log now takes out variation selectors, Hangul fillers and the other invisible characters a notification already takes out, and shows line and paragraph separators as spaces, so that nothing invisible splits a key out of the masks' sight in the log.
+- The devices' log now strips the same invisible characters as notifications, including variation selectors and Hangul fillers, before masking. This lets it recognize keys split by those characters. Line and paragraph separators are shown as spaces.
