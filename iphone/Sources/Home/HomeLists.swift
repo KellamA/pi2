@@ -88,7 +88,31 @@ enum HomeLists {
 
     /// What the Archive holds: conversations and projects put away.
     static func archivedCount(_ engine: EngineSession<MessageField>) -> Int {
-        engine.archived.count + engine.projects.count(where: { $0.archivedAt != nil && $0.deletedAt == nil })
+        engine.archived.count + archivedProjects(engine.projects)
+    }
+
+    /// How many projects are archived, not deleted.
+    static func archivedProjects(_ rows: [ProjectRow]) -> Int {
+        rows.count(where: { $0.archivedAt != nil && $0.deletedAt == nil })
+    }
+
+    /// What the projects' section says once the engine's lists are in and none is open: with every project archived,
+    /// not "No projects yet", which would send the person to make one they already have.
+    static func noProjects(_ rows: [ProjectRow]) -> String {
+        let archived = archivedProjects(rows)
+        if archived == 0 { return String(localized: "No projects yet. Make one on your Mac with New Project, from a folder.") }
+        return archived == 1
+            ? String(localized: "No open projects. The one archived is in the Archive, under More, to restore.")
+            : String(localized: "No open projects. The \(archived) archived are in the Archive, under More, to restore.")
+    }
+
+    /// What the Dashboard's row says of the open projects.
+    static func projectCount(_ count: Int) -> String {
+        switch count {
+        case 0: String(localized: "No projects")
+        case 1: String(localized: "1 project")
+        default: String(localized: "\(count) projects")
+        }
     }
 }
 
