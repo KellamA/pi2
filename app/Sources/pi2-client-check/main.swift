@@ -29,6 +29,7 @@ func fail(_ message: String) -> Never {
 }
 
 checkPresented()
+await checkEventsNotAnswers()
 
 guard let session = try? String(contentsOf: sessionURL, encoding: .utf8) else {
     fail("cannot read \(sessionURL.path); run it from app/ or pass --fixture <folder>")
