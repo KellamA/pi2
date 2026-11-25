@@ -469,17 +469,22 @@ struct ConnectionTests {
         #expect(words.contains("refuse it there") && words.contains("not this iPhone's") && !words.contains("accept"), "\(words)")
     }
 
-    @Test func anOfferAnsweredWithWhatThePhoneCannotReadIsNotOfferedAgain() async throws {
-        // An answer the phone does not read, or none within ten seconds, may hide a refusal that counted: not again by itself.
-        let paired = try await Self.paired(TestMac.Rules(offers: .unreadable))
+    /// An answer the phone does not read, a link that drops with no answer and no `bye`, or none within ten seconds, may
+    /// hide a refusal that counted: not offered again by itself. Nothing came back, so the words say only to try again,
+    /// never to refuse the key the Mac shows, which may be this phone's own (#1016).
+    @Test(arguments: [TestMac.OfferAnswer.unreadable, .dropped, .silent])
+    func anOfferWithNoAnswerIsNotOfferedAgain(answer: TestMac.OfferAnswer) async throws {
+        let paired = try await Self.paired(TestMac.Rules(offers: answer))
         defer { paired.mac.stop() }
         try #require(paired.keys.software).softwarePresence.waiting.withLock { $0 = true }
         let connection = try Self.connection(paired)
         connection.start()
         defer { connection.stop() }
-        #expect(await Wait.until { connection.problem == .presenceKeyNotTaken })
+        #expect(await Wait.until { connection.problem == .presenceKeyNoAnswer }, "\(String(describing: connection.problem))")
         try await Task.sleep(for: .seconds(1))
         #expect(paired.mac.state.withLock { ($0.offers.count, $0.attaches.count) } == (1, 0), "one offer, no attach, no retry")
+        let words = ConnectionProblem.presenceKeyNoAnswer.words
+        #expect(words.contains("nothing came back") && words.contains("Tap Try again") && !words.contains("refuse") && !words.contains("accept"), "\(words)")
     }
 
     /// The Mac's refusals of an offer (#891): each reason stops the phone with its own words, and it does not try again by
@@ -691,7 +696,7 @@ struct ConnectionTests {
 
     @Test func everyProblemHasWordsOfItsOwn() {
         let problems: [ConnectionProblem] = [
-            .update, .suspended, .presence, .clock, .faceID(.sessionNotOpen), .faceID(.faceIDNotPassed), .macNotProved, .presenceKeyWaits, .presenceKeyNotTaken,
+            .update, .suspended, .presence, .clock, .faceID(.sessionNotOpen), .faceID(.faceIDNotPassed), .macNotProved, .presenceKeyWaits, .presenceKeyNotTaken, .presenceKeyNoAnswer,
             .relaySaid("left"), .relaySaid("update-required"), .relaySaid("new-word"),
         ]
         let words = problems.map(\.words)
