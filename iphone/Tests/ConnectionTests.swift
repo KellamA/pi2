@@ -155,6 +155,97 @@ struct ConnectionTests {
         #expect(await Wait.until { next.received > 0 && app.engine.status == .connected }, "the next session's greeting comes on its own transport")
     }
 
+    // MARK: - The phone's own lines across a drop (#939)
+
+    /// A phone attached through `paired`'s Mac, its client reading the session: the app, the transport and the connection.
+    static func attached(_ paired: PairedPhone) async throws -> (AppSession, ChannelTransport, RemoteConnection) {
+        let connection = try Self.connection(paired)
+        let app = AppSession()
+        let transport = connection.transport()
+        app.start(transport, as: .connecting)
+        connection.start()
+        #expect(await Wait.until { !app.engine.projects.isEmpty && app.engine.status == .connected })
+        return (app, transport, connection)
+    }
+
+    /// What came of a message sent, once something has.
+    @MainActor final class Outcome {
+        var value: EngineSession<MessageField>.SubmitOutcome?
+        func callAsFunction() -> EngineSession<MessageField>.SubmitOutcome? { value }
+    }
+
+    /// Sends `text` with `EngineSession.submit`, as the message field does, and gives back its outcome once it has one.
+    static func submit(_ text: String, through app: AppSession) -> Outcome {
+        let outcome = Outcome()
+        Task { outcome.value = await app.engine.submit(text, to: 1, steer: false) }
+        return outcome
+    }
+
+    @Test func aLineCutMidwayIsSentAgainOnTheResumedChannel() async throws {
+        // The channel drops after the first part of a message too long for one transport message went: the Mac never had
+        // it whole, and never counted it. The session resumes, and the message is sent again on the new channel.
+        let paired = try await Self.paired(TestMac.Rules(cutLines: 1, takesMessages: true))
+        defer { paired.mac.stop() }
+        let (app, transport, connection) = try await Self.attached(paired)
+        defer { connection.stop() }
+
+        let outcome = Self.submit(String(repeating: "a long message ", count: 20_000), through: app)
+        #expect(await Wait.until { outcome() != nil }, "the call is answered, not left waiting until the session ends")
+        #expect(outcome() == .sent)
+        let (cut, attached, submits) = paired.mac.state.withLock { ($0.cut, $0.attachedCount, $0.submits) }
+        #expect(cut == 1, "the first copy was cut part way")
+        #expect(attached == 2 && connection.transport() === transport, "and the session resumed, on the same transport")
+        #expect(submits.count == 1, "the copy sent again is the one the Mac took")
+        #expect(app.engine.lastError == nil)
+    }
+
+    @Test func aLineTakenWholeButNotCountedIsSentAgainAndTakenOnce() async throws {
+        // The Mac took the message whole, then the channel dropped before its ack: the phone cannot know it arrived, so
+        // it sends it again, with the same request id, and the engine gives it the submission it already has.
+        let paired = try await Self.paired(TestMac.Rules(dropAfterTaking: 1, takesMessages: true))
+        defer { paired.mac.stop() }
+        let (app, transport, connection) = try await Self.attached(paired)
+        defer { connection.stop() }
+
+        let outcome = Self.submit("hello across a drop", through: app)
+        #expect(await Wait.until { outcome() != nil })
+        #expect(outcome() == .sent)
+        let (submits, submissions) = paired.mac.state.withLock { ($0.submits, $0.submissions) }
+        #expect(submits.count == 2 && Set(submits).count == 1, "sent twice, with one request id: \(submits)")
+        #expect(submissions.count == 1, "and taken once")
+        #expect(connection.transport() === transport)
+    }
+
+    @Test func aLineTheMacCountedIsNotSentAgain() async throws {
+        // The Mac acknowledged the message before the channel dropped: its answer comes on the resumed channel, and the
+        // message is not sent again.
+        let paired = try await Self.paired(TestMac.Rules(dropAfterAcking: 1, takesMessages: true))
+        defer { paired.mac.stop() }
+        let (app, _, connection) = try await Self.attached(paired)
+        defer { connection.stop() }
+
+        let outcome = Self.submit("counted before the drop", through: app)
+        #expect(await Wait.until { outcome() != nil })
+        #expect(outcome() == .sent)
+        #expect(paired.mac.state.withLock { ($0.submits.count, $0.attachedCount) } == (1, 2), "sent once, answered on the resumed channel")
+    }
+
+    @Test func aLineCutEveryTimeGoesBackToTheField() async throws {
+        // A Mac that cuts the message every time (a line pi² Remote cuts for its budget, #908): the phone tries three
+        // times, then gives up, and the message goes back to the field with why.
+        let paired = try await Self.paired(TestMac.Rules(cutLines: 100, takesMessages: true))
+        defer { paired.mac.stop() }
+        let (app, transport, connection) = try await Self.attached(paired)
+        defer { connection.stop() }
+
+        let outcome = Self.submit(String(repeating: "too long for this Mac ", count: 20_000), through: app)
+        #expect(await Wait.until { outcome() != nil })
+        #expect(outcome() == .refused, "refused, so that the message field gives the text back")
+        #expect(paired.mac.state.withLock { ($0.cut, $0.submits.count) } == (EngineSession<MessageField>.cutTries, 0))
+        #expect(app.engine.lastError?.contains("dropped") == true, "\(app.engine.lastError ?? "no words")")
+        #expect(connection.transport() === transport && app.engine.status == .connected, "the session goes on")
+    }
+
     @Test func homeIsFoundByItsTagAlone() async throws {
         let paired = try await Self.paired()
         defer { paired.mac.stop() }

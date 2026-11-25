@@ -133,6 +133,29 @@ struct ConversationsProblemRow: View {
     }
 }
 
+/// When a screen that asks the Mac for something as it opens (the folders offered, a file) asks again: the client is
+/// connected, and to the Mac itself or the demo rather than to the phone's last state. At launch a paired phone's client
+/// starts on what the Mac last sent (`CachedTransport`), which refuses every request, and moves to the Mac once it is
+/// reached, its status `connected` throughout.
+struct ConversationsReach: Hashable {
+    /// What else the screen's asking depends on, such as the command whose output it follows.
+    var key = ""
+    let connected: Bool
+    let live: Bool
+
+    /// Connected to the Mac itself, or the demo.
+    var ready: Bool { connected && live }
+
+    @MainActor init(_ session: AppSession, for key: String = "") {
+        self.key = key
+        connected = session.engine.status == .connected
+        switch session.connection {
+        case .connected, .demo: live = true
+        case .notPaired, .connecting, .outOfReach: live = false
+        }
+    }
+}
+
 /// What a screen shows while the Mac's lists have not come yet.
 struct ConversationsWaiting: View {
     var body: some View {

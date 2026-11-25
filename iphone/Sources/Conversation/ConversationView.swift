@@ -118,6 +118,7 @@ struct ConversationView: View {
                         },
                         onLink: { link = $0 },
                         onOpenConversation: { openRoute(.conversation($0)) },
+                        onFile: { openRoute(.filePreview(conversation: conversationID, path: $0)) },
                         loadOlder: { engine.loadOlder(conversationID) },
                         fetchPicture: { entry, index in await requests.picture(entry: entry, index: index) }
                     )
