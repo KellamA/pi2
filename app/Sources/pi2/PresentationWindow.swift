@@ -26,7 +26,6 @@ struct PresentationWindow: View {
     @State private var model: PresentationWindowModel
     @ObservedObject private var windows = PresentationWindows.shared
     @Environment(\.dismiss) private var dismiss
-    @State private var askingNetwork = false
 
     private var engine: EngineClient { app.engine }
 
@@ -85,9 +84,7 @@ struct PresentationWindow: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PresentationBar(model: model, agent: agent, names: names) {
-                askingNetwork = true
-            }
+            PresentationBar(model: model, agent: agent, names: names, askNetwork: model.askNetworkConsent)
             stage
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             if model.stripShown, model.items.count > 0 {
@@ -132,23 +129,25 @@ struct PresentationWindow: View {
         #if PI2_DEVELOPMENT
         .background { if PresentationLaunch.smallest { SmallestWindow() } }
         .task(id: model.pageView != nil) {
-            guard PresentationLaunch.networkAlert, model.pageView != nil, !model.networkAllowed else { return }
-            try? await Task.sleep(for: .seconds(1))
-            askingNetwork = true
+            guard PresentationLaunch.networkAlert, model.pageView != nil, let target = model.networkTarget else { return }
+            guard (try? await Task.sleep(for: .seconds(1))) != nil, model.networkTarget == target else { return }
+            model.askNetworkConsent()
         }
         #endif
-        .alert("Allow network for this page?", isPresented: $askingNetwork) {
-            Button("Allow Network") { Task { await model.setNetwork(true) } }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(verbatim: networkMeaning)
+        .alert("Allow network for this page?", isPresented: Binding(
+            get: { model.networkConsent != nil },
+            set: { if !$0 { model.dismissNetworkConsent() } }
+        ), presenting: model.networkConsent) { target in
+            Button("Allow Network") { model.confirmNetworkConsent(target) }
+            Button("Cancel", role: .cancel) { model.dismissNetworkConsent() }
+        } message: { target in
+            Text(verbatim: networkMeaning(for: target.version))
         }
     }
 
     /// What allowing the network means, said before it is allowed: what the page can then do, and what is not stopped.
-    private var networkMeaning: String {
-        let number = model.place.map { "version \($0.0)" } ?? "this version"
-        return "The page, which an agent wrote, can then load anything from the internet over secure (https) addresses, and send whatever it holds, or whatever you type into it, to any site.\n\nPlain http addresses stay blocked, and so do the addresses of this Mac and your local network as written. A secure address whose name points back at this Mac or your network is not stopped.\n\nIt still cannot leave this window, open others, or ask for your files, camera, microphone or location. It is for \(number) alone: a newer version starts with the network off again."
+    private func networkMeaning(for version: Int) -> String {
+        "The page, which an agent wrote, can then load anything from the internet over secure (https) addresses, and send whatever it holds, or whatever you type into it, to any site.\n\nPlain http addresses stay blocked, and so do the addresses of this Mac and your local network as written. A secure address whose name points back at this Mac or your network is not stopped.\n\nIt still cannot leave this window, open others, or ask for your files, camera, microphone or location. It is for version \(version) alone: a newer version starts with the network off again."
     }
 
     @ViewBuilder
@@ -436,7 +435,7 @@ struct PresentationBar: View {
         let on = model.networkAllowed
         if PresentedPagePolicy.networkCanBeAllowed {
             Button {
-                if on { Task { await model.setNetwork(false) } } else { askNetwork() }
+                if on { Task { await model.turnNetworkOff() } } else { askNetwork() }
             } label: {
                 Label(on ? "Network on: https" : "Network off", systemImage: on ? "network" : "network.slash")
                     .font(.system(size: 12, weight: on ? .semibold : .regular))
@@ -790,6 +789,10 @@ struct PresentationWindowOpener: View {
                 guard engine.hasLoadedLibrary, PresentationBarCheck.asked else { return }
                 try? await Task.sleep(for: .seconds(1))
                 await PresentationBarCheck.run(home: engine.dataFolder) { engine.note($0) }
+            }
+            .task(id: engine.hasLoadedLibrary) {
+                guard engine.hasLoadedLibrary, PresentationNetworkCheck.asked else { return }
+                await PresentationNetworkCheck.run { engine.note($0) }
             }
             .task(id: engine.hasLoadedLibrary) {
                 guard engine.hasLoadedLibrary, let asked = PresentationLaunch.take() else { return }

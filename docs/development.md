@@ -367,7 +367,7 @@ The view an agent's page is drawn in (`PresentedPageView` in `app/Sources/Transc
 cd app && swift build --product pi2-presented-check && .build/debug/pi2-presented-check
 ```
 
-What it cannot check: "Allow network for this page", which this piece leaves out; a form control's own picker (a colour, a date), which opens on the person's click in the live window and was not opened here, since it would come on the screen; the local network beyond this Mac's own addresses, which the check does not touch; and the window around the view, which is the next piece's.
+The Mac window's consent handlers are checked separately in a throwaway copy. Start `scripts/test-copy start test-1020 --show presentation:network-check`, wait for `presentation network check: all passed` (or the failure lines) in the copy's `app.log`, then run `scripts/test-copy stop test-1020`. The check feeds the real window model in-memory version updates, verifies Cancel, stale and unchanged targets, and changes before and during a write. It makes no WebKit view, no `presented.network` request and no network connections. It does not drive the native alert's controls.
 
 ### Client checks
 
