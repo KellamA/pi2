@@ -2590,15 +2590,15 @@ try {
 		console.log(`    66 MiB task: refused by the table in ${Math.round(table.took)} ms, for its size in ${Math.round(sized.took)} ms; the mean of its ${task.rounds} rounds grew the engine by ${mb(task.more)} MB more than the table's refusal`);
 		assert.ok(sized.took <= 3 * table.took + 2_000, `in ${Math.round(sized.took)} ms, where the same line refused by the table took ${Math.round(table.took)} ms`);
 		// The same in fields the devices' log's summary reads (#940's security read): a refused request is summarized by its
-		// method alone, so nothing cleans, masks or splits the title or the path first. Each field keeps the bound its fault
-		// needs: two texts for the path, which the summary masks whole (742 MB and 836 MB in two fault runs of #1030), and one
-		// text for the title, which origin/main held it to. The title's own fault is small in this measure but not absent:
-		// each round builds the summary from the whole 66 MiB title, unhidden and masked before the log clips it to 200
-		// characters, then drops it, and the pages the collector frees make the next round's copy cheap — the mean reads what
-		// the process kept, 19 MB when only a title's summary is made, 70 and 87 MB when the path's fault ran before it in
-		// the same run. What it does not keep it pays for in time: 2078 ms where the table's refusal took 227, and that time
-		// assertion below, not the memory one, is what catches this fault. It takes sixteen rounds because its reading moves
-		// by a whole text in a round: the mean of eight landed on 35 MB in four runs of five, half of its bound.
+		// method alone, so nothing cleans, masks or splits the title or the path first. Each field keeps its own bound.
+		// The path, two texts: were the summary made from it, previewedPath would split the whole 66 MiB into its names
+		// and join them again before keeping 120 characters (742 MB and 836 MB in two fault runs of #1030). The title,
+		// one text, as origin/main held it: were the summary made from it, the whole title would be unhidden and masked
+		// before the log clips it to 200 characters, then dropped, so the mean reads only what the process kept: 19 MB
+		// when a title's summary alone is made, 70 and 87 MB when the path's was made too in the same run. For a title
+		// alone it is the time assertion below that fails (2078 ms where the table's refusal took 227). The title takes
+		// sixteen rounds because its reading moves by a whole text in a round: the mean of eight landed on 33 to 35 MB,
+		// half of its bound, in four runs of five.
 		const { id: renamed } = (await ask("conversation.create", { model: demo })).result;
 		const reads: (Awaited<ReturnType<typeof againstTable>> & { what: string; method: string; rounds: number; texts: number })[] = [];
 		for (const [what, method, params, rounds, texts] of [
