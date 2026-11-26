@@ -1,10 +1,11 @@
 #!/bin/bash
-# Checks scripts/ci-changes, which decides which of CI's jobs a change needs (#245, #871), in two parts:
+# Checks scripts/ci-changes, which decides which of CI's jobs a change needs (#245, #871, #1034), in two parts:
 #
 # - Its decisions: each case makes a throwaway repository with a main branch and a change merged into it as CI's merge
-#   commit is (or a push to main), runs a copy of the script there, and compares the iphone, macos and relay it writes,
-#   or that it writes none. Among them: names git would quote, names in another letter case, SwiftPM's version-specific
-#   manifests, moves and deletions, links, and a commit with no parent.
+#   commit is (or a push to main), runs a copy of the script there, and compares the iphone, engine, app and relay it
+#   writes, or that it writes none. Among them: every entry of the four lists and what it narrows, names git would
+#   quote, names in another letter case, SwiftPM's version-specific manifests, moves and deletions, links, and a commit
+#   with no parent.
 # - What the phone's build reaches outside iphone/, in this checkout: every link under iphone/, every ../ path in the
 #   Xcode project, and, for its local package, the manifest, the resolved versions and the folders of the targets the
 #   project links and their dependencies must all be in the phone's list, so that a change to them runs its job.
@@ -32,8 +33,8 @@ put() { mkdir -p "$(dirname -- "$1")" && printf 'x\n' >"$1"; }
 
 # decide <name> <event> <expected> <base> <change> [parent|other|empty]
 # <base> and <change> are shell code run in the repository: the first on main before the change branches off, the
-# second on the change's branch. <expected> is "iphone macos relay" as the script writes them, or "none" when it must
-# write nothing (and fail). For a push, `before` is the merge's first parent, another commit, or empty.
+# second on the change's branch. <expected> is "iphone engine app relay" as the script writes them, or "none" when it
+# must write nothing (and fail). For a push, `before` is the merge's first parent, another commit, or empty.
 decide() {
 	local name=$1 event=$2 expected=$3 base=$4 change=$5 before_is=${6:-parent}
 	local repo out got before status
@@ -64,7 +65,7 @@ decide() {
 	(cd "$repo" && GITHUB_OUTPUT=$out scripts/ci-changes "$event" "$before") >"$repo.log" 2>&1
 	status=$?
 	if [[ -s $out ]]; then
-		got="$(sed -n 's/^iphone=//p' "$out") $(sed -n 's/^macos=//p' "$out") $(sed -n 's/^relay=//p' "$out")"
+		got="$(sed -n 's/^iphone=//p' "$out") $(sed -n 's/^engine=//p' "$out") $(sed -n 's/^app=//p' "$out") $(sed -n 's/^relay=//p' "$out")"
 	else
 		got=none
 	fi
@@ -85,81 +86,129 @@ decide() {
 }
 
 PR=pull_request
-# What runs and what is skipped, by kind of file.
-decide "docs only" $PR "false false false" "" "put docs/a.md"
-decide "docs and changelog" $PR "false false false" "" "put docs/a.md; put changelog.d/871.md"
-decide "the transcript page" $PR "true true false" "" "put app/Web/transcript/transcript.js"
-decide "the transcript page's tests" $PR "false true false" "" "put app/Web/test/transcript.test.mjs"
-decide "a phone file" $PR "true true false" "" "put iphone/Sources/App.swift"
-decide "a phone test and docs" $PR "true true false" "" "put iphone/Tests/ConversationTests.swift; put docs/a.md"
-decide "a shared target" $PR "true true false" "" "put app/Sources/TranscriptKit/TranscriptLoading.swift"
-decide "each shared target" $PR "true true false" "" "put app/Sources/PiModels/a.swift; put app/Sources/EngineKit/b.swift; put app/Sources/RemoteKit/c.swift"
-decide "a target named like one" $PR "false true false" "" "put app/Sources/TranscriptKitty/x.swift"
-decide "the recorded session" $PR "true true false" "" "put app/Sources/pi2-client-check/Fixture/session.jsonl"
-decide "the client check" $PR "false true false" "" "put app/Sources/pi2-client-check/main.swift"
-decide "Package.swift" $PR "true true false" "" "put app/Package.swift"
-decide "Package.resolved" $PR "true true false" "" "put app/Package.resolved"
-decide "Package@swift-6.swift" $PR "true true false" "" "put app/Package@swift-6.swift"
-decide "Package@swift-6.1.swift" $PR "true true false" "" "put app/Package@swift-6.1.swift"
-decide "scripts/iphone-sim" $PR "true false false" "" "put scripts/iphone-sim"
-decide "scripts/test-iphone-sim" $PR "false false false" "" "put scripts/test-iphone-sim"
-decide "this script" $PR "true true false" "" "printf '# changed\n' >>scripts/ci-changes"
-decide "this script's test" $PR "false true false" "" "put scripts/test-ci-changes"
-decide "ci.yml" $PR "true true false" "" "put .github/workflows/ci.yml"
-decide "release.yml" $PR "false true false" "" "put .github/workflows/release.yml"
+# What runs and what is skipped, by kind of file: iphone engine app relay.
+decide "docs only" $PR "false false false false" "" "put docs/a.md"
+decide "docs and changelog" $PR "false false false false" "" "put docs/a.md; put changelog.d/871.md"
+decide "the transcript page" $PR "true false true false" "" "put app/Web/transcript/transcript.js"
+decide "the transcript page's tests" $PR "false false true false" "" "put app/Web/test/transcript.test.mjs"
+decide "a shared target" $PR "true false true false" "" "put app/Sources/TranscriptKit/TranscriptLoading.swift"
+decide "each shared target" $PR "true true true true" "" "put app/Sources/PiModels/a.swift; put app/Sources/EngineKit/b.swift; put app/Sources/RemoteKit/c.swift"
+decide "a target named like one" $PR "false false true false" "" "put app/Sources/TranscriptKitty/x.swift"
+decide "the recorded session" $PR "true false true false" "" "put app/Sources/pi2-client-check/Fixture/session.jsonl"
+decide "the client check" $PR "false false true false" "" "put app/Sources/pi2-client-check/main.swift"
+decide "Package.swift" $PR "true true true true" "" "put app/Package.swift"
+decide "Package.resolved" $PR "true true true true" "" "put app/Package.resolved"
+decide "Package@swift-6.swift" $PR "true true true true" "" "put app/Package@swift-6.swift"
+decide "Package@swift-6.1.swift" $PR "true true true true" "" "put app/Package@swift-6.1.swift"
+decide "scripts/iphone-sim" $PR "true false false false" "" "put scripts/iphone-sim"
+decide "scripts/test-iphone-sim" $PR "false false false false" "" "put scripts/test-iphone-sim"
+decide "this script" $PR "true true true true" "" "printf '# changed\n' >>scripts/ci-changes"
+decide "this script's test" $PR "false true true true" "" "put scripts/test-ci-changes"
+decide "ci.yml" $PR "true true true true" "" "put .github/workflows/ci.yml"
+decide "release.yml" $PR "false true true true" "" "put .github/workflows/release.yml"
 # The owner's dispatch-only qualification of the mini (#993): as release.yml, a change to it runs the macOS jobs, and
-# neither the phone's job nor the relay's, which read nothing of it.
-decide "mini-qualify.yml" $PR "false true false" "" "put .github/workflows/mini-qualify.yml"
-decide "the engine" $PR "false true false" "" "put engine/src/engine.ts"
-decide "the relay" $PR "false false true" "" "put relay/src/index.ts"
-decide ".gitattributes" $PR "true true false" "" "put .gitattributes"
-decide "app/.gitattributes" $PR "true true false" "" "put app/.gitattributes"
-decide "a .gitattributes in docs" $PR "true false false" "" "put docs/.gitattributes"
-decide "app/VERSION a version" $PR "false false false" "" "mkdir -p app; printf '1.2.3\n' >app/VERSION"
+# neither the phone's job nor one that reads nothing of it.
+decide "mini-qualify.yml" $PR "false true true true" "" "put .github/workflows/mini-qualify.yml"
+decide "the engine" $PR "false true true true" "" "put engine/src/engine.ts"
+decide "an engine script" $PR "false true true true" "" "put engine/scripts/patch-dependencies.ts"
+decide "the engine's packages" $PR "false true true true" "" "put engine/package.json"
+decide "the engine's package lock" $PR "false true true true" "" "put engine/package-lock.json"
+# A file beside the engine's lists: no list says what reads it, so every job runs.
+decide "the engine's TypeScript config" $PR "false true true true" "" "put engine/tsconfig.json"
+decide "the relay" $PR "false false false true" "" "put relay/src/index.ts"
+decide "the relay's packages" $PR "false false false true" "" "put relay/package.json"
+decide ".gitattributes" $PR "true true true true" "" "put .gitattributes"
+decide "app/.gitattributes" $PR "true true true true" "" "put app/.gitattributes"
+decide "a .gitattributes in docs" $PR "true false false false" "" "put docs/.gitattributes"
+decide "app/VERSION a version" $PR "false false false false" "" "mkdir -p app; printf '1.2.3\n' >app/VERSION"
 decide "app/VERSION not a version" $PR "none" "" "mkdir -p app; printf '1.2 3;x\n' >app/VERSION"
-decide "an empty merge" $PR "true true true" "" ":"
+decide "a root file no list names" $PR "false true true true" "" "put notes.txt"
+decide "an empty merge" $PR "true true true true" "" ":"
+
+# A change to the iPhone app alone needs only its job (#1034): no macOS job's steps name iphone/...
+decide "a phone file" $PR "true false false false" "" "put iphone/Sources/App.swift"
+decide "a phone test and docs" $PR "true false false false" "" "put iphone/Tests/ConversationTests.swift; put docs/a.md"
+decide "a phone file and the changelog" $PR "true false false false" "" "put iphone/Sources/App.swift; put changelog.d/1034.md"
+# ...except the line the engine's tests read (engine/test/devices.ts): that file runs every macOS job.
+decide "the phone's line limit the engine reads" $PR "true true true true" "" "put iphone/Sources/Connection/Attach.swift"
+decide "a phone file and the engine" $PR "true true true true" "" "put iphone/Sources/App.swift; put engine/src/engine.ts"
+decide "a phone file and one engine test" $PR "true true false false" "" "put iphone/Sources/App.swift; put engine/test/wipe.ts"
+decide "a phone file and the relay" $PR "true false false true" "" "put iphone/Sources/App.swift; put relay/src/index.ts"
+
+# A change to one engine test needs only the Engine job (#1034): neither other macOS job reads engine/test/, since the
+# App job and the protocol test run engine/src/main.ts and install the engine's packages, not its tests.
+decide "one engine test" $PR "false true false false" "" "put engine/test/wipe.ts"
+decide "two engine tests" $PR "false true false false" "" "put engine/test/wipe.ts; put engine/test/load-script.ts"
+decide "an engine test and the app" $PR "false true true false" "" "put engine/test/wipe.ts; put app/Sources/PaneKit/Pane.swift"
+decide "an engine test and a RemoteKit file" $PR "true true true true" "" "put engine/test/wipe.ts; put app/Sources/RemoteKit/Frames.swift"
+decide "an engine test and the change to the script" $PR "true true true true" "" "put engine/test/wipe.ts; printf '# changed\n' >>scripts/ci-changes"
+
+# A change to the Mac app alone keeps the App job, and only the paths the other two jobs build or read keep theirs.
+decide "the app alone" $PR "false false true false" "" "put app/Sources/pi2/App.swift"
+decide "the app's build script" $PR "false false true false" "" "put app/build.sh"
+decide "an app check" $PR "false false true false" "" "put app/Sources/pi2-computer-check/main.swift"
+decide "a check RemoteKit needs" $PR "false false true false" "" "put app/Sources/pi2-remote-check/main.swift"
+decide "the fuzzer" $PR "false false true false" "" "put app/Sources/pi2-remote-fuzz/main.swift"
+# pi² Remote and RemoteKit: the engine's tests read files of both, and the protocol test builds them.
+decide "pi² Remote" $PR "false true true true" "" "put app/Sources/pi2-remote/Remote.swift"
+decide "a RemoteKit file" $PR "true true true true" "" "put app/Sources/RemoteKit/Frames.swift"
+decide "the helper" $PR "false false true true" "" "put app/Sources/pi2-remote-helper/main.swift"
+decide "the helper's check" $PR "false false true true" "" "put app/Sources/pi2-remote-helper-check/main.swift"
+decide "the relay check" $PR "false false true true" "" "put app/Sources/pi2-relay-check/main.swift"
 
 # Names git quotes without -z: each must be read as it is.
-decide 'a quote in a phone name' $PR "true true false" "" "put 'iphone/Sources/a\"b.swift'"
-decide 'a backslash in a phone name' $PR "true true false" "" "put 'iphone/Sources/a\\b.swift'"
-decide 'a tab in a phone name' $PR "true true false" "" "put \$'iphone/Sources/a\\tb.swift'"
-decide 'a line break in a phone name' $PR "true true false" "" "put \$'iphone/Sources/a\\nb.swift'"
-decide 'a letter outside ASCII in a phone name' $PR "true true false" "" "put \$'iphone/Sources/Caf\\xc3\\xa9.swift'"
-decide 'a letter outside ASCII in a shared target' $PR "true true false" "" "put \$'app/Sources/RemoteKit/\\xc3\\xa9.swift'"
-decide 'a name with $(…), a backtick and *' $PR "true true false" "" "put 'iphone/Sources/\$(touch ran)\`touch ran\`*.swift'"
-decide 'a workflow command as a name' $PR "true true false" "" "put \$'iphone/Sources/x\\n::error::y'"
-# The macOS jobs ran for such names before, when git quoted them, and still do: no name the list did not match before
-# matches it now.
-decide 'a letter outside ASCII in docs' $PR "false true false" "" "put \$'docs/Caf\\xc3\\xa9.md'"
-decide 'a quote in docs' $PR "false true false" "" "put 'docs/a\"b.md'"
-decide 'a line break in docs' $PR "false true false" "" "put \$'docs/a\\nb.md'"
-decide 'a quote in the relay' $PR "false true false" "" "put 'relay/a\"b.ts'"
+decide 'a quote in a phone name' $PR "true true true true" "" "put 'iphone/Sources/a\"b.swift'"
+decide 'a backslash in a phone name' $PR "true true true true" "" "put 'iphone/Sources/a\\b.swift'"
+decide 'a tab in a phone name' $PR "true true true true" "" "put \$'iphone/Sources/a\\tb.swift'"
+decide 'a line break in a phone name' $PR "true true true true" "" "put \$'iphone/Sources/a\\nb.swift'"
+decide 'a letter outside ASCII in a phone name' $PR "true true true true" "" "put \$'iphone/Sources/Caf\\xc3\\xa9.swift'"
+decide 'a letter outside ASCII in a shared target' $PR "true true true true" "" "put \$'app/Sources/RemoteKit/\\xc3\\xa9.swift'"
+# A printable name with no quote or backslash is a phone name as written, and needs the phone's job alone.
+decide 'a name with $(…), a backtick and *' $PR "true false false false" "" "put 'iphone/Sources/\$(touch ran)\`touch ran\`*.swift'"
+decide 'a workflow command as a name' $PR "true true true true" "" "put \$'iphone/Sources/x\\n::error::y'"
+# The macOS jobs ran for such names before, when git quoted them, and still do: no name the lists did not match before
+# matches them now.
+decide 'a letter outside ASCII in docs' $PR "false true true true" "" "put \$'docs/Caf\\xc3\\xa9.md'"
+decide 'a quote in docs' $PR "false true true true" "" "put 'docs/a\"b.md'"
+decide 'a line break in docs' $PR "false true true true" "" "put \$'docs/a\\nb.md'"
+decide 'a quote in the relay' $PR "false true true true" "" "put 'relay/a\"b.ts'"
 
-# Letter case: the runner's file system ignores it, so these are built into the phone's folders.
-decide "IPHONE/" $PR "true true false" "" "put IPHONE/Sources/B.swift"
-decide "App/Sources/RemoteKit" $PR "true true false" "" "put App/Sources/RemoteKit/N.swift"
-decide "app/sources/PiModels" $PR "true true false" "" "put app/sources/PiModels/N.swift"
-decide "APP/package@SWIFT-6.swift" $PR "true true false" "" "put APP/package@SWIFT-6.swift"
-decide "app/web/TRANSCRIPT" $PR "true true false" "" "put app/web/TRANSCRIPT/t.js"
-decide "SCRIPTS/IPHONE-SIM" $PR "true true false" "" "put SCRIPTS/IPHONE-SIM"
-# The macOS list is matched as written: another case is not on it, and runs them.
-decide "Docs/" $PR "false true false" "" "put Docs/a.md"
+# Letter case: the runner's file system ignores it, so these are built into the phone's folders. The macOS lists are
+# matched as written, so a name in another case is on none of them, and runs every macOS job.
+decide "IPHONE/" $PR "true true true true" "" "put IPHONE/Sources/B.swift"
+decide "App/Sources/RemoteKit" $PR "true true true true" "" "put App/Sources/RemoteKit/N.swift"
+decide "app/sources/PiModels" $PR "true false true false" "" "put app/sources/PiModels/N.swift"
+decide "APP/package@SWIFT-6.swift" $PR "true true true true" "" "put APP/package@SWIFT-6.swift"
+decide "app/web/TRANSCRIPT" $PR "true false true false" "" "put app/web/TRANSCRIPT/t.js"
+decide "SCRIPTS/IPHONE-SIM" $PR "true true true true" "" "put SCRIPTS/IPHONE-SIM"
+decide "ENGINE/test" $PR "false true true true" "" "put ENGINE/test/a.ts"
+# The runner ignores case, so a folder in another case is that folder: the two the other jobs read or build are
+# matched in any case, and one whose first folder is not app/ at all is on no list and runs every job.
+decide "a RemoteKit folder in another case" $PR "true true true true" "" "put app/Sources/remotekit/N.swift"
+decide "a pi² Remote folder in another case" $PR "false true true true" "" "put app/sources/pi2-remote/Remote.swift"
+decide "the app in another case" $PR "false true true true" "" "put App/Sources/pi2/App.swift"
+decide "Docs/" $PR "false true true true" "" "put Docs/a.md"
 
-# Moves, deletions and links.
-decide "a move out of iphone/" $PR "true true false" "put iphone/Sources/A.swift" "mkdir -p docs; git mv iphone/Sources/A.swift docs/A.swift"
-decide "a move into iphone/" $PR "true true false" "put docs/A.swift" "mkdir -p iphone/Sources; git mv docs/A.swift iphone/Sources/A.swift"
-decide "a phone file deleted" $PR "true true false" "put iphone/Sources/A.swift; put iphone/Sources/B.swift" "git rm -q iphone/Sources/A.swift"
-decide "a shared target's file deleted" $PR "true true false" "put app/Sources/EngineKit/E.swift; put app/Sources/EngineKit/F.swift" "git rm -q app/Sources/EngineKit/E.swift"
+# Moves, deletions and links: both names of a move count.
+decide "a move out of iphone/" $PR "true false false false" "put iphone/Sources/A.swift" "mkdir -p docs; git mv iphone/Sources/A.swift docs/A.swift"
+decide "a move into iphone/" $PR "true false false false" "put docs/A.swift" "mkdir -p iphone/Sources; git mv docs/A.swift iphone/Sources/A.swift"
+decide "a phone file deleted" $PR "true false false false" "put iphone/Sources/A.swift; put iphone/Sources/B.swift" "git rm -q iphone/Sources/A.swift"
+decide "a shared target's file deleted" $PR "true false true false" "put app/Sources/EngineKit/E.swift; put app/Sources/EngineKit/F.swift" "git rm -q app/Sources/EngineKit/E.swift"
+# An engine test moved into the app needs both jobs: its old name needs the Engine job, its new one the App job.
+decide "an engine test moved into the app" $PR "false true true false" "put engine/test/a.ts" "mkdir -p app/Sources/PaneKit; git mv engine/test/a.ts app/Sources/PaneKit/a.swift"
+decide "an engine test moved into pi² Remote" $PR "false true true true" "put engine/test/a.ts" "mkdir -p app/Sources/pi2-remote; git mv engine/test/a.ts app/Sources/pi2-remote/a.swift"
 LINK='put app/Web/transcript/t.js; mkdir -p iphone/Sources/Conversation; ln -s ../../../app/Web/transcript iphone/Sources/Conversation/transcript'
-decide "the page's link pointed elsewhere" $PR "true true false" "$LINK; put docs/t.js" "rm iphone/Sources/Conversation/transcript; ln -s ../../../docs iphone/Sources/Conversation/transcript"
-decide "the page's link made a folder" $PR "true true false" "$LINK" "rm iphone/Sources/Conversation/transcript; put iphone/Sources/Conversation/transcript/t.js"
-decide "app/Web made a link" $PR "true true false" "$LINK; put docs/t.js" "git rm -rq app/Web; ln -s ../docs app/Web"
+decide "the page's link pointed elsewhere" $PR "true false false false" "$LINK; put docs/t.js" "rm iphone/Sources/Conversation/transcript; ln -s ../../../docs iphone/Sources/Conversation/transcript"
+decide "the page's link made a folder" $PR "true false false false" "$LINK" "rm iphone/Sources/Conversation/transcript; put iphone/Sources/Conversation/transcript/t.js"
+decide "app/Web made a link" $PR "true false true false" "$LINK; put docs/t.js" "git rm -rq app/Web; ln -s ../docs app/Web"
 
-# Pushes to main.
-decide "a merge of docs" push "false true true" "" "put docs/a.md"
-decide "a merge of a phone file" push "true true true" "" "put iphone/Sources/App.swift"
-decide "a push whose parent is not before" push "true true true" "" "put docs/a.md" other
-decide "a push with no before" push "true true true" "" "put docs/a.md" empty
+# Pushes to main: every macOS job runs, whatever changed (#1034: whether that stays is the owner's decision).
+decide "a merge of docs" push "false true true true" "" "put docs/a.md"
+decide "a merge of a phone file" push "true true true true" "" "put iphone/Sources/App.swift"
+decide "a merge of one engine test" push "false true true true" "" "put engine/test/wipe.ts"
+decide "a push whose parent is not before" push "true true true true" "" "put docs/a.md" other
+decide "a push with no before" push "true true true true" "" "put docs/a.md" empty
+
 
 # No base: a commit with no parent, as a checkout of depth 1 has. The script fails and writes nothing, so every job runs.
 repo=$(mktemp -d "$T/nobase.XXXX")
