@@ -1,2 +1,3 @@
 ### For contributors
 - `docs/ci-runner.md` has "Qualifying the mini": the short, separate runs that decide whether the owner's Mac mini can run the App and Engine checks, each one started by hand with the new dispatch-only `.github/workflows/mini-qualify.yml`, which no required check and no routing uses. `scripts/ci-runner-clean` now says when it cannot read the Keychain's items, with the status, instead of passing over it.
+- The Engine and App jobs give a job on the owner's runner a keychain of its own (`scripts/ci-runner-clean keychain-start` and `keychain-end`), since a job's security session there cannot open the account's login keychain; it needs no secret. `mini-qualify.yml` takes `keychain=job` to try it.

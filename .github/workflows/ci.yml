@@ -79,6 +79,12 @@ jobs:
         if: runner.environment == 'self-hosted'
         working-directory: ${{ github.workspace }}
         run: scripts/ci-runner-clean start
+      # The Engine's tests write dummy items to the default keychain, which in a job's own security session on the owner's
+      # runner is the account's login keychain, locked and unopenable (#993). GitHub's runners get a new one at each job.
+      - name: Make a keychain of the job's own
+        if: runner.environment == 'self-hosted'
+        working-directory: ${{ github.workspace }}
+        run: scripts/ci-runner-clean keychain-start
       - uses: actions/setup-node@v7
         with:
           node-version: 26
@@ -87,6 +93,10 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm run test:macos
+      - name: Put the job's own keychain back
+        if: always() && runner.environment == 'self-hosted'
+        working-directory: ${{ github.workspace }}
+        run: scripts/ci-runner-clean keychain-end
       - name: Clean the owner's runner after the job
         if: always() && runner.environment == 'self-hosted'
         continue-on-error: true
@@ -262,6 +272,10 @@ jobs:
       - name: Clean the owner's runner
         if: runner.environment == 'self-hosted'
         run: scripts/ci-runner-clean start
+      # As the engine's job: the app's checks and the release check write to the default keychain (#993).
+      - name: Make a keychain of the job's own
+        if: runner.environment == 'self-hosted'
+        run: scripts/ci-runner-clean keychain-start
       # What scripts/test-copy refuses, in a stand-in checkout: it launches nothing. Here and not on Linux because both
       # it and its test read and write the bundle's Info.plist with PlistBuddy, which only macOS has (#235).
       - name: Check what scripts/test-copy refuses
@@ -355,6 +369,9 @@ jobs:
       - name: Build RemoteKit for iOS
         working-directory: app
         run: swift build --target RemoteKit --triple arm64-apple-ios18.0 --sdk "$(xcrun --sdk iphoneos --show-sdk-path)" --scratch-path .build/ios
+      - name: Put the job's own keychain back
+        if: always() && runner.environment == 'self-hosted'
+        run: scripts/ci-runner-clean keychain-end
       - name: Clean the owner's runner after the job
         if: always() && runner.environment == 'self-hosted'
         continue-on-error: true
