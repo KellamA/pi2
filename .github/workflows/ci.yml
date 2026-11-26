@@ -263,8 +263,9 @@ jobs:
       cancel-in-progress: true
     # As the engine's job, by CI_MAC_RUNNER on attempt 1 only (docs/ci-runner.md).
     runs-on: "${{ github.run_attempt == '1' && vars.CI_MAC_RUNNER != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && vars.CI_MAC_RUNNER || 'macos-26' }}"
-    # Five more than before pi² Remote's check (#675), which runs an engine and waits out a session's resume window.
-    timeout-minutes: 25
+    # Five more than before pi² Remote's check (#675), which runs an engine and waits out a session's resume window, and
+    # five again for pi2-presented-check (#979), about four minutes, which with it once had the job cancelled at 25.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:

@@ -281,7 +281,7 @@ jobs:
     name: App (build), all its steps
     if: github.actor == github.repository_owner && github.event.inputs.check == 'app'
     runs-on: ${{ github.event.inputs.runner }}
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
