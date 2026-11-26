@@ -263,8 +263,9 @@ jobs:
       cancel-in-progress: true
     # As the engine's job, by CI_MAC_RUNNER on attempt 1 only (docs/ci-runner.md).
     runs-on: "${{ github.run_attempt == '1' && vars.CI_MAC_RUNNER != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && vars.CI_MAC_RUNNER || 'macos-26' }}"
-    # Five more than before pi² Remote's check (#675), which runs an engine and waits out a session's resume window.
-    timeout-minutes: 25
+    # Five more than before pi² Remote's check (#675), which runs an engine and waits out a session's resume window, and
+    # five again for pi2-presented-check (#979), about four minutes, which with it once had the job cancelled at 25.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
@@ -329,6 +330,13 @@ jobs:
       - name: Check the conversation page loaded ahead
         working-directory: app
         run: .build/debug/pi2-transcript-check
+      # The sandboxed view an agent's page is drawn in (#964), against hostile pages: the scheme handler serves the
+      # manifest alone, no `file:` address loads, another presentation's origin answers nothing, and nothing reaches the
+      # network. Off-screen windows of its own, 127.0.0.1 alone, about two minutes. Its DNS group reads `log show` for the
+      # check's own WebKit networking process, and says `info` rather than failing where a runner cannot read the log.
+      - name: Check the presented page's view against hostile pages
+        working-directory: app
+        run: .build/debug/pi2-presented-check
       # What the client reads of a recorded session of the engine, compared with what it read before its models moved
       # into PiModels (#669). Reads two files in the checkout; touches nothing.
       - name: Check what the client reads of the engine
