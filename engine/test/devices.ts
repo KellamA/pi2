@@ -24,7 +24,7 @@ import { createModels } from "@earendil-works/pi-ai";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { allowsHiddenApproval, checkDeviceLists, deviceLogged, HIDDEN_FROM_THE_PHONE, deviceMay, devicePlacement, type DeviceSession, MAX_TYPED_FROM_A_DEVICE, ONLY_FROM_THE_HELPER, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID, PERSON_REQUESTS, typedRefusal } from "../src/answers.ts";
-import { APPROVAL_DEPTH, checkRequestItem, type Device, deviceRequests, DeviceLog, Devices, devicesState, flushDeviceLog, fromBase64url, helperWanted, hidesSomething, LEAVE_NOT_SIGNED, logDevice, macNameNow, maskValue, NOT_A_LEAVE, NOT_KEPT, pairClaim, PART_HIDDEN, remoteHooks, revokedWatchers, shownName, summarize, TOO_DEEP, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, maskKeysFrom, readSigned, SECOND_CLAIM, wireDevices } from "../src/devices.ts";
+import { APPROVAL_DEPTH, checkRequestItem, type Device, deviceRequests, DeviceLog, Devices, devicesState, flushDeviceLog, fromBase64url, helperWanted, hidesSomething, LEAVE_NOT_SIGNED, logDevice, macNameNow, maskValue, NOT_A_LEAVE, NOT_KEPT, pairClaim, PART_HIDDEN, remoteHooks, revokedWatchers, shownName, summarize, TOO_DEEP, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, maskKeysFrom, readSigned, SECOND_CLAIM, START_AGAIN_CHANGED, wireDevices } from "../src/devices.ts";
 import type { Client } from "../src/clients.ts";
 import { attachChallenge, checkAttach, offerPresenceKey, PRESENCE_KEY_ALREADY_WAITS, PRESENCE_KEY_CHANGED, PRESENCE_KEY_WAITS } from "../src/devices.ts";
 import { personOnly } from "../src/answers.ts";
@@ -1298,6 +1298,94 @@ console.log(JSON.stringify(outcome));
 	step("devices.startAgain with no phone paired, pi² Remote stopped: started and kept wanted while its word about this address is awaited, for a pairing at another relay or at none; the page told from pi² Remote's last word");
 	step("devices.pairStart opens no code for a pairing registered at another relay (relay switch on or off), for one made with the relay off once it is on, nor without pi² Remote's word about this address (#1013)");
 	step("devices.startAgain, for a pairing at another relay: the window closed, every active device revoked and the pairing forgotten in one commit, pi² Remote told each revocation and then forgetPairing, nothing registered by itself; the old pairing never taken back; the next pairing registers anew");
+}
+
+// ---- Starting again is tied to what the person's yes was about (#917's second read): the pairing, the relay's address
+// and the switches are read again at the commit, so a setting changed while pi² Remote's word is awaited refuses.
+
+{
+	const harness = await Harness.open(await openNodeSqliteStorage(join(mkdtempSync(join(work, "moved-")), "session.sqlite")), { registry: createRegistry(), models: createModels() }, context);
+	const old = b64url(randomBytes(16));
+	const at = "ws://127.0.0.1:9/v1";
+	const made = (name: string): Device => ({
+		id: `dev_${b64url(randomBytes(16))}`, name, model: "iPhone 17 Pro", system: "iOS 27.1", deviceKey: spki(p256().publicKey), presenceKey: spki(p256().publicKey), pendingPresenceKey: null,
+		channelKey: b64url(randomBytes(32)), recordKey: spki(p256().publicKey), attestKeyId: "", build: "7", suspendedAt: null, pairedAt: Date.now() - 60_000, lastSeenAt: null, lastPath: "home", revokedAt: null,
+	});
+	/** Two phones paired at the relay's address, with remote access and the relay switch on: what starting again is about. */
+	const startFrom = async (pairing: string) => {
+		await harness.commit(async (tx) => {
+			const doc = await tx.doc(Devices);
+			Object.assign(doc, { pairing, relay: at, devices: [made("Alex's iPhone"), made("Sam's iPhone")], macKeys: { identity: spki(p256().publicKey), channel: b64url(randomBytes(32)), record: spki(p256().publicKey), relay: spki(p256().publicKey), secureEnclave: false } });
+			doc.remote = { ...doc.remote, preview: true, on: true, relay: true };
+		}, context);
+		await wireDevices({ harness, context, log: () => {}, release: false, names: { conversation: () => undefined, project: () => undefined } });
+	};
+	await startFrom(old);
+	const saved = { ...remoteHooks };
+	const told: any[] = [];
+	const closed: string[] = [];
+	let relay: Record<string, unknown> | null = { state: "unavailable", reason: "another-relay", registered: "another-relay", address: at };
+	/** What changes while pi² Remote's word is awaited, as the Devices page changes it on the person's word. */
+	let meanwhile: (() => Promise<void>) | null = null;
+	Object.assign(remoteHooks, {
+		toHelper: (event: any) => told.push(event),
+		ready: async () => ({ addresses: [] }),
+		addresses: () => [],
+		changed: () => {},
+		closeSessions: (device: string) => closed.push(device),
+		helper: () => ({ running: true, stoppedInLastHour: 0, relay }),
+		relayWord: async () => {
+			// The word about this address is awaited all this time, and the settings change meanwhile.
+			if (meanwhile !== null) await meanwhile();
+			return relay;
+		},
+		lastRelayWord: () => relay,
+	});
+	const client = { socket: { write: () => true, destroyed: false, destroy: () => {} }, subscriptions: new Map(), shown: new Set() } as unknown as Client;
+	const again = () => deviceRequests["devices.startAgain"]!({}, client);
+	const meanwhileChange = (edit: (doc: any) => void) => async () => {
+		await harness.commit(async (tx) => edit(await tx.doc(Devices)), context);
+		await wireDevices({ harness, context, log: () => {}, release: false, names: { conversation: () => undefined, project: () => undefined } });
+	};
+	const refused = async (what: string, pairing: string) => {
+		await assert.rejects(again(), (error: Error) => error.message === START_AGAIN_CHANGED, what);
+		assert.ok(devicesState().pairing === pairing && activeDevices().length === 2, `every phone still paired, and the pairing the Mac's: ${what}`);
+		assert.equal(told.length, 0, `and nothing sent to pi² Remote: ${what}`);
+		assert.deepEqual(closed, [], `and no session closed: ${what}`);
+	};
+
+	// (1) Nothing changes while the word is awaited: as before.
+	meanwhile = null;
+	const answer = (await again()) as { revoked: string[] };
+	assert.equal(answer.revoked.length, 2, "both phones revoked");
+	assert.equal(devicesState().pairing, null, "and the pairing forgotten");
+	assert.deepEqual(told.map((event) => event.kind), ["revoke", "revoke", "forgetPairing"], "each revocation told, then the pairing forgotten");
+
+	// (2) The relay's address changes while the word is awaited: refused, revoking and forgetting nothing.
+	await startFrom(old);
+	told.length = 0;
+	closed.length = 0;
+	meanwhile = meanwhileChange((doc) => void (doc.relay = "ws://127.0.0.1:10/v1"));
+	await refused("the relay's address changed while starting again", old);
+
+	// (3) A switch changes while the word is awaited: the same.
+	await startFrom(old);
+	told.length = 0;
+	closed.length = 0;
+	meanwhile = meanwhileChange((doc) => void (doc.remote.relay = false));
+	await refused("the relay switch turned off while starting again", old);
+
+	// (4) The pairing is replaced while the word is awaited: the same.
+	await startFrom(old);
+	const replaced = b64url(randomBytes(16));
+	told.length = 0;
+	closed.length = 0;
+	meanwhile = meanwhileChange((doc) => void (doc.pairing = replaced));
+	await refused("the pairing replaced while starting again", replaced);
+
+	Object.assign(remoteHooks, saved);
+	await harness.close(context);
+	step("devices.startAgain is tied to what the person's yes was about: as before while nothing changes, and refused with nothing revoked, forgotten or sent when the relay's address, a switch or the pairing changes while pi² Remote's word is awaited (#917's second read)");
 }
 
 // ---- A new Face ID key against a real store (#786): the log's kept share, and the races of a save under way

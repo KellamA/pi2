@@ -1447,6 +1447,8 @@ const forgottenPairings = new Set<string>();
 /** `devices.startAgain` calls asking pi² Remote for its word: it is wanted meanwhile, with no device paired too. */
 let askingAgain = 0;
 export const NOTHING_TO_START_AGAIN = "pi² Remote does not say this Mac's pairing belongs to another relay or to none, so there is nothing to start again.";
+/** `devices.startAgain` refused: what the person's yes was about is not what the Mac holds now (#917's second read). */
+export const START_AGAIN_CHANGED = "This Mac's pairing, the relay's address or the switches changed while starting again; nothing was changed. Try again.";
 
 /**
  * Where this Mac's pairing is registered beside the relay's address now set, by pi² Remote's last word about this
@@ -1468,11 +1470,18 @@ function pairingRegisteredNow(): string | null {
  * while pi² Remote says the pairing cannot use this relay, so that it never unpairs the phones of a pairing that can.
  * The old relay is not contacted: pi² Remote asks a relay to remove a device only while connected there as this
  * pairing's Mac, which it is not at another relay's address (nor ever, for a pairing made with the relay off).
+ * The pairing, the relay's address and the switches are read again immediately before that commit, with nothing awaited
+ * between the two, so that a setting changed while pi² Remote's word was awaited refuses instead (#917's second read).
  */
 async function startAgain(): Promise<{ revoked: string[] }> {
 	if (!remoteOn()) throw new Error("Turn on Reach from an iPhone first.");
 	if (!state.remote.relay || state.relay === "") throw new Error("Turn on Reach through pi²'s relay, with its address, first.");
 	if (state.pairing === null) throw new Error(NOTHING_TO_START_AGAIN);
+	// What the person's yes is about, recorded before anything is awaited: the pairing as it is now, and the relay's
+	// address this start acts on. The commit that revokes and forgets checks that both are still these (#917's second
+	// read): a settings change while pi² Remote's word is awaited refuses, with nothing revoked or forgotten.
+	const pairing = state.pairing;
+	const address = state.relay;
 	// As pairStart (#1013): pi² Remote started if it is not running (no device paired), and its word about the address
 	// now set awaited, within the same bound; no word, no start again.
 	askingAgain += 1;
@@ -1482,24 +1491,35 @@ async function startAgain(): Promise<{ revoked: string[] }> {
 		const word = await remoteHooks.relayWord(RELAY_WORD_WAIT_MS);
 		if (word === null) throw new Error(RELAY_WORD_MISSING);
 		if (word.registered !== "another-relay" && word.registered !== "none") throw new Error(NOTHING_TO_START_AGAIN);
-		return await forgetAll(word.registered === "another-relay" ? "another-relay" : "unregistered");
+		return await forgetAll(word.registered === "another-relay" ? "another-relay" : "unregistered", pairing, address, word);
 	} finally {
 		askingAgain -= 1;
 		remoteHooks.changed();
 	}
 }
 
-async function forgetAll(reason: string): Promise<{ revoked: string[] }> {
-	const forgotten = state.pairing;
-	if (forgotten === null) throw new Error(NOTHING_TO_START_AGAIN);
-	closeWindow(null);
+/**
+ * Whether what `devices.startAgain` read when it started has moved since: the pairing, the relay's address, the
+ * switches that start needs, or the address pi² Remote's word is about. Checked in the commit's own synchronous stretch,
+ * so nothing can change between the check and the write.
+ */
+function startAgainMoved(doc: DevicesState, pairing: string, address: string, word: Record<string, unknown>): boolean {
+	return doc.pairing !== pairing || doc.relay !== address || !(doc.remote.on && doc.remote.preview) || !doc.remote.relay || word.address !== address;
+}
+
+async function forgetAll(reason: string, pairing: string, address: string, word: Record<string, unknown>): Promise<{ revoked: string[] }> {
+	if (startAgainMoved(state, pairing, address, word)) throw new Error(START_AGAIN_CHANGED);
 	const revoked = activeDevices().map((device) => device.id);
 	const now = Date.now();
+	closeWindow(null);
 	await change((doc) => {
+		// The same check again on the record the commit writes, with nothing awaited since it: a switch, the address or
+		// the pairing that changed while the word was awaited refuses, revoking and forgetting nothing.
+		if (startAgainMoved(doc, pairing, address, word)) throw new Error(START_AGAIN_CHANGED);
 		for (const one of doc.devices) if (revoked.includes(one.id)) forget(one, now);
 		doc.pairing = null;
 	});
-	forgottenPairings.add(forgotten);
+	forgottenPairings.add(pairing);
 	for (const id of revoked) {
 		failures.delete(id);
 		for (const watch of revokedWatchers) {
@@ -1513,7 +1533,7 @@ async function forgetAll(reason: string): Promise<{ revoked: string[] }> {
 		remoteHooks.toHelper({ kind: "revoke", device: id });
 		remoteHooks.closeSessions(id, "revoked");
 	}
-	remoteHooks.toHelper({ kind: "forgetPairing", pairing: forgotten });
+	remoteHooks.toHelper({ kind: "forgetPairing", pairing });
 	log(`devices: started again at the relay now set, as the person asked: ${revoked.length} device(s) revoked and the pairing forgotten (${reason})`);
 	return { revoked };
 }
