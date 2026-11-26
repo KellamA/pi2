@@ -23,10 +23,13 @@
 //
 // A value is found by its ends, its first 8 characters (its head) and its last 8 (its foot), never compared whole:
 // wherever a head stands, the value's length from there is hidden (to the text's end if it ends first); wherever a foot
-// stands, the value's length up to it (from the text's start if it starts later). So a value is hidden whole, and so is
-// any part of it that holds one of its ends: an answer or an output still coming, sent whole so far each time it grows,
-// and a text cut at its front (a background command's kept output, a snippet), at its end, or in its middle (run_code's
-// "characters left out"). Of a value written out, at most its first 7 and its last 7 characters can show, at a cut. And
+// stands, the value's length up to it (from the text's start if it starts later). A value that begins with a URL's
+// scheme or `www.` (COMMON_BEGINNINGS) has its head after them, and hides from there the rest of its length, so that a
+// URL in a variable does not hide every link on a phone (#997). So a value is hidden whole (but for that beginning),
+// and so is any part of it that holds one of its ends: an answer or an output still coming, sent whole so far each time
+// it grows, and a text cut at its front (a background command's kept output, a snippet), at its end, or in its middle
+// (run_code's "characters left out"). Of a value written out, at most its first 7 (after a common beginning) and its
+// last 7 characters can show, at a cut. And
 // what follows a head or comes before a foot is never compared: a phone that sends text and reads it back masked or
 // not learns only whether it held 8 characters that begin or end a value, never a value one character at a time. The
 // cost is hiding a little too much where a head or a foot stands in ordinary text: of several values with the same
@@ -44,6 +47,41 @@ import type { Credential, CredentialStore } from "@earendil-works/pi-ai";
 
 /** The fewest characters of a value looked for, and the length of its head and its foot. */
 export const LEAST_SECRET = 8;
+
+/**
+ * The common beginnings a value's head is never taken from (#997, the owner's decision of 24 November): a value that
+ * begins with one of these schemes, and then with `www.`, or with `www.` alone, has its head taken from the 8
+ * characters after them, so that a URL held in a variable does not hide every link of that scheme on a phone. This
+ * list and `www.` are the whole of the rule: a value beginning with any other word or host still has its first 8
+ * characters for a head, and its foot is always its last 8. A value with fewer than 8 characters after a beginning is
+ * compared whole; one that is nothing but a beginning is not looked for. The cost: a value cut before its head shows
+ * its beginning and up to 7 characters after it (`postgres://u:s3cr3` of `postgres://u:s3cr3tPw@…`), where its
+ * first 7 alone showed before. Each ends in "://", so no one of them begins another.
+ */
+export const COMMON_BEGINNINGS: readonly string[] = [
+	"https://",
+	"http://",
+	"postgres://",
+	"postgresql://",
+	"mysql://",
+	"mongodb://",
+	"mongodb+srv://",
+	"redis://",
+	"rediss://",
+	"amqp://",
+	"amqps://",
+	"ssh://",
+	"ftp://",
+	"wss://",
+	"ws://",
+	"file://",
+];
+
+/** How many characters of `value` are a common beginning (COMMON_BEGINNINGS, then `www.`): its head starts after them. */
+export function commonBeginning(value: string): number {
+	const scheme = COMMON_BEGINNINGS.find((one) => value.startsWith(one))?.length ?? 0;
+	return value.startsWith("www.", scheme) ? scheme + 4 : scheme;
+}
 /** What stands in a device's copy, or a push, for a secret the engine knows (docs/iphone.md 7). */
 export const SECRET_HIDDEN = "•••";
 /** How many replaced or removed values are still looked for, the oldest forgotten first. */
@@ -79,7 +117,9 @@ const plain = (text: string) => new Set(text).size < 4;
 function forms(value: string, into: Set<string>): void {
 	for (const one of [value, ...value.split(/\r\n|\r|\n/)]) {
 		const trimmed = one.trim();
-		if (trimmed.length < LEAST_SECRET || plain(trimmed)) continue;
+		// What follows a common beginning is what is secret in it: a value that is nothing but one ("https://",
+		// "https://www.") holds nothing to hide, and is not looked for (#997).
+		if (trimmed.length < LEAST_SECRET || trimmed.length === commonBeginning(trimmed) || plain(trimmed)) continue;
 		into.add(trimmed);
 		const escaped = JSON.stringify(trimmed).slice(1, -1);
 		if (escaped !== trimmed) into.add(escaped);
@@ -140,9 +180,18 @@ function search(): Search | null {
 		else known.length = Math.max(known.length, length);
 	};
 	for (const value of values) {
-		const head = value.slice(0, LEAST_SECRET);
+		// A head after a common beginning hides the rest of the value from it; the beginning, which is no secret, shows.
+		const after = commonBeginning(value);
+		// Fewer than LEAST_SECRET after it ("redis://:p4ss@h"): no head can be taken after the beginning, and one taken
+		// from it would hide every link of that scheme; such a value is compared whole, hidden where it stands whole, as
+		// it was before (#1015's security read). A cut of it shows.
+		if (value.length - after < LEAST_SECRET) {
+			add("whole", value, value.length);
+			continue;
+		}
+		const head = value.slice(after, after + LEAST_SECRET);
 		const foot = value.slice(-LEAST_SECRET);
-		if (!plain(head)) add("head", head, value.length);
+		if (!plain(head)) add("head", head, value.length - after);
 		if (!plain(foot)) add("foot", foot, value.length);
 		if (plain(head) && plain(foot)) add("whole", value, value.length);
 	}
