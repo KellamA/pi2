@@ -74,7 +74,9 @@ func drawsItsOwnPage(pictures: URL?) async {
         check("it is at its own pi2-presented origin", (seen["origin"] as? String)?.hasPrefix("pi2-presented://p") == true, "\(seen)")
         info("a page is \(seen["secure"] as? Bool == true ? "" : "not ")a secure context (window.isSecureContext)")
         check("it is not blank", !found.blank)
-        check("drawn 1280 wide and taller than the view", found.width == 1280 && found.height > 1900, "\(found.width)×\(found.height)")
+        // Laid out at the view's width, less a scroll bar's where the Mac always shows one, as a CI runner's does
+        // (1263 of 1280, in #979): that setting changes the layout's width, not what the page may do.
+        check("drawn as wide as the view, less a scroll bar where one is always shown, and taller than it", found.width >= 1240 && found.width <= 1280 && found.height > 1900, "\(found.width)×\(found.height)")
         check("its console's line is reported", found.console.contains { $0.hasPrefix("log: hello from app.js {\"step\":1}") }, "\(found.console)")
         check("its script error is reported, with where", found.console.contains { $0.hasPrefix("error: TypeError") && $0.contains("at js/app.js:3") }, "\(found.console)")
         check("the file it could not find is reported", found.notFound == ["missing.css"], "\(found.notFound)")
