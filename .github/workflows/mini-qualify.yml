@@ -1,0 +1,299 @@
+name: Qualify the mini
+
+# Owner-only, by hand: the small, separate runs that qualify the owner's Mac mini as a CI runner (#993), as "Qualifying
+# the mini" in docs/ci-runner.md puts them in order. It changes nothing of ci.yml: the mini is still switched on by the
+# repository variables alone, this workflow is never required, never called by another workflow, and nothing routes a
+# required check by it. The owner starts it from a branch or commit and reads which of its steps passed.
+#
+# Each run is one job, chosen by `check`, on the runner `runner` names, with the step or the job of ci.yml it checks.
+# Only the owner can start it (every job refuses anyone else), and it holds no secret: `contents: read` only, which the
+# actions below need for the checkout.
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Where to run it — the owner's mini, or GitHub's image for the comparison on another OS
+        required: true
+        type: choice
+        options:
+          # The self-hosted runner's label (docs/ci-runner.md, "The switch").
+          - pi2-mini
+          # The images ci.yml uses: macos-26 is where a pull request and main are built and tested, xcode-27 is the OS
+          # control for the computer check, since the mini runs macOS 27 (ci.yml's iPhone app's job).
+          - macos-26
+          - xcode-27
+      check:
+        description: What to check
+        required: true
+        type: choice
+        options:
+          - computer
+          - keychain
+          - credentials
+          - engine
+          - app
+
+# The run's name says which of the two a run was, without opening it.
+run-name: Qualify the mini — ${{ github.event.inputs.check }} on ${{ github.event.inputs.runner }}
+
+permissions:
+  contents: read
+
+jobs:
+  # The App job's step "Check how computer use reaches controls" alone, with the debug build it needs (run 45721625385
+  # on the mini failed it in its step 15, #993). The two assertions that failed are in its group "a parked window joins
+  # the app's accessibility list when the copy raises it once": passing elsewhere and failing here says the runner's
+  # session, and passing on xcode-27 says macOS 27's AppKit is not at fault either.
+  computer:
+    name: How computer use reaches controls
+    if: github.actor == github.repository_owner && github.event.inputs.check == 'computer'
+    runs-on: ${{ github.event.inputs.runner }}
+    timeout-minutes: 20
+    steps:
+      # Pinned by commit (v7), as ci.yml pins the actions of the jobs that run on the mini; `clean` as there, so that a
+      # warm build of the mini is kept (docs/ci-runner.md, "Build folders, kept on purpose").
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          clean: ${{ runner.environment != 'self-hosted' }}
+      - name: Clean the owner's runner
+        if: runner.environment == 'self-hosted'
+        run: scripts/ci-runner-clean start
+      # ci.yml's App (build) job, step "Build the app, ComputerKit and the probe", unchanged: what the check runs is
+      # built into .build/debug.
+      - name: Build the app, ComputerKit and the probe
+        working-directory: app
+        run: swift build
+      # ci.yml's App (build) job, step "Check how computer use reaches controls", unchanged.
+      - name: Check how computer use reaches controls
+        working-directory: app
+        run: .build/debug/pi2-computer-check
+      - name: Clean the owner's runner after the job
+        if: always() && runner.environment == 'self-hosted'
+        continue-on-error: true
+        run: scripts/ci-runner-clean end
+
+  # The Engine job's Keychain round trip on its own: one dummy item, under a service of this run's own, so that the
+  # next failing run says whether the session's Keychain is locked, has no default keychain, or may not show a prompt
+  # (run 45716809195 attempt 2 failed ten test files on writes, #993).
+  keychain:
+    name: Keychain probe (exit statuses only)
+    if: github.actor == github.repository_owner && github.event.inputs.check == 'keychain'
+    runs-on: ${{ github.event.inputs.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          clean: ${{ runner.environment != 'self-hosted' }}
+      - name: Clean the owner's runner
+        if: runner.environment == 'self-hosted'
+        run: scripts/ci-runner-clean start
+      # The probe the diagnosis on #993 asks for: dummy data only, and a service name of the run's own, which
+      # scripts/ci-runner-clean removes like any other test's. It prints step names, exit statuses and yes/no words and
+      # nothing else: never a listing, never what `security` printed (it can name a keychain's path), never the value of
+      # an item, and it deletes the one item it made.
+      - name: Keychain round trip with a dummy item
+        shell: bash
+        run: |
+          set -uo pipefail
+          service="dev.pi2.credentials.qualify-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          account="probe"
+          dummy="pi2 qualification probe"
+          failures=0
+          say() { printf '%s: %s\n' "$1" "$2"; }
+          yes_no() { if [ "$1" = yes ]; then echo yes; else echo no; fi; }
+
+          # The default keychain this session would write to: its status, and never what it printed.
+          default=$(/usr/bin/security default-keychain 2>/dev/null)
+          status=$?
+          present=no
+          if [ "$status" = 0 ] && [ -n "$default" ]; then present=yes; fi
+          say "default keychain present" "$(yes_no "$present") (exit $status)"
+          [ "$present" = yes ] || failures=1
+
+          # Unlocked: its own answer does not say "is locked", and it could be asked at all.
+          unlocked=no
+          if [ "$present" = yes ]; then
+            info=$(/usr/bin/security show-keychain-info "$default" 2>/dev/null)
+            status=$?
+            case $info in
+              *"is locked"*) unlocked=no ;;
+              *) if [ "$status" = 0 ]; then unlocked=yes; fi ;;
+            esac
+            say "default keychain unlocked" "$(yes_no "$unlocked") (exit $status)"
+          fi
+
+          # One dummy item, written as hexadecimal so that its value is never a word of a command line.
+          hex=$(printf '%s' "$dummy" | od -An -tx1 | tr -d ' \n')
+          /usr/bin/security add-generic-password -U -s "$service" -a "$account" -l "pi2: qualification probe" -X "$hex" 2>/dev/null
+          status=$?
+          say "add the dummy item" "exit $status"
+          [ "$status" = 0 ] || failures=1
+
+          # Read back and compared here, so that neither the value written nor the value read is printed.
+          got=$(/usr/bin/security find-generic-password -s "$service" -a "$account" -w 2>/dev/null)
+          status=$?
+          say "read the dummy item back" "exit $status"
+          [ "$status" = 0 ] || failures=1
+          same=no
+          if [ "$got" = "$dummy" ]; then same=yes; else failures=1; fi
+          say "it is what was written" "$(yes_no "$same")"
+
+          /usr/bin/security delete-generic-password -s "$service" -a "$account" 2>/dev/null
+          status=$?
+          say "delete the dummy item" "exit $status"
+          [ "$status" = 0 ] || failures=1
+
+          # 44 is how `security` says "not found" (engine/src/credentials.ts), so nothing is left under this run's service.
+          /usr/bin/security find-generic-password -s "$service" -a "$account" >/dev/null 2>&1
+          status=$?
+          gone=no
+          if [ "$status" = 44 ]; then gone=yes; else failures=1; fi
+          say "it is gone afterwards" "$(yes_no "$gone") (exit $status)"
+
+          exit "$failures"
+      - name: Clean the owner's runner after the job
+        if: always() && runner.environment == 'self-hosted'
+        continue-on-error: true
+        run: scripts/ci-runner-clean end
+
+  # The credential store's own test file alone (engine/test/credentials.ts), before the whole Engine job, which is the
+  # order the diagnosis on #993 gives: this file green and then the suite green clears the mini of the write failure.
+  credentials:
+    name: Credential store's tests
+    if: github.actor == github.repository_owner && github.event.inputs.check == 'credentials'
+    runs-on: ${{ github.event.inputs.runner }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: engine
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          clean: ${{ runner.environment != 'self-hosted' }}
+      # ci.yml's Engine (type-check and tests) job, its clean-up steps, unchanged: they run from the checkout's top.
+      - name: Clean the owner's runner
+        if: runner.environment == 'self-hosted'
+        working-directory: ${{ github.workspace }}
+        run: scripts/ci-runner-clean start
+      # ci.yml's Engine (type-check and tests) job, the setup-node step and `npm ci`, unchanged.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: engine/package-lock.json
+      - run: npm ci
+      - run: node --test test/credentials.ts
+      - name: Clean the owner's runner after the job
+        if: always() && runner.environment == 'self-hosted'
+        continue-on-error: true
+        working-directory: ${{ github.workspace }}
+        run: scripts/ci-runner-clean end
+
+  # The whole of the Engine job's tests, without its type-check: `npm run test:macos`, as ci.yml runs it.
+  engine:
+    name: Engine tests (npm run test:macos)
+    if: github.actor == github.repository_owner && github.event.inputs.check == 'engine'
+    runs-on: ${{ github.event.inputs.runner }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: engine
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          clean: ${{ runner.environment != 'self-hosted' }}
+      - name: Clean the owner's runner
+        if: runner.environment == 'self-hosted'
+        working-directory: ${{ github.workspace }}
+        run: scripts/ci-runner-clean start
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: engine/package-lock.json
+      - run: npm ci
+      - run: npm run test:macos
+      - name: Clean the owner's runner after the job
+        if: always() && runner.environment == 'self-hosted'
+        continue-on-error: true
+        working-directory: ${{ github.workspace }}
+        run: scripts/ci-runner-clean end
+
+  # The whole of ci.yml's App (build) job: its steps, in its order, with its commands and its names. A green computer
+  # check alone does not qualify it (#993), so this is the run that says whether the job passes on the mini, and in
+  # which session state.
+  app:
+    name: App (build), all its steps
+    if: github.actor == github.repository_owner && github.event.inputs.check == 'app'
+    runs-on: ${{ github.event.inputs.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          clean: ${{ runner.environment != 'self-hosted' }}
+      - name: Clean the owner's runner
+        if: runner.environment == 'self-hosted'
+        run: scripts/ci-runner-clean start
+      - name: Check what scripts/test-copy refuses
+        run: scripts/test-test-copy
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 26
+      - name: Check the owner's targets in Package.swift
+        run: scripts/check-protected-targets
+      - name: Build the app, ComputerKit and the probe
+        working-directory: app
+        run: swift build
+      - name: Check the pane layout (optimised build)
+        working-directory: app
+        run: swift build -c release --product pi2-layout-check && .build/release/pi2-layout-check
+      - name: Build and start the packaged release engine
+        run: |
+          ./app/build.sh release
+          node app/check-release-build.mts "app/build/pi².app" --commit "$(git rev-parse HEAD)" --build-number "$(git rev-list --count HEAD)" --open-app
+          node app/test-release-build.mts "app/build/pi².app"
+      - name: Check Return in the message field
+        working-directory: app
+        run: .build/debug/pi2-compose-check
+      - name: Check window sizes
+        working-directory: app
+        run: .build/debug/pi2-window-check
+      - name: Check engine login item decisions
+        working-directory: app
+        run: .build/debug/pi2-login-item-check
+      - name: Check how the engine tells the app's connection
+        working-directory: app
+        run: .build/debug/pi2-peer-check
+      - name: Check file links
+        working-directory: app
+        run: .build/debug/pi2-file-link-check
+      - name: Check how computer use reaches controls
+        working-directory: app
+        run: .build/debug/pi2-computer-check
+      - name: Check the conversation page loaded ahead
+        working-directory: app
+        run: .build/debug/pi2-transcript-check
+      - name: Check what the client reads of the engine
+        working-directory: app
+        run: .build/debug/pi2-client-check
+      - name: Check RemoteKit's channel and sealing
+        working-directory: app
+        run: .build/debug/pi2-remote-check
+      - name: Fuzz RemoteKit's parsers
+        working-directory: app
+        run: .build/debug/pi2-remote-fuzz --seed 674 --seconds 60
+      - name: Check pi² Remote
+        working-directory: app
+        run: |
+          npm --prefix ../engine ci --no-audit --no-fund
+          .build/debug/pi2-remote-helper-check --engine ../engine/src/main.ts
+      - name: Check RemoteKit's relay client
+        working-directory: app
+        run: .build/debug/pi2-relay-check
+      - name: Build RemoteKit for iOS
+        working-directory: app
+        run: swift build --target RemoteKit --triple arm64-apple-ios18.0 --sdk "$(xcrun --sdk iphoneos --show-sdk-path)" --scratch-path .build/ios
+      - name: Clean the owner's runner after the job
+        if: always() && runner.environment == 'self-hosted'
+        continue-on-error: true
+        run: scripts/ci-runner-clean end

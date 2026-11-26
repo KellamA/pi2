@@ -46,6 +46,36 @@ async function run(args: string[], stdin?: string): Promise<{ code: number; stdo
 /** The Keychain service pi²'s secrets are kept under: the usual one, or the one PI2_KEYCHAIN_SERVICE names. */
 export const keychainService = (env: NodeJS.ProcessEnv = process.env): string => env.PI2_KEYCHAIN_SERVICE ?? "dev.pi2.credentials";
 
+/**
+ * Why a Keychain write did not take, in plain words, from `security`'s exit status alone. What it printed is never
+ * passed on: it can quote what it was given (see the top of this file) and name a keychain, and neither belongs in a
+ * message or a log. `security` exits with the low byte of the OSStatus it got, which is what these numbers are:
+ * errSecItemNotFound (-25300) is 44, as NOT_FOUND above; errSecInteractionNotAllowed (-25308) 36; errSecNoDefaultKeychain
+ * (-25307) 37; errSecAuthFailed (-25293) 51; errSecNotAvailable (-25291) 53; errSecUserCanceled (-128) 128. A status this
+ * list does not know is its number, so that a log says what the Keychain answered instead of guessing at it.
+ */
+export function keychainWriteReason(code: number): string {
+	switch (code) {
+		// The item did not come back after a write `security` reported no error for: the read-back itself says so.
+		case 0:
+			return "security reported no error";
+		case 36:
+			return "the session may not show a prompt (interaction not allowed)";
+		case 37:
+			return "there is no default keychain";
+		case 44:
+			return "not found";
+		case 51:
+			return "the keychain is locked, or did not accept the password";
+		case 53:
+			return "the keychain is not available";
+		case 128:
+			return "the prompt was cancelled";
+		default:
+			return `status ${code}`;
+	}
+}
+
 function checkId(providerId: string): void {
 	if (!/^[A-Za-z0-9._-]{1,80}$/.test(providerId)) throw new Error(`Invalid provider id: ${providerId}`);
 }
@@ -125,9 +155,10 @@ export class KeychainObjects {
 		checkAccount(account);
 		const json = encode(value);
 		const before = await this.#partCount(account);
-		const parts = await this.#write(account, json);
+		const { parts, code } = await this.#write(account, json);
 		const stored = await this.read(account);
-		if (stored === undefined || encode(stored) !== json) throw new Error(`The Keychain did not accept ${what}`);
+		if (stored === undefined || encode(stored) !== json)
+			throw new Error(`The Keychain did not accept ${what} (${keychainWriteReason(code)})`);
 		await this.#deleteParts(account, parts, before);
 	}
 
@@ -148,8 +179,11 @@ export class KeychainObjects {
 		return result.stdout.trim();
 	}
 
-	/** Stores the JSON, whole if it fits one command and in pieces behind a manifest if not. Returns how many pieces it used. */
-	async #write(account: string, json: string): Promise<number> {
+	/**
+	 * Stores the JSON, whole if it fits one command and in pieces behind a manifest if not. Returns how many pieces it
+	 * used, and what `security` exited with, which the caller turns into the reason a write did not take.
+	 */
+	async #write(account: string, json: string): Promise<{ parts: number; code: number }> {
 		const command = (name: string, value: string) => `add-generic-password -U -s ${this.service} -a ${name} -l "pi2: ${name}" -X ${Buffer.from(value, "utf8").toString("hex")}`;
 		const whole = command(account, json);
 		const commands: string[] = [];
@@ -161,9 +195,10 @@ export class KeychainObjects {
 			commands.push(command(account, JSON.stringify(manifest)));
 		}
 		if (commands.some((line) => line.length > MAX_COMMAND)) throw new Error("It is too long for the Keychain");
-		// What `security` prints here can quote its input, so it is never passed on; the caller reads the value back instead.
-		await run(["-i"], commands.map((line) => `${line}\n`).join(""));
-		return commands.length - 1;
+		// What `security` prints here can quote its input, so it is never passed on; the caller reads the value back instead,
+		// and says why in words from the exit status (keychainWriteReason).
+		const result = await run(["-i"], commands.map((line) => `${line}\n`).join(""));
+		return { parts: commands.length - 1, code: result.code };
 	}
 
 	/** How many pieces the stored object says it has: 0 when it is stored whole, damaged or absent. */

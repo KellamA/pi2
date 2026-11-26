@@ -62,6 +62,8 @@ dir="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 printf '%s\n' "$*" >>"$dir/log/security"
 case $1 in
 dump-keychain)
+	# With dump-fails in the test's folder, as a Keychain that cannot be read: a status of its own, and nothing listed.
+	[[ ! -f $dir/dump-fails ]] || { echo "security: The keychain could not be read." >&2; exit 51; }
 	for file in "$dir/keychain"/*; do
 		[[ -f $file ]] || continue
 		for ((i = 0; i < $(cat "$file"); i++)); do
@@ -328,6 +330,17 @@ expect "still leaves the processes outside" alive "$outside"
 rm -rf "$checkout/.git"
 out=$(env_for bash "$script" end 2>&1)
 expect "a checkout that is not a repository is left alone" test $? = 0 -a -f "$checkout/src/tracked"
+
+# ---- A Keychain it cannot read: one line with the status, nothing it printed, and the run still ends cleanly.
+
+echo 1 >"$T/keychain/dev.pi2.credentials.test-unreadable"
+: >"$T/dump-fails"
+out=$(env_for bash "$script" end 2>&1)
+expect "a Keychain it cannot read still exits 0" test $? = 0
+expect "says that the dump failed, with its status" grep -qx "ci-runner-clean: could not read which test Keychain items are there: security dump-keychain exited 51" <<<"$out"
+expect "prints nothing the Keychain said" bash -c "! grep -q 'could not be read' <<<\"\$1\"" _ "$out"
+expect "removes nothing of a service it could not read" test "$(cat "$T/keychain/dev.pi2.credentials.test-unreadable")" = 1
+rm -f "$T/dump-fails"
 
 # ---- A folder on the way replaced by a link: refused, nothing removed through it, and the run fails.
 

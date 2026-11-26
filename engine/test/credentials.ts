@@ -7,7 +7,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Credential } from "@earendil-works/pi-ai";
-import { KeychainCredentialStore } from "../src/credentials.ts";
+import { KeychainCredentialStore, keychainWriteReason } from "../src/credentials.ts";
 
 const SERVICE = process.env.PI2_TEST_KEYCHAIN_SERVICE ?? "dev.pi2.credentials.test";
 const home = mkdtempSync(join(tmpdir(), "pi2-credentials-test-"));
@@ -33,6 +33,24 @@ const oauth = (scale: number) =>
 	({ type: "oauth", access: "a".repeat(5 * scale), refresh: "r".repeat(3 * scale), expires: 1234567890, idToken: "x".repeat(6 * scale), note: "non-ascii ✓ é 日本語 🙂 \"quoted\" back\\slash" }) as unknown as Credential;
 
 try {
+	// Why a write did not take, from `security`'s exit status alone, without this machine's Keychain: the test stands in
+	// for nothing here, so what it can hold without one is the words a status turns into. None of them is quoted from
+	// what `security` printed, which can hold what it was given and a keychain's path.
+	for (const [code, reason] of [
+		[0, "security reported no error"],
+		[36, "the session may not show a prompt (interaction not allowed)"],
+		[37, "there is no default keychain"],
+		[44, "not found"],
+		[51, "the keychain is locked, or did not accept the password"],
+		[53, "the keychain is not available"],
+		[128, "the prompt was cancelled"],
+		[2, "status 2"],
+		[1, "status 1"],
+		[100, "status 100"],
+		[255, "status 255"],
+	] as const)
+		assert.equal(keychainWriteReason(code), reason, `status ${code} says why, in words of the engine's own`);
+
 	// Every size around the one-command limit and well past it comes back exactly.
 	for (const scale of [10, 36, 70, 100, 140, 290, 570, 1200]) {
 		const credential = oauth(scale);

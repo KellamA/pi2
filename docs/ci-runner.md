@@ -155,6 +155,27 @@ A job that starts reading or leaving something new (another folder in `~/Library
 
 This needs no variable change for a run whose CI already has the attempt-1 routing rule. A re-run of an older workflow uses that older definition; it has no same-commit switch. To get a fresh run in that case, update the branch from `main` first, or bring the mini back.
 
+## Qualifying the mini
+
+A pull request's App and Engine checks may run on the mini again only once its two trial failures are explained: the App job's parked-window accessibility check, and the ten Engine test files whose Keychain writes were not accepted ([#993](https://github.com/KellamA/pi2/issues/993)). `.github/workflows/mini-qualify.yml` is the small, separate run for each step of that. Only the owner can start it (anyone else's dispatch runs nothing), it is never required, nothing calls it, and it changes neither `ci.yml` nor which runner a job uses: **both variables stay unset while it runs**, and its result is no part of a pull request's checks.
+
+Start one on a branch or a commit, with `check` (below) and `runner` (`pi2-mini`, or `macos-26` and `xcode-27` for the comparison):
+
+```bash
+gh workflow run mini-qualify.yml --ref <branch or commit> -f runner=pi2-mini -f check=computer
+gh run list --workflow mini-qualify.yml --limit 3
+```
+
+In order, each with what passing and failing say:
+
+1. **`check=computer`, on the mini**, with `runner`'s session in front (fast user switching to `runner`; never typing a password into a prompt that appears there, [above](#what-separates-the-jobs-from-the-owners-account-and-what-does-not)), then again with it switched to the background, and once with the display asleep if that is easy: the App job's step "Check how computer use reaches controls" and the `swift build` it needs. **Pass:** the step exits 0, and its group "a parked window joins the app's accessibility list when the copy raises it once" prints its four `ok` lines. **Fail:** an assertion prints FAIL, as step 15 of run 45721625385 did. Then the same `check` on `xcode-27`, which is macOS 27 as the mini is. **Reading:** front-most passes, background fails, `xcode-27` passes → the runner's session, and the App job can pass on the mini only while `runner`'s session is the one in front; front-most fails and `xcode-27` fails too → macOS 27's AppKit, and the mini is not at fault.
+2. **`check=keychain`**, a status-only probe: whether there is a default keychain and whether it is unlocked, then one dummy item added, read back, compared and deleted, under a service of the run's own (`dev.pi2.credentials.qualify-<run id>-<attempt>`). It prints step names, exit statuses and yes/no words and nothing else: never a listing, never what `security` printed, never a value. **Pass:** every line says yes or exits 0, and the job exits 0. **Fail:** any other status, which the line names (`51` a locked keychain or a refused password, `37` no default keychain, `36` a session that may not show a prompt), and then the Engine job's tests are writing into `runner`'s login keychain and it will not take the write: the remedy is a job-local temporary keychain for the Engine job, which gives the mini what a new machine gives GitHub's runners for free.
+3. **`check=credentials`**, only once `keychain` passed: `node --test test/credentials.ts` on the mini, under a test service of its own. **Pass:** that file green. **Fail** with the trial's message → not that file alone; the ten files run one at a time say whether it is load, and step 4's `xcode-27` run says whether it is macOS 27 instead.
+4. **`check=engine`**: `npm run test:macos`. **Pass:** the whole suite green on the mini, which with step 3 clears it. **Fail:** the same files, and the same `check` on `xcode-27` says whether macOS 27 is the cause.
+5. **`check=app`**: the whole App (build) job, its 19 steps in order, which a green step 1 does not settle. **Pass:** every step green on the mini, in the session state step 1 found. **Fail:** the first step that fails, and step 1 says which assertion to read.
+
+Each run starts and ends with `scripts/ci-runner-clean` on the mini, as `ci.yml` does, so it leaves the mini as it found it: the probe's dummy item is deleted by the step itself, and under a test's service the clean-up would take it too.
+
 ## Upkeep
 
 - **Is it online?** Settings › Actions › Runners shows `pi2-mini` as Idle (waiting) or Active (running a job). A job's log says which runner ran it in its first lines ("Runner name: 'pi2-mini'").
