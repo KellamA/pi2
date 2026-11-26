@@ -103,8 +103,10 @@ jobs:
           yes_no() { if [ "$1" = yes ]; then echo yes; else echo no; fi; }
 
           # The default keychain this session would write to: its status, and never what it printed.
-          default=$(/usr/bin/security default-keychain 2>/dev/null)
+          raw=$(/usr/bin/security default-keychain 2>/dev/null)
           status=$?
+          # It prints the path between quotes, with spaces before it; both come off, so that the name is the path itself.
+          default=$(printf '%s' "$raw" | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//')
           present=no
           if [ "$status" = 0 ] && [ -n "$default" ]; then present=yes; fi
           say "default keychain present" "$(yes_no "$present") (exit $status)"
