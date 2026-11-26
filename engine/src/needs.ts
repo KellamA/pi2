@@ -31,6 +31,7 @@ import { type AgentProfile, type InboxItem, Library, type Meta, runsAs } from ".
 import { chatIdOf } from "./versions.ts";
 import { arrivedIn, arriveIn } from "./wakes.ts";
 import { answerGoesTo } from "./orchestrator.ts";
+import { repeated } from "./requests.ts";
 
 // ---- What is stored (3.9)
 
@@ -65,9 +66,16 @@ type StoredBase = {
 /** Put in a sub-chat whose run was handed a work item (`work assign`): its number, for the card (#507). */
 type OnWork = { work?: number };
 
+/**
+ * A decision about something an agent presented (`present`, presented.ts, #946): the presentation and its version, the
+ * conversation named as the app names it. The card shows its pictures with the choices.
+ */
+export type PresentationRef = { conversationId: number; presentation: string; version: number };
+type AboutPresentation = { presentation?: PresentationRef };
+
 export type StoredNeed =
 	| (StoredBase & OnWork & { kind: "question"; question: string })
-	| (StoredBase & OnWork & { kind: "decision"; question: string; choices: Choice[]; words: boolean })
+	| (StoredBase & OnWork & AboutPresentation & { kind: "decision"; question: string; choices: Choice[]; words: boolean })
 	| (StoredBase & { kind: "reach"; change: ReachChange; why: string | null })
 	| (StoredBase & { kind: "rule"; text: string; binds: "orchestrator" | "everyone"; why: string | null })
 	| (StoredBase & { kind: "limit"; start: Start; limit: LimitReading; confirmed?: LimitReading[] });
@@ -128,7 +136,7 @@ export type NeedItem =
 			answers: ApprovalAnswer[];
 	  })
 	| (WireBase & OnWork & { kind: "question"; question: string })
-	| (WireBase & OnWork & { kind: "decision"; question: string; choices: Choice[]; words: boolean })
+	| (WireBase & OnWork & AboutPresentation & { kind: "decision"; question: string; choices: Choice[]; words: boolean })
 	| (WireBase & { kind: "reach"; change: ReachChange; why: string | null })
 	| (WireBase & { kind: "rule"; text: string; binds: "orchestrator" | "everyone"; why: string | null })
 	| (WireBase & { kind: "limit"; start: Start; limit: LimitReading });
@@ -232,8 +240,24 @@ export async function withdrawNeed(tx: Tx, id: string): Promise<StoredNeed | und
 	const doc = await needsIn(tx);
 	const need = doc.items[id];
 	if (need !== undefined) delete doc.items[id];
+	if (need?.kind === "decision" && need.presentation !== undefined) await presentationEnded?.(tx, need, { ended: "withdrawn" });
 	return need;
 }
+
+/** How a question about a presentation ended, as `pi2.presented` keeps it (presented.ts). */
+export type PresentationEnd = { chose: string } | { words: string } | { ended: "withdrawn" | "messaged" | "stopped" };
+
+/** What presented.ts does when a stored decision about a presentation ends: in the commit that ends it (#946). */
+let presentationEnded: ((tx: Tx, need: Extract<StoredNeed, { kind: "decision" }>, end: PresentationEnd) => Promise<void>) | undefined;
+export function onPresentationEnded(handler: typeof presentationEnded): void {
+	presentationEnded = handler;
+}
+
+/**
+ * What a `present` question that waits (an Inbox item with `choices`) gives its call: the choice's label or the words,
+ * as JSON, so that the call can tell one from the other whatever the words say (presented.ts reads it back).
+ */
+export type PresentedAnswer = { chose: string; choice: string } | { words: string };
 
 /** The needs stored and waiting, oldest first: a plain copy. */
 export function storedNeeds(): StoredNeed[] {
@@ -258,7 +282,7 @@ function words(value: unknown, field: string): string {
 export function checkAnswer(given: unknown): NeedAnswer {
 	if (!isObject(given)) throw new Error("answer must be an object with a kind");
 	const kind = given.kind as NeedItem["kind"];
-	if (!KINDS.includes(kind)) throw new Error(`Unknown kind of answer: ${String(given.kind)}`);
+	if (!KINDS.includes(kind)) throw new Error(`Unknown kind of answer: ${repeated(given.kind)}`);
 	const flag = (field: string) => {
 		if (typeof given[field] !== "boolean") throw new Error(`${field} must be true or false`);
 		return given[field] as boolean;
@@ -308,6 +332,16 @@ export function answersOf(item: InboxItem): ApprovalAnswer[] {
 
 /** What the waiting call is given for `answer`, or why it does not answer `item`. */
 function inboxAnswer(item: InboxItem, answer: NeedAnswer): string {
+	// A `present` question (#946): a decision on the wire, answered by a choice or in words; `inbox.answer`'s words too.
+	if (item.kind === "question" && item.choices !== undefined) {
+		// Words are bounded on every route, `inbox.answer`'s too, as `checkAnswer` bounds them: they are kept in the record.
+		if (answer.kind === "question") return JSON.stringify({ words: words(answer.text, "text") } satisfies PresentedAnswer);
+		if (answer.kind !== "decision") throw new Error(`This is ${NAMED.decision}, not ${NAMED[answer.kind]}`);
+		if ("text" in answer) return JSON.stringify({ words: words(answer.text, "text") } satisfies PresentedAnswer);
+		const chosen = item.choices.find((choice) => choice.id === answer.choice);
+		if (chosen === undefined) throw new Error(`There is no choice ${answer.choice} in this decision`);
+		return JSON.stringify({ chose: chosen.label, choice: chosen.id } satisfies PresentedAnswer);
+	}
 	if (item.kind === "question") {
 		if (answer.kind !== "question") throw new Error(`This is ${NAMED.question}, not ${NAMED[answer.kind]}`);
 		return answer.text;
@@ -326,7 +360,7 @@ function inboxAnswer(item: InboxItem, answer: NeedAnswer): string {
 function checkStored(need: StoredNeed, answer: NeedAnswer): void {
 	if (answer.kind !== need.kind) throw new Error(`This is ${NAMED[need.kind]}, not ${NAMED[answer.kind]}`);
 	if (need.kind === "decision" && answer.kind === "decision") {
-		if ("choice" in answer && !need.choices.some((choice) => choice.id === answer.choice)) throw new Error(`There is no choice ${answer.choice} in this decision`);
+		if ("choice" in answer && !need.choices.some((choice) => choice.id === answer.choice)) throw new Error(`There is no choice ${repeated(answer.choice)} in this decision`);
 		if ("text" in answer && !need.words) throw new Error("This decision takes one of its choices, not an answer in words");
 	}
 }
@@ -432,7 +466,12 @@ async function wakeWith(tx: Tx, need: StoredNeed & { question: string; work?: nu
 }
 
 onAnswer("question", (tx, need, answer) => wakeWith(tx, need, answer.text));
-onAnswer("decision", (tx, need, answer) => wakeWith(tx, need, "choice" in answer ? need.choices.find((choice) => choice.id === answer.choice)!.label : answer.text));
+onAnswer("decision", async (tx, need, answer) => {
+	const end: PresentationEnd = "choice" in answer ? { chose: need.choices.find((choice) => choice.id === answer.choice)!.label } : { words: answer.text };
+	// A decision about a presentation (`present` with `wait: false`, #946) is marked answered in its record, in this commit.
+	if (need.presentation !== undefined) await presentationEnded?.(tx, need, end);
+	return wakeWith(tx, need, "chose" in end ? end.chose : end.words);
+});
 
 // ---- The list, as sent
 
@@ -464,6 +503,10 @@ export function needItems(): NeedItem[] {
 	const waiting: NeedItem[] = wired.inbox.list().map((item) => {
 		// A question from a chat's version is the chat's: the app shows the chat under its own id, as the Inbox does.
 		const wire = base(item.id, chatIdOf(conversations, item.conversationId), undefined, true, item.createdAt);
+		// A `present` question that waits is a decision that blocks, which takes words too (#946).
+		if (item.kind === "question" && item.choices !== undefined) {
+			return { ...wire, kind: "decision", question: item.question ?? "", choices: item.choices, words: true, ...(item.presentation === undefined ? {} : { presentation: item.presentation }) };
+		}
 		if (item.kind === "question") return { ...wire, kind: "question", question: item.question ?? "" };
 		return {
 			...wire,

@@ -61,7 +61,7 @@ import { preparedTool } from "./stringargs.ts";
 import { textOf } from "./transcript.ts";
 import { broadcast, type Client, clients, send } from "./clients.ts";
 import { dirtyUsage, overBudget, refreshUsage, scheduleUsageRefresh, Spend, type UsageDocShape, usageById, usageRowsChanged, usageSummary, usageTimer, usageTotals, wireUsage } from "./usage.ts";
-import { checkPersonStart, type Params, startConfirmation, text } from "./requests.ts";
+import { checkPersonStart, type Params, repeated, startConfirmation, text } from "./requests.ts";
 import { providerRequests, wireProviderRequests } from "./providerrequests.ts";
 import { addCommandRule, agentRequests, saveAgent, wireAgentRequests } from "./agentrequests.ts";
 import { conversationRequests, wireConversationEvents } from "./conversationevents.ts";
@@ -72,6 +72,7 @@ import { armSchedules, scheduleRequests, schedulesEvent, scheduleTimer, setSched
 import { agents, busyConversations, chatOf, conversationsWithWork, isSubChat, library, refreshBusy, rootOf, setAgents, setLibrary, setVersions, setWorking, versions, working } from "./indexes.ts";
 import { McpServers } from "./mcp.ts";
 import { claim } from "./needs.ts";
+import { presentedStorage } from "./presented.ts";
 import { ComputerHost, hasApps } from "./computer.ts";
 import { plainProviderError } from "./providererror.ts";
 import { DEMO_MODEL, DEMO_PROVIDER, defaultThinking, LOCAL_PROVIDER, Providers } from "./providers.ts";
@@ -285,6 +286,7 @@ const engine: Engine = {
 	log,
 	agents: () => agents,
 	library: () => library,
+	conversation: (id) => conversation(id),
 	chatSettings: () => chatSettings(settings.chat),
 	pictureModel: () => settings.pictureModel ?? null,
 	setPictureModel: (model) => {
@@ -556,7 +558,7 @@ setVersions((await harness.snapshot(Versions, context)) ?? { chats: {} });
 async function conversation(id: unknown): Promise<Conversation> {
 	const shown = typeof id === "number" ? (versions.chats[String(id)]?.current ?? id) : undefined;
 	const found = shown === undefined ? undefined : await harness.conversation(shown as unknown as ConversationId, context);
-	if (found === undefined) throw new Error(`Unknown conversation: ${String(id)}`);
+	if (found === undefined) throw new Error(`Unknown conversation: ${repeated(id)}`);
 	return found;
 }
 
@@ -909,7 +911,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	// `backup`: whether the last backup did not finish, for Settings › Storage (backup.ts, #792). A device is told no path of
 	// the Mac's, and nothing of its upkeep (docs/iphone.md 5.7).
 	"engine.info": async (_params, client) =>
-		client.device !== undefined ? { build, pid: process.pid } : { build, main: engineMain, pid: process.pid, backup: backupStatus(home) },
+		client.device !== undefined ? { build, pid: process.pid } : { build, main: engineMain, pid: process.pid, backup: backupStatus(home), presented: presentedStorage(home) },
 	/** Whether this connection may act for the person (#504): the app asks once it has connected. */
 	"connection.mayAnswer": async (_params, client) => {
 		const { allowed, why } = await mayAnswer(client);
@@ -1017,6 +1019,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			},
 			context,
 		);
+		for (const feature of host.features) await feature.forked?.(sourceId, fork.id as unknown as number);
 		// A fork of a conversation in no project goes into its folder's project (9.9), as one made is.
 		for (const feature of host.features) await feature.made?.(fork.id as unknown as number);
 		return { id: fork.id };
@@ -1306,7 +1309,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	// Answered through `claim` (needs.ts), as every answer to what waits for the person is, by whichever route.
 	"inbox.decide": async (params) => {
 		const decision = text(params, "decision");
-		if (!["once", "always", "rule", "deny"].includes(decision)) throw new Error(`Unknown decision: ${decision}`);
+		if (!["once", "always", "rule", "deny"].includes(decision)) throw new Error(`Unknown decision: ${repeated(decision)}`);
 		await claim(text(params, "id"), { kind: "approval", decision: decision as "once" | "always" | "rule" | "deny" });
 		return {};
 	},

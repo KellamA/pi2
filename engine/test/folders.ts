@@ -372,7 +372,20 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd,
 	assert.ok(!TOO_MANY_PREVIEWS.includes("/"));
 	assert.equal(await from("another phone"), NOT_LINKED, "each device has its own");
 	assert.equal(await from(), NOT_LINKED, "the app is not counted");
-	assert.doesNotThrow(() => previewCounted("phone", Date.now() + 60_000), "a minute later, it may again");
+	assert.doesNotThrow(() => previewCounted("phone", performance.now() + 60_000), "a minute later, it may again");
+	// On a monotonic clock (#997): the Mac's clock set back a day neither holds a phone back, nor set forward gives it a
+	// new count. Only this process's Date.now is moved, never the system's clock.
+	const wallClock = Date.now;
+	try {
+		for (let n = 0; n < PREVIEWS_PER_MINUTE; n++) previewCounted("clock phone");
+		Date.now = () => wallClock() + 86_400_000;
+		assert.throws(() => previewCounted("clock phone"), { message: TOO_MANY_PREVIEWS }, "the clock set forward a day gives no new count");
+		for (let n = 0; n < PREVIEWS_PER_MINUTE; n++) previewCounted("another clock phone");
+		Date.now = () => wallClock() - 86_400_000;
+		assert.doesNotThrow(() => previewCounted("another clock phone", performance.now() + 60_000), "the clock set back a day holds no phone back a minute later");
+	} finally {
+		Date.now = wallClock;
+	}
 	step(`files.preview: at most ${PREVIEWS_PER_MINUTE} a minute from each device, then refused in words the phone shows`);
 }
 

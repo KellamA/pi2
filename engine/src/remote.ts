@@ -865,7 +865,7 @@ function deviceLineFailed(id: string, message: unknown): (error: unknown) => voi
 		log("remote: a device's request failed in the engine:", error instanceof Error ? (error.stack ?? error.message) : error);
 		try {
 			const given = typeof message === "object" && message !== null && !Array.isArray(message) ? (message as { id?: unknown }).id : undefined;
-			const body = { id: given ?? null, error: DEVICE_LINE_FAILED };
+			const body = { id: deviceId(given) ? (given ?? null) : null, error: DEVICE_LINE_FAILED };
 			const session = sessions.get(id);
 			if (session !== undefined) send(session.client, body);
 			else {
@@ -888,17 +888,35 @@ function endpointsByName(message: Record<string, unknown>): void {
 	}
 }
 
+/**
+ * A device's request id: a whole number, a text of at most MAX_DEVICE_ID characters, or none. The phone numbers its
+ * requests (`ChannelTransport`); a test's are short words.
+ */
+const MAX_DEVICE_ID = 64;
+const deviceId = (id: unknown) => id === undefined || id === null || Number.isSafeInteger(id) || (typeof id === "string" && id.length <= MAX_DEVICE_ID);
+
+/** What a device is answered for a request whose id is none of those. */
+export const NOT_AN_ID = "A request from a phone must have a whole number or a text of at most 64 characters as its id.";
+
 /** A device's line in a session: refused outside one, checked against its table, handled as from the app, logged. */
 async function deviceLine(id: string, message: unknown): Promise<void> {
 	const session = sessions.get(id);
 	const request = (typeof message === "object" && message !== null && !Array.isArray(message) ? message : {}) as { id?: unknown; method?: unknown; params?: unknown };
+	// An id is answered back with every reply, masked and written each time: one of tens of megabytes, a list or an
+	// object is refused before anything else is done with the line, answered with none, and logged nowhere (#997).
+	const idTaken = deviceId(request.id);
+	const answeredId = idTaken ? (request.id ?? null) : null;
 	const reply = (body: Record<string, unknown>, picture?: string) => {
-		if (session !== undefined && picture === undefined) send(session.client, { id: request.id ?? null, ...body });
+		if (session !== undefined && picture === undefined) send(session.client, { id: answeredId, ...body });
 		else if (session?.closed !== true) {
-			const out = forDevice(JSON.stringify({ id: request.id ?? null, ...body }));
+			const out = forDevice(JSON.stringify({ id: answeredId, ...body }));
 			if (out !== null) toSession(id, picture === undefined ? out : withPicture(out, picture));
 		}
 	};
+	if (!idTaken) {
+		reply({ error: NOT_AN_ID });
+		return;
+	}
 	const device = session === undefined ? undefined : pairedDevice(session.device);
 	if (session === undefined || device === undefined || device.suspendedAt !== null) {
 		reply({ error: OPEN_WITH_FACE_ID });
@@ -924,9 +942,11 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
  * from the entry's own image block (`imagesOf`, transcript.ts) and sends only once `isPicture` (attachments.ts) finds
  * it base64 of a picture of its `mimeType`, one of PICTURE_TYPES. Masking would break the picture (a run of base64
  * can look like a key) and would hide nothing a person reads: a picture shows a key as pixels, if it shows one, and no
- * mask ever looked at those.
+ * mask ever looked at those. And `presented.picture`'s (#946, presented.ts), `{ mimeType, data }` too: a presented
+ * PNG, JPEG, GIF or WebP, or a page's PNG snapshot, read from the copy the engine kept and checked by its first bytes;
+ * an SVG item is refused to a device before any answer, and its type is not in PICTURE_TYPES either.
  */
-export const PICTURE_ANSWERS: ReadonlySet<string> = new Set(["conversation.image"]);
+export const PICTURE_ANSWERS: ReadonlySet<string> = new Set(["conversation.image", "presented.picture"]);
 
 /**
  * The picture types whose bytes go to a device unmasked, fixed here on the owner's path: a type that attachments.ts
@@ -961,12 +981,15 @@ function withPicture(out: string, data: string): string {
  * `DEVICE_LINE_FAILED`'s words.
  */
 async function deviceRequest(device: Device, path: DevicePath, client: Client, method: string, params: Params, reply: (body: Record<string, unknown>, picture?: string) => void): Promise<"done" | "failed" | "refused"> {
-	// A typed text over 1 MB first (#924), measured in place: nothing below reads or copies it before it is refused.
+	// A typed text over 1 MB first (#924), and any other text over its bound (#940), measured in place: nothing below
+	// reads or copies it before it is refused.
 	const tooLong = typedRefusal(method, params as Params);
 	const gate = { path, approvalSwitch, approvalHidden };
 	const answer = tooLong === null ? deviceMay(method, params as Params, gate) : "no";
 	// The log's own names (a pairing, an offer of a Face ID key) are the engine's to write: a device's are "unknown" (#786).
-	const summary = summarize(requestLogged(method), params as Params);
+	// A request refused for its text is summarized by its method alone: a summary reads the title, path or folder it
+	// names, which would clean and mask the whole of what was refused (#940's security read).
+	const summary = tooLong === null ? summarize(requestLogged(method), params as Params) : `${requestLogged(method)}: refused for the text it carries`;
 	const record = (outcome: "done" | "refused" | "failed", why?: string) =>
 		void logDevice({ device: device.id, path, method: requestLogged(method), summary, presence: true, outcome, ...(why === undefined ? {} : { why }) }).catch((error) =>
 			log("devices: the log could not be written:", error instanceof Error ? error.message : error),

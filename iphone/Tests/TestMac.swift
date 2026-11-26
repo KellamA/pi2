@@ -69,6 +69,10 @@ final class TestMac: @unchecked Sendable {
         case refused(Refusal.Reason)
         /// A line the phone does not read as an answer to an offer (`attached`), then the close.
         case unreadable
+        /// The link closed with no answer and no `bye`, as a network or a relay that drops it (#1016).
+        case dropped
+        /// No answer at all, the channel left open: the phone's ten seconds run out (#1016).
+        case silent
     }
 
     struct Device {
@@ -339,6 +343,8 @@ final class TestMac: @unchecked Sendable {
         case .unreadable:
             try channel.send(.attached(Attached(session: SessionID("s_offer")!, resume: false)))
             channel.close()
+        case .dropped: channel.finish()
+        case .silent: break
         }
     }
 

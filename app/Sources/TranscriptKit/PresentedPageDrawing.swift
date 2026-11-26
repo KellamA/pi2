@@ -19,15 +19,21 @@ public enum PresentedPageDrawing {
     /// the findings are made and before it is closed: pi2-presented-check asks the page what it could and could not do.
     public static func draw(
         page: PresentedPage, source: any PresentedFiles, width: Int = 1280, height: Int = 800,
-        kept: ((PresentedPageView) async -> Void)? = nil
+        processes: PresentedProcesses = .shared, kept: ((PresentedPageView) async -> Void)? = nil
     ) async -> PresentedPageFindings {
         var findings = PresentedPageFindings()
+        // A place for the page's process first: without one, nothing is drawn.
+        guard let place = processes.take() else {
+            findings.reason = processes.refusal
+            return findings
+        }
         let ended = LoadEnd()
         let start = ContinuousClock.now
         let view: PresentedPageView
         do {
             view = try await PresentedPageView.make(page: page, source: source, mode: .drawing) { reason in ended.end(reason) }
         } catch {
+            place.release()
             findings.reason = "the network's rules could not be made: \(error.localizedDescription)"
             return findings
         }
@@ -36,11 +42,21 @@ public enum PresentedPageDrawing {
         window.isReleasedWhenClosed = false
         view.frame = size
         window.contentView = view
-        defer {
-            view.close()
-            window.contentView = nil
-            window.close()
-        }
+        findings = await drawn(view, findings: findings, size: size, ended: ended, start: start, kept: kept)
+        // The page's process is ended before this returns, whatever its scripts do, and its place given back once it
+        // has gone: a drawing that has returned has left no process behind.
+        await place.end(view)
+        window.contentView = nil
+        window.close()
+        return findings
+    }
+
+    /// What drawing the page in `view`, in its window, finds.
+    private static func drawn(
+        _ view: PresentedPageView, findings: PresentedPageFindings, size: NSRect, ended: LoadEnd, start: ContinuousClock.Instant,
+        kept: ((PresentedPageView) async -> Void)?
+    ) async -> PresentedPageFindings {
+        var findings = findings
 
         let outcome = await ended.wait(longest: longestLoad)
         findings.loadMs = Int((ContinuousClock.now - start) / .milliseconds(1))
@@ -72,6 +88,7 @@ public enum PresentedPageDrawing {
         let record = view.record
         findings.console = record.consoleLines
         findings.blocked = record.blockedAddresses
+        findings.blockedSeen = record.blockedSeen
         findings.notFound = record.notFoundPaths
         findings.answered = record.answeredRequests
         if let kept { await kept(view) }

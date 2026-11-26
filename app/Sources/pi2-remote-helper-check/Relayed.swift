@@ -313,7 +313,7 @@ enum Relayed {
 		third.sendLine(Data(#"{"sessionEnd":{}}"#.utf8))
 		Check.expect(engine.request("remote.sessionEnd")?.params["session"]?.stringValue == "r_one" && third.event() == .bye, "and back to the relay; the phone's sessionEnd ends it in the engine, and its channel")
 
-		hostile(engine, mac: fmac, device: device, keys: keys1, wire: wire)
+		hostile(engine, mac: mac, relay: relay, address: address, home: home)
 		mailbox(engine, mac: mac, device: device, keys: keys1, wire: wire, relay: relay)
 		RelayedPushes.through(engine, mac: mac, device: device, keys: keys1, wire: wire, relay: relay, home: home)
 
@@ -422,9 +422,40 @@ enum Relayed {
 		Check.expect(kept(home).map { kept in !kept.devices.contains { $0.id == device } } == true, "and the device is not on pi² Remote's own list")
 	}
 
+	/// A phone paired over the relay as the first one is, with the check as the engine, and its socket at the relay as a
+	/// listed device; nil if any step fails.
+	static func listedPhone(_ engine: FakeEngine, mac: Mac, relay: URL, address: String, claim: String) -> (DeviceID, PhoneKeys, RelayWire)? {
+		let secret = Bytes.random(32)
+		let expires = openJoin(engine, pairing: mac.pairing, secret: secret)
+		let keys = PhoneKeys()
+		guard let link = join(relay, pairing: mac.pairing, secret: secret, keys: keys) else { return nil }
+		let joined = RelayWire(link: link)
+		defer { joined.close() }
+		let phone = Phone(relay: joined)
+		guard phone.pair(payload: payload(mac, relay: relay, secret: secret, expires: expires), keys: keys, team: team) != nil, let request = engine.request("remote.pairClaim") else { return nil }
+		engine.answer(request.id, .object([("claim", .string(claim))]))
+		let device = DeviceID.random()
+		engine.event("closeJoin")
+		usleep(300_000)
+		engine.event("paired", [
+			("claim", .string(claim)), ("device", keys.paired(id: device)),
+			("paired", .object([("device", .string(device.text)), ("pairing", .string(mac.pairing.text)), ("name", .string("Check Mac")), ("addresses", .array([.string(address)]))])),
+		])
+		guard let line = phone.line(), case .paired? = try? ControlLine.parse(line, from: .mac), phone.event() == .bye else { return nil }
+		return connect(relay, pairing: mac.pairing, device: device, keys: keys).map { (device, keys, $0) }
+	}
+
 	/// #675's hostile cases, over the relay: each closed by the same code as on the home path, and none reaches the engine.
-	static func hostile(_ engine: FakeEngine, mac: Flows.Mac, device: DeviceID, keys: PhoneKeys, wire: RelayWire) {
+	/// A device's handshakes are six a minute on the relay path as at home, and the phone paired before has had three over
+	/// it: so the cases are two phones' paired for them, the first's six handshakes and its seventh, then the second's two,
+	/// in place of a minute's wait before each (#1016). Which listed device it is changes nothing a case shows. Both are
+	/// revoked at the end, so that what follows has the one phone paired before.
+	static func hostile(_ engine: FakeEngine, mac relayMac: Mac, relay: URL, address: String, home: URL) {
 		Check.section("#675's hostile cases over the relay path: the same refusals, by the same code")
+		let mac = relayMac.flows
+		guard let (device, keys, wire) = listedPhone(engine, mac: relayMac, relay: relay, address: address, claim: "claim_r_h1"),
+		      let (later, laterKeys, laterWire) = listedPhone(engine, mac: relayMac, relay: relay, address: address, claim: "claim_r_h2")
+		else { return Check.expect(false, "two more phones pair over the relay, and connect to it as listed devices, for the hostile cases") }
 		var phone = Phone(relay: wire)
 		phone.send(Bytes.random(96))
 		Check.expect(phone.closesWithin(3) && engine.quiet(for: 1), "a pairing's first message with no window open: nothing answers, and the engine hears nothing")
@@ -442,8 +473,6 @@ enum Relayed {
 			Check.expect(phone.closesWithin(10), "\(what) is closed over the relay")
 			Check.expect(engine.quiet(for: 1), "and never reaches the engine")
 		}
-		// A device's handshakes are six a minute on the relay path as at home: a fresh minute for these six.
-		sleep(61)
 		attachAs("7", signer: P256.Signing.PrivateKey(), "an attach not signed by the device key on pi² Remote's own list")
 		attachAs("0", "an attach from a build below the minimum")
 		attachAs("9a", "an attach whose build is not numbers and dots")
@@ -454,7 +483,7 @@ enum Relayed {
 			(#"{"challenge":"x","mac":{"signed":"y","signature":"z"}}"#, "the Mac's proof from a phone"),
 			(#"{"refused":{"reason":"update"}}"#, "a refused line from a phone"),
 		]
-		func session(_ index: Int) {
+		func session(_ index: Int, _ device: DeviceID, _ keys: PhoneKeys, _ wire: RelayWire) {
 			let (line, what) = lines[index]
 			guard let (session, attached) = Flows.attach(engine, mac: mac, device: device, keys: keys, session: "r_h\(index)", path: "relay", make: { Phone(relay: wire) }) else {
 				return Check.expect(false, "attached over the relay for \(what)")
@@ -464,16 +493,23 @@ enum Relayed {
 			Check.expect(engine.sessionLine(within: 1) == nil, "and never reaches the engine")
 			engine.event("sessionClosed", [("session", .string(attached.session.text)), ("why", .string("check"))])
 		}
-		session(0)
-		session(1)
+		session(0, device, keys, wire)
+		session(1, device, keys, wire)
 		// The seventh within the minute.
 		let seventh = Phone(relay: wire)
 		let handshake = try! ChannelHandshake.connection(initiator: true, pairing: mac.pairing, device: device, channelKey: keys.channel, remoteChannelKey: mac.channel)
 		seventh.send(try! handshake.writeMessage())
 		Check.expect(seventh.closesWithin(3) && engine.quiet(for: 1), "a seventh handshake for the device within a minute is closed before the engine hears of it: the limit the home path has")
-		sleep(61)
-		session(2)
-		session(3)
+		session(2, later, laterKeys, laterWire)
+		session(3, later, laterKeys, laterWire)
+		for (one, oneWire) in [(device, wire), (later, laterWire)] {
+			engine.event("revoke", [("device", .string(one.text))])
+			Check.expect(oneWire.ended(within: 15)?.contains("removed") == true, "a phone paired for the hostile cases is revoked again, and its slot at the relay removed")
+			oneWire.close()
+		}
+		let revokedBy = Date().addingTimeInterval(10)
+		while kept(home)?.devices.contains(where: { $0.id == device || $0.id == later }) != false, Date() < revokedBy { usleep(20000) }
+		Check.expect(kept(home)?.devices.count == 1, "and pi² Remote's own list has the one phone paired before")
 	}
 
 	/// The mailbox both ways (5.3; #806, #876): what the phone left, opened and handed to the engine, acknowledged only once

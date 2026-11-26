@@ -155,8 +155,14 @@ func control(_ page: String, base: URL, then: (WKWebView) async -> Void) async {
 
 /// A live view, as the window will hold it, in a window that is never shown, once its page has loaded.
 @MainActor
-func live(_ files: FolderFiles, page: PresentedPage? = nil) async -> (NSWindow, PresentedPageView)? {
-    guard let view = try? await PresentedPageView.make(page: page ?? files.manifest(), source: files, mode: .live) else {
+func live(_ files: FolderFiles, page: PresentedPage? = nil, network: Bool? = nil, waits: Bool = true) async -> (NSWindow, PresentedPageView)? {
+    // Without `network`, the view is made as every view was before the switch: `make`, which has none.
+    let made: PresentedPageView? = if let network {
+        try? await PresentedPageView.makeLive(page: page ?? files.manifest(), source: files, network: network)
+    } else {
+        try? await PresentedPageView.make(page: page ?? files.manifest(), source: files, mode: .live)
+    }
+    guard let view = made else {
         check("a live view is made", false)
         return nil
     }
@@ -164,6 +170,8 @@ func live(_ files: FolderFiles, page: PresentedPage? = nil) async -> (NSWindow, 
     window.isReleasedWhenClosed = false
     view.frame = NSRect(x: 0, y: 0, width: 1280, height: 800)
     window.contentView = view
+    // A page that loads what it may not can stay loading; its own `done` says when it has finished instead.
+    if !waits { return (window, view) }
     // The empty document before the page is complete too: the page is loaded once it is the one at its address.
     let entry = view.entryAddress?.absoluteString ?? ""
     guard await until("the live page loads", { await js(view, "return document.readyState + ' ' + location.href") as? String == "complete " + entry }) else { return nil }
@@ -193,6 +201,7 @@ func run(pictures: URL?) async {
     let net = listener.origin
 
     await paths()
+    await presentationTexts()
     await drawsItsOwnPage(pictures: pictures)
     await blankPage()
     await outsideTheManifest()
@@ -204,6 +213,11 @@ func run(pictures: URL?) async {
     await panels(listener: listener, net: net)
     await messageHandlers()
     await processEnds()
+    await networkSwitch(listener: listener, net: net)
+    await spinningPage()
+    await processNumbers()
+    await stuckPlaces()
+    await consoleLevels()
 
     await group("no window or panel came on screen through the whole check") {
         let shown = NSApp.windows.filter(\.isVisible)

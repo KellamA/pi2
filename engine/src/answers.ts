@@ -18,7 +18,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { Socket } from "node:net";
 import { dirname, isAbsolute, join } from "node:path";
-import { sizeText } from "./attachments.ts";
+import { MAX_IMAGE_BYTES, MAX_TEXT_CHARACTERS, sizeText } from "./attachments.ts";
 import type { SwitchName } from "./projects.ts";
 
 /** What a connection that is not the app's is told: it reaches an agent that tried, so it says what to do instead. */
@@ -230,6 +230,7 @@ const OPEN_TO_ANY = new Set([
 	"presented.list", // reads what agents presented in a conversation (#946); it changes nothing
 	"presented.picture", // reads a presented picture or a page's snapshot, as conversation.image does
 	"presented.file", // reads one file of a presented page, by its manifest's path, which the engine copied
+	"presented.page", // reads a presented page's list of files, its manifest, which the engine made
 	"projects.carryOver", // a dry run alone since carrying over runs by itself at the update (#715): it changes nothing
 	"reports.wake", // waking never widens; the limits bound it
 	"wakes.cancel",
@@ -323,13 +324,38 @@ type DeviceRow = {
 	mailbox?: (params: Params) => boolean;
 	/** The text it hands a conversation as the person's own words, held to MAX_TYPED_FROM_A_DEVICE (`typedRefusal`, #924). */
 	typed?: Typed;
+	/** The other texts it may carry past MAX_OTHER_FROM_A_DEVICE, each with its own bound (`typedRefusal`, #940). */
+	texts?: Texts;
 };
 
-/** What a request's typed text is, for its refusal's words, and where it is in the parameters. */
-type Typed = { what: "message" | "answer"; text: (params: Params) => unknown };
+/** What a request's typed text is, for its refusal's words, and where it is in the parameters (as a `Texts` key). */
+type Typed = { what: "message" | "answer"; at: string };
 
-const typedMessage: Typed = { what: "message", text: (params) => params.text };
-const typedAnswer: Typed = { what: "answer", text: (params) => params.text };
+const typedMessage: Typed = { what: "message", at: "text" };
+const typedAnswer: Typed = { what: "answer", at: "text" };
+
+/**
+ * Texts a device's request may carry beyond MAX_OTHER_FROM_A_DEVICE, by where each sits in the parameters: `a.b` is the
+ * key `b` of the object at `a`, and `a[].b` the key `b` of each object in the list at `a`. Each is at most `max` UTF-16
+ * units, as every bound of the engine counts characters (`.length`), and is text, or left out (undefined or null); `what`
+ * names it in the refusal ("A task").
+ */
+type Texts = Readonly<Record<string, { what: string; max: number }>>;
+
+/** Twenty thousand characters: the bound of `work`'s text and chat instructions, and of each free text below (#940). */
+const FREE_TEXT = 20_000;
+/** A schedule's title, as `work`'s title, and a message's request id (#940). */
+const SHORT_TEXT = 200;
+
+/**
+ * The most a device's request may carry beside the texts its row names (`typed` and `texts`), counted as `typedRefusal`
+ * counts it: each value one, each string its length besides, each key of an object its length (#940). Ids, names,
+ * switches, models, paths, a note of 400 characters, a rule of 1,000, a set-up command of 4,000, an agent's settings
+ * as the phone sends the fields it changed: all are far under it. Over it, the walk stops, so a phone's list
+ * of millions of values, or an id of 66 MiB where a handler names it in a refusal (`Unknown agent: …`), or turns a
+ * list into text (`String(params.id)`), never reaches a handler.
+ */
+export const MAX_OTHER_FROM_A_DEVICE = 64 * 1024;
 
 /**
  * The most typed text a phone may hand a conversation in one request (#924, the owner's decision): 1 MB of UTF-8. The
@@ -338,23 +364,109 @@ const typedAnswer: Typed = { what: "answer", text: (params) => params.text };
 export const MAX_TYPED_FROM_A_DEVICE = 1024 * 1024;
 
 /**
- * Why a device's request is refused for its typed text, or null: a message, an edit, a message handed to an agent, or
- * an answer in words over MAX_TYPED_FROM_A_DEVICE bytes of UTF-8. Measured in place, before the request is handled,
- * logged or masked, so that refusing a text of tens of megabytes copies none of it (`Buffer.byteLength` reads the
- * string; a string of at most a third of the limit in UTF-16 units cannot be over it, and is not read at all).
+ * Why a device's request is refused for the text it carries, or null; the first thing `deviceRequest` asks, on every
+ * path. First its typed text (#924): a message, an edit, a message handed to an agent, or an answer in words over
+ * MAX_TYPED_FROM_A_DEVICE bytes of UTF-8. Then the rest of its parameters (#940): each text its row names (`texts`, or
+ * TEXTS_WITH_FACE_ID) at most its own bound, and text where it is given; everything else at most
+ * MAX_OTHER_FROM_A_DEVICE in all. Measured in place, before the request is handled, logged or masked, so that refusing
+ * a text of tens of megabytes copies none of it: a string's length is read, never the string (but `Buffer.byteLength`
+ * for a typed text more than a third of its limit in UTF-16 units, which reads it without copying it), and the walk
+ * stops as soon as it is over (but within an object, whose keys `for…in` lists first: at most what the line's own
+ * parse made). A request no device list holds is left to the table, which refuses it.
  */
 export function typedRefusal(method: string, params: Params): string | null {
-	const typed = Object.hasOwn(FROM_A_DEVICE, method) ? FROM_A_DEVICE[method]!.typed : undefined;
-	if (typed === undefined) return null;
-	const text = typed.text(params);
-	if (typeof text !== "string" || text.length * 3 <= MAX_TYPED_FROM_A_DEVICE) return null;
-	const bytes = Buffer.byteLength(text, "utf8");
-	if (bytes <= MAX_TYPED_FROM_A_DEVICE) return null;
-	// Rounded to a tenth, a text barely over the limit would read as "1.0 MB; at most 1 MB", as a picture's would.
-	const size = sizeText(bytes) === sizeText(MAX_TYPED_FROM_A_DEVICE) ? "just over 1 MB" : sizeText(bytes);
-	return typed.what === "message"
-		? `A message from a phone can carry at most 1 MB of typed text; this one has ${size}. Shorten it, or send it from the Mac.`
-		: `An answer from a phone can carry at most 1 MB of typed text; this one has ${size}. Shorten it, or answer on the Mac.`;
+	const row = Object.hasOwn(FROM_A_DEVICE, method) ? FROM_A_DEVICE[method]! : undefined;
+	if (row === undefined && !Object.hasOwn(WITH_FACE_ID, method)) return null;
+	const typed = row?.typed;
+	const text = typed === undefined ? undefined : textAt(params, typed.at);
+	if (typed !== undefined && typeof text === "string" && text.length * 3 > MAX_TYPED_FROM_A_DEVICE) {
+		const bytes = Buffer.byteLength(text, "utf8");
+		// Rounded to a tenth, a text barely over the limit would read as "1.0 MB; at most 1 MB", as a picture's would.
+		const size = sizeText(bytes) === sizeText(MAX_TYPED_FROM_A_DEVICE) ? "just over 1 MB" : sizeText(bytes);
+		if (bytes > MAX_TYPED_FROM_A_DEVICE) {
+			return typed.what === "message"
+				? `A message from a phone can carry at most 1 MB of typed text; this one has ${size}. Shorten it, or send it from the Mac.`
+				: `An answer from a phone can carry at most 1 MB of typed text; this one has ${size}. Shorten it, or answer on the Mac.`;
+		}
+	}
+	return otherTextRefusal(params, textsOf(method));
+}
+
+/** The value at the typed text's `at` (keys, no list) in `params`, or undefined where a step is not an object. */
+function textAt(params: Params, at: string): unknown {
+	let value: unknown = params;
+	for (const key of at.split(".")) value = typeof value === "object" && value !== null && Object.hasOwn(value, key) ? (value as Params)[key] : undefined;
+	return value;
+}
+
+/** A request's named texts, typed and other, as a tree of the steps to each: built once for each request. */
+type TextTree = { keys: Map<string, TextTree>; items?: TextTree; text?: { what: string; max: number } };
+const textTrees = new Map<string, TextTree>();
+
+function textsOf(method: string): TextTree {
+	const built = textTrees.get(method);
+	if (built !== undefined) return built;
+	const row = Object.hasOwn(FROM_A_DEVICE, method) ? FROM_A_DEVICE[method] : undefined;
+	const texts: Record<string, { what: string; max: number }> = { ...row?.texts, ...(Object.hasOwn(TEXTS_WITH_FACE_ID, method) ? TEXTS_WITH_FACE_ID[method] : {}) };
+	// The typed text's own bound is in bytes, measured above; here it is only to be text, and outside the rest's count.
+	if (row?.typed !== undefined) texts[row.typed.at] = { what: row.typed.what === "message" ? "A message" : "An answer", max: Number.POSITIVE_INFINITY };
+	const tree: TextTree = { keys: new Map() };
+	for (const [at, text] of Object.entries(texts)) {
+		let node = tree;
+		for (const step of at.split(".")) {
+			const list = step.endsWith("[]");
+			const key = list ? step.slice(0, -2) : step;
+			if (!node.keys.has(key)) node.keys.set(key, { keys: new Map() });
+			node = node.keys.get(key)!;
+			if (list) node = node.items ??= { keys: new Map() };
+		}
+		node.text = text;
+	}
+	textTrees.set(method, tree);
+	return tree;
+}
+
+const characters = (n: number) => n.toLocaleString("en-US");
+
+/**
+ * Why the parameters are refused for their texts, or null: walked without recursion, a value at a time, each named text
+ * measured where it sits, and the rest counted against MAX_OTHER_FROM_A_DEVICE until the count is spent. A list is read
+ * by its indices, so a long one is read only as far as the count; an object's keys are what `for…in` lists, and it
+ * lists them all before the first is counted, a list of pointers no longer than the object the line's parse made.
+ */
+function otherTextRefusal(params: Params, tree: TextTree): string | null {
+	let left = MAX_OTHER_FROM_A_DEVICE;
+	const over = `A request from a phone can carry at most ${characters(MAX_OTHER_FROM_A_DEVICE)} characters beside its message or its longer texts; this one carries more. Shorten what it holds, or do this on the Mac.`;
+	const waiting: [unknown, TextTree | undefined][] = [];
+	// Each value is measured as it is met, so that what waits to be walked is never more than the count allows.
+	const meet = (value: unknown, node: TextTree | undefined): string | null => {
+		const text = node?.text;
+		if (text !== undefined) {
+			if (value === undefined || value === null) return null;
+			if (typeof value !== "string") return `${text.what} from a phone must be text.`;
+			if (value.length > text.max) return `${text.what} from a phone can be at most ${characters(text.max)} characters; this one has ${characters(value.length)}. Shorten it, or do this on the Mac.`;
+			return null;
+		}
+		left -= typeof value === "string" ? 1 + value.length : 1;
+		if (left < 0) return over;
+		if (typeof value === "object" && value !== null) waiting.push([value, node]);
+		return null;
+	};
+	let refused = meet(params, tree);
+	while (refused === null && waiting.length > 0) {
+		const [value, node] = waiting.pop()!;
+		if (Array.isArray(value)) {
+			for (let index = 0; refused === null && index < value.length; index++) refused = meet(value[index], node?.items);
+		} else {
+			for (const key in value as Params) {
+				if (!Object.hasOwn(value as Params, key)) continue;
+				left -= key.length;
+				refused = meet((value as Params)[key], node?.keys.get(key));
+				if (refused !== null) break;
+			}
+		}
+	}
+	return refused;
 }
 
 /** The switches whose approvals are the person's ordinary acts; an approval for any other widens (4.2). */
@@ -410,6 +522,12 @@ const FROM_A_DEVICE: Record<string, DeviceRow> = {
 		// refused without being spread into characters.
 		mailbox: (params) => params.attachments === undefined && typeof params.text === "string" && params.text.length <= 8_000 && [...params.text].length <= 4_000,
 		typed: typedMessage,
+		// Each attachment's own bound, as `validateAttachments` holds it: a picture of 5 MiB in base64, a text of 400,000.
+		texts: {
+			requestId: { what: "A message's request id", max: SHORT_TEXT },
+			"attachments[].data": { what: "An attached picture", max: 4 * Math.ceil(MAX_IMAGE_BYTES / 3) },
+			"attachments[].text": { what: "An attached text", max: MAX_TEXT_CHARACTERS },
+		},
 	},
 	continue: { why: "a message's ordinary next step" },
 	abort: { why: "stopping only narrows", mailbox: always },
@@ -420,8 +538,8 @@ const FROM_A_DEVICE: Record<string, DeviceRow> = {
 		may: (params) => (params.cwd != null ? "no" : pastALimit(params)),
 		typed: typedMessage,
 	},
-	"conversation.compact": { why: "the person's ordinary act" },
-	"conversation.reset": { why: "the person's ordinary act" },
+	"conversation.compact": { why: "the person's ordinary act", texts: { instructions: { what: "Instructions for compacting", max: FREE_TEXT } } },
+	"conversation.reset": { why: "the person's ordinary act", texts: { note: { what: "A note for starting afresh", max: FREE_TEXT } } },
 	"conversation.edit": { why: "the person's ordinary act", typed: typedMessage },
 	"conversation.version": { why: "the person's ordinary act" },
 	"conversation.retry": { why: "Try Again, on the same model or another the person has (4.2, two rows)" },
@@ -467,12 +585,13 @@ const FROM_A_DEVICE: Record<string, DeviceRow> = {
 		},
 		mailbox: always,
 		// A question's or a decision's answer in words, or a rule's text.
-		typed: {
-			what: "answer",
-			text: (params) => (typeof params.answer === "object" && params.answer !== null ? (params.answer as Params).text : undefined),
-		},
+		typed: { what: "answer", at: "answer.text" },
 	},
-	"work.act": { why: "what the person does by hand on the board; it merges nothing (4.2); past a limit, it widens", may: pastALimit },
+	"work.act": {
+		why: "what the person does by hand on the board; it merges nothing (4.2); past a limit, it widens",
+		may: pastALimit,
+		texts: { text: { what: "Work's text", max: FREE_TEXT }, task: { what: "A task", max: FREE_TEXT } },
+	},
 	"github.settle": {
 		why: "the person's answer to a write whose outcome is unknown; Not done lets the write be made again, which widens",
 		may: (params) => (params.happened === true ? "yes" : "face"),
@@ -485,6 +604,7 @@ const FROM_A_DEVICE: Record<string, DeviceRow> = {
 	"chat.set": {
 		why: "chat mode's settings; turning the web or memory on, or new instructions, widen",
 		may: (params) => (params.web === true || params.memory === true || params.instructions !== undefined ? "face" : "yes"),
+		texts: { instructions: { what: "Chat instructions", max: FREE_TEXT } },
 	},
 	// Changes that narrow, or are the person's ordinary acts.
 	"agents.allowEverything": { why: "turning Allow everything off narrows; on is the Mac's alone (question 5)", may: (params) => (params.on === true ? "no" : "yes") },
@@ -503,10 +623,10 @@ const FROM_A_DEVICE: Record<string, DeviceRow> = {
 	"projects.archive": { why: "putting away narrows" },
 	"projects.startFresh": { why: "the person's ordinary act" },
 	"projects.rules.add": { why: "the person's ordinary act" },
-	"work.create": { why: "filing work, as the person does on the board" },
+	"work.create": { why: "filing work, as the person does on the board", texts: { text: { what: "Work's text", max: FREE_TEXT } } },
 	"worktree.create": { why: "the person's ordinary act" },
 	"github.detach": { why: "detaching narrows" },
-	"github.sendBack": { why: "the person's ordinary act" },
+	"github.sendBack": { why: "the person's ordinary act", texts: { reason: { what: "A reason for sending back", max: FREE_TEXT } } },
 	"settings.setCompaction": { why: "the person's ordinary act" },
 	"settings.setAutoArchive": { why: "the person's ordinary act" },
 	"settings.setAwake": { why: "the person's ordinary act" },
@@ -566,6 +686,18 @@ const WITH_FACE_ID: Record<string, string> = {
 	"worktree.remove": "cannot be undone",
 };
 
+/**
+ * The texts of WITH_FACE_ID's requests that may be longer than MAX_OTHER_FROM_A_DEVICE, as `texts` is for FROM_A_DEVICE's
+ * (#940): a list of its own, since WITH_FACE_ID's rows are their reasons alone. A schedule's prompt becomes a
+ * conversation's first message at each run, `schedules.runNow` among them, and an agent's instructions go to the model
+ * at every turn.
+ */
+const TEXTS_WITH_FACE_ID: Record<string, Texts> = {
+	"agents.save": { "agent.instructions": { what: "An agent's instructions", max: FREE_TEXT } },
+	"schedules.save": { "schedule.prompt": { what: "A schedule's prompt", max: FREE_TEXT }, "schedule.title": { what: "A schedule's title", max: SHORT_TEXT } },
+	"projects.addAgent": { "agent.instructions": { what: "An agent's instructions", max: FREE_TEXT } },
+};
+
 /** What only the Mac may do, with why. `NOT_NAMED`: a handler 4.2 does not name, kept to the Mac until one places it. */
 const NOT_NAMED = "not named in 4.2's table";
 const MAC_ONLY: Record<string, string> = {
@@ -617,6 +749,7 @@ const MAC_ONLY: Record<string, string> = {
 	"presented.network": "a presented page's network switch, the person's setting at the Mac",
 	"presented.list": "presenting's window, the Mac's for now",
 	"presented.file": "a presented page's files, the Mac's for now",
+	"presented.page": "a presented page's list of files, the Mac's for now",
 	// The Mac's upkeep.
 	"backup.create": "the Mac's upkeep",
 	"priority.set": "the Mac's upkeep",
@@ -685,6 +818,11 @@ export function devicePlacement(method: string): { list: DevicePlacement; why: s
 	return null;
 }
 
+/** Every request a device may send, from FROM_A_DEVICE and WITH_FACE_ID: for the test that each is walked (#940). */
+export function deviceRequestsListed(): string[] {
+	return [...Object.keys(FROM_A_DEVICE), ...Object.keys(WITH_FACE_ID)];
+}
+
 /** The requests that answer for the person or change what they set, which a device's table must place with care. */
 export const PERSON_REQUESTS: readonly string[] = [...Object.keys(FOR_THE_PERSON), ...Object.keys(FOR_THE_PERSON_SETTINGS)];
 
@@ -719,6 +857,8 @@ export function checkDeviceLists(methods: Iterable<string>, helperMethods: Itera
 			mistakes.push(`${method} is pi² Remote's, and is in a list of the socket's requests too`);
 		}
 	}
+	// A text bound named for a request a phone sends with Face ID only once it is in WITH_FACE_ID (#940).
+	for (const method of Object.keys(TEXTS_WITH_FACE_ID)) if (!Object.hasOwn(WITH_FACE_ID, method)) mistakes.push(`${method} has texts in TEXTS_WITH_FACE_ID and is not in WITH_FACE_ID`);
 	if (mistakes.length > 0) throw new Error(`Device lists in answers.ts:\n${mistakes.join("\n")}`);
 }
 

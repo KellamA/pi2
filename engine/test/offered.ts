@@ -156,7 +156,7 @@ try {
 
 	assert.deepEqual(
 		client.events.agents.builtInTools.map((tool: any) => tool.key),
-		["files", "documents", "ask", "plan", "web", "pictures", "compact", "code"],
+		["files", "documents", "ask", "plan", "web", "present", "pictures", "compact", "code"],
 		"the settings are sent the list, each with what it is for",
 	);
 	assert.deepEqual(
@@ -188,7 +188,8 @@ try {
 	const trimmed = await client.offered(built);
 	report("the same, with files, documents, asking and the web left out", trimmed);
 	// And its project's own tools, which the list does not govern: a worker in a project asks the person and keeps its work with them.
-	assert.deepEqual([...trimmed.tools].sort(), ["background", "bash", "edit", "needs_you", "read", "update_plan", "work", "write"], "only what a worker uses");
+	// It keeps `present` (#946): a worker shows the person the pictures it takes of its work.
+	assert.deepEqual([...trimmed.tools].sort(), ["background", "bash", "edit", "needs_you", "present", "read", "update_plan", "work", "write"], "only what a worker uses");
 	assert.ok(!trimmed.sections.includes("documents"), "the documents section goes with write_document");
 	assert.ok(trimmed.prompt + trimmed.definitions < everyTool.prompt + everyTool.definitions);
 	console.log(`#   ${Math.round(100 - (100 * (trimmed.prompt + trimmed.definitions)) / (everyTool.prompt + everyTool.definitions))}% less`);

@@ -23,8 +23,15 @@ import UIKit
 /// - no navigation away from its origin, no new windows, no downloads, no full screen, no panels: an alert, a
 ///   confirmation, a prompt, a file picker, a camera, a microphone are each answered at once without anything shown.
 ///
-/// Scripts run: what makes them safe here is everything above. "Allow network for this page" is not part of this
-/// piece: the view has no way to turn the network on.
+/// Scripts run: what makes them safe here is everything above.
+///
+/// "Allow network for this page" is a live view made with `network: true`, the person's choice in the window alone,
+/// for one view: its rule list lets https and secure WebSockets through (never plain http or ws) but to this Mac and the
+/// local network as written, its policy lets them load, and it has no dead-end proxy. All of it hangs on one constant,
+/// `PresentedPagePolicy.networkCanBeAllowed`. Everything else holds as above: no message handler, no
+/// navigation away, no new windows, downloads or panels, WebRTC and what asks for a permission taken away. A view made
+/// without it, and every offscreen one, has the network off as above, and nothing can turn it on afterwards: allowing
+/// it is making a new view.
 public final class PresentedPageView: WKWebView, WKNavigationDelegate, WKUIDelegate {
     public enum Mode: Sendable {
         /// In the window: no message handler at all.
@@ -35,6 +42,9 @@ public final class PresentedPageView: WKWebView, WKNavigationDelegate, WKUIDeleg
 
     public let page: PresentedPage
     public let mode: Mode
+    /// Whether this view's page may reach the network (not this Mac or the local network): false unless the live view
+    /// was made with `network: true`.
+    public let network: Bool
     /// This page's origin, made as it was made: `pi2-presented://<origin>/`.
     public let origin: String
     /// A link or a script tried to take the page away from its origin, and was stopped: for the window's bar.
@@ -61,22 +71,36 @@ public final class PresentedPageView: WKWebView, WKNavigationDelegate, WKUIDeleg
     /// A view for a page, its files from `source`, loading it. Throws if the network rules cannot be made: a page is
     /// never drawn without them.
     public static func make(page: PresentedPage, source: any PresentedFiles, mode: Mode) async throws -> PresentedPageView {
-        try await make(page: page, source: source, mode: mode, loadEnded: nil)
+        try await make(page: page, source: source, mode: mode, network: false, loadEnded: nil)
+    }
+
+    /// A live view whose page may reach the network if `network` is true: the person's "Allow network for this page".
+    public static func makeLive(page: PresentedPage, source: any PresentedFiles, network: Bool) async throws -> PresentedPageView {
+        try await make(page: page, source: source, mode: .live, network: network, loadEnded: nil)
     }
 
     /// The same, told when the first load of the entry ends, from before it starts.
     static func make(page: PresentedPage, source: any PresentedFiles, mode: Mode, loadEnded: ((String?) -> Void)?) async throws -> PresentedPageView {
-        let rules = try await PresentedRules.shared()
-        guard let deadEnd = PresentedDeadEnd.port else { throw PresentedRulesError.noDeadEnd }
-        return PresentedPageView(page: page, source: source, mode: mode, rules: rules, deadEnd: deadEnd, loadEnded: loadEnded)
+        try await make(page: page, source: source, mode: mode, network: false, loadEnded: loadEnded)
     }
 
-    private init(page: PresentedPage, source: any PresentedFiles, mode: Mode, rules: WKContentRuleList, deadEnd: UInt16, loadEnded: ((String?) -> Void)?) {
+    private static func make(page: PresentedPage, source: any PresentedFiles, mode: Mode, network: Bool, loadEnded: ((String?) -> Void)?) async throws -> PresentedPageView {
+        // Only a live view, in the window, is ever drawn with the network: never one drawn offscreen for the engine.
+        let network = network && mode == .live && PresentedPagePolicy.networkCanBeAllowed
+        let rules = try await PresentedRules.shared(network: network)
+        let deadEnd = PresentedDeadEnd.port
+        guard network || deadEnd != nil else { throw PresentedRulesError.noDeadEnd }
+        return PresentedPageView(page: page, source: source, mode: mode, network: network, rules: rules, deadEnd: network ? nil : deadEnd, loadEnded: loadEnded)
+    }
+
+    private init(page: PresentedPage, source: any PresentedFiles, mode: Mode, network: Bool, rules: WKContentRuleList, deadEnd: UInt16?, loadEnded: ((String?) -> Void)?) {
         self.page = page
         self.mode = mode
+        self.network = network
         let origin = PresentedPagePolicy.newOrigin()
         self.origin = origin
-        let handler = PresentedSchemeHandler(page: page, source: source, origin: origin)
+        let handler = PresentedSchemeHandler(page: page, source: source, origin: origin,
+                                             policy: network ? PresentedPagePolicy.contentSecurityPolicyWithNetwork : PresentedPagePolicy.contentSecurityPolicy)
         schemeHandler = handler
         log = mode == .drawing ? PresentedLog() : nil
 
@@ -85,7 +109,10 @@ public final class PresentedPageView: WKWebView, WKNavigationDelegate, WKUIDeleg
         // Whatever WebKit itself connects to without asking the rule list (a link clicked or a page navigated to is
         // connected to ahead, while the navigation delegate is still to decide) goes to a proxy on this Mac where
         // nothing listens: refused at once, and no name looked up, since a proxy is given the name to look up.
-        store.proxyConfigurations = [ProxyConfiguration(httpCONNECTProxy: .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: deadEnd)!))]
+        // With the network allowed there is none: the rule list alone keeps this Mac and the local network out.
+        if let deadEnd {
+            store.proxyConfigurations = [ProxyConfiguration(httpCONNECTProxy: .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: deadEnd)!))]
+        }
         configuration.websiteDataStore = store
         configuration.setURLSchemeHandler(handler, forURLScheme: PresentedPagePolicy.scheme)
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
@@ -138,11 +165,75 @@ public final class PresentedPageView: WKWebView, WKNavigationDelegate, WKUIDeleg
         load(URLRequest(url: url))
     }
 
-    /// Stops listening to the page, for a view that is going away.
+    /// Stops listening to the page, for a view that is going away. Its web content process may outlive it: `end` ends it.
     public func close() {
         configuration.userContentController.removeAllScriptMessageHandlers()
         log?.view = nil
         stopLoading()
+    }
+
+    /// Whether `end` has been asked: the page is never loaded again after that.
+    public private(set) var isEnding = false
+    /// Told when the page's process has ended, while `end` waits for it.
+    private var processGone: (() -> Void)?
+
+    /// Closes the view and ends its web content process, and says whether it is known to have gone. Call it whenever a
+    /// page is done with: after drawing, when its window closes, before its window shows another item.
+    ///
+    /// WebKit keeps a page's process after its view is let go, closed, stopped, sent to a blank page or to another
+    /// origin, and after `_killWebContentProcess`; a page whose script never yields keeps it at full speed (#1000's
+    /// security read; each was measured). No public call ends it. So this uses WebKit's own
+    /// `_killWebContentProcessAndResetState`, which is not public, looked up when it runs; on a WebKit without it, the
+    /// process's id (`_webProcessIdentifier`, also not public) and SIGKILL, to the process WebKit started for this view.
+    /// Gone is seen by the process's id where WebKit gives it, else by `webViewWebContentProcessDidTerminate`, within
+    /// `wait`. False if it could not be ended or seen to end: the caller then counts it as alive (`PresentedProcesses`).
+    public func end(wait: Duration = .seconds(5)) async -> Bool {
+        isEnding = true
+        close()
+        let given = Self.processIdentifier(of: self)
+        let pid = Self.signallable(given)
+        var told = false
+        processGone = { told = true }
+        defer { processGone = nil }
+        // WebKit is asked first, whatever number it gives: a process still being started reads as 0.
+        let kill = NSSelectorFromString("_killWebContentProcessAndResetState")
+        if responds(to: kill) {
+            perform(kill)
+        } else if let pid {
+            Darwin.kill(pid, SIGKILL)
+        } else {
+            // Nothing can end it: gone only if WebKit says there is no process.
+            return given == 0
+        }
+        let until = ContinuousClock.now + wait
+        while ContinuousClock.now < until {
+            // By its number where it has one: WebKit says it has ended as it asks it to, before it is gone.
+            if let pid {
+                if Darwin.kill(pid, 0) != 0 && errno == ESRCH { return true }
+            } else if told {
+                return true
+            } else if given == 0, Self.processIdentifier(of: self) == 0 {
+                // There was none to number, and there is none now.
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        return false
+    }
+
+    /// The id of the view's web content process: 0 for none, nil if WebKit does not say (a call that is not public).
+    static func processIdentifier(of view: WKWebView) -> pid_t? {
+        guard view.responds(to: NSSelectorFromString("_webProcessIdentifier")),
+              let number = view.value(forKey: "_webProcessIdentifier") as? NSNumber else { return nil }
+        return number.int32Value
+    }
+
+    /// A number WebKit gave as its process's id, if it may be signalled.
+    /// A number of 0 or below names no single process (a negative one is a group, -1 every process of the person's), 1
+    /// is launchd, and this process's own would end pi²: each is taken as WebKit not saying.
+    public static func signallable(_ number: pid_t?) -> pid_t? {
+        guard let number, number > 1, number != getpid() else { return nil }
+        return number
     }
 
     /// Whether an address is this page's own: its scheme and its origin.
@@ -155,7 +246,9 @@ public final class PresentedPageView: WKWebView, WKNavigationDelegate, WKUIDeleg
         guard message.webView === self, message.frameInfo.isMainFrame, let url = message.frameInfo.request.url, isOwn(url),
               let line = message.body as? String else { return }
         if line.hasPrefix("blocked ") {
-            record.blocked(String(line.dropFirst("blocked ".count)))
+            // The page's own report of a refusal (its security-policy events, which it can make itself): kept apart from
+            // what the app saw refused itself.
+            record.blocked(String(line.dropFirst("blocked ".count)), byPage: true)
         } else if line.hasPrefix("console ") {
             record.console(String(line.dropFirst("console ".count)))
         }
@@ -225,6 +318,11 @@ public final class PresentedPageView: WKWebView, WKNavigationDelegate, WKUIDeleg
     }
 
     public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        // Ended on purpose: never loaded again.
+        if isEnding {
+            processGone?()
+            return
+        }
         if let loadEnded {
             self.loadEnded = nil
             loadEnded("its web content process ended")
@@ -316,7 +414,10 @@ public final class PresentedPageView: WKWebView, WKNavigationDelegate, WKUIDeleg
 /// What a page did that its findings report, each list capped as the design says.
 public struct PresentedPageRecord: Sendable {
     public private(set) var consoleLines: [String] = []
+    /// Every address refused: those the app saw refused itself, and those the page reported.
     public private(set) var blockedAddresses: [String] = []
+    /// Of those, the ones the app saw refused itself (the navigation delegate's), which the page cannot make up.
+    public private(set) var blockedSeen: [String] = []
     public private(set) var notFoundPaths: [String] = []
     public private(set) var answeredRequests: [String] = []
 
@@ -325,8 +426,10 @@ public struct PresentedPageRecord: Sendable {
         consoleLines.append(String(line.prefix(PresentedPageFindings.lineLength)))
     }
 
-    mutating func blocked(_ address: String) {
-        Self.add(String(address.prefix(PresentedPageFindings.lineLength)), to: &blockedAddresses)
+    mutating func blocked(_ address: String, byPage: Bool = false) {
+        let address = String(address.prefix(PresentedPageFindings.lineLength))
+        Self.add(address, to: &blockedAddresses)
+        if !byPage, blockedAddresses.contains(address) { Self.add(address, to: &blockedSeen) }
     }
 
     mutating func notFound(_ path: String) {
@@ -357,15 +460,19 @@ final class PresentedLog: NSObject, WKScriptMessageHandler {
 @MainActor
 enum PresentedRules {
     private static var compiled: WKContentRuleList?
+    private static var compiledWithNetwork: WKContentRuleList?
 
-    static func shared() async throws -> WKContentRuleList {
-        if let compiled { return compiled }
+    /// The network-off list, or with `network` the list of a page the person allowed the network.
+    static func shared(network: Bool = false) async throws -> WKContentRuleList {
+        if let list = network ? compiledWithNetwork : compiled { return list }
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("pi2-presented-rules", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         guard let store = WKContentRuleListStore(url: folder) else { throw PresentedRulesError.noStore }
-        let list = try await store.compileContentRuleList(forIdentifier: "presented-network-off", encodedContentRuleList: PresentedPagePolicy.contentRules)
+        let list = try await store.compileContentRuleList(
+            forIdentifier: network ? "presented-network-on" : "presented-network-off",
+            encodedContentRuleList: network ? PresentedPagePolicy.contentRulesWithNetwork : PresentedPagePolicy.contentRules)
         guard let list else { throw PresentedRulesError.noStore }
-        compiled = list
+        if network { compiledWithNetwork = list } else { compiled = list }
         return list
     }
 }

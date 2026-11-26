@@ -26,7 +26,7 @@
 import type { Client } from "./clients.ts";
 import { broadcastWatchers } from "./clients.ts";
 import { isChat } from "./chat.ts";
-import { activeDevices, hidesSomething, maskKeys, maskValue, PART_HIDDEN, pairedDevice, remoteHooks, remoteOn, revokedWatchers } from "./devices.ts";
+import { activeDevices, hidesSomething, maskKeys, maskValue, PART_HIDDEN, pairedDevice, remoteHooks, remoteOn, revokedWatchers, unhidden } from "./devices.ts";
 import type { Feature } from "./features.ts";
 import type { NeedItem } from "./needs.ts";
 import { orchestratorRole } from "./orchestrator.ts";
@@ -167,19 +167,6 @@ const NOT_READY_RETRY_MS = 30_000;
 // ---- What an alert says
 
 /**
- * What a notification shows as nothing, or as something other than what is there, taken out of every text: what
- * RemoteKit's `ShownText` refuses in a name (every control character, U+200B to U+200F, U+202A to U+202E, U+2066 to
- * U+2069, U+FEFF), widened to every format character (`Cf`: U+00AD, U+061C, U+2060 to U+2064, the tag characters
- * U+E0001 and U+E0020 to U+E007F, and the rest), the line and paragraph separators, and every default-ignorable code
- * point (Hangul fillers, variation selectors). A line break stays; a tab is a space; a line or paragraph separator is a
- * line break, so that two lines never read as one word. Each of these but a line break kept changes the text.
- */
-const NOT_SHOWN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
-
-/** Half of a character, which JSON would write as an escape and a notification as nothing. */
-const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
-
-/**
  * A run that may be a key or a token with no known prefix (7): 32 or more of base64's characters, base64url's too, with
  * a letter and a digit among them, and at least 4.25 bits a character (`highEntropy`). Hex (a commit's hash, a UUID)
  * has at most 4 bits a character, so it is never one; a random token of 32 letters and digits has about 4.6.
@@ -210,7 +197,10 @@ export function highEntropy(run: string): boolean {
  * it. Commit hashes, ids and base64 are everywhere in what agents run, and an approval that holds one stays answerable.
  */
 export function shown(text: string, max: number): { text: string; cut: boolean; changed: boolean; masked: boolean; tokenLike: boolean } {
-	const cleaned = text.replace(LONE_SURROGATE, "").replace(NOT_SHOWN, (found) => (found === "\n" ? found : found === "\t" ? " " : found === "\u2028" || found === "\u2029" ? "\n" : ""));
+	// What a notification shows as nothing, or as something other than what is there, taken out, its lines kept: the
+	// devices' log's own set (`unhidden`, devices.ts), a wider one than RemoteKit's `ShownText` refuses in a name. Each
+	// of these but a line break kept changes the text.
+	const cleaned = unhidden(text, "kept");
 	const changed = cleaned !== text;
 	const unmasked = maskKeys(cleaned);
 	const masked = unmasked !== cleaned;

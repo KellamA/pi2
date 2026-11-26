@@ -35,11 +35,11 @@ enum Flows {
 		return items.compactMap { $0["id"]?.stringValue }
 	}
 
-	/// `start`, and the `remote.hello` it brings.
-	static func hello(_ engine: FakeEngine, pairing: PairingID, devices: [String] = []) -> Mac? {
+	/// `start`, and the `remote.hello` it brings. `entries`, when given, are the devices `start` lists, as written.
+	static func hello(_ engine: FakeEngine, pairing: PairingID, devices: [String] = [], entries: [JSONValue]? = nil) -> Mac? {
 		engine.event("start", [
 			("relay", .string("ws://127.0.0.1:9/v1")), ("switches", switches), ("pairing", .string(pairing.text)),
-			("devices", .array(devices.map { .object([("id", .string($0))]) })), ("minimumBuild", .string("1")),
+			("devices", .array(entries ?? devices.map { .object([("id", .string($0))]) })), ("minimumBuild", .string("1")),
 		])
 		guard let hello = engine.request("remote.hello") else { return nil }
 		engine.answer(hello.id)
@@ -693,13 +693,17 @@ enum Flows {
 	static func homeKeyKept(helper: URL, home: URL, child: Child, engine: FakeEngine, mac: Mac) {
 		var child = child, engine = engine, mac = mac
 		defer { child.stop() }
-		/// A crash: pi² Remote killed where it is, then started again with the devices the engine lists.
-		func crashAndStart(listing devices: [DeviceID]) {
+		/// A crash: pi² Remote killed where it is, then started again with `start`'s entries for the devices as written.
+		func crashAndStartWith(entries: [JSONValue]) {
 			kill(child.pid, SIGKILL)
 			child.wait(15)
 			(child, engine) = Starts.start(helper: helper, home: home)
-			guard let again = hello(engine, pairing: mac.pairing, devices: devices.map(\.text)) else { Check.stop("pi² Remote said hello after a crash") }
+			guard let again = hello(engine, pairing: mac.pairing, entries: entries) else { Check.stop("pi² Remote said hello after a crash") }
 			mac = again
+		}
+		/// The same, with the devices the engine lists.
+		func crashAndStart(listing devices: [DeviceID]) {
+			crashAndStartWith(entries: devices.map { .object([("id", .string($0.text))]) })
 		}
 
 		// First, on this pi² Remote just started, whose limits on first messages and handshakes no earlier step has used.
@@ -708,6 +712,11 @@ enum Flows {
 		// on a start of its own, with no device listed, as it would have.
 		crashAndStart(listing: [])
 		presenceKeyOffers(engine: engine, mac: mac, home: home)
+		crashAndStart(listing: [])
+		presenceKeysAtStart(engine: engine, mac: mac, home: home) { entries in
+			crashAndStartWith(entries: entries)
+			return (engine, mac)
+		}
 		crashAndStart(listing: [])
 
 		Check.section("a first pairing whose home key cannot be kept (S2)")
@@ -1053,6 +1062,98 @@ enum Flows {
 		let revokedBy = Date().addingTimeInterval(10)
 		while !listed(home).isEmpty || storedHomeKey(home) != nil, Date() < revokedBy { usleep(10000) }
 		Check.expect(listed(home).isEmpty && storedHomeKey(home) == nil, "both devices are revoked again, and with them the home key")
+	}
+
+	/// The presence keys on pi² Remote's own list from the engine's `start` (#891's security read, held here in place of the
+	/// reader's probe, #1016): a key accepted on the Mac whose `presenceKey` event pi² Remote could not keep is on the list
+	/// after the next start; and at a start, a device not on the list is not added, an entry with no presence key leaves
+	/// the key as it is and one with `null` clears it, a key that cannot be read leaves that device with none and changes
+	/// nothing of the other, and no device, channel or record key changes, whatever the entry names. `restart` is a crash
+	/// and a start with those entries, each on a pi² Remote of its own; the two devices paired for it are dropped by the
+	/// start after.
+	static func presenceKeysAtStart(engine: FakeEngine, mac: Mac, home: URL, restart: ([JSONValue]) -> (FakeEngine, Mac)) {
+		Check.section("the presence keys on pi² Remote's own list from the engine's start (#891's security read)")
+		var engine = engine, mac = mac
+		let keysA = PhoneKeys(), keysB = PhoneKeys()
+		guard let a = pair(engine, mac: mac, keys: keysA, claim: "claim_start_a"), let b = pair(engine, mac: mac, keys: keysB, claim: "claim_start_b") else {
+			Check.stop("two phones paired for the presence keys at start")
+		}
+		/// A device's keys on the list but its presence key: its device, channel and record keys and its App Attest key id.
+		func fixedKeys(_ id: DeviceID) -> [String]? {
+			guard let data = FileManager.default.contents(atPath: home.appendingPathComponent("remote-devices.json").path), let kept = try? KeptDevices(data: data),
+			      let one = kept.devices.first(where: { $0.id == id })
+			else { return nil }
+			return [PublicKeys.text(one.deviceKey), PublicKeys.text(one.channelKey), PublicKeys.text(one.recordKey), one.attestKeyId ?? ""]
+		}
+		func log() -> String { (try? String(contentsOf: home.appendingPathComponent("remote.log"), encoding: .utf8)) ?? "" }
+		/// An entry of `start` for `id` with another phone's device, channel and record keys, and `presence` as given.
+		func entry(_ id: DeviceID, presence: JSONValue?) -> JSONValue {
+			let stranger = PhoneKeys()
+			return .object([
+				("id", .string(id.text)), ("deviceKey", .string(PublicKeys.text(stranger.device.publicKey))), ("channelKey", .string(PublicKeys.text(stranger.channel.publicKey))),
+				("recordKey", .string(PublicKeys.text(stranger.record.publicKey))),
+			] + (presence.map { [("presenceKey", $0)] } ?? []))
+		}
+		/// An attach as `who`, signed by its device key on the list, its presence by `presence`, which the check as the engine
+		/// takes: attached (the session then closed), or refused presence with the session ended there.
+		func attach(_ who: DeviceID, _ phoneKeys: PhoneKeys, presence: P256.Signing.PrivateKey, session: String, taken: Bool, _ what: String) {
+			guard let phone = Phone(port: mac.port), let challenge = beginAttach(phone, engine, mac: mac, device: who, keys: phoneKeys) else { return Check.expect(false, "\(what): the attach began") }
+			let claim = try! AttachClaim.make(
+				pairing: mac.pairing, device: who, session: nil, received: nil, binding: phone.channel!.handshakeHash, challenge: challenge, build: phoneKeys.build,
+				deviceKey: phoneKeys.device, presenceKey: presence)
+			phone.sendLine(ControlLine.attach(claim).line)
+			guard let request = engine.request("remote.attach") else { return Check.expect(false, "\(what): the attach reached the engine") }
+			engine.answer(request.id, .object([("session", .string(session)), ("resume", .bool(false))]))
+			var line: ControlLine?
+			if case let .line(read)? = phone.event(within: 10) { line = try? ControlLine.parse(read, from: .mac) }
+			if taken {
+				if case .attached? = line { Check.expect(true, what) } else { Check.expect(false, what, "\(String(describing: line))") }
+				engine.event("sessionClosed", [("session", .string(session)), ("why", .string("check"))])
+				return
+			}
+			if case let .refused(refusal)? = line { Check.expect(refusal.reason == .presence, what, "\(String(describing: refusal.reason))") } else { Check.expect(false, what, "\(String(describing: line))") }
+			let ended = engine.request("remote.sessionEnd")
+			if let ended { engine.answer(ended.id) }
+			Check.expect(ended?.params["session"]?.stringValue == session, "\(what): and the session the engine opened is ended there")
+		}
+		let fixedA = fixedKeys(a), fixedB = fixedKeys(b)
+		Check.expect(fixedA != nil && fixedB != nil && keptPresenceKey(home, a) == .some(keysA.presence.publicKey.derRepresentation), "two phones paired, each on the list with its own keys")
+
+		// The lost write: the person accepts a new key for A, and the write of the engine's event fails.
+		let newA = P256.Signing.PrivateKey()
+		let unkeptBefore = log().components(separatedBy: "could not be kept").count
+		chmod(home.path, 0o500)
+		engine.event("presenceKey", [("device", .string(a.text)), ("presenceKey", .string(PublicKeys.text(newA.publicKey)))])
+		let triedBy = Date().addingTimeInterval(10)
+		while log().components(separatedBy: "could not be kept").count == unkeptBefore, Date() < triedBy { usleep(20000) }
+		chmod(home.path, 0o700)
+		Check.expect(log().components(separatedBy: "could not be kept").count > unkeptBefore && keptPresenceKey(home, a) == .some(keysA.presence.publicKey.derRepresentation),
+		             "a presenceKey event whose write fails leaves the old key in the kept list")
+
+		// The next start names A's new key beside another phone's device, channel and record keys; B with a key that
+		// cannot be read; and C, which is on no list of pi² Remote's.
+		let c = DeviceID.random()
+		(engine, mac) = restart([
+			entry(a, presence: .string(PublicKeys.text(newA.publicKey))),
+			entry(b, presence: .string(Base64URL.encode(P256.Signing.PrivateKey().publicKey.compressedRepresentation))),
+			entry(c, presence: .string(PublicKeys.text(P256.Signing.PrivateKey().publicKey))),
+		])
+		Check.expect(keptPresenceKey(home, a) == .some(newA.publicKey.derRepresentation), "the key whose write failed is on the list after the next start, from the engine's start")
+		Check.expect(keptPresenceKey(home, b) == .some(nil), "a key start gives that cannot be read leaves that device with none")
+		Check.expect(Set(listed(home)) == [a.text, b.text], "a device start names that is not on the list is not added", listed(home).joined(separator: ", "))
+		Check.expect(fixedKeys(a) == fixedA && fixedKeys(b) == fixedB, "and no device's device, channel or record key changes, though start named others")
+		attach(a, keysA, presence: newA, session: "s_start_new", taken: true, "an attach under the key from start, signed by the device key on the list, gets a session")
+		attach(a, keysA, presence: keysA.presence, session: "s_start_old", taken: false, "an attach under the key before it is refused presence")
+		attach(b, keysB, presence: keysB.presence, session: "s_start_b", taken: false, "an attach by the device whose key could not be read is refused presence")
+
+		// An entry with no presence key leaves the key on the list as it is.
+		(engine, mac) = restart([entry(a, presence: nil), entry(b, presence: nil)])
+		Check.expect(keptPresenceKey(home, a) == .some(newA.publicKey.derRepresentation) && keptPresenceKey(home, b) == .some(nil), "an entry with no presenceKey leaves the device's key on the list as it is")
+		// One with null clears it.
+		(engine, mac) = restart([entry(a, presence: .null), entry(b, presence: nil)])
+		Check.expect(keptPresenceKey(home, a) == .some(nil), "an entry with presenceKey null clears it")
+		Check.expect(Set(listed(home)) == [a.text, b.text] && fixedKeys(a) == fixedA && fixedKeys(b) == fixedB, "and the list and every other key are as they were")
+		attach(a, keysA, presence: newA, session: "s_start_cleared", taken: false, "an attach after it is refused presence")
 	}
 
 	/// What `pid` holds in memory, in kilobytes.

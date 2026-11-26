@@ -28,6 +28,7 @@ func fail(_ message: String) -> Never {
     exit(1)
 }
 
+checkPresented()
 await checkEventsNotAnswers()
 
 guard let session = try? String(contentsOf: sessionURL, encoding: .utf8) else {

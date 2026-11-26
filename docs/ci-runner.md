@@ -9,7 +9,7 @@ GitHub's free macOS runners are what a pull request here waits for: a free accou
 | `CI_MAC_RUNNER` = `pi2-mini` | `Engine (type-check and tests)`, `App (build)` (the two required macOS checks) | `macos-26` |
 | `CI_MAC_RUNNER_MORE` = `pi2-mini` | `Relay (protocol test)`, `iPhone app (tests and Release build)` | `macos-26`, `xcode-27` |
 
-Each job's `runs-on` in `.github/workflows/ci.yml` is the variable's value only when all of these hold: the variable is set and not empty; the run is for a **pull request from a branch of this repository** (`github.event.pull_request.head.repo.full_name == github.repository`); that pull request was **opened by the repository's owner** (`github.event.pull_request.user.login == github.repository_owner`, so no account's name is written in the file); and the owner started the run (`github.actor == github.repository_owner`: someone else's push to the owner's pull request stays on GitHub's runners). Anything else runs on GitHub's runner exactly as before:
+Each job's `runs-on` in `.github/workflows/ci.yml` is the variable's value only when all of these hold: the variable is set and not empty; the run is for a **pull request from a branch of this repository** (`github.event.pull_request.head.repo.full_name == github.repository`); that pull request was **opened by the repository's owner** (`github.event.pull_request.user.login == github.repository_owner`, so no account's name is written in the file); and the owner started the run (`github.actor == github.repository_owner`: someone else's push to the owner's pull request stays on GitHub's runners). For App and Engine, **only the first attempt goes to the mini**. Re-runs of those two checks use `macos-26` and test the same SHA and ref ([When the mini is off](#when-the-mini-is-off)). Relay and iPhone routing does not change on re-runs. Anything else runs on GitHub's runner exactly as before:
 
 - a push to `main`, so every merge is still built and tested on a new, clean machine with GitHub's Xcode (see [Build folders](#build-folders-kept-on-purpose));
 - a pull request from a fork, and **anyone else's pull request**, a collaborator's included, from a branch of this repository or not (see [Conditions](#conditions));
@@ -20,7 +20,7 @@ Each job's `runs-on` in `.github/workflows/ci.yml` is the variable's value only 
 
 To go back at any time, **delete the variable** (or empty it). The next run of every job it moved is on GitHub's runner again; a run already waiting for the mini keeps waiting (see [When the mini is off](#when-the-mini-is-off)).
 
-The value is the runner's label. `runs-on: "${{ … && vars.CI_MAC_RUNNER || 'macos-26' }}"` is GitHub's form "a single variable containing a string" ([workflow syntax, `runs-on`](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idruns-on)), and a variable that is not set reads as an empty string, which picks GitHub's runner.
+The value is the runner's label. `runs-on: "${{ … && vars.CI_MAC_RUNNER || 'macos-26' }}"` is GitHub's form "a single variable containing a string" ([workflow syntax, `runs-on`](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idruns-on)), and a variable that is not set reads as an empty string, which picks GitHub's runner. A list of labels would require a runner matching **all** of them; it is not a fallback.
 
 ## Conditions
 
@@ -143,14 +143,17 @@ A job that starts reading or leaving something new (another folder in `~/Library
 
 ## When the mini is off
 
-A job for the mini that finds no runner online is not cancelled as GitHub's are when they are short of runners: it waits in the queue, up to 24 hours, and then fails. So nothing fails and nothing is run again by `scripts/rerun-if-no-runner`: the pull requests just wait, in silence.
+**Recovery is manual, even after a runner failure.** GitHub's run-ID retry applies to the current attempt, which could change after the controller's last read. The [job-ID endpoint](https://docs.github.com/en/rest/actions/workflow-runs#re-run-a-job-from-a-workflow-run) identifies a job but also re-runs its downstream dependents. Its public contract does not guarantee that a job from an earlier attempt is rejected if another attempt starts or completes before the request. The controller therefore uses neither endpoint for mini recovery. It also keeps a later hosted attempt out of the existing hosted-capacity retry if App or Engine requested the mini earlier in the run.
 
-It shows as a check that stays at *Queued*, with "Waiting for a runner to pick up this job…" in its log, and as `pi2-mini` **Offline** on Settings › Actions › Runners (or `gh api repos/KellamA/pi2/actions/runners --jq '.runners[] | "\(.name) \(.status)"'`, which needs the owner's sign-in).
+**A queued job does not move.** It shows *Queued* and "Waiting for a runner to pick up this job…". It can wait up to 24 hours; `timeout-minutes` starts on a runner and does not bound this wait. GitHub has no API to cancel just that queued job or to cancel only if it is still queued. Cancelling the workflow could interrupt unrelated checks or a job that just started. The controller never cancels a run.
 
-The usual cause is a restart: after one, the runner is offline until the owner unlocks FileVault and logs in as `runner` ([What separates the jobs](#what-separates-the-jobs-from-the-owners-account-and-what-does-not)). Then either log in as `runner` (the runner starts with the session; switch back to your own account afterwards), or go back to GitHub's runners:
+**Owner's same-commit fallback:**
 
-1. Delete `CI_MAC_RUNNER` (and `CI_MAC_RUNNER_MORE`).
-2. Cancel each run still waiting, and run its jobs again: `gh run cancel <run-id>`, then `gh run rerun <run-id>`, or the buttons on the run's page. If a job run again still waits for `pi2-mini`, start a new run instead: merge `origin/main` into the pull request's branch and push.
+1. If App or Engine has been queued for **10 minutes**, check whether `pi2-mini` is offline in Settings › Actions › Runners. After a restart, unlocking FileVault and logging in as `runner` brings it back ([What separates the jobs](#what-separates-the-jobs-from-the-owners-account-and-what-does-not)). If that is not practical, check that this is still the latest run for the PR and that the job is still queued, not running. Let other checks finish first where possible, then cancel the run (`gh run cancel <run-id>`) and wait for cancellation to complete. This acts on the whole run, so other interrupted checks may need recovery too.
+2. If the job already started, don't infer an outage from elapsed time. Read the log and terminal result. Retry an infrastructure failure such as a runner disconnect, or a job that never got a runner, not a genuine build or test failure. Leave unclear results for investigation.
+3. Review the latest attempt immediately before retrying. Check what depends on the affected job, then use its **Re-run job** button or `gh run rerun --job <job-id>` (`gh run view <run-id> --json jobs --jq '.jobs[] | {name, databaseId}'` gives the API IDs, not the numbers in the job URLs). GitHub can reject job IDs from earlier attempts. If both jobs need recovery, use `gh run rerun <run-id> --failed` only after confirming that **every** non-passing job is safe to rerun; don't use it to erase a real failure. Check that the retry actually passes on a GitHub-hosted runner at the original SHA and ref.
+
+This needs no variable change for a run whose CI already has the attempt-1 routing rule. A re-run of an older workflow uses that older definition; it has no same-commit switch. To get a fresh run in that case, update the branch from `main` first, or bring the mini back.
 
 ## Upkeep
 

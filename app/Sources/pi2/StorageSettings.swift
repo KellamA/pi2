@@ -40,6 +40,8 @@ struct StorageSettings: View {
     @State private var restoreFrom: URL?
     /// What the engine says of the last backup when it did not finish (#792): cut off by the engine stopping, or failed.
     @State private var unfinished: String?
+    /// What agents' presented pictures and pages keep in the data folder (`engine.info`'s `presented`, #946).
+    @State private var presented: String?
 
     var body: some View {
         Form {
@@ -48,6 +50,11 @@ struct StorageSettings: View {
                     HStack {
                         Text(engine.dataFolder.path).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
                         Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([engine.dataFolder]) }
+                    }
+                }
+                if let presented {
+                    LabeledContent("Presented pictures and pages") {
+                        Text(presented).foregroundStyle(.secondary).monospacedDigit()
                     }
                 }
             } footer: {
@@ -102,7 +109,9 @@ struct StorageSettings: View {
 
     /// The line for a backup that did not finish, from `engine.info`'s `backup`; nothing when the last one finished.
     private func loadStatus() async {
-        guard let result = try? await engine.call("engine.info"), let last = result["backup"]?["unfinished"], case .object = last else {
+        let result = try? await engine.call("engine.info")
+        presented = result.flatMap { Self.presentedLine($0["presented"]) }
+        guard let result, let last = result["backup"]?["unfinished"], case .object = last else {
             unfinished = nil
             return
         }
@@ -113,6 +122,16 @@ struct StorageSettings: View {
         }
         let folder = last["folder"]?.stringValue.map { " in \(URL(fileURLWithPath: $0).lastPathComponent)" } ?? ""
         unfinished = "The last backup\(folder)\(when), did not finish: \(why). What it had copied is not a backup and is removed. Back up again to have one."
+    }
+
+    /// "312 MB, in 14 conversations", from `engine.info`'s `presented: { bytes, conversations }`; nil from an engine that
+    /// does not say. Nothing limits it above one conversation yet: the line only shows the total.
+    static func presentedLine(_ value: JSONValue?) -> String? {
+        guard case .number(let bytes)? = value?["bytes"], case .number(let count)? = value?["conversations"], bytes >= 0, count >= 0 else { return nil }
+        if count == 0 { return "None yet" }
+        let size = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+        let conversations = Int(count)
+        return "\(size), in \(conversations) conversation\(conversations == 1 ? "" : "s")"
     }
 
     private func restore(_ folder: URL) {

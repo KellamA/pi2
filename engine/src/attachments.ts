@@ -28,6 +28,15 @@ const IMAGE_TYPES: Record<string, { label: string; matches: (head: Buffer) => bo
 };
 
 /**
+ * Which of those formats a file is, by its first bytes, as an attached picture is checked: for presenting (presented.ts,
+ * #946), which takes the same four. Undefined for anything else.
+ */
+export function pictureType(head: Buffer): { mimeType: string; label: string } | undefined {
+	const found = Object.entries(IMAGE_TYPES).find(([, type]) => type.matches(head));
+	return found === undefined ? undefined : { mimeType: found[0], label: found[1].label };
+}
+
+/**
  * Whether `data` is base64, in its one plain form, of a picture of `mimeType`: one of the four types, starting as a
  * file of that type starts. What a paired phone is sent of a picture's bytes unmasked (remote.ts) has passed it.
  */

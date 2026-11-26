@@ -188,7 +188,9 @@ final class RemoteConnection {
                         stopTrying(.faceID(error))
                         return
                     } catch {
-                        if !Task.isCancelled { stopTrying(.presenceKeyNotTaken) }
+                        // No answer came, or none the phone reads: never the words for another key waiting, since the
+                        // key the Mac shows may be this one (#1016).
+                        if !Task.isCancelled { stopTrying(.presenceKeyNoAnswer) }
                         return
                     }
                     guard !Task.isCancelled else { return }
@@ -204,6 +206,8 @@ final class RemoteConnection {
                         stopTrying(ConnectionProblem(reason))
                     case .revoked:
                         await unpair()
+                    case .dropped:
+                        stopTrying(.presenceKeyNoAnswer)
                     case .refused, .closed:
                         stopTrying(.presenceKeyNotTaken)
                     }
@@ -428,8 +432,12 @@ enum ConnectionProblem: Equatable, Sendable {
     /// The new Face ID key, made when Face ID was set up again, waits to be accepted on the Mac: the offer was answered
     /// `refused` with `presence` (#891).
     case presenceKeyWaits
-    /// The offer of the new Face ID key ended with no answer the phone acts on.
+    /// The Mac refused the offer of the new Face ID key with no reason (`bye` alone, or a reason this build does not
+    /// know): as it does when another new key already waits there.
     case presenceKeyNotTaken
+    /// No answer to the offer of the new Face ID key came back, or none the phone could read: within ten seconds, before
+    /// the link dropped (#1016). The key the Mac shows may be this one, so the words say only to try again.
+    case presenceKeyNoAnswer
     /// The relay stopped this phone's connection, with its word: shown as the relay's word, never acted on.
     case relaySaid(String)
 
@@ -453,6 +461,7 @@ enum ConnectionProblem: Equatable, Sendable {
         case .macNotProved: "Not your Mac"
         case .presenceKeyWaits: "Accept the new Face ID key on your Mac"
         case .presenceKeyNotTaken: "Your Mac did not take the new Face ID key"
+        case .presenceKeyNoAnswer: "No answer from your Mac"
         case .relaySaid: "What pi²'s relay says"
         }
     }
@@ -477,6 +486,8 @@ enum ConnectionProblem: Equatable, Sendable {
             "Face ID was set up again on this iPhone, so pi² made a new key for it and sent it to your Mac. On your Mac, accept it in pi² › Settings › Devices, only if you set up Face ID yourself. Then tap Try again here."
         case .presenceKeyNotTaken:
             "Your Mac did not take the new key pi² made when Face ID was set up again on this iPhone. If your Mac shows another new key for this iPhone in pi² › Settings › Devices, it is not this iPhone's: refuse it there, then tap Try again here."
+        case .presenceKeyNoAnswer:
+            "pi² offered your Mac the new key it made when Face ID was set up again on this iPhone, and nothing came back. Tap Try again."
         case let .relaySaid(word):
             switch word {
             case "left", "removed", "not-listed", "deleted", "unknown-pairing":

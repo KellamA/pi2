@@ -545,15 +545,16 @@ export async function previewFile(params: Record<string, unknown>, engine: Engin
 	}
 }
 
-/** When each device was last shown files, the last minute's, by device. */
+/** When each device was last shown files, the last minute's, by device, in `performance.now()`'s milliseconds. */
 const previewsBy = new Map<string, number[]>();
 
 /**
  * Counts one `files.preview` from `device`, or refuses it, in words the phone shows, when it asked for
  * PREVIEWS_PER_MINUTE in the last minute. Counted before any of the work, whether it is then shown or refused; one
  * refused here is not counted, so a phone that keeps asking is shown files again a minute after its last one shown.
+ * On a monotonic clock (#997), so that a change of the Mac's clock neither holds a phone back nor gives it a new count.
  */
-export function previewCounted(device: string, now = Date.now()): void {
+export function previewCounted(device: string, now = performance.now()): void {
 	const recent = (previewsBy.get(device) ?? []).filter((at) => now - at < 60_000);
 	if (recent.length >= PREVIEWS_PER_MINUTE) {
 		previewsBy.set(device, recent);

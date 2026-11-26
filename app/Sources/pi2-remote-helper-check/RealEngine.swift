@@ -495,8 +495,8 @@ enum RealEngine {
 
 		if let (other, session) = another { typedTextUnder(app: app, phone: other, session: session, ask: ask) }
 		newFaceIDKey(app: app, home: home, port: port, ask: ask)
-		offerRefusals(app: app, port: port)
-		acceptedWhileAway(app: app, engine: engine, home: home, port: port)
+		let afterRefusals = offerRefusals(app: app, home: home, port: port)
+		acceptedWhileAway(app: app, engine: engine, home: home, port: afterRefusals)
 
 		guard case .success = app.call("devices.set", .object([("on", .bool(false))])) else { return Check.expect(false, "remote access turned off") }
 		if let remote {
@@ -631,13 +631,26 @@ enum RealEngine {
 	}
 
 	/// The engine's refusals of an offer, through the real engine and pi² Remote, each told the phone by its reason in place
-	/// of a bare `bye` (#891): a second key while one waits `presence`, a clock three minutes off `clock`, an offer from a
-	/// suspended device `suspended`; and a build below the minimum `update`, which pi² Remote's own check of the minimum the
-	/// engine gave it says first. A device paired for it, its fifth counted refusal suspending it; resumed and revoked at
-	/// the end. It waits out one minute, so that its eighth handshake is within the six a minute pi² Remote takes.
-	static func offerRefusals(app: App, port: UInt16) {
+	/// of a bare `bye` (#891): a first new key `presence`, as it waits; a second key while one waits no reason, `bye` alone;
+	/// a clock three minutes off `clock`, an offer from a suspended device `suspended`; and a build below the minimum
+	/// `update`, which pi² Remote's own check of the minimum the engine gave it says first. Two devices paired for it, each
+	/// within the six handshakes a minute pi² Remote takes, in place of a minute's wait (#1016): the first for the key that
+	/// waits, the second key and the build; the second for the clocks, its fifth counted refusal suspending it, and the
+	/// offer it then makes. The engine counts each device's refusals apart, and its own test counts a second key's. First
+	/// on a pi² Remote started again (Reach off and on), whose twenty first messages a minute from 127.0.0.1 the steps
+	/// before have not used; the port it listens on then is returned. Each device is revoked once its part is done.
+	static func offerRefusals(app: App, home: URL, port: UInt16) -> UInt16 {
 		Check.section("an offer's refusals through the real engine, each told the phone by its reason (#891)")
-		guard let (payload, device, keys) = pairPhone(app: app, port: port) else { return Check.expect(false, "a phone paired for the offer's refusals") }
+		let started = listening(home).count
+		guard case .success = app.call("devices.set", .object([("on", .bool(false))])) else { Check.expect(false, "Reach turned off before the offer's refusals"); return port }
+		for _ in 0 ..< 600 where helperRunning(app) != false { usleep(100_000) }
+		guard case .success = app.call("devices.set", .object([("on", .bool(true)), ("preview", .bool(true)), ("relay", .bool(false)), ("relayAddress", .string("ws://127.0.0.1:9/v1"))])) else {
+			Check.expect(false, "Reach turned on again before the offer's refusals")
+			return port
+		}
+		for _ in 0 ..< 600 where !(helperRunning(app) == true && listening(home).count > started) { usleep(100_000) }
+		guard listening(home).count > started, let port = listening(home).port else { Check.expect(false, "pi² Remote starts again for the offer's refusals"); return port }
+		guard let (payload, device, keys) = pairPhone(app: app, port: port) else { Check.expect(false, "a phone paired for the offer's refusals"); return port }
 		func told(_ line: ControlLine?, _ reason: Refusal.Reason, _ what: String) {
 			if case let .refused(refusal)? = line {
 				Check.expect(refusal.reason == reason, "\(what) is told refused \(reason.rawValue), then bye", "\(String(describing: refusal.reason))")
@@ -651,23 +664,26 @@ enum RealEngine {
 		let second = offer(P256.Signing.PrivateKey(), port: port, payload: payload, device: device, keys: keys, byeAlone: true)
 		Check.expect(second == nil && lastByeAlone, "a second key while one waits is told no reason: bye alone", "\(String(describing: second))")
 		told(offer(first, port: port, payload: payload, device: device, keys: keys, build: "0"), .update, "a build below the minimum")
-		for _ in 0 ..< 3 {
-			told(offer(first, port: port, payload: payload, device: device, keys: keys, at: Date().addingTimeInterval(180)), .clock, "a clock three minutes ahead")
+		if case .failure = app.call("devices.revoke", .object([("device", .string(device.text))])) { Check.expect(false, "the offer's device is revoked at the end") }
+
+		// Five counted refusals and the offer after them: six handshakes of a device of their own.
+		guard let (payload2, clocked, keys2) = pairPhone(app: app, port: port) else { Check.expect(false, "a second phone paired for the offer's refusals"); return port }
+		for _ in 0 ..< 4 {
+			told(offer(first, port: port, payload: payload2, device: clocked, keys: keys2, at: Date().addingTimeInterval(180)), .clock, "a clock three minutes ahead")
 		}
-		// Six handshakes so far; four refusals counted (the second key, three clocks). After a minute, a fifth suspends.
-		sleep(61)
-		told(offer(first, port: port, payload: payload, device: device, keys: keys, at: Date().addingTimeInterval(-180)), .clock, "a clock three minutes behind, the fifth counted refusal,")
+		told(offer(first, port: port, payload: payload2, device: clocked, keys: keys2, at: Date().addingTimeInterval(-180)), .clock, "a clock three minutes behind, the fifth counted refusal,")
 		var suspended = false
 		for _ in 0 ..< 100 where !suspended {
 			if case let .success(state) = app.call("devices.watch"), case let .array(devices)? = state["devices"] {
-				suspended = devices.first { $0["id"]?.stringValue == device.text }?["suspendedAt"]?.isNull == false
+				suspended = devices.first { $0["id"]?.stringValue == clocked.text }?["suspendedAt"]?.isNull == false
 			}
 			if !suspended { usleep(100_000) }
 		}
 		Check.expect(suspended, "five counted refusals of offers suspend the device")
-		told(offer(first, port: port, payload: payload, device: device, keys: keys), .suspended, "an offer from a suspended device")
-		_ = app.call("devices.resume", .object([("device", .string(device.text))]))
-		if case .failure = app.call("devices.revoke", .object([("device", .string(device.text))])) { Check.expect(false, "the offer's device is revoked at the end") }
+		told(offer(first, port: port, payload: payload2, device: clocked, keys: keys2), .suspended, "an offer from a suspended device")
+		_ = app.call("devices.resume", .object([("device", .string(clocked.text))]))
+		if case .failure = app.call("devices.revoke", .object([("device", .string(clocked.text))])) { Check.expect(false, "the second offer's device is revoked at the end") }
+		return port
 	}
 
 	static func newFaceIDKey(app: App, home: URL, port: UInt16, ask: (Phone, String, String, String) -> JSONValue?) {
