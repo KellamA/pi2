@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { crc32, deflateSync } from "node:zlib";
+import { dayKey } from "../src/projectspend.ts";
 import { newestOnly } from "../src/providers.ts";
 import { usageWords } from "../src/subchatusage.ts";
 import { ARCHIVED_PAGE, archivedPage } from "../src/subchats.ts";
@@ -221,6 +222,8 @@ let backupPath = "";
 let restoredId = -1;
 let engine = startEngine();
 try {
+	// The day the run began on, for the usage step, which cannot say "all of it was spent today" once the day has changed (#1032).
+	const startedOn = dayKey();
 	let client = await Client.attach();
 	await client.until("providers", () => client.providers.length > 0);
 	await assert.rejects(client.call("test-copy.fill", { entries: 600 }), /Unknown method: test-copy\.fill/);
@@ -2740,7 +2743,8 @@ try {
 	assert.ok(conv.state.usage.tokens > 0 && conv.state.usage.cost > 0, "a conversation counts its own tokens and cost");
 	assert.ok(conv.state.context.used > 0 && conv.state.context.window !== null, "and how full its context is");
 	const usage = await client.until("usage summary", () => (client.usage?.total.tokens > 0 ? client.usage : undefined));
-	assert.ok(Math.abs(usage.today.cost - usage.total.cost) < 1e-9 && usage.today.tokens === usage.total.tokens, "everything spent so far was spent today");
+	if (dayKey() === startedOn) assert.ok(Math.abs(usage.today.cost - usage.total.cost) < 1e-9 && usage.today.tokens === usage.total.tokens, "everything spent so far was spent today");
+	else assert.ok(usage.today.cost <= usage.total.cost + 1e-9 && usage.today.tokens <= usage.total.tokens && usage.total.tokens > 0, "after midnight, today's spend is part of the total");
 	assert.ok(usage.models.some((m: any) => m.key === "demo/demo-1"));
 	assert.ok(usage.agents.some((x: any) => x.agentId === "atlas") && usage.conversations.length > 0);
 	await client.call("usage.setBudget", { daily: 0.000001 });
