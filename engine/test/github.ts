@@ -695,6 +695,34 @@ try {
 	changeStandIn((whole) => void (whole.repos["example/widgets"].pulls.find((one: any) => one.number === 3).state = "OPEN"));
 	step("update_pull_request replaces an open pull request's text and title, keeping its agent's line, Fixes and marker, for its own conversation and the orchestrator; refused: another's, merged, closed, no marker, no record, nothing given, no number, no pull requests");
 
+	// ---- A text that names an issue with a closing word in passing says so, and a "Part of #N" line takes the Fixes off (#1044)
+	// Each pull request from a branch of its own: the stand-in refuses a second open one from the same branch.
+	const onBranch = (name: string) => {
+		gitIn("checkout", "-q", "-b", name);
+		gitIn("config", `branch.${name}.remote`, "origin");
+		gitIn("config", `branch.${name}.merge`, `refs/heads/${name}`);
+	};
+	onBranch("passing");
+	const inPassing = await client.work(worker, "pull_request", { title: "In passing", text: `Do not close #${pathy.id}: more remains.` });
+	const inPassingNumber = Number(/^Opened pull request #(\d+) from passing into main: /.exec(said(inPassing))![1]);
+	assert.match(said(inPassing), new RegExp(`GitHub will close #${pathy.id} when this merges, because the text says "close #${pathy.id}"\\. If that is not meant, reword it and use update_pull_request\\.`));
+	const parted = await client.work(worker, "update_pull_request", { id: inPassingNumber, text: `Part of #${pathy.id}.\n\nWhat changed. The rest of #${pathy.id} is done elsewhere.` });
+	assert.match(said(parted), new RegExp(`keeping the line naming its agent, no longer fixing #${pathy.id} and pi²'s marker`));
+	const partedPull = widgets().pulls.find((one: any) => one.number === inPassingNumber);
+	assert.equal(partedPull.body.includes(`Fixes #${pathy.id}`), false, "the Part of line takes the Fixes off");
+	assert.match(partedPull.body, new RegExp(`\\n\\nPart of #${pathy.id}\\.\\n\\nWhat changed\\. The rest of #${pathy.id} is done elsewhere\\.\\n\\n<!-- pi2:[0-9a-f]{16} -->$`));
+	// Without a Part of line, the Fixes for the issue the pull request was opened with is put back as before.
+	onBranch("passing-two");
+	const withId = await client.work(worker, "pull_request", { id: pathy.id, title: "With an id", text: "What changed." });
+	const withIdNumber = Number(/^Opened pull request #(\d+) from passing-two into main: /.exec(said(withId))![1]);
+	const withIdPull = () => widgets().pulls.find((one: any) => one.number === withIdNumber);
+	const withIdMarker = /<!-- pi2:[0-9a-f]{16} -->$/.exec(withIdPull().body)![0];
+	const keptFixes = await client.work(worker, "update_pull_request", { id: withIdNumber, text: "What changed, and more of it." });
+	assert.match(said(keptFixes), new RegExp(`keeping the line naming its agent, Fixes #${pathy.id} and pi²'s marker`));
+	assert.equal(withIdPull().body, `*From Worker, an agent of the pi² project “Widgets”.*\n\nWhat changed, and more of it.\n\nFixes #${pathy.id}\n\n${withIdMarker}`);
+	gitIn("checkout", "-q", "feature");
+	step("a pull request whose text closes an issue in passing says so; a Part of line takes the Fixes off and says so; without it Fixes is kept");
+
 	// ---- A first read reads everything, and what is closed comes brief until it is opened (#599)
 	const secondFolder = realpathSync(mkdtempSync(join(tmpdir(), "pi2-github-anew-")));
 	const { id: anew } = await client.call("projects.create", { folder: secondFolder, name: "Widgets anew" });

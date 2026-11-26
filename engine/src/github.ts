@@ -1331,8 +1331,22 @@ async function sendBack(project: Project, number: number, reason: string, by: Wh
 	return told;
 }
 
-/** The words GitHub reads as closing issue `number` on merge: "Fixes #12", "closes #12", "Resolved #12". */
-const closes = (number: number) => new RegExp(`\\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\\s+#${number}\\b`, "i");
+/** Every distinct issue `text` names with one of the words GitHub reads as closing it on merge, with the words first matched for it: "close #905", "Fixes #12". */
+function closingPhrases(text: string): { issue: number; words: string }[] {
+	const found: { issue: number; words: string }[] = [];
+	for (const match of plain(text).matchAll(/\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+#(\d+)\b/gi)) {
+		const issue = Number(match[1]);
+		if (!found.some((one) => one.issue === issue)) found.push({ issue, words: match[0] });
+	}
+	return found;
+}
+
+/** Whether `text` names issue `number` with one of those words. */
+const closes = (number: number, text: string) => closingPhrases(text).some((one) => one.issue === number);
+
+/** What `pull_request` and `update_pull_request` say when a text closes an issue nobody asked it to close. */
+const closingWarning = ({ issue, words }: { issue: number; words: string }) =>
+	`GitHub will close #${issue} when this merges, because the text says "${words}". If that is not meant, reword it and use update_pull_request.`;
 
 /**
  * Replace the text (and the title, if given) of open pull request `number`, which this project's tool opened (#823),
@@ -1361,15 +1375,22 @@ async function updatePull(project: Project, number: number, by: Who, args: Recor
 	const title = retitled === "" ? pr.title : publicText(retitled);
 	let edited = body;
 	const kept: string[] = [];
+	let closing: { issue: number; words: string }[] = [];
 	if (given !== undefined) {
 		// What opening added, read from the text as it is: never a line or an issue it did not have.
 		const line = AGENT_LINE.exec(body)?.[0] ?? (opening?.args.by === undefined ? "" : agentLine(project, opening.args.by as Who));
 		const head = line.trim() === "" ? "" : `${line.trim()}\n\n`;
 		if (head !== "") kept.push("the line naming its agent");
-		const fixed = [...new Set([...plain(body).matchAll(/\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?)\s+#(\d+)\b/gi)].map((match) => Number(match[1])))];
+		const fixed = closingPhrases(body).map(({ issue }) => issue);
 		let said = given;
+		closing = closingPhrases(given).filter(({ issue }) => !fixed.includes(issue));
 		for (const issue of fixed) {
-			if (!closes(issue).test(said)) said = `${said}\n\nFixes #${issue}`;
+			// A line "Part of #N" takes the Fixes line off, but only when the new text does not close the issue itself: then GitHub closes it anyway.
+			if (new RegExp(`^\\s*part of #${issue}\\b`, "im").test(given) && !closes(issue, given)) {
+				kept.push(`no longer fixing #${issue}`);
+				continue;
+			}
+			if (!closes(issue, said)) said = `${said}\n\nFixes #${issue}`;
 			kept.push(`Fixes #${issue}`);
 		}
 		kept.push("pi²'s marker");
@@ -1381,7 +1402,9 @@ async function updatePull(project: Project, number: number, by: Who, args: Recor
 	keepInListing(project, undefined, pullOf(await viewPull(project, number), intentsOf(project), mirror.projects[project.id]?.openedBy));
 	const what = [title !== pr.title ? "title" : null, edited !== body ? "text" : null].filter((one) => one !== null).join(" and ");
 	const keeping = kept.length === 0 ? "" : `, keeping ${kept.length === 1 ? kept[0] : `${kept.slice(0, -1).join(", ")} and ${kept.at(-1)}`}`;
-	return { text: `Updated the ${what} of pull request #${number} “${title}”${keeping}: ${pr.url}`, title };
+	let told = `Updated the ${what} of pull request #${number} “${title}”${keeping}: ${pr.url}`;
+	for (const one of closing) told += `\n${closingWarning(one)}`;
+	return { text: told, title };
 }
 
 /** Every pull-request action of `work` (5.7); the tool has checked who may. */
@@ -1409,9 +1432,12 @@ async function pull(project: Project, action: PullAction, by: Who, args: Record<
 		const { head } = await headOf(folder, repositoryOf(project));
 		const baseBranch = typeof args.base === "string" && args.base.trim() !== "" ? args.base.trim() : await defaultBranch(project);
 		let said = typeof args.text === "string" ? args.text : "";
-		if (fixes !== null && !closes(fixes).test(said)) said = said.trim() === "" ? `Fixes #${fixes}` : `${said}\n\nFixes #${fixes}`;
+		// Of the text the agent gave, so not of the Fixes line added below for `id`.
+		const closing = closingPhrases(said).filter(({ issue }) => issue !== fixes);
+		if (fixes !== null && !closes(fixes, said)) said = said.trim() === "" ? `Fixes #${fixes}` : `${said}\n\nFixes #${fixes}`;
 		const made = (await write(project, key, "pr.create", { call: keys.call, by, role: "pull_request", head, base: baseBranch, title: publicText(title), body: compose(project, by, said, key), openedBy: by.conversationId, summary: `opening the pull request “${short(title)}”` })) as { number: number; url: string };
 		text = `Opened pull request #${made.number} from ${head} into ${baseBranch}: ${made.url}`;
+		for (const one of closing) text += `\n${closingWarning(one)}`;
 		summary = `Opened pull request #${made.number} “${short(title)}” on GitHub`;
 	} else if (action === "review") {
 		const verdict = (typeof args.verdict === "string" ? args.verdict : "comment") as Verdict;
