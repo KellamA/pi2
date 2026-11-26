@@ -20,6 +20,10 @@
 /scripts/test-auto-merge @KellamA
 /scripts/ci-changes @KellamA
 /scripts/test-ci-changes @KellamA
+# Which of a run's open macOS jobs goes to the owner's runner, and its test (#1041): it decides where a job that runs a
+# pull request's code runs, and one job there is all the owner's machine takes at once.
+/scripts/ci-runner-free @KellamA
+/scripts/test-ci-runner-free @KellamA
 # The trusted CI controller that requests re-runs with Actions write access, and its policy fixtures (#993).
 /scripts/rerun-if-no-runner @KellamA
 /scripts/test-rerun-if-no-runner.mjs @KellamA
