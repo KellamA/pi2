@@ -790,6 +790,8 @@ try {
 	assert.deepEqual(decision.presentation, { conversationId: chat1, presentation: "p3", version: 1 });
 	assert.equal(client.events.inbox.items.find((item: Event) => item.id === decision.id).tool, "present");
 	await assert.rejects(client.call("needs.answer", { id: decision.id, answer: { kind: "decision", choice: "c3" } }), /There is no choice c3/);
+	// A choice the decision does not offer is repeated as every refusal repeats a request's value (#940): cut to 60 characters.
+	await assert.rejects(client.call("needs.answer", { id: decision.id, answer: { kind: "decision", choice: "x".repeat(100) } }), (error: Error) => error.message === `There is no choice ${"x".repeat(59)}… in this decision`);
 	await assert.rejects(client.call("needs.answer", { id: decision.id, answer: { kind: "approval", decision: "once" } }), /This is a decision, not a request for approval/);
 	await client.call("needs.answer", { id: decision.id, answer: { kind: "decision", choice: "c2" } });
 	await assert.rejects(client.call("needs.answer", { id: decision.id, answer: { kind: "decision", choice: "c1" } }), (error: Error) => error.message === GONE);
