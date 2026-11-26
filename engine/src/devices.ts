@@ -671,6 +671,13 @@ type Params = Record<string, unknown>;
 export const DEVICE_FAULT = testSwitch("PI2_DEVICE_FAULT");
 
 /**
+ * `PI2_DEVICE_FAULT_AFTER`, a test switch: the method whose answer goes out and whose step after it throws (remote.ts),
+ * so that engine/test/devices.ts can show that a device gets one answer per request id and the log says the request was
+ * answered (#905). A request of that method asked with the id "after-answer" meets it.
+ */
+export const DEVICE_FAULT_AFTER = testSwitch("PI2_DEVICE_FAULT_AFTER");
+
+/**
  * A line for the log saying what a request did (`summaryLine`), or, should that fail, the method's name alone. It never
  * throws: a device chooses every parameter it reads, and it runs before the request's own `try` (remote.ts), where a
  * throw would end the engine.

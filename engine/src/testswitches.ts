@@ -44,7 +44,8 @@ import { fileURLToPath } from "node:url";
  * (main.ts); `PI2_DEVICE_SESSION_MS`, the engine's own bound on a device session, shortened (remote.ts);
  * `PI2_APPROVAL_DEPTH_THROWS`, with which an approval met deeper than a phone's forms put one throws rather than being
  * said in the log (devices.ts, #881); `PI2_DEVICE_FAULT`, a method whose log line and handling from a device's line
- * throw, which must not end the engine (devices.ts, remote.ts). The tunings
+ * throw, which must not end the engine (devices.ts, remote.ts); `PI2_DEVICE_FAULT_AFTER`, a method whose answer goes out
+ * and whose step after it throws, which must not answer the same id twice (devices.ts, remote.ts, #905). The tunings
  * only tests change: `PI2_AWAKE_GRACE_MS`, `PI2_AWAKE_POLL_MS` (keepawake.ts),
  * `PI2_COMMAND_TIMEOUT_SECONDS` (commands.ts), `PI2_OUTPUT_WAIT_SECONDS` (background.ts), `PI2_LIMITS_MIN_INTERVAL_MS`
  * (limits.ts), the `PI2_LIMIT_*_MS` (limitwait.ts), `PI2_LOCAL_STALL_MS`, `PI2_LOCAL_RETRY_MS`, `PI2_LOCAL_RETRIES`,
@@ -71,6 +72,7 @@ export const TEST_SWITCHES = [
 	"PI2_DEMO_TEXT_MODEL",
 	"PI2_DEMO_TOKENS_PER_SECOND",
 	"PI2_DEVICE_FAULT",
+	"PI2_DEVICE_FAULT_AFTER",
 	"PI2_DEVICE_SESSION_MS",
 	"PI2_LIMITS_ANTHROPIC_URL",
 	"PI2_LIMITS_CODEX_URL",
