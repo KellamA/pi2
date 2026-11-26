@@ -275,6 +275,9 @@ jobs:
       - name: Check the conversation page loaded ahead
         working-directory: app
         run: .build/debug/pi2-transcript-check
+      - name: Check the presented page's view against hostile pages
+        working-directory: app
+        run: .build/debug/pi2-presented-check
       - name: Check what the client reads of the engine
         working-directory: app
         run: .build/debug/pi2-client-check
