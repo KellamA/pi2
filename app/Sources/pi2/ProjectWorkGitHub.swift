@@ -1,3 +1,4 @@
+import EngineKit
 import PiModels
 import SwiftUI
 
@@ -738,7 +739,7 @@ struct ProjectWorkGitHub: View {
     /// The field for what to put right, sent with `github.sendBack`, which posts it on the pull request and hands it to
     /// the conversation that opened it (3.11). At the foot of the page, as a comment's field is on an issue's.
     private func sendBackField(_ pull: GitHubPull, enabled: Bool) -> some View {
-        WorkFootField(note: pull.openedBy.map { "The reason is posted on the pull request and given to sub-chat \($0), which opened it." }
+        WorkFootField(note: pull.openedBy.map { "The reason is posted on the pull request and given to \(PullRequestOpener.words($0, conversations: engine.conversations, agents: engine.allAgents)), which opened it." }
             ?? "The reason is posted on the pull request. Nobody opened it through pi², so no agent is told.") {
             TextField("Send Back", text: $sendBackText, prompt: Text("What to put right"), axis: .vertical)
                 .textFieldStyle(.plain)
