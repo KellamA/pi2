@@ -339,7 +339,7 @@ function inboxAnswer(item: InboxItem, answer: NeedAnswer): string {
 		if (answer.kind !== "decision") throw new Error(`This is ${NAMED.decision}, not ${NAMED[answer.kind]}`);
 		if ("text" in answer) return JSON.stringify({ words: words(answer.text, "text") } satisfies PresentedAnswer);
 		const chosen = item.choices.find((choice) => choice.id === answer.choice);
-		if (chosen === undefined) throw new Error(`There is no choice ${answer.choice} in this decision`);
+		if (chosen === undefined) throw new Error(`There is no choice ${repeated(answer.choice)} in this decision`);
 		return JSON.stringify({ chose: chosen.label, choice: chosen.id } satisfies PresentedAnswer);
 	}
 	if (item.kind === "question") {
