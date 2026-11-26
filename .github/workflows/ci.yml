@@ -14,6 +14,8 @@ permissions:
 # main, as before, by a concurrency group each.
 concurrency:
   # An owner PR retry must not cancel a newer commit pushed between the controller's last read and its re-run request.
+  # Which runner a job went to does not enter the group (#1041): a re-run goes to GitHub's runners and a job given the
+  # owner's runner is queued like any other, so the runs that cancel each other are the same as before.
   group: ci-${{ github.event_name == 'pull_request' && (github.run_attempt != '1' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && format('retry-{0}', github.run_id) || github.ref) || github.sha }}
   cancel-in-progress: true
 
@@ -25,6 +27,10 @@ jobs:
   # and so do they for every push to main. The iPhone app's job is decided the other way round, on a push to main too:
   # it runs only for a change to what the phone is built from, and if this job fails (#871). scripts/ci-changes
   # decides each, from what the jobs' steps read.
+  #
+  # It also decides where the two macOS jobs run (#1041). GitHub settles `runs-on` when a job is queued, and a queued
+  # job never moves to another runner, so the owner's runner is chosen here, as the run starts, and when it is not free
+  # both macOS jobs go to GitHub's runners. The answer is one word, in the `runner` output.
   changes:
     name: Which jobs the change needs
     runs-on: ubuntu-latest
@@ -38,7 +44,45 @@ jobs:
       relay: ${{ steps.files.outputs.relay }}
       # Whether the iPhone app's job runs.
       iphone: ${{ steps.files.outputs.iphone }}
+      # Which of the two macOS jobs goes to the owner's runner: "app" or "engine", or empty for GitHub's runners for
+      # both (#1041).
+      runner: ${{ steps.runner.outputs.runner }}
     steps:
+      # Asked before anything of the change is checked out, so that the token this step holds reaches no step that runs
+      # the change's own files, and no other step of this job at all (docs/ci-runner.md, "The free check"). The
+      # conditions are exactly the Engine and App jobs' routing: a pull request from a branch of this repository, opened
+      # and pushed by the owner, on attempt 1, with the variable set — and then the shell asks only when the secret is
+      # not empty. The variable and the secret are checked in the shell rather than here so that the log says why the
+      # owner's runner was not asked for, which a skipped step does not. A pull request from a fork gets no secrets at
+      # all, and the conditions leave one out too, so one never reaches this step.
+      - id: runners
+        if: >-
+          ${{ github.run_attempt == '1' && github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner }}
+        env:
+          # A fine-grained token with read-only Administration for this repository holds this secret, and this one step
+          # is the only place it appears: a workflow's own token cannot read the runners, and a job rather than a step
+          # would give it to every later step. It goes to curl through curl's standard input, so it is in no command
+          # line and no file, and curl's answer goes to the runner's own temporary folder, never into a log. The job's
+          # own scripts/ci-changes runs later with the change's files, and could rewrite that answer; that can only
+          # send the same change's job to the owner's runner, which its own copy of this file can do anyway.
+          CI_RUNNER_STATUS_TOKEN: ${{ secrets.CI_RUNNER_STATUS_TOKEN }}
+          RUNNER_LABEL: ${{ vars.CI_MAC_RUNNER }}
+        run: |
+          if [[ -z $RUNNER_LABEL ]]; then
+            echo "CI_MAC_RUNNER is not set: every macOS job on GitHub's runners."
+          elif [[ -z $CI_RUNNER_STATUS_TOKEN ]]; then
+            echo "No CI_RUNNER_STATUS_TOKEN: every macOS job on GitHub's runners."
+          elif printf 'header = "Authorization: Bearer %s"\n' "$CI_RUNNER_STATUS_TOKEN" |
+            curl --config - --silent --show-error --fail --max-time 5 \
+              --output "$RUNNER_TEMP/ci-runners.json" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runners?per_page=100"; then
+            echo "Asked GitHub for the owner's runner's state."
+          else
+            rm -f "$RUNNER_TEMP/ci-runners.json"
+            echo "The request about the owner's runner failed or took more than five seconds: every macOS job on GitHub's runners."
+          fi
       - uses: actions/checkout@v7
         with:
           # A pull request: the merge commit CI tests, and main's commit it was made on. A push: the pushed commit and
@@ -51,6 +95,39 @@ jobs:
           BEFORE: ${{ github.event.before }}
         # The decision is in the script, which scripts/test-ci-changes holds to its cases (Scripts (tests)).
         run: scripts/ci-changes "$EVENT" "$BEFORE"
+      - id: runner
+        # The one job, if any, that goes to the owner's runner, from the answer the step above wrote and what this
+        # change needs: "app" or "engine", or nothing. The decision is in scripts/ci-runner-free, which
+        # scripts/test-ci-runner-free holds to its cases, and it is read from the commit this one is merged on (the
+        # first parent), out of git's own objects: the change's own copy of it never runs, so a change to it cannot
+        # answer for itself. It holds no secret. A missing answer, a missing script and a word that is neither job's
+        # name all mean GitHub's runners.
+        env:
+          RUNNER_LABEL: ${{ vars.CI_MAC_RUNNER }}
+          APP_NEEDED: ${{ steps.files.outputs.app }}
+          ENGINE_NEEDED: ${{ steps.files.outputs.engine }}
+        run: |
+          word=
+          answer="$RUNNER_TEMP/ci-runners.json"
+          # No answer file: not asked (a push, or a pull request that is not the owner's), or it did not answer, which
+          # the step above said. Either way nothing goes to the owner's runner.
+          if [[ -f $answer ]]; then
+            if [[ $(git cat-file -t 'HEAD^1:scripts/ci-runner-free' 2>/dev/null) != blob ]]; then
+              echo "The commit this one is merged on has no scripts/ci-runner-free: every macOS job on GitHub's runners."
+            elif git cat-file blob 'HEAD^1:scripts/ci-runner-free' >"$RUNNER_TEMP/ci-runner-free"; then
+              word=$(bash "$RUNNER_TEMP/ci-runner-free" "$RUNNER_LABEL" "$APP_NEEDED" "$ENGINE_NEEDED" <"$answer") || word=
+            fi
+          fi
+          rm -f "$answer" "$RUNNER_TEMP/ci-runner-free"
+          # Only the one word the jobs below read, and only a job's name: nothing of the answer is written out.
+          case $word in
+          app | engine) ;;
+          *)
+            [[ -z $word ]] || echo "The answer was '$word', which is no job's name: every macOS job on GitHub's runners."
+            word=
+            ;;
+          esac
+          printf 'runner=%s\n' "$word" >>"$GITHUB_OUTPUT"
 
   engine:
     name: Engine (type-check and tests)
@@ -59,16 +136,19 @@ jobs:
     concurrency:
       group: ci-engine-${{ github.event_name == 'pull_request' && github.run_id || github.ref }}
       cancel-in-progress: true
-    # The owner's runner when the repository variable CI_MAC_RUNNER names it (its label, pi2-mini), for a pull request
-    # opened by the repository's owner from a branch of this repository; GitHub's macos-26 for everything else: the
-    # variable unset or empty, a push to main, a fork's pull request, anyone else's (docs/ci-runner.md, #990). The
-    # author, since github.actor (whoever pushed) and github.triggering_actor (whoever ran it again) are the owner when
-    # the owner pushes to, or re-runs, someone else's pull request; and github.actor too, so that someone else's push to
-    # the owner's pull request stays off it (a re-run keeps the first run's actor). This is routing, not
-    # a lock: a pull request runs its own copy of this file and can change it. The lock for outsiders is GitHub's setting
-    # that has the owner approve their runs; for a collaborator who can push, there is none but trust.
-    # The mini is for attempt 1 only. GitHub re-runs the original ref and SHA, using macos-26 for the same check.
-    runs-on: "${{ github.run_attempt == '1' && vars.CI_MAC_RUNNER != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && vars.CI_MAC_RUNNER || 'macos-26' }}"
+    # The owner's runner only when the first job found it free and gave this job to it (#1041): this run's attempt 1,
+    # of a pull request the repository's owner opened and pushed from a branch of this repository, with the variable
+    # CI_MAC_RUNNER naming the runner's label (pi2-mini), and one runner with that label online and not busy as the run
+    # started (docs/ci-runner.md). GitHub's macos-26 for everything else: the owner's runner busy, offline or asleep,
+    # the variable unset or empty, a push to main, a fork's pull request, anyone else's, a re-run, or a first job that
+    # failed and left no output. The conditions are repeated here, as the first job has them too, since a job re-run
+    # keeps the outputs it was given and only this expression's own attempt keeps a re-run off the owner's runner.
+    # The author and the actor are both required: with either alone, the owner's push to a collaborator's branch, or a
+    # collaborator's push to the owner's pull request, would send that code to the mini (docs/ci-runner.md, Conditions).
+    # This is routing, not a lock: a pull request runs its own copy of this file and can change it. The lock for
+    # outsiders is GitHub's setting that has the owner approve their runs; for a collaborator who can push, there is none
+    # but trust.
+    runs-on: "${{ github.run_attempt == '1' && needs.changes.outputs.runner == 'engine' && vars.CI_MAC_RUNNER != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && vars.CI_MAC_RUNNER || 'macos-26' }}"
     timeout-minutes: 20
     defaults:
       run:
@@ -154,7 +234,8 @@ jobs:
     # request (#553). scripts/test-docs-lists checks that the docs' lists of the engine's files keep up with them (#640).
     # scripts/test-iphone-sim checks scripts/iphone-sim with stand-ins for xcrun and xcodebuild: no simulator (#681).
     # scripts/test-ci-changes checks what the first job decides, in throwaway repositories, and that every path the
-    # phone's project and links reach outside iphone/ is one its job runs for (#871).
+    # phone's project and links reach outside iphone/ is one its job runs for (#871). scripts/test-ci-runner-free checks
+    # the first job's free-runner decision, from answers written in the test (#1041).
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -169,6 +250,9 @@ jobs:
       - run: scripts/test-check-protected-targets
       - run: scripts/test-iphone-sim
       - run: scripts/test-ci-changes
+      # What the first job makes of GitHub's answer about the owner's runner, which decides where open macOS jobs run
+      # (#1041).
+      - run: scripts/test-ci-runner-free
       - run: node --test scripts/test-rerun-if-no-runner.mjs
       # What scripts/ci-runner-clean removes and keeps on the owner's runner, in a stand-in of it with stand-in tools (#990).
       - run: scripts/test-ci-runner-clean
@@ -270,8 +354,9 @@ jobs:
     concurrency:
       group: ci-app-${{ github.event_name == 'pull_request' && github.run_id || github.ref }}
       cancel-in-progress: true
-    # As the engine's job, by CI_MAC_RUNNER on attempt 1 only (docs/ci-runner.md).
-    runs-on: "${{ github.run_attempt == '1' && vars.CI_MAC_RUNNER != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && vars.CI_MAC_RUNNER || 'macos-26' }}"
+    # As the engine's job, by CI_MAC_RUNNER on attempt 1 only, and only when the first job found the runner free and
+    # gave it this job, the longer one, rather than the Engine job (docs/ci-runner.md, #1041).
+    runs-on: "${{ github.run_attempt == '1' && needs.changes.outputs.runner == 'app' && vars.CI_MAC_RUNNER != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && vars.CI_MAC_RUNNER || 'macos-26' }}"
     # Five more than before pi² Remote's check (#675), which runs an engine and waits out a session's resume window, and
     # five again for pi2-presented-check (#979), about four minutes, which with it once had the job cancelled at 25.
     timeout-minutes: 30

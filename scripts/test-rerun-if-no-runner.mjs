@@ -98,6 +98,11 @@ fixture('two failed mini jobs do not cause two writes or a blanket retry', { job
 fixture('a passing mini job does not allow a hosted capacity retry to bypass the guard', {
 	jobs: [{ ...engine, conclusion: 'success' }, hosted],
 }, manual);
+// #1041: a run gives the mini one of its two macOS jobs at most, and the other to GitHub's. The one that ran there
+// still keeps the whole run out of the hosted capacity retry, whichever of the two it is.
+fixture('a failed mini job and a hosted capacity miss stay manual (#1041)', {
+	jobs: [app, hosted],
+}, manual);
 fixture('a mini job and a downstream failure stay manual', { jobs: [app, {
 	...hosted, name: 'Dependent check', conclusion: 'failure', steps: [{ conclusion: 'failure' }],
 }] }, manual);
