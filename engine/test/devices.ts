@@ -2590,22 +2590,23 @@ try {
 		console.log(`    66 MiB task: refused by the table in ${Math.round(table.took)} ms, for its size in ${Math.round(sized.took)} ms; the mean of its ${task.rounds} rounds grew the engine by ${mb(task.more)} MB more than the table's refusal`);
 		assert.ok(sized.took <= 3 * table.took + 2_000, `in ${Math.round(sized.took)} ms, where the same line refused by the table took ${Math.round(table.took)} ms`);
 		// The same in fields the devices' log's summary reads (#940's security read): a refused request is summarized by its
-		// method alone, so nothing cleans, masks or splits the title or the path first. Two texts is the bound these readings
-		// hold: the summary masking the whole path grows the engine by some 850 MB (a fault run of #1030), six times the bound,
-		// while a copy of the title alone is 70 MB, which is no more than these two readings drift by on a quiet Mac (up to
-		// 55 MB seen); the title's case is kept for its refusal, its time and its log line, and the guard
-		// itself is the path's to show.
+		// method alone, so nothing cleans, masks or splits the title or the path first. Each field keeps the bound its fault
+		// needs: two texts for the path, which the summary masks whole (742 MB and 836 MB in two fault runs of #1030), and one
+		// text for the title, which origin/main held it to. The title's own fault is small in memory — 19 MB when only its
+		// summary is made, since the log clips that before masking — though it takes 2078 ms where the table's refusal took
+		// 227, which the time assertion below catches. It takes sixteen rounds because its reading moves by a whole text in a
+		// round: the mean of eight landed on 35 MB in four runs of five, half of its bound.
 		const { id: renamed } = (await ask("conversation.create", { model: demo })).result;
-		const reads: (Awaited<ReturnType<typeof againstTable>> & { what: string; method: string; rounds: number })[] = [];
-		for (const [what, method, params] of [
-			["path", "files.preview", { id: renamed, path: "/ŧ".repeat(huge.length / 2) }],
-			["title", "conversation.rename", { id: renamed, title: huge }],
+		const reads: (Awaited<ReturnType<typeof againstTable>> & { what: string; method: string; rounds: number; texts: number })[] = [];
+		for (const [what, method, params, rounds, texts] of [
+			["path", "files.preview", { id: renamed, path: "/ŧ".repeat(huge.length / 2) }, 8, 2],
+			["title", "conversation.rename", { id: renamed, title: huge }, 16, 1],
 		] as const)
-			reads.push({ what, method, ...(await againstTable(what, method, () => params)) });
+			reads.push({ what, method, texts, ...(await againstTable(what, method, () => params, rounds)) });
 		// Both figures are printed before either is checked, so that one run shows what the summary does with both fields.
 		for (const read of reads) console.log(`    66 MiB ${read.what}: refused in ${Math.round(read.sized.took)} ms; the mean of its ${read.rounds} rounds grew the engine by ${mb(read.more)} MB more than the table's refusal`);
 		for (const read of reads) {
-			assert.ok(read.more <= 2 * huge.length, `with the engine grown by ${mb(read.more)} MB more than the table's refusal of the same line, in the mean of its ${read.rounds} rounds (the table's refusal grew it by ${mb(read.tableGrowth)} MB on average), where the summary reading the ${mb(huge.length)} MB ${read.what} would show in every round`);
+			assert.ok(read.more <= read.texts * huge.length, `with the engine grown by ${mb(read.more)} MB more than the table's refusal of the same line, in the mean of its ${read.rounds} rounds (the table's refusal grew it by ${mb(read.tableGrowth)} MB on average), where the summary reading the ${mb(huge.length)} MB ${read.what} would show in every round`);
 			assert.equal(read.sized.reply.error, overTheRest, `a ${read.what} of 66 MiB is past the rest's count`);
 			assert.ok(read.sized.took <= 2 * read.table.took + 1_000, `in ${Math.round(read.sized.took)} ms, where the same line refused by the table took ${Math.round(read.table.took)} ms`);
 			const entry = (await app.call("devices.log", { device: phone.id })).entries.find((one: any) => one.method === read.method && one.why === overTheRest);
