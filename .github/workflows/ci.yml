@@ -50,12 +50,14 @@ jobs:
     steps:
       # Asked before anything of the change is checked out, so that the token this step holds reaches no step that runs
       # the change's own files, and no other step of this job at all (docs/ci-runner.md, "The free check"). The
-      # conditions are exactly the Engine and App jobs' routing: the variable set, a pull request from a branch of this
-      # repository, opened and pushed by the owner, attempt 1. A pull request from a fork gets no secrets at all, and the
-      # conditions leave one out too. Without the secret this answers nothing, so it switches nothing on.
+      # conditions are exactly the Engine and App jobs' routing: a pull request from a branch of this repository, opened
+      # and pushed by the owner, on attempt 1, with the variable set — and then the shell asks only when the secret is
+      # not empty. The variable and the secret are checked in the shell rather than here so that the log says why the
+      # owner's runner was not asked for, which a skipped step does not. A pull request from a fork gets no secrets at
+      # all, and the conditions leave one out too, so one never reaches this step.
       - id: runners
         if: >-
-          ${{ github.run_attempt == '1' && vars.CI_MAC_RUNNER != '' && github.event_name == 'pull_request' &&
+          ${{ github.run_attempt == '1' && github.event_name == 'pull_request' &&
           github.event.pull_request.head.repo.full_name == github.repository &&
           github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner }}
         env:
@@ -66,8 +68,11 @@ jobs:
           # own scripts/ci-changes runs later with the change's files, and could rewrite that answer; that can only
           # send the same change's job to the owner's runner, which its own copy of this file can do anyway.
           CI_RUNNER_STATUS_TOKEN: ${{ secrets.CI_RUNNER_STATUS_TOKEN }}
+          RUNNER_LABEL: ${{ vars.CI_MAC_RUNNER }}
         run: |
-          if [[ -z $CI_RUNNER_STATUS_TOKEN ]]; then
+          if [[ -z $RUNNER_LABEL ]]; then
+            echo "CI_MAC_RUNNER is not set: every macOS job on GitHub's runners."
+          elif [[ -z $CI_RUNNER_STATUS_TOKEN ]]; then
             echo "No CI_RUNNER_STATUS_TOKEN: every macOS job on GitHub's runners."
           elif printf 'header = "Authorization: Bearer %s"\n' "$CI_RUNNER_STATUS_TOKEN" |
             curl --config - --silent --show-error --fail --max-time 5 \
