@@ -38,8 +38,9 @@ import RemoteKit
 enum RelayPathState: Equatable {
 	/// **Reach through pi²'s relay** is off: home and private networks only, as the person chose.
 	case off
-	/// It cannot run, and why: no relay key, no pairing registered at this relay, an address it does not connect to.
-	case unavailable(String)
+	/// It cannot run, and why: no relay key, no pairing registered at this relay, an address it does not connect to. The
+	/// reason is a fixed word the engine and the Devices page act on (#917); the sentence is for a person.
+	case unavailable(String, reason: Unavailable)
 	case connecting
 	case ready
 	/// The socket dropped; the client connects again at `retryAt` (ms since 1970).
@@ -47,18 +48,37 @@ enum RelayPathState: Equatable {
 	/// The client stopped on a refusal trying again would not change, if the relay says true.
 	case stopped(String)
 
-	func json(anotherMacAt: Int64?) -> JSONValue {
+	/// `registered` and `address` (#1013): where this Mac's pairing is registered beside the relay's address now set, and
+	/// that address, whatever the state, so that the engine opens no pairing whose code would name the pairing to
+	/// another relay, and knows the word is about the address it has.
+	func json(anotherMacAt: Int64?, registered: String? = nil, address: String? = nil) -> JSONValue {
 		var members: [(String, JSONValue)]
 		switch self {
 		case .off: members = [("available", .bool(false)), ("state", .string("off")), ("why", .string("Reach through pi²'s relay is off: home and private networks only."))]
-		case let .unavailable(why): members = [("available", .bool(false)), ("state", .string("unavailable")), ("why", .string(Log.oneLine(why)))]
+		case let .unavailable(why, reason): members = [("available", .bool(false)), ("state", .string("unavailable")), ("why", .string(Log.oneLine(why))), ("reason", .string(reason.rawValue))]
 		case .connecting: members = [("available", .bool(false)), ("state", .string("connecting"))]
 		case .ready: members = [("available", .bool(true)), ("state", .string("ready"))]
 		case let .down(why, retryAt): members = [("available", .bool(false)), ("state", .string("down")), ("why", .string(why)), ("retryAt", .integer(retryAt))]
 		case let .stopped(why): members = [("available", .bool(false)), ("state", .string("stopped")), ("why", .string(why))]
 		}
 		if let anotherMacAt { members.append(("anotherMacAt", .integer(anotherMacAt))) }
+		if let registered { members.append(("registered", .string(registered))) }
+		if let address { members.append(("address", .string(address))) }
 		return .object(members)
+	}
+
+	/// Why the relay path cannot run, as the engine takes it (`RELAY_REASONS` in remote.ts, #917). `unregistered` and
+	/// `anotherRelay` are the two only a new pairing mends, which the Devices page offers (`devices.startAgain`).
+	enum Unavailable: String {
+		case address
+		case key
+		case noPairing = "no-pairing"
+		/// This pairing is registered at no relay pi² Remote knows of: its id was made here, for the home path alone.
+		case unregistered
+		/// This pairing was registered at a relay other than the one now set, and is shown to no other.
+		case anotherRelay = "another-relay"
+		case client
+		case registerFailed = "register-failed"
 	}
 }
 
@@ -121,6 +141,8 @@ final class RelayEnd: @unchecked Sendable {
 	private var generation = 0
 	private(set) var isReady = false
 	private var reported: RelayPathState?
+	/// The `registered` and `address` last said with it.
+	private var reportedWhere: (registered: String?, address: String)?
 	private var anotherMacAt: Int64?
 	private var registering = false
 
@@ -177,6 +199,8 @@ final class RelayEnd: @unchecked Sendable {
 	/// Starts, keeps or stops the client as the switches, the relay's address, its key and the pairing say. Called once
 	/// the engine has taken `remote.hello`, and whenever one of them changes.
 	func reconsider() {
+		// A new address or registration is said even when the state stays the same (#1013).
+		defer { if let reported { report(reported) } }
 		switch wanted() {
 		case let .failure(state):
 			stopClient()
@@ -198,22 +222,38 @@ final class RelayEnd: @unchecked Sendable {
 	private func wanted() -> Result<Target, Unwanted> {
 		guard remote.switches.on, remote.switches.relay else { return .failure(Unwanted(state: .off)) }
 		guard let url = URL(string: remote.relay), RelayEndpoint.isAllowed(url) else {
-			return .failure(Unwanted(state: .unavailable("the relay's address is not one pi² Remote connects to (wss://, or ws:// to this Mac)")))
+			return .failure(Unwanted(state: .unavailable("the relay's address is not one pi² Remote connects to (wss://, or ws:// to this Mac)", reason: .address)))
 		}
 		guard let key = remote.relayKey else {
-			return .failure(Unwanted(state: .unavailable(remote.relayKeyProblem ?? "the relay key for this address could not be read or made; the relay path is off, home and direct carry on")))
+			return .failure(Unwanted(state: .unavailable(remote.relayKeyProblem ?? "the relay key for this address could not be read or made; the relay path is off, home and direct carry on", reason: .key)))
 		}
-		guard let pairing = remote.pairing else { return .failure(Unwanted(state: .unavailable("no pairing yet: one is registered at the relay when the first iPhone pairs"))) }
-		guard let registration = remote.registration, registration.pairing == pairing, registration.relay.utf8.elementsEqual(remote.relay.utf8) else {
-			return .failure(Unwanted(state: .unavailable("this Mac's pairing was not registered at this relay by pi² Remote, and is shown to no other relay; home and direct carry on")))
+		guard let pairing = remote.pairing else { return .failure(Unwanted(state: .unavailable("no pairing yet: one is registered at the relay when the first iPhone pairs", reason: .noPairing))) }
+		guard let registration = remote.registration, registration.pairing == pairing else {
+			return .failure(Unwanted(state: .unavailable("this Mac's pairing is registered at no relay pi² Remote knows of, and was not registered at this relay by pi² Remote; home and direct carry on", reason: .unregistered)))
+		}
+		guard registration.relay.utf8.elementsEqual(remote.relay.utf8) else {
+			return .failure(Unwanted(state: .unavailable("this Mac's pairing belongs to another relay: it was not registered at this relay by pi² Remote, and is shown to no other relay; home and direct carry on", reason: .anotherRelay)))
 		}
 		return .success(Target(url: url, address: remote.relay, pairing: pairing, key: key.publicKey.rawRepresentation))
 	}
 
 	private func report(_ state: RelayPathState, force: Bool = false) {
-		guard force || state != reported else { return }
+		let registered = registeredWord
+		let address = remote.relay
+		let same = reportedWhere.map { $0.registered == registered && $0.address.utf8.elementsEqual(address.utf8) } ?? false
+		guard force || state != reported || !same else { return }
 		reported = state
-		remote.engine.request("remote.state", .object([("relay", state.json(anotherMacAt: anotherMacAt))]))
+		reportedWhere = (registered, address)
+		remote.engine.request("remote.state", .object([("relay", state.json(anotherMacAt: anotherMacAt, registered: registered, address: address))]))
+	}
+
+	/// Where this Mac's pairing is registered, beside the relay's address now set, whatever the switches say (#1013):
+	/// `here`, at `another-relay`, or at `none` (its id made here, for the home path alone); nil with no pairing. A
+	/// pairing code names the pairing and this address together, and the phone tries the relay at it at once.
+	private var registeredWord: String? {
+		guard let pairing = remote.pairing else { return nil }
+		guard let registration = remote.registration, registration.pairing == pairing else { return "none" }
+		return registration.relay.utf8.elementsEqual(remote.relay.utf8) ? "here" : "another-relay"
 	}
 
 	// ---- The client
@@ -224,7 +264,7 @@ final class RelayEnd: @unchecked Sendable {
 		do {
 			made = try RelayClient(relay: target.url, role: .mac(target.pairing), build: Self.build, signer: RelaySigner(key), connector: connector)
 		} catch {
-			return report(.unavailable("the relay's client could not start: \(error)"))
+			return report(.unavailable("the relay's client could not start: \(error)", reason: .client))
 		}
 		generation += 1
 		let generation = self.generation
@@ -394,7 +434,7 @@ final class RelayEnd: @unchecked Sendable {
 		own(why)
 		#else
 		log("register: \(why); the engine is told the relay path is unavailable, and waits for a pairing until its own time runs out")
-		report(.unavailable(why))
+		report(.unavailable(why, reason: .registerFailed))
 		#endif
 	}
 
@@ -406,6 +446,21 @@ final class RelayEnd: @unchecked Sendable {
 		log("register: \(why); pi² Remote made the pairing's id itself, for the home path alone")
 		remote.engine.request("remote.state", .object([("pairing", .string(made.text))]))
 		reconsider()
+	}
+
+	/// The pairing was forgotten (`forgetPairing`, #917): its client stops, if one ran, and nothing kept for it is asked
+	/// of a relay again: no window, no device to list, nothing to put. The next `register` makes a new one.
+	func forgetPairing() {
+		stopClient()
+		stoppedFor = nil
+		restart?.cancel()
+		restart = nil
+		window = nil
+		deferredClose?.cancel()
+		deferredClose = nil
+		pendingAdds = [:]
+		outbox = []
+		leaving = []
 	}
 
 	// ---- The relay's requests, one at a time, only while ready

@@ -153,6 +153,13 @@ export type RemoteHooks = {
 	recordChanged: (device: string) => void;
 	/** The Mac's addresses as the running pi² Remote said them, or null when none has said hello. */
 	addresses: () => string[] | null;
+	/**
+	 * What pi² Remote says of the relay path once it is about the relay's address now set (#1013), or null if it does not
+	 * say it within `within` ms.
+	 */
+	relayWord: (within: number) => Promise<Record<string, unknown> | null>;
+	/** pi² Remote's last word about the address and the pairing now set, kept while it is stopped; or null. */
+	lastRelayWord: () => Record<string, unknown> | null;
 };
 
 let harness: Harness;
@@ -180,6 +187,10 @@ export const remoteHooks: RemoteHooks = {
 	helper: () => ({ running: false, stoppedInLastHour: 0 }),
 	recordChanged: () => {},
 	addresses: () => null,
+	// The tests that play no pi² Remote: a pairing registered here. An engine's own is remote.ts's (`wireRemote`), and
+	// without one `ready` refuses before any pairing opens.
+	relayWord: async () => ({ registered: "here", address: state.relay }),
+	lastRelayWord: () => null,
 };
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -277,7 +288,7 @@ export function activeDevices(): Device[] {
 
 /** Whether pi² Remote should run (5.5): the preview and remote access on, and a device paired or a pairing open. */
 export function helperWanted(): boolean {
-	return unreadable === null && state.remote.preview && state.remote.on && (activeDevices().length > 0 || window !== null || saving > 0);
+	return unreadable === null && state.remote.preview && state.remote.on && (activeDevices().length > 0 || window !== null || saving > 0 || askingAgain > 0);
 }
 
 /** Whether devices may pair and attach at all: the preview (decision 19) and remote access on. */
@@ -296,7 +307,8 @@ async function change(edit: (doc: DevicesState) => void): Promise<void> {
 /** What pi² Remote reported of itself (`remote.hello`, `remote.state`). */
 export async function helperReported(given: { macKeys?: MacKeys; pairing?: string | null }): Promise<void> {
 	const keys = given.macKeys;
-	const pairing = given.pairing ?? null;
+	// A pairing the person started again from is never taken back: a hello or a state in flight may still name it (#917).
+	const pairing = given.pairing != null && forgottenPairings.has(given.pairing) ? null : (given.pairing ?? null);
 	if (pairing !== null && state.pairing !== null && pairing !== state.pairing) {
 		throw new Error("pi² Remote names another pairing than this Mac's.");
 	}
@@ -966,6 +978,8 @@ export function devicesEvent(notice?: Notice) {
 		pairing: state.pairing,
 		macKeys: state.macKeys,
 		helper: remoteHooks.helper(),
+		/** Where this Mac's pairing is registered beside the relay now set (#917, #1013): what the page offers by. */
+		pairingRegistered: pairingRegisteredNow(),
 		devices: state.devices,
 		sessions: remoteHooks.sessions(),
 		pairingWindow:
@@ -1131,6 +1145,10 @@ async function pairStart(): Promise<{ payload: string; expires: number }> {
 	remoteHooks.changed();
 	try {
 		const { addresses } = await remoteHooks.ready();
+		if (state.pairing !== null) {
+			const refused = pairingElsewhere(await remoteHooks.relayWord(RELAY_WORD_WAIT_MS));
+			if (refused !== null) throw new Error(refused);
+		}
 		if (state.pairing === null) {
 			remoteHooks.toHelper({ kind: "register", relay: state.relay });
 			await waitForPairing();
@@ -1158,6 +1176,29 @@ async function pairStart(): Promise<{ payload: string; expires: number }> {
 		if (window?.secret === secret) closeWindow(null);
 		throw error;
 	}
+}
+
+/** How long `pairStart` waits for pi² Remote's word about the relay's address now set (#1013). */
+const RELAY_WORD_WAIT_MS = 15_000;
+export const PAIRING_AT_ANOTHER_RELAY = "This Mac's pairing belongs to another relay. Start again at this relay first, or set the relay's address back.";
+export const PAIRING_AT_ANOTHER_RELAY_OFF = "This Mac's pairing belongs to another relay. Set the relay's address back, or turn on Reach through pi²'s relay and start again at this relay.";
+export const PAIRING_AT_NO_RELAY = "This Mac's pairing is registered at no relay. Start again at this relay first, or turn Reach through pi²'s relay off.";
+export const RELAY_WORD_MISSING = "pi² Remote has not said whether this Mac's pairing belongs to the relay now set. Try again in a moment.";
+
+/**
+ * Why no pairing may open now, or null (#1013): a pairing code names the pairing's id with the relay's address now set,
+ * and the phone tries that relay at once, so a code for a pairing registered at another relay would show its id to this
+ * one, which #678's security read rules out; whatever the relay switch says, since the phone does not know it. One made
+ * with the relay off (`none`) is registered nowhere: its code may name it to a relay while the switch is off, as its
+ * first did; with the switch on the page offers to start again instead, and so does the engine. A word not said within
+ * the wait refuses too: nothing opens on a guess.
+ */
+function pairingElsewhere(word: Record<string, unknown> | null): string | null {
+	if (word === null) return RELAY_WORD_MISSING;
+	if (word.registered === "another-relay") return state.remote.relay ? PAIRING_AT_ANOTHER_RELAY : PAIRING_AT_ANOTHER_RELAY_OFF;
+	if (word.registered === "none" && state.remote.relay) return PAIRING_AT_NO_RELAY;
+	if (word.registered !== "here" && word.registered !== "none") return RELAY_WORD_MISSING;
+	return null;
 }
 
 /** Waits for pi² Remote to report the pairing the relay gave it, after `register`. */
@@ -1448,6 +1489,110 @@ async function revoke(id: string): Promise<void> {
 	// next would otherwise have ended (3.6).
 	remoteHooks.toHelper({ kind: "revoke", device: id });
 	remoteHooks.closeSessions(id, "revoked");
+}
+
+// ---- Starting again at the relay now set (#917)
+
+/**
+ * What pi² Remote says of the relay path (`remote.state`'s `relay.reason`) when this Mac's pairing cannot use the relay
+ * now set, and only a new pairing can: it was registered at another relay, whose pairing's id pi² Remote never shows to
+ * this one (#678's security read), or at none (pi² Remote made its id, or could not keep its registration).
+ */
+export const START_AGAIN_REASONS: readonly string[] = ["another-relay", "unregistered"];
+/** Pairings forgotten by starting again, this run: pi² Remote's word naming one is not taken back (`helperReported`). */
+const forgottenPairings = new Set<string>();
+/** `devices.startAgain` calls asking pi² Remote for its word: it is wanted meanwhile, with no device paired too. */
+let askingAgain = 0;
+export const NOTHING_TO_START_AGAIN = "pi² Remote does not say this Mac's pairing belongs to another relay or to none, so there is nothing to start again.";
+/** `devices.startAgain` refused: what the person's yes was about is not what the Mac holds now (#917's second read). */
+export const START_AGAIN_CHANGED = "This Mac's pairing, the relay's address or the switches changed while starting again; nothing was changed. Try again.";
+
+/**
+ * Where this Mac's pairing is registered beside the relay's address now set, by pi² Remote's last word about this
+ * address and this pairing (`registered`, #1013), remembered while pi² Remote is stopped, as it is with no device
+ * paired: `here`, `another-relay`, `none`, or null when there is no such word. The Devices page offers to start again,
+ * and offers no pairing code, by it, as `pairStart` and `startAgain` decide by the live word.
+ */
+function pairingRegisteredNow(): string | null {
+	if (!remoteOn() || state.pairing === null) return null;
+	const registered = remoteHooks.lastRelayWord()?.registered;
+	return typeof registered === "string" ? registered : null;
+}
+
+/**
+ * `devices.startAgain`, the person's word on the Mac (FOR_THE_PERSON_SETTINGS, MAC_ONLY): every device revoked as Revoke
+ * revokes each, and the pairing forgotten, in one commit; then pi² Remote is told each revocation (the phones attached
+ * are sent the signed `revoked` line) and `forgetPairing`. It registers nothing: the next `devices.pairStart` finds no
+ * pairing and has pi² Remote register one at the relay now set, as a first pairing does, with the window it opens. Only
+ * while pi² Remote says the pairing cannot use this relay, so that it never unpairs the phones of a pairing that can.
+ * The old relay is not contacted: pi² Remote asks a relay to remove a device only while connected there as this
+ * pairing's Mac, which it is not at another relay's address (nor ever, for a pairing made with the relay off).
+ * The pairing, the relay's address and the switches are read again immediately before that commit, with nothing awaited
+ * between the two, so that a setting changed while pi² Remote's word was awaited refuses instead (#917's second read).
+ */
+async function startAgain(): Promise<{ revoked: string[] }> {
+	if (!remoteOn()) throw new Error("Turn on Reach from an iPhone first.");
+	if (!state.remote.relay || state.relay === "") throw new Error("Turn on Reach through pi²'s relay, with its address, first.");
+	if (state.pairing === null) throw new Error(NOTHING_TO_START_AGAIN);
+	// What the person's yes is about, recorded before anything is awaited: the pairing as it is now, and the relay's
+	// address this start acts on. The commit that revokes and forgets checks that both are still these (#917's second
+	// read): a settings change while pi² Remote's word is awaited refuses, with nothing revoked or forgotten.
+	const pairing = state.pairing;
+	const address = state.relay;
+	// As pairStart (#1013): pi² Remote started if it is not running (no device paired), and its word about the address
+	// now set awaited, within the same bound; no word, no start again.
+	askingAgain += 1;
+	try {
+		remoteHooks.changed();
+		await remoteHooks.ready();
+		const word = await remoteHooks.relayWord(RELAY_WORD_WAIT_MS);
+		if (word === null) throw new Error(RELAY_WORD_MISSING);
+		if (word.registered !== "another-relay" && word.registered !== "none") throw new Error(NOTHING_TO_START_AGAIN);
+		return await forgetAll(word.registered === "another-relay" ? "another-relay" : "unregistered", pairing, address, word);
+	} finally {
+		askingAgain -= 1;
+		remoteHooks.changed();
+	}
+}
+
+/**
+ * Whether what `devices.startAgain` read when it started has moved since: the pairing, the relay's address, the
+ * switches that start needs, or the address pi² Remote's word is about. Checked in the commit's own synchronous stretch,
+ * so nothing can change between the check and the write.
+ */
+function startAgainMoved(doc: DevicesState, pairing: string, address: string, word: Record<string, unknown>): boolean {
+	return doc.pairing !== pairing || doc.relay !== address || !(doc.remote.on && doc.remote.preview) || !doc.remote.relay || word.address !== address;
+}
+
+async function forgetAll(reason: string, pairing: string, address: string, word: Record<string, unknown>): Promise<{ revoked: string[] }> {
+	if (startAgainMoved(state, pairing, address, word)) throw new Error(START_AGAIN_CHANGED);
+	const revoked = activeDevices().map((device) => device.id);
+	const now = Date.now();
+	closeWindow(null);
+	await change((doc) => {
+		// The same check again on the record the commit writes, with nothing awaited since it: a switch, the address or
+		// the pairing that changed while the word was awaited refuses, revoking and forgetting nothing.
+		if (startAgainMoved(doc, pairing, address, word)) throw new Error(START_AGAIN_CHANGED);
+		for (const one of doc.devices) if (revoked.includes(one.id)) forget(one, now);
+		doc.pairing = null;
+	});
+	forgottenPairings.add(pairing);
+	for (const id of revoked) {
+		failures.delete(id);
+		for (const watch of revokedWatchers) {
+			try {
+				watch(id);
+			} catch (error) {
+				log("devices: a watcher of revocations failed:", error instanceof Error ? error.message : error);
+			}
+		}
+		// As `revoke`: the phone's signed `revoked` line first, then its sessions.
+		remoteHooks.toHelper({ kind: "revoke", device: id });
+		remoteHooks.closeSessions(id, "revoked");
+	}
+	remoteHooks.toHelper({ kind: "forgetPairing", pairing });
+	log(`devices: started again at the relay now set, as the person asked: ${revoked.length} device(s) revoked and the pairing forgotten (${reason})`);
+	return { revoked };
 }
 
 // ---- A phone's leave, passed on by the relay (3.6; #813, #929)
@@ -2020,6 +2165,10 @@ export const deviceRequests: Record<string, (params: Params, client: Client) => 
 	"devices.refusePresenceKey": async (params) => {
 		await refusePresenceKey(deviceId(params));
 		return {};
+	},
+	"devices.startAgain": async (params) => {
+		if (Object.keys(params).length > 0) throw new Error("devices.startAgain takes nothing.");
+		return startAgain();
 	},
 	"devices.resume": async (params) => {
 		const id = deviceId(params);

@@ -120,6 +120,7 @@ package final class Remote: @unchecked Sendable {
 		case "start": start(event)
 		case "settings": settings(event)
 		case "register": register(event)
+		case "forgetPairing": forgetPairing(event)
 		case "openJoin":
 			guard let secret = event["secret"]?.stringValue.flatMap({ Base64URL.decode($0, count: 32) }), let expires = event["expires"]?.integerValue else {
 				log("openJoin: not a pairing window; left")
@@ -276,6 +277,24 @@ package final class Remote: @unchecked Sendable {
 	/// The relay's `register`: the engine has no pairing yet (`RelayEnd.register`).
 	private func register(_ event: JSONValue) {
 		relayEnd.register()
+	}
+
+	/// The person started again on the Mac (#917, `devices.startAgain`): the engine revoked every device, each `revoke`
+	/// sent before this on the same connection, and forgot its pairing, which this names. pi² Remote forgets it too, with
+	/// its registration and what is left of the list (nothing, but a device the engine revoked while it was not told),
+	/// in one write; the next `register` registers a new pairing at the relay now set. Nothing is sent to any relay.
+	private func forgetPairing(_ event: JSONValue) {
+		guard let named = event["pairing"]?.stringValue, let pairing, named.utf8.elementsEqual(pairing.text.utf8) else {
+			return log("forgetPairing: not this Mac's pairing; left")
+		}
+		for device in devices.map(\.id) { revoke(device) }
+		relayEnd.forgetPairing()
+		window = nil
+		self.pairing = nil
+		registration = nil
+		keep([], homeKey: nil)
+		log("the pairing was forgotten, as the person asked on the Mac: the next pairing is registered anew at the relay in use")
+		relayEnd.reconsider()
 	}
 
 	/// The pairing the relay gave, or pi² Remote made for the home path alone (`registration` nil), kept with the list of

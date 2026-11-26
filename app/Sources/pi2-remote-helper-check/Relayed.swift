@@ -344,6 +344,7 @@ enum Relayed {
 		if let other { engine.answer(other.id) }
 		let elsewhere = engine.relayState("unavailable", from: count)
 		Check.expect(elsewhere?["why"]?.stringValue?.contains("not registered at this relay") == true, "another relay's address: the pairing is not shown to it, and the engine is told why", elsewhere.map(JSON.text) ?? "nothing")
+		Check.expect(elsewhere?["reason"]?.stringValue == "another-relay", "with the reason's word, another-relay (#917)", elsewhere.map(JSON.text) ?? "nothing")
 		RelayedPushes.afterStop(engine, device: device, relay: relay, home: home, "the same push, at another relay's address", said: false)
 		count = engine.states.count
 		engine.event("settings", [("relay", .string(relay.absoluteString)), ("switches", Flows.switches)])

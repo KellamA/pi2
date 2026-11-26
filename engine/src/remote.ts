@@ -33,7 +33,8 @@
 // the path `mailbox`), and `remote.left` (#929: a phone's leave the relay passed on, its notice checked again with
 // `deviceLeft` in devices.ts, which revokes the device). `remote.state` also carries what pi² Remote can do with the relay (`relay`, 6.5), which the
 // Devices page is told (`helper.relay`). The event's `mailboxOut` asks pi² Remote to leave a sealed item for a phone (a
-// receipt, 5.3).
+// receipt, 5.3). Its `forgetPairing` (#917), after a `revoke` for every device, has it forget the pairing the person
+// started again from (`devices.startAgain`), whose `relay.reason` said it belongs to another relay or to none.
 //
 // A device session is a `Client` of its own (clients.ts) with `device` set, so it has its own subscriptions and
 // greeting, and is sent the broadcasts every app is. What it is sent passes `forDevice`: never the events of 5.7,
@@ -178,6 +179,11 @@ export function wireRemote(parts: RemoteParts): void {
 			if (record !== undefined) for (const session of sessions.values()) if (session.device === device) send(session.client, deviceEvent(record));
 		},
 		addresses: () => (helper?.hello == null ? null : helper.hello.addresses),
+		relayWord,
+		lastRelayWord: () => {
+			const now = devicesState();
+			return lastWord !== null && lastWord.relay.address === now.relay && lastWord.pairing === now.pairing ? lastWord.relay : null;
+		},
 	} satisfies typeof remoteHooks);
 	reconsider();
 }
@@ -497,6 +503,7 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 			const relay = relayState(params.relay);
 			if (relay === null) throw new Error("The relay's state is not one pi² Remote reports.");
 			current.relay = relay;
+			lastWord = { relay, pairing: devicesState().pairing };
 			sessionsChanged();
 		}
 		if (params.addresses !== undefined) {
@@ -579,23 +586,60 @@ export const helperRequests: Record<string, (current: Helper, params: Params) =>
 
 /** What pi² Remote may say of the relay path (6.5): none wanted, why it cannot run, or how it runs. */
 const RELAY_STATES = ["off", "unavailable", "connecting", "ready", "down", "stopped"];
+/**
+ * Why it cannot run, as a fixed word beside the sentence (#917), which the Devices page acts on and the sentence never:
+ * the relay's address, its key, no pairing yet, a pairing registered at no relay or at another, its client, registering.
+ */
+const RELAY_REASONS = ["address", "key", "no-pairing", "unregistered", "another-relay", "client", "register-failed"];
 
 /** `remote.state`'s `relay` as the Devices page is told it, or null for one pi² Remote does not send. */
 function relayState(value: unknown): Record<string, unknown> | null {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
 	const given = value as Record<string, unknown>;
-	if (Object.keys(given).some((key) => !["available", "state", "why", "retryAt", "anotherMacAt"].includes(key))) return null;
+	if (Object.keys(given).some((key) => !["available", "state", "why", "reason", "retryAt", "anotherMacAt", "registered", "address"].includes(key))) return null;
+	if (given.registered !== undefined && !["here", "another-relay", "none"].includes(given.registered as string)) return null;
+	if (given.address !== undefined && (typeof given.address !== "string" || given.address.length > 2048)) return null;
 	if (typeof given.available !== "boolean") return null;
 	if (given.state !== undefined && !RELAY_STATES.includes(given.state as string)) return null;
+	if (given.reason !== undefined && (given.state !== "unavailable" || !RELAY_REASONS.includes(given.reason as string))) return null;
 	if (given.why !== undefined && typeof given.why !== "string") return null;
 	for (const time of [given.retryAt, given.anotherMacAt]) if (time !== undefined && !Number.isSafeInteger(time)) return null;
 	return {
 		available: given.available,
 		state: given.state ?? (given.available ? "ready" : "unavailable"),
 		...(given.why === undefined ? {} : { why: maskKeys((given.why as string).slice(0, 500)) }),
+		...(given.reason === undefined ? {} : { reason: given.reason }),
 		...(given.retryAt === undefined ? {} : { retryAt: given.retryAt }),
 		...(given.anotherMacAt === undefined ? {} : { anotherMacAt: given.anotherMacAt }),
+		...(given.registered === undefined ? {} : { registered: given.registered }),
+		...(given.address === undefined ? {} : { address: given.address }),
 	};
+}
+
+/**
+ * pi² Remote's last word of the relay path, with the pairing the engine had when it came (#917, #1013): kept when pi²
+ * Remote stops, as it does with no device paired, so that the Devices page goes on offering to start again. It holds
+ * only while the address and the pairing are those now set: `registered` changes only with the pairing (register,
+ * forgetPairing) or the address, and both pass through the engine.
+ */
+let lastWord: { relay: Record<string, unknown>; pairing: string | null } | null = null;
+
+/**
+ * What pi² Remote last said of the relay path, once it is about the relay's address now set (`address`, #1013), from a
+ * pi² Remote that said hello; null if none says it within `within` ms. It says it after every hello, and again whenever
+ * the address or where the pairing is registered changes, so a word about another address is one still on its way.
+ */
+function relayWord(within: number): Promise<Record<string, unknown> | null> {
+	const deadline = Date.now() + within;
+	return new Promise((resolve) => {
+		const look = () => {
+			const relay = helper?.hello != null ? helper.relay : null;
+			if (relay !== null && relay.address === devicesState().relay) return resolve(relay);
+			if (Date.now() >= deadline) return resolve(null);
+			setTimeout(look, 50).unref();
+		};
+		look();
+	});
 }
 
 // ---- The mailbox (5.3, 4.3; #678, #806)

@@ -59,8 +59,8 @@ struct SettingsLaunch {
     var localSheet: String?
     /// On Tools, `#variables=<server id>` opens that MCP server's Variables sheet.
     var variablesSheet: String?
-    /// On Devices, `#pair` opens the pairing sheet, which asks the engine for a code, and `#log=<device's name or id>`
-    /// a device's log.
+    /// On Devices, `#pair` opens the pairing sheet, which asks the engine for a code, `#log=<device's name or id>`
+    /// a device's log, and `#start-again` the confirmation of Start Again at This Relay… while the page offers it (#917).
     var devicesSheet: String?
 
     init?(_ value: String?) {
@@ -80,7 +80,7 @@ struct SettingsLaunch {
                 if let provider = target.first { modelsSheet = (String(provider), target.count > 1 ? String(target[1]) : "") }
             } else if part.hasPrefix("variables=") {
                 variablesSheet = String(part.dropFirst("variables=".count))
-            } else if part == "pair" || part.hasPrefix("log=") {
+            } else if part == "pair" || part == "start-again" || part.hasPrefix("log=") {
                 devicesSheet = part
             }
         }
@@ -113,7 +113,7 @@ struct SettingsLaunch {
         return server
     }
 
-    /// The Devices tab's sheet that was asked for, once: "pair", or "log=<device's name or id>".
+    /// The Devices tab's sheet that was asked for, once: "pair", "start-again", or "log=<device's name or id>".
     @MainActor static func takeDevicesSheet() -> String? {
         guard let sheet = asked?.devicesSheet, asked?.tab == .devices, ShowAsked.shared.take(&devicesShown) else { return nil }
         return sheet
@@ -144,7 +144,7 @@ struct SettingsLaunch {
     static func refusal(_ value: String) -> String? {
         guard let asked = SettingsLaunch(value), let hash = value.firstIndex(of: "#") else { return nil }
         let part = String(value[value.index(after: hash)...])
-        if ["models=", "local=", "add-model=", "variables=", "log="].contains(where: part.hasPrefix) || part == "pair" { return nil }
+        if ["models=", "local=", "add-model=", "variables=", "log="].contains(where: part.hasPrefix) || part == "pair" || part == "start-again" { return nil }
         if let section = asked.section, section.tab == asked.tab { return nil }
         let sections = SettingsSection.allCases.filter { $0.tab == asked.tab }.map { "#\($0.rawValue)" }.joined(separator: ", ")
         return "Settings' \(asked.tab.rawValue.capitalized) tab has no section #\(part); use \(sections)"

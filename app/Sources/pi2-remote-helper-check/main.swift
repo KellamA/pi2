@@ -107,6 +107,8 @@ if let relayURL {
 	// And a relay of the check's own that lies and floods, on 127.0.0.1 (#921's security read).
 	Relayed.flood(helper: bundled, home: home)
 	if let engineMain { RealEngine.run(engineMain: engineMain, helper: built, root: root, relay: relayURL) }
+	// Starting again at the relay now set, through a real engine, with a front of the check's own on that relay (#917).
+	if let engineMain { StartAgain.run(engineMain: engineMain, helper: built, root: root, relay: relayURL) }
 } else {
 	Units.run(sources: sources, helper: built)
 	Pushes.run(home: root)
