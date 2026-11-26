@@ -2378,21 +2378,39 @@ try {
 			await sampled;
 			return { reply, took, before, peak };
 		};
-		const table = await cost("huge-table", "variables.set", { agentId: "forge", name: "HUGE", value: huge });
-		assert.equal(table.reply.error, ONLY_ON_THE_MAC);
+		// What each request grew the engine by, in the whole process's resident size, is what the collector moves by two or
+		// three times the line's size from one request to the next, so one reading cannot tell a copy from a pause (#1030).
+		// Each request is made several times instead (sixteen for this text, eight for the others), in alternation
+		// with the table's refusal of the same line and with the table first every other round, and what is asserted is the
+		// mean of the differences: the collector's pause and the order of the pair cancel out, while a copy the engine keeps
+		// shows in every round. The text's own size, or half of it, is the bound: a refusal that read or kept it would show.
+		const grew = (one: { before: number; peak: number }) => one.peak - one.before;
+		const mean = (values: number[]) => values.reduce((sum, one) => sum + one, 0) / values.length;
+		const againstTable = async (what: string, method: string, params: () => Record<string, unknown> | Promise<Record<string, unknown>>, rounds = 8) => {
+			const tableRounds: { reply: any; took: number; before: number; peak: number }[] = [];
+			const sizedRounds: { reply: any; took: number; before: number; peak: number }[] = [];
+			for (let round = 0; round < rounds; round++) {
+				const tableFirst = round % 2 === 0;
+				if (tableFirst) tableRounds.push(await cost(`huge-${what}-table-${round}`, "variables.set", { agentId: "forge", name: "HUGE", value: huge }));
+				sizedRounds.push(await cost(`huge-${what}-${round}`, method, await params()));
+				if (!tableFirst) tableRounds.push(await cost(`huge-${what}-table-${round}`, "variables.set", { agentId: "forge", name: "HUGE", value: huge }));
+			}
+			const differences = sizedRounds.map((one, index) => grew(one) - grew(tableRounds[index]!));
+			return { table: tableRounds[0]!, sized: sizedRounds[0]!, more: mean(differences), tableGrowth: mean(tableRounds.map(grew)), rounds };
+		};
 		const hugeFrom = remote.sessionLines.get(session)!.length;
 		// In a conversation with no title yet, as the devices' log's summary is read below ("Sent a message").
 		const { id: untitled } = (await ask("conversation.create", { model: { provider: "demo", modelId: "demo-1" } })).result;
-		const sized = await cost("huge-typed", "submit", { id: untitled, text: huge });
-		assert.equal(sized.reply.error, overMessage("66.0 MB"), "a phone's text of 66 MiB is refused");
+		// A conversation of its own each round, as a task gets an item of its own below: one that already holds the message makes
+		// the next round cheaper, and with sixteen rounds of one the fault's growth fell away to nothing (#1030).
+		const typed = await againstTable("typed", "submit", async () => ({ id: (await ask("conversation.create", { model: { provider: "demo", modelId: "demo-1" } })).result.id, text: huge }), 16);
+		const { table, sized } = typed;
 		const mb = (bytes: number) => Math.round(bytes / 1e6);
-		console.log(`    66 MiB: refused by the table in ${Math.round(table.took)} ms (${mb(table.before)} MB, at most ${mb(table.peak)} MB), for its size in ${Math.round(sized.took)} ms (${mb(sized.before)} MB, at most ${mb(sized.peak)} MB)`);
+		assert.ok(typed.more <= huge.length / 2, `with the engine grown by ${mb(typed.more)} MB more than the table's refusal of the same line, in the mean of its ${typed.rounds} rounds (the table's refusal grew it by ${mb(typed.tableGrowth)} MB on average), where a copy of the ${mb(huge.length)} MB text would show in every round`);
+		assert.equal(table.reply.error, ONLY_ON_THE_MAC);
+		assert.equal(sized.reply.error, overMessage("66.0 MB"), "a phone's text of 66 MiB is refused");
+		console.log(`    66 MiB: refused by the table in ${Math.round(table.took)} ms, for its size in ${Math.round(sized.took)} ms; the mean of its ${typed.rounds} rounds grew the engine by ${mb(typed.more)} MB more than the table's refusal`);
 		assert.ok(sized.took <= 3 * table.took + 2_000, `in ${Math.round(sized.took)} ms, where the same line refused by the table took ${Math.round(table.took)} ms`);
-		// What each grew the engine by from where it stood, since what one leaves the next may reuse, or the collector free:
-		// about twice the line's size either way, so the bound is that again. Taking the text, as before #924, grew it by
-		// some 480 MB.
-		const grew = (one: { before: number; peak: number }) => one.peak - one.before;
-		assert.ok(grew(sized) <= grew(table) + 2 * huge.length, `with the engine grown by ${mb(grew(sized))} MB, where the table's refusal grew it by ${mb(grew(table))} MB`);
 		// The check itself, here in this process: it reads the string in place, faster than the line's JSON is parsed.
 		const hugeParams = { id: untitled, text: huge };
 		const parsedIn = performance.now();
@@ -2541,31 +2559,57 @@ try {
 			await sampled;
 			return { reply, took, before, peak };
 		};
-		const table = await cost("huge-task-table", "variables.set", { agentId: "forge", name: "HUGE", value: huge });
-		assert.equal(table.reply.error, ONLY_ON_THE_MAC);
-		const hugeItem = (await app.call("work.create", { projectId: made.id, title: "Huge" })).id;
-		const sized = await cost("huge-task", "work.act", { projectId: made.id, id: hugeItem, action: "assign", agentId: helper.id, task: huge });
-		assert.equal(sized.reply.error, over("A task", 20_000, huge.length), "a task of 66 MiB is refused");
-		const mb = (bytes: number) => Math.round(bytes / 1e6);
-		console.log(`    66 MiB task: refused by the table in ${Math.round(table.took)} ms (${mb(table.before)} MB, at most ${mb(table.peak)} MB), for its size in ${Math.round(sized.took)} ms (${mb(sized.before)} MB, at most ${mb(sized.peak)} MB)`);
-		assert.ok(sized.took <= 3 * table.took + 2_000, `in ${Math.round(sized.took)} ms, where the same line refused by the table took ${Math.round(table.took)} ms`);
+		// Measured as in step 1 (#1030): eight rounds of each, alternating which comes first, and the mean of the eight
+		// differences. A task is handed to an item of its own each round, since an item assigned once takes the same task no
+		// further.
 		const grew = (one: { before: number; peak: number }) => one.peak - one.before;
-		assert.ok(grew(sized) <= grew(table) + 2 * huge.length, `with the engine grown by ${mb(grew(sized))} MB, where the table's refusal grew it by ${mb(grew(table))} MB`);
+		const mean = (values: number[]) => values.reduce((sum, one) => sum + one, 0) / values.length;
+		const againstTable = async (what: string, method: string, params: () => Record<string, unknown> | Promise<Record<string, unknown>>, rounds = 8) => {
+			const tableRounds: { reply: any; took: number; before: number; peak: number }[] = [];
+			const sizedRounds: { reply: any; took: number; before: number; peak: number }[] = [];
+			for (let round = 0; round < rounds; round++) {
+				const tableFirst = round % 2 === 0;
+				if (tableFirst) tableRounds.push(await cost(`huge-${what}-table-${round}`, "variables.set", { agentId: "forge", name: "HUGE", value: huge }));
+				sizedRounds.push(await cost(`huge-${what}-${round}`, method, await params()));
+				if (!tableFirst) tableRounds.push(await cost(`huge-${what}-table-${round}`, "variables.set", { agentId: "forge", name: "HUGE", value: huge }));
+			}
+			const differences = sizedRounds.map((one, index) => grew(one) - grew(tableRounds[index]!));
+			return { table: tableRounds[0]!, sized: sizedRounds[0]!, more: mean(differences), tableGrowth: mean(tableRounds.map(grew)), rounds };
+		};
+		const hugeItem = (await app.call("work.create", { projectId: made.id, title: "Huge" })).id;
+		let items = 0;
+		const task = await againstTable("task", "work.act", async () => {
+			const item = (await app.call("work.create", { projectId: made.id, title: `Huge ${++items}` })).id;
+			return { projectId: made.id, id: item, action: "assign", agentId: helper.id, task: huge };
+		});
+		const { table, sized } = task;
+		const mb = (bytes: number) => Math.round(bytes / 1e6);
+		assert.ok(task.more <= huge.length, `with the engine grown by ${mb(task.more)} MB more than the table's refusal of the same line, in the mean of its ${task.rounds} rounds (the table's refusal grew it by ${mb(task.tableGrowth)} MB on average), where a copy of the ${mb(huge.length)} MB task would show in every round`);
+		assert.equal(table.reply.error, ONLY_ON_THE_MAC);
+		assert.equal(sized.reply.error, over("A task", 20_000, huge.length), "a task of 66 MiB is refused");
+		console.log(`    66 MiB task: refused by the table in ${Math.round(table.took)} ms, for its size in ${Math.round(sized.took)} ms; the mean of its ${task.rounds} rounds grew the engine by ${mb(task.more)} MB more than the table's refusal`);
+		assert.ok(sized.took <= 3 * table.took + 2_000, `in ${Math.round(sized.took)} ms, where the same line refused by the table took ${Math.round(table.took)} ms`);
 		// The same in fields the devices' log's summary reads (#940's security read): a refused request is summarized by its
-		// method alone, so nothing cleans, masks or splits the title or the path first. Held closer than the task, since a
-		// summary made from them took seconds and grew the engine by gigabytes.
+		// method alone, so nothing cleans, masks or splits the title or the path first. Two texts is the bound these readings
+		// hold: the summary masking the whole path grows the engine by some 850 MB (a fault run of #1030), six times the bound,
+		// while a copy of the title alone is 70 MB, which is no more than these two readings drift by on a quiet Mac (up to
+		// 55 MB seen); the title's case is kept for its refusal, its time and its log line, and the guard
+		// itself is the path's to show.
 		const { id: renamed } = (await ask("conversation.create", { model: demo })).result;
+		const reads: (Awaited<ReturnType<typeof againstTable>> & { what: string; method: string; rounds: number })[] = [];
 		for (const [what, method, params] of [
-			["title", "conversation.rename", { id: renamed, title: huge }],
 			["path", "files.preview", { id: renamed, path: "/ŧ".repeat(huge.length / 2) }],
-		] as const) {
-			const read = await cost(`huge-${what}`, method, params);
-			assert.equal(read.reply.error, overTheRest, `a ${what} of 66 MiB is past the rest's count`);
-			console.log(`    66 MiB ${what}: refused in ${Math.round(read.took)} ms (${mb(read.before)} MB, at most ${mb(read.peak)} MB)`);
-			assert.ok(read.took <= 2 * table.took + 1_000, `in ${Math.round(read.took)} ms, where the same line refused by the table took ${Math.round(table.took)} ms`);
-			assert.ok(grew(read) <= grew(table) + huge.length, `with the engine grown by ${mb(grew(read))} MB, where the table's refusal grew it by ${mb(grew(table))} MB`);
-			const entry = (await app.call("devices.log", { device: phone.id })).entries.find((one: any) => one.method === method && one.why === overTheRest);
-			assert.equal(entry?.summary, `${method}: refused for the text it carries`, `logged by its method alone: ${JSON.stringify(entry).slice(0, 200)}`);
+			["title", "conversation.rename", { id: renamed, title: huge }],
+		] as const)
+			reads.push({ what, method, ...(await againstTable(what, method, () => params)) });
+		// Both figures are printed before either is checked, so that one run shows what the summary does with both fields.
+		for (const read of reads) console.log(`    66 MiB ${read.what}: refused in ${Math.round(read.sized.took)} ms; the mean of its ${read.rounds} rounds grew the engine by ${mb(read.more)} MB more than the table's refusal`);
+		for (const read of reads) {
+			assert.ok(read.more <= 2 * huge.length, `with the engine grown by ${mb(read.more)} MB more than the table's refusal of the same line, in the mean of its ${read.rounds} rounds (the table's refusal grew it by ${mb(read.tableGrowth)} MB on average), where the summary reading the ${mb(huge.length)} MB ${read.what} would show in every round`);
+			assert.equal(read.sized.reply.error, overTheRest, `a ${read.what} of 66 MiB is past the rest's count`);
+			assert.ok(read.sized.took <= 2 * read.table.took + 1_000, `in ${Math.round(read.sized.took)} ms, where the same line refused by the table took ${Math.round(read.table.took)} ms`);
+			const entry = (await app.call("devices.log", { device: phone.id })).entries.find((one: any) => one.method === read.method && one.why === overTheRest);
+			assert.equal(entry?.summary, `${read.method}: refused for the text it carries`, `logged by its method alone: ${JSON.stringify(entry).slice(0, 200)}`);
 		}
 		const hugeParams = { projectId: made.id, id: hugeItem, action: "assign", agentId: helper.id, task: huge };
 		const heapBefore = process.memoryUsage().heapUsed;
