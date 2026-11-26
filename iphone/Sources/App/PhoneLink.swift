@@ -277,6 +277,7 @@ final class PhoneLink {
     /// only once this session has started the connection (`startedInSession`).
     private func follow(_ state: AppSession.Connection) {
         followed += 1
+        let state = Self.aged(state, lastHeard: store.lastHeard)
         guard paired else { return }
         guard keyring.session.state == .open, startedInSession, let connection else {
             session.connection = state
@@ -314,6 +315,18 @@ final class PhoneLink {
             storeOpen ? .cached : .live
         case .notPaired, .demo:
             .none
+        }
+    }
+
+    /// Keeps the out-of-reach state's time from going back to nil (#949): the connection keeps its own `lastSeen` in
+    /// memory only, so on a fresh launch it is nil, while the store knows when the Mac was last heard. For an out-of-reach
+    /// state the later of the two wins (either may be nil, and both nil leaves it nil); every other state is unchanged.
+    nonisolated static func aged(_ state: AppSession.Connection, lastHeard: Date?) -> AppSession.Connection {
+        switch state {
+        case .outOfReach(let seen):
+            .outOfReach(lastSeen: [seen, lastHeard].compactMap({ $0 }).max())
+        default:
+            state
         }
     }
 
