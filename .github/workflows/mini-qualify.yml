@@ -171,7 +171,9 @@ jobs:
             if [ "$got" = "$dummy" ]; then same=yes; else failures=1; fi
             say "it is what was written" "$(yes_no "$same")"
 
-            /usr/bin/security delete-generic-password -s "$service" -a "$account" 2>/dev/null
+            # Its output is the deleted item's attributes, the job keychain's path among them: the step prints statuses
+            # only, so it goes nowhere, as the two lines above do.
+            /usr/bin/security delete-generic-password -s "$service" -a "$account" >/dev/null 2>&1
             status=$?
             say "delete the dummy item" "exit $status"
             [ "$status" = 0 ] || failures=1

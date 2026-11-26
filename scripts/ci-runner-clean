@@ -448,10 +448,12 @@ keychain_record_read() {
 	return 0
 }
 
-# The job's own keychain, and only that one: a name of ours, directly in the job's temporary folder. The record is a
-# file any step of the job can write, so nothing else from it is acted on, and no other keychain is ever deleted.
+# The job's own keychain, and only that one: a name of ours, directly in the job's temporary folder, and the file rather
+# than a link, which could lead to another keychain. The record is a file any step of the job can write, so nothing else
+# from it is acted on, and no other keychain is ever deleted.
 ours() {
 	case ${1##*/} in pi2-job-*.keychain-db) ;; *) return 1 ;; esac
+	[ ! -L "$1" ] || return 1
 	[ "$(real "$(dirname -- "$1")")" = "$temp" ]
 }
 
@@ -514,9 +516,16 @@ keychain_put_back() {
 }
 
 keychain_start() {
-	local status password path search
+	local status password path search name
 	[ -n "${GITHUB_RUN_ID:-}" ] && [ -n "${GITHUB_RUN_ATTEMPT:-}" ] ||
 		refuse "GITHUB_RUN_ID or GITHUB_RUN_ATTEMPT is not set: the job's keychain has no name of its own"
+	# The name below is made from these two, so each is digits only: a name of digits and two hyphens is directly in the
+	# job's temporary folder whatever a job sets, and cannot be a folder, a link or `..`.
+	for name in GITHUB_RUN_ID GITHUB_RUN_ATTEMPT; do
+		case ${!name} in
+		'' | *[!0-9]*) refuse "$name is not a number: the job's keychain has no name of its own" ;;
+		esac
+	done
 	job_keychain="$temp/pi2-job-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.keychain-db"
 	keychain_record_read
 	if [ -n "$record_keychain" ]; then

@@ -509,6 +509,30 @@ expect "prints no path after the failure" bash -c '! grep -q / <<<"$1"' _ "$out"
 expect "never prints the password after the failure" bash -c '! grep -qF -- "$2" <<<"$1"' _ "$out" "$password"
 rm -f "$T/create-fails"
 
+# The job's keychain is named from GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT, so each has to be digits: anything else is
+# refused before anything is made, in one line that names no value, and security is asked nothing.
+for bad in 2040a '2040/1' '..'; do
+	: >"$log/security"
+	out=$(env_for GITHUB_RUN_ID="$bad" bash "$script" keychain-start 2>&1)
+	code=$?
+	expect "a keychain-start whose run id is '$bad' is refused" test "$code" = 2
+	expect "and refuses it in a line that names no value ($bad)" bash -c '[[ $1 == *refused* && $1 != *"$2"* ]]' _ "$out" "$bad"
+	expect "and asks security nothing ($bad)" test ! -s "$log/security"
+	expect "and makes no keychain ($bad)" bash -c '! ls "$1" | grep -q "^pi2-job-"' _ "$temp"
+	expect "and leaves no record ($bad)" test ! -e "$temp/pi2-job-keychain"
+	expect "and prints no path ($bad)" bash -c '! grep -q / <<<"$1"' _ "$out"
+done
+# Empty, as it is outside GitHub's runner, is refused as it was before: one line, exit 2, and nothing made.
+: >"$log/security"
+out=$(env_for GITHUB_RUN_ID= bash "$script" keychain-start 2>&1)
+code=$?
+expect "a keychain-start with an empty run id is refused" test "$code" = 2
+expect "with the line it had before" grep -qF "GITHUB_RUN_ID or GITHUB_RUN_ATTEMPT is not set" <<<"$out"
+expect "and asks security nothing when it is empty" test ! -s "$log/security"
+expect "and makes no keychain when it is empty" bash -c '! ls "$1" | grep -q "^pi2-job-"' _ "$temp"
+expect "and leaves no record when it is empty" test ! -e "$temp/pi2-job-keychain"
+expect "and prints no path when it is empty" bash -c '! grep -q / <<<"$1"' _ "$out"
+
 # A default keychain and a search list a killed job left behind, and a file that is gone.
 printf '%s\n' "$temp/pi2-job-1-1.keychain-db" >"$T/state/default-keychain"
 printf '%s\n' "$temp/pi2-job-1-1.keychain-db" "$home/Library/Keychains/old.keychain-db" \
@@ -538,6 +562,28 @@ expect "still puts the default back" grep -qxF "default-keychain -d user -s $hom
 expect "still puts the search list back" grep -qxF "list-keychains -d user -s $home/Library/Keychains/login.keychain-db" "$log/security"
 expect "removes the record it did not act on" test ! -e "$temp/pi2-job-keychain"
 expect "says the record's keychain is not the job's" grep -qF "not this job's" <<<"$out"
+expect "prints no path" bash -c '! grep -q / <<<"$1"' _ "$out"
+
+# A record naming a link is not one naming the job's keychain either: the link may lead to another keychain, so it is
+# never given to delete-keychain, the default and the search list are still put back, and the run fails with one line
+# and no path.
+mkdir -p "$T/victim/kc"
+echo keep >"$T/victim/kc/keychain-db"
+ln -s "$T/victim/kc/keychain-db" "$temp/pi2-job-linked.keychain-db"
+printf 'default\t%s\nlist\t%s\nkeychain\t%s\n' \
+	"$home/Library/Keychains/login.keychain-db" "$home/Library/Keychains/login.keychain-db" \
+	"$temp/pi2-job-linked.keychain-db" >"$temp/pi2-job-keychain"
+: >"$log/security"
+out=$(env_for bash "$script" keychain-end 2>&1)
+code=$?
+echo "$out" | sed 's/^/  | /'
+expect "a keychain-end whose record names a link exits 1" test "$code" = 1
+expect "never gives that link to delete-keychain" bash -c '! grep -q delete-keychain "$1"' _ "$log/security"
+expect "leaves the link and what it points to" test -L "$temp/pi2-job-linked.keychain-db" -a -s "$T/victim/kc/keychain-db"
+expect "still puts the default back" grep -qxF "default-keychain -d user -s $home/Library/Keychains/login.keychain-db" "$log/security"
+expect "still puts the search list back" grep -qxF "list-keychains -d user -s $home/Library/Keychains/login.keychain-db" "$log/security"
+expect "says the link's keychain is not the job's" grep -qF "not this job's" <<<"$out"
+expect "removes the record it did not act on" test ! -e "$temp/pi2-job-keychain"
 expect "prints no path" bash -c '! grep -q / <<<"$1"' _ "$out"
 
 # ---- A simulator that will not go fails the run, and its record is kept.
