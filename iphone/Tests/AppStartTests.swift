@@ -46,6 +46,20 @@ struct AppStartTests {
         #expect(carrier(.notPaired) == .none)
     }
 
+    @Test func theOutOfReachStateKeepsTheLastHeardTheStoreKnows() {
+        func aged(_ state: AppSession.Connection, _ lastHeard: Date?) -> AppSession.Connection {
+            PhoneLink.aged(state, lastHeard: lastHeard)
+        }
+        let older = Date(timeIntervalSince1970: 1_000)
+        let newer = Date(timeIntervalSince1970: 2_000)
+        #expect(aged(.outOfReach(lastSeen: nil), older) == .outOfReach(lastSeen: older), "a fresh launch's nil comes from the store")
+        #expect(aged(.outOfReach(lastSeen: older), newer) == .outOfReach(lastSeen: newer), "the store heard later than the connection kept")
+        #expect(aged(.outOfReach(lastSeen: newer), older) == .outOfReach(lastSeen: newer), "the connection's own later time stands")
+        #expect(aged(.outOfReach(lastSeen: nil), nil) == .outOfReach(lastSeen: nil), "nothing heard, ever, stays unknown")
+        #expect(aged(.connecting, older) == .connecting)
+        #expect(aged(.connected(.home), older) == .connected(.home))
+    }
+
     // MARK: - With the test Mac
 
     private static func folder() -> StoreFolder {
