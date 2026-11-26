@@ -18,19 +18,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Decides whether a pull request needs the macOS jobs, which wait for GitHub's scarcer macOS runners (#245). One that
-  # changes only files no macOS job reads (the docs, the changelog, the version) skips them, and a skipped job reports
-  # its check as passed, so their required checks do not hold it up. Anything else, any doubt, and every push to main
-  # runs them: they run unless this job says "false", so if it fails they run too. The iPhone app's job is decided the
-  # other way round, on a push to main too: it runs only for a change to what the phone is built from, and if this job
-  # fails (#871). scripts/ci-changes decides both.
+  # Decides which of the jobs a change needs, one at a time, since each macOS job builds and reads different parts of
+  # the tree and macOS runners are GitHub's scarcer ones (#245, #1034). A job runs for a file its steps read; one for
+  # none of them is skipped, and a skipped job reports its check as passed, so its required check does not hold a pull
+  # request up. Any doubt runs a job: it runs unless this job says "false" for it, so if this job fails they all run,
+  # and so do they for every push to main. The iPhone app's job is decided the other way round, on a push to main too:
+  # it runs only for a change to what the phone is built from, and if this job fails (#871). scripts/ci-changes
+  # decides each, from what the jobs' steps read.
   changes:
     name: Which jobs the change needs
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      macos: ${{ steps.files.outputs.macos }}
-      # Whether the relay changed, which the protocol test (a macOS job) reads besides what macos covers.
+      # Whether Engine (type-check and tests) runs: engine/, and what its tests read outside it.
+      engine: ${{ steps.files.outputs.engine }}
+      # Whether App (build) runs: app/, the engine it builds into the bundle and runs, and the scripts it checks with.
+      app: ${{ steps.files.outputs.app }}
+      # Whether Relay (protocol test) runs: relay/, and the app's targets it builds against it.
       relay: ${{ steps.files.outputs.relay }}
       # Whether the iPhone app's job runs.
       iphone: ${{ steps.files.outputs.iphone }}
@@ -51,7 +55,7 @@ jobs:
   engine:
     name: Engine (type-check and tests)
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' }}
+    if: ${{ !cancelled() && needs.changes.outputs.engine != 'false' }}
     concurrency:
       group: ci-engine-${{ github.event_name == 'pull_request' && github.run_id || github.ref }}
       cancel-in-progress: true
@@ -198,10 +202,11 @@ jobs:
     # The protocol test (docs/iphone.md 10, #678): RemoteKit's relay client, through the system's WebSocket, against the
     # relay itself, run on the runner under Wrangler's local runtime on 127.0.0.1 (scripts/relay-protocol-test, through
     # relay/scripts/isolated.mjs: a throwaway home, no usage events, no Cloudflare credential). On macOS, since the client
-    # is Swift on CryptoKit and Foundation's WebSocket. Runs whenever the macOS jobs run, and when the relay changed.
-    # Deploys nothing.
+    # is Swift on CryptoKit and Foundation's WebSocket. Runs for a change to the relay, to the app's targets it builds
+    # with it (RemoteKit, pi² Remote and its check, pi2-relay-check, the package's manifest and pins) and to the engine
+    # it runs, and for any doubt (#1034). Deploys nothing.
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.macos != 'false' || needs.changes.outputs.relay == 'true') }}
+    if: ${{ !cancelled() && needs.changes.outputs.relay != 'false' }}
     concurrency:
       group: ci-relay-protocol-${{ github.ref }}
       cancel-in-progress: true
@@ -257,7 +262,7 @@ jobs:
   app:
     name: App (build)
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' }}
+    if: ${{ !cancelled() && needs.changes.outputs.app != 'false' }}
     concurrency:
       group: ci-app-${{ github.event_name == 'pull_request' && github.run_id || github.ref }}
       cancel-in-progress: true

@@ -92,7 +92,7 @@ In the repository's Settings › Environments, make an environment called `relea
    ```
 
    This adds a `## 0.7.9` section below `## Unreleased`, with the entries under `### Added`, `### Changed`, `### Fixed` and `### For contributors`, in that order, and under each heading by issue number, and removes the entry files. It refuses, and changes nothing, when `app/VERSION` says another version, the section exists already, an entry is not well formed, an entry was written into Unreleased instead, or no entry is reader-facing. `--dry-run` prints the section without writing it. Reorder lines within a heading by hand if you like, then commit `CHANGELOG.md`, `app/VERSION` and the removed files. That version's reader-facing entries become the release notes and what the update window shows; `### For contributors` and its contents are left out. Do not edit already-published sections to tidy their notes.
-2. Merge to `main`.
+2. Merge to `main`. The pull request runs `App (build)`: `app/VERSION` is one of the files that job's steps build and check with. A version with white space inside it is refused by CI's first job, which then runs every macOS job ([CI](development.md#ci)).
 3. Tag the commit on `main` and push the tag:
 
    ```bash
