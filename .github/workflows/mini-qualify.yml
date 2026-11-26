@@ -32,9 +32,20 @@ on:
           - credentials
           - engine
           - app
+      # The Engine's tests write their dummy items to the default keychain, which on the mini is the account's login one
+      # and locked in a job's security session (#993). `job` gives the job a keychain of its own instead, as ci.yml does
+      # once the mini qualifies; on a GitHub-hosted runner it does nothing, since that session has its own keychain.
+      keychain:
+        description: Which keychain the job's tests write to
+        required: true
+        type: choice
+        default: login
+        options:
+          - login
+          - job
 
-# The run's name says which of the two a run was, without opening it.
-run-name: Qualify the mini — ${{ github.event.inputs.check }} on ${{ github.event.inputs.runner }}
+# The run's name says which of the three a run was, without opening it.
+run-name: Qualify the mini — ${{ github.event.inputs.check }} on ${{ github.event.inputs.runner }}, keychain ${{ github.event.inputs.keychain }}
 
 permissions:
   contents: read
@@ -87,6 +98,9 @@ jobs:
       - name: Clean the owner's runner
         if: runner.environment == 'self-hosted'
         run: scripts/ci-runner-clean start
+      - name: Make a keychain of the job's own
+        if: github.event.inputs.keychain == 'job' && runner.environment == 'self-hosted'
+        run: scripts/ci-runner-clean keychain-start
       # The probe the diagnosis on #993 asks for: dummy data only, and a service name of the run's own, which
       # scripts/ci-runner-clean removes like any other test's. It prints step names, exit statuses and yes/no words and
       # nothing else: never a listing, never what `security` printed (it can name a keychain's path), never the value of
@@ -94,6 +108,9 @@ jobs:
       - name: Keychain round trip with a dummy item
         shell: bash
         run: |
+          # GitHub runs a `shell: bash` step with `bash -e`, which would end the step at the first command whose status
+          # it reads. Every line prints, and the step's own `exit` at the end is what fails it.
+          set +e
           set -uo pipefail
           service="dev.pi2.credentials.qualify-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           account="probe"
@@ -124,35 +141,50 @@ jobs:
             say "default keychain unlocked" "$(yes_no "$unlocked") (exit $status)"
           fi
 
-          # One dummy item, written as hexadecimal so that its value is never a word of a command line.
-          hex=$(printf '%s' "$dummy" | od -An -tx1 | tr -d ' \n')
-          /usr/bin/security add-generic-password -U -s "$service" -a "$account" -l "pi2: qualification probe" -X "$hex" 2>/dev/null
-          status=$?
-          say "add the dummy item" "exit $status"
-          [ "$status" = 0 ] || failures=1
+          # The dummy item goes on any exit, so that the step leaves nothing behind whatever it finds.
+          delete_item() {
+            /usr/bin/security delete-generic-password -s "$service" -a "$account" >/dev/null 2>&1 || true
+          }
+          trap delete_item EXIT
 
-          # Read back and compared here, so that neither the value written nor the value read is printed.
-          got=$(/usr/bin/security find-generic-password -s "$service" -a "$account" -w 2>/dev/null)
-          status=$?
-          say "read the dummy item back" "exit $status"
-          [ "$status" = 0 ] || failures=1
-          same=no
-          if [ "$got" = "$dummy" ]; then same=yes; else failures=1; fi
-          say "it is what was written" "$(yes_no "$same")"
+          # The round trip only with the keychain unlocked: an add to a locked one can only fail, and the two lines above
+          # already say why.
+          if [ "$unlocked" = yes ]; then
+            # One dummy item, written as hexadecimal so that its value is never a word of a command line.
+            hex=$(printf '%s' "$dummy" | od -An -tx1 | tr -d ' \n')
+            /usr/bin/security add-generic-password -U -s "$service" -a "$account" -l "pi2: qualification probe" -X "$hex" 2>/dev/null
+            status=$?
+            say "add the dummy item" "exit $status"
+            [ "$status" = 0 ] || failures=1
 
-          /usr/bin/security delete-generic-password -s "$service" -a "$account" 2>/dev/null
-          status=$?
-          say "delete the dummy item" "exit $status"
-          [ "$status" = 0 ] || failures=1
+            # Read back and compared here, so that neither the value written nor the value read is printed.
+            got=$(/usr/bin/security find-generic-password -s "$service" -a "$account" -w 2>/dev/null)
+            status=$?
+            say "read the dummy item back" "exit $status"
+            [ "$status" = 0 ] || failures=1
+            same=no
+            if [ "$got" = "$dummy" ]; then same=yes; else failures=1; fi
+            say "it is what was written" "$(yes_no "$same")"
 
-          # 44 is how `security` says "not found" (engine/src/credentials.ts), so nothing is left under this run's service.
-          /usr/bin/security find-generic-password -s "$service" -a "$account" >/dev/null 2>&1
-          status=$?
-          gone=no
-          if [ "$status" = 44 ]; then gone=yes; else failures=1; fi
-          say "it is gone afterwards" "$(yes_no "$gone") (exit $status)"
+            /usr/bin/security delete-generic-password -s "$service" -a "$account" 2>/dev/null
+            status=$?
+            say "delete the dummy item" "exit $status"
+            [ "$status" = 0 ] || failures=1
+
+            # 44 is how `security` says "not found" (engine/src/credentials.ts), so nothing is left under this run's service.
+            /usr/bin/security find-generic-password -s "$service" -a "$account" >/dev/null 2>&1
+            status=$?
+            gone=no
+            if [ "$status" = 44 ]; then gone=yes; else failures=1; fi
+            say "it is gone afterwards" "$(yes_no "$gone") (exit $status)"
+          else
+            printf '%s\n' "add: skipped, the keychain is locked"
+          fi
 
           exit "$failures"
+      - name: Put the job's own keychain back
+        if: always() && github.event.inputs.keychain == 'job' && runner.environment == 'self-hosted'
+        run: scripts/ci-runner-clean keychain-end
       - name: Clean the owner's runner after the job
         if: always() && runner.environment == 'self-hosted'
         continue-on-error: true
@@ -177,6 +209,10 @@ jobs:
         if: runner.environment == 'self-hosted'
         working-directory: ${{ github.workspace }}
         run: scripts/ci-runner-clean start
+      - name: Make a keychain of the job's own
+        if: github.event.inputs.keychain == 'job' && runner.environment == 'self-hosted'
+        working-directory: ${{ github.workspace }}
+        run: scripts/ci-runner-clean keychain-start
       # ci.yml's Engine (type-check and tests) job, the setup-node step and `npm ci`, unchanged.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
@@ -185,6 +221,10 @@ jobs:
           cache-dependency-path: engine/package-lock.json
       - run: npm ci
       - run: node --test test/credentials.ts
+      - name: Put the job's own keychain back
+        if: always() && github.event.inputs.keychain == 'job' && runner.environment == 'self-hosted'
+        working-directory: ${{ github.workspace }}
+        run: scripts/ci-runner-clean keychain-end
       - name: Clean the owner's runner after the job
         if: always() && runner.environment == 'self-hosted'
         continue-on-error: true
@@ -208,6 +248,10 @@ jobs:
         if: runner.environment == 'self-hosted'
         working-directory: ${{ github.workspace }}
         run: scripts/ci-runner-clean start
+      - name: Make a keychain of the job's own
+        if: github.event.inputs.keychain == 'job' && runner.environment == 'self-hosted'
+        working-directory: ${{ github.workspace }}
+        run: scripts/ci-runner-clean keychain-start
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 26
@@ -215,6 +259,10 @@ jobs:
           cache-dependency-path: engine/package-lock.json
       - run: npm ci
       - run: npm run test:macos
+      - name: Put the job's own keychain back
+        if: always() && github.event.inputs.keychain == 'job' && runner.environment == 'self-hosted'
+        working-directory: ${{ github.workspace }}
+        run: scripts/ci-runner-clean keychain-end
       - name: Clean the owner's runner after the job
         if: always() && runner.environment == 'self-hosted'
         continue-on-error: true
@@ -236,6 +284,9 @@ jobs:
       - name: Clean the owner's runner
         if: runner.environment == 'self-hosted'
         run: scripts/ci-runner-clean start
+      - name: Make a keychain of the job's own
+        if: github.event.inputs.keychain == 'job' && runner.environment == 'self-hosted'
+        run: scripts/ci-runner-clean keychain-start
       - name: Check what scripts/test-copy refuses
         run: scripts/test-test-copy
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
@@ -295,6 +346,9 @@ jobs:
       - name: Build RemoteKit for iOS
         working-directory: app
         run: swift build --target RemoteKit --triple arm64-apple-ios18.0 --sdk "$(xcrun --sdk iphoneos --show-sdk-path)" --scratch-path .build/ios
+      - name: Put the job's own keychain back
+        if: always() && github.event.inputs.keychain == 'job' && runner.environment == 'self-hosted'
+        run: scripts/ci-runner-clean keychain-end
       - name: Clean the owner's runner after the job
         if: always() && runner.environment == 'self-hosted'
         continue-on-error: true
