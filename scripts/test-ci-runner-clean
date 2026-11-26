@@ -540,6 +540,28 @@ expect "removes the record it did not act on" test ! -e "$temp/pi2-job-keychain"
 expect "says the record's keychain is not the job's" grep -qF "not this job's" <<<"$out"
 expect "prints no path" bash -c '! grep -q / <<<"$1"' _ "$out"
 
+# A record naming a link is not one naming the job's keychain either: the link may lead to another keychain, so it is
+# never given to delete-keychain, the default and the search list are still put back, and the run fails with one line
+# and no path.
+mkdir -p "$T/victim/kc"
+echo keep >"$T/victim/kc/keychain-db"
+ln -s "$T/victim/kc/keychain-db" "$temp/pi2-job-linked.keychain-db"
+printf 'default\t%s\nlist\t%s\nkeychain\t%s\n' \
+	"$home/Library/Keychains/login.keychain-db" "$home/Library/Keychains/login.keychain-db" \
+	"$temp/pi2-job-linked.keychain-db" >"$temp/pi2-job-keychain"
+: >"$log/security"
+out=$(env_for bash "$script" keychain-end 2>&1)
+code=$?
+echo "$out" | sed 's/^/  | /'
+expect "a keychain-end whose record names a link exits 1" test "$code" = 1
+expect "never gives that link to delete-keychain" bash -c '! grep -q delete-keychain "$1"' _ "$log/security"
+expect "leaves the link and what it points to" test -L "$temp/pi2-job-linked.keychain-db" -a -s "$T/victim/kc/keychain-db"
+expect "still puts the default back" grep -qxF "default-keychain -d user -s $home/Library/Keychains/login.keychain-db" "$log/security"
+expect "still puts the search list back" grep -qxF "list-keychains -d user -s $home/Library/Keychains/login.keychain-db" "$log/security"
+expect "says the link's keychain is not the job's" grep -qF "not this job's" <<<"$out"
+expect "removes the record it did not act on" test ! -e "$temp/pi2-job-keychain"
+expect "prints no path" bash -c '! grep -q / <<<"$1"' _ "$out"
+
 # ---- A simulator that will not go fails the run, and its record is kept.
 
 mkdir -p "$checkout/iphone/build/simulators/ci"

@@ -448,10 +448,12 @@ keychain_record_read() {
 	return 0
 }
 
-# The job's own keychain, and only that one: a name of ours, directly in the job's temporary folder. The record is a
-# file any step of the job can write, so nothing else from it is acted on, and no other keychain is ever deleted.
+# The job's own keychain, and only that one: a name of ours, directly in the job's temporary folder, and the file rather
+# than a link, which could lead to another keychain. The record is a file any step of the job can write, so nothing else
+# from it is acted on, and no other keychain is ever deleted.
 ours() {
 	case ${1##*/} in pi2-job-*.keychain-db) ;; *) return 1 ;; esac
+	[ ! -L "$1" ] || return 1
 	[ "$(real "$(dirname -- "$1")")" = "$temp" ]
 }
 
