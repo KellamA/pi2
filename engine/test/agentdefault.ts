@@ -133,6 +133,45 @@ try {
 	assert.deepEqual((await client.runsOn(picked.id)).model, demo);
 	step("an agent made by hand, and its duplicate, start on the default; one with a model of its own, and its duplicate, keep it; a conversation already started keeps its model");
 
+	// ---- What agents.save takes of an agent's own settings: types and shapes (#1012)
+
+	const fields = { color: "teal", model: text, thinkingLevel: "high", mcpServers: ["notes"], delegates: ["scout"], codeMode: true, description: "A checked agent", instructions: "Write plainly" };
+	const { id: checked } = await client.call("agents.save", { agent: { name: "Checked", ...fields } });
+	const shows = () => client.agent(checked);
+	await client.until("Checked", () => shows() && Object.entries(fields).every(([key, value]) => JSON.stringify(shows()[key]) === JSON.stringify(value)));
+	// Each wrong value refused with its own words, and the agent afterwards exactly what it was (read back off the event).
+	for (const [given, message] of [
+		[{ color: { a: 1 } }, /Unknown colour/],
+		[{ model: "gpt" }, /The model must be \{ provider, modelId \}/],
+		[{ model: { provider: "x" } }, /The model must be/],
+		[{ thinkingLevel: "huge" }, /The thinking level must be one of:/],
+		[{ mcpServers: [1] }, /MCP servers must be a list/],
+		[{ delegates: "all" }, /Delegates must be a list/],
+		[{ codeMode: "yes" }, /codeMode must be true or false/],
+		[{ description: "x".repeat(2_001) }, /The description is too long/],
+	] as [Record<string, unknown>, RegExp][]) {
+		await assert.rejects(client.call("agents.save", { agent: { id: checked, name: "Checked", ...given } }), message);
+	}
+	await client.until("unchanged by the refusals", () => shows() && Object.entries(fields).every(([key, value]) => JSON.stringify(shows()[key]) === JSON.stringify(value)));
+	// The right values kept: a model ref with extra fields as its two fields alone, lists without duplicates, description
+	// trimmed at exactly the bound.
+	await client.call("agents.save", { agent: { id: checked, name: "Checked", color: "green", model: { provider: "demo", modelId: "demo-1", extra: 1 }, thinkingLevel: "off", mcpServers: ["notes", "web", "notes"], delegates: ["scout", "scout"], codeMode: false, description: "  Tidy  ", instructions: "Plain" } });
+	await client.until("the good values kept", () =>
+		shows() !== undefined &&
+		shows().color === "green" &&
+		sameRef(shows().model, demo) &&
+		Object.keys(shows().model).length === 2 &&
+		shows().thinkingLevel === "off" &&
+		JSON.stringify(shows().mcpServers) === JSON.stringify(["notes", "web"]) &&
+		JSON.stringify(shows().delegates) === JSON.stringify(["scout"]) &&
+		shows().codeMode === false &&
+		shows().description === "Tidy" &&
+		shows().instructions === "Plain");
+	// At exactly the bound it is kept.
+	await client.call("agents.save", { agent: { id: checked, name: "Checked", description: "y".repeat(2_000) } });
+	await client.until("the bound kept", () => shows()?.description === "y".repeat(2_000));
+	step("agents.save refuses a colour, model, thinking level, list, codeMode or overlong description of the wrong shape, leaves the agent unchanged, and keeps the right ones");
+
 	// A project: its default orchestrator, its New Agent, and the orchestrator's `make`.
 	await leaveOut(client);
 	const project = await client.call("projects.create", { folder: work });
