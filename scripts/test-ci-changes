@@ -80,7 +80,8 @@ decide() {
 	# Nothing in a name is run.
 	[[ ! -e $repo/ran ]] || fail "$name: something in a name ran"
 	# Nothing a name holds may begin a line of the log, where the runner would read it as a workflow command.
-	if grep -q '^::' "$repo.log" && [[ $name != "app/VERSION not a version" ]]; then
+	# A refused app/VERSION writes an ::error line of its own, and the cases for it say so in their names.
+	if grep -q '^::' "$repo.log" && [[ $name != app/VERSION* ]]; then
 		fail "$name: a line of the log begins with ::"
 	fi
 }
@@ -89,6 +90,11 @@ PR=pull_request
 # What runs and what is skipped, by kind of file: iphone engine app relay.
 decide "docs only" $PR "false false false false" "" "put docs/a.md"
 decide "docs and changelog" $PR "false false false false" "" "put docs/a.md; put changelog.d/871.md"
+# The one doc a macOS job reads: scripts/test-test-copy, in App (build), reads docs/development.md (#1034's security
+# read). Another doc runs none of them.
+decide "the doc scripts/test-test-copy reads" $PR "false false true false" "" "put docs/development.md"
+decide "another doc" $PR "false false false false" "" "put docs/iphone.md"
+decide "the doc scripts/test-test-copy reads and a phone file" $PR "true false true false" "" "put docs/development.md; put iphone/Sources/App.swift"
 decide "the transcript page" $PR "true false true false" "" "put app/Web/transcript/transcript.js"
 decide "the transcript page's tests" $PR "false false true false" "" "put app/Web/test/transcript.test.mjs"
 decide "a shared target" $PR "true false true false" "" "put app/Sources/TranscriptKit/TranscriptLoading.swift"
@@ -120,8 +126,14 @@ decide "the relay's packages" $PR "false false false true" "" "put relay/package
 decide ".gitattributes" $PR "true true true true" "" "put .gitattributes"
 decide "app/.gitattributes" $PR "true true true true" "" "put app/.gitattributes"
 decide "a .gitattributes in docs" $PR "true false false false" "" "put docs/.gitattributes"
-decide "app/VERSION a version" $PR "false false false false" "" "mkdir -p app; printf '1.2.3\n' >app/VERSION"
+# app/VERSION is read by the App job's steps (app/build.sh:98, app/check-release-build.mts:88), so a well-formed
+# version needs App (build) and nothing else; white space at the ends is all the two readers agree on.
+decide "app/VERSION a version" $PR "false false true false" "" "mkdir -p app; printf '1.2.3\n' >app/VERSION"
+decide "app/VERSION with spaces at its ends" $PR "false false true false" "" "mkdir -p app; printf ' 1.2.3 \n' >app/VERSION"
 decide "app/VERSION not a version" $PR "none" "" "mkdir -p app; printf '1.2 3;x\n' >app/VERSION"
+# White space inside a version: build.sh drops it (1.23) and check-release-build.mts trims only the ends (1.2 3), so
+# the two disagree. Nothing is written and every job runs.
+decide "app/VERSION not a version" $PR "none" "" "mkdir -p app; printf '1.2 3\n' >app/VERSION"
 decide "a root file no list names" $PR "false true true true" "" "put notes.txt"
 decide "an empty merge" $PR "true true true true" "" ":"
 

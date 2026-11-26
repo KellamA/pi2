@@ -120,7 +120,12 @@ else
 			continue
 		fi
 		case $file in
-		# Read by no macOS job. A file one of them starts reading comes off this list. Unchanged from before #1034.
+		# The App job's step "Check what scripts/test-copy refuses" runs scripts/test-test-copy, which reads this page
+		# (lines 513 and 526) and fails when a section of the app's settings or agent enums is not named there (#768).
+		# No other macOS job reads a doc.
+		docs/development.md) need app ;;
+		# Read by no macOS job but the page above. A file one of them starts reading comes off this list. Unchanged
+		# from before #1034, except docs/development.md.
 		docs/* | README.md | CONTRIBUTING.md | CHANGELOG.md | SECURITY.md | CLAUDE.md) ;;
 		# Changelog entries: Transcript page (tests) checks them on Linux.
 		changelog.d/*) ;;
@@ -155,12 +160,17 @@ else
 
 		# ---- The Mac app. App (build) builds and checks everything under app/ (`swift build`, every pi2-*-check,
 		# build.sh), so it runs for any of it; the other two jobs build or read only these parts.
-		# Copied into the app's Info.plist by app/build.sh, which drops white space: checked here for what could
-		# break that. A version is read by no job's steps (build.sh copies it as it is); one that is not a version
-		# fails, writing no output, so every job runs.
+		# Read by the App job's steps: app/build.sh:98 puts it in the app's Info.plist and app/check-release-build.mts:88
+		# checks a build against it. build.sh drops every space or tab (`tr -d '[:space:]'`) and the check trims the
+		# ends (`.trim()`), so only one version with white space at the ends alone is read the same by both. Anything
+		# else is not a version: it writes no output, so every job runs. A version needs App (build), which builds and
+		# checks with it, and no other macOS job reads it.
 		app/VERSION)
 			version=$(tr -d '[:space:]' <app/VERSION)
-			[[ $version =~ ^[0-9A-Za-z.+-]+$ ]] || { echo "::error::app/VERSION is not a version: $version"; exit 1; } ;;
+			[[ $version =~ ^[0-9A-Za-z.+-]+$ ]] || { echo "::error::app/VERSION is not a version: $version"; exit 1; }
+			trimmed=$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' app/VERSION)
+			[[ $trimmed == "$version" ]] || { echo "::error::app/VERSION is not a version: $version"; exit 1; }
+			need app ;;
 		app/*)
 			# The runner's file system ignores case, so App/Sources/RemoteKit/N.swift is checked out into
 			# app/Sources/RemoteKit and built: the folders the other two jobs read or build are matched here in any
