@@ -93,6 +93,10 @@ decide "docs and changelog" $PR "false false false false" "" "put docs/a.md; put
 # The one doc a macOS job reads: scripts/test-test-copy, in App (build), reads docs/development.md (#1034's security
 # read). Another doc runs none of them.
 decide "the doc scripts/test-test-copy reads" $PR "false false true false" "" "put docs/development.md"
+# In another letter case it is the same file on a runner's disk, and runs the App job as it does there. A folder in
+# another case is on no list, so every macOS job runs: as before, it errs towards running.
+decide "that doc in another case" $PR "false false true false" "" "put docs/Development.md"
+decide "that doc in a folder in another case" $PR "false true true true" "" "put DOCS/development.md"
 decide "another doc" $PR "false false false false" "" "put docs/iphone.md"
 decide "the doc scripts/test-test-copy reads and a phone file" $PR "true false true false" "" "put docs/development.md; put iphone/Sources/App.swift"
 decide "the transcript page" $PR "true false true false" "" "put app/Web/transcript/transcript.js"

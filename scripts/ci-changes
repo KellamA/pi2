@@ -122,8 +122,13 @@ else
 		case $file in
 		# The App job's step "Check what scripts/test-copy refuses" runs scripts/test-test-copy, which reads this page
 		# (lines 513 and 526) and fails when a section of the app's settings or agent enums is not named there (#768).
-		# No other macOS job reads a doc.
-		docs/development.md) need app ;;
+		# No other macOS job reads a doc. Its name in any letter case, as the phone's list is matched: a runner's disk
+		# need not tell docs/Development.md from it. The folder is matched as written, so a docs/ in another case is on
+		# no list at all and runs every macOS job, erring towards running.
+		docs/*)
+			shopt -s nocasematch
+			case $file in docs/development.md) need app ;; esac
+			shopt -u nocasematch ;;
 		# Read by no macOS job but the page above. A file one of them starts reading comes off this list. Unchanged
 		# from before #1034, except docs/development.md.
 		docs/* | README.md | CONTRIBUTING.md | CHANGELOG.md | SECURITY.md | CLAUDE.md) ;;
