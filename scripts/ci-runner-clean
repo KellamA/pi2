@@ -273,8 +273,13 @@ clean_checkout() {
 # ---- Keychain items under a test's service.
 
 delete_keychain_items() {
-	local services service count tries
-	services=$("$security" dump-keychain 2>/dev/null |
+	local dump status services service count tries
+	# A failure here used to look like "nothing there". It is said in one line, with the status and nothing it printed,
+	# which can be a listing of every item in that keychain.
+	dump=$("$security" dump-keychain 2>/dev/null)
+	status=$?
+	[[ $status == 0 ]] || said "could not read which test Keychain items are there: security dump-keychain exited $status"
+	services=$(printf '%s\n' "$dump" |
 		sed -n 's/^[[:space:]]*"svce"<blob>="\(dev\.pi2\.credentials\.[^"][^"]*\)"[[:space:]]*$/\1/p' | sort -u)
 	[[ -n $services ]] || return 0
 	while IFS= read -r service; do

@@ -107,6 +107,9 @@ decide "this script" $PR "true true false" "" "printf '# changed\n' >>scripts/ci
 decide "this script's test" $PR "false true false" "" "put scripts/test-ci-changes"
 decide "ci.yml" $PR "true true false" "" "put .github/workflows/ci.yml"
 decide "release.yml" $PR "false true false" "" "put .github/workflows/release.yml"
+# The owner's dispatch-only qualification of the mini (#993): as release.yml, a change to it runs the macOS jobs, and
+# neither the phone's job nor the relay's, which read nothing of it.
+decide "mini-qualify.yml" $PR "false true false" "" "put .github/workflows/mini-qualify.yml"
 decide "the engine" $PR "false true false" "" "put engine/src/engine.ts"
 decide "the relay" $PR "false false true" "" "put relay/src/index.ts"
 decide ".gitattributes" $PR "true true false" "" "put .gitattributes"
