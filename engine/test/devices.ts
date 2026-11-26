@@ -2592,10 +2592,13 @@ try {
 		// The same in fields the devices' log's summary reads (#940's security read): a refused request is summarized by its
 		// method alone, so nothing cleans, masks or splits the title or the path first. Each field keeps the bound its fault
 		// needs: two texts for the path, which the summary masks whole (742 MB and 836 MB in two fault runs of #1030), and one
-		// text for the title, which origin/main held it to. The title's own fault is small in memory — 19 MB when only its
-		// summary is made, since the log clips that before masking — though it takes 2078 ms where the table's refusal took
-		// 227, which the time assertion below catches. It takes sixteen rounds because its reading moves by a whole text in a
-		// round: the mean of eight landed on 35 MB in four runs of five, half of its bound.
+		// text for the title, which origin/main held it to. The title's own fault is small in this measure but not absent:
+		// each round builds the summary from the whole 66 MiB title, unhidden and masked before the log clips it to 200
+		// characters, then drops it, and the pages the collector frees make the next round's copy cheap — the mean reads what
+		// the process kept, 19 MB when only a title's summary is made, 70 and 87 MB when the path's fault ran before it in
+		// the same run. What it does not keep it pays for in time: 2078 ms where the table's refusal took 227, and that time
+		// assertion below, not the memory one, is what catches this fault. It takes sixteen rounds because its reading moves
+		// by a whole text in a round: the mean of eight landed on 35 MB in four runs of five, half of its bound.
 		const { id: renamed } = (await ask("conversation.create", { model: demo })).result;
 		const reads: (Awaited<ReturnType<typeof againstTable>> & { what: string; method: string; rounds: number; texts: number })[] = [];
 		for (const [what, method, params, rounds, texts] of [
