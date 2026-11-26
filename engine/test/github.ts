@@ -376,6 +376,23 @@ try {
 	assert.match((await client.call("github.diff", { projectId, number: 3 })).diff, /^diff --git/);
 	step("a reviewing agent's finding is attached; Send back reaches the conversation that opened it; merging asks while the switch is off, is refused, then merges");
 
+	// ---- A long diff comes back whole through github.diff, and one over the engine's 2 MB comes back cut (#977)
+	const hunk = (i: number) => `diff --git a/file${i}.txt b/file${i}.txt\n--- a/file${i}.txt\n+++ b/file${i}.txt\n@@ -1 +1 @@\n-old line ${i}\n+new line ${i}\n`;
+	const longDiff = Array.from({ length: 3_000 }, (_, i) => hunk(i)).join("") + "last line of the long diff\n";
+	assert.ok(Buffer.byteLength(longDiff) > 300_000 && Buffer.byteLength(longDiff) < 400_000);
+	changeStandIn((whole) => void (whole.repos["example/widgets"].diff = longDiff));
+	const long = (await client.call("github.diff", { projectId, number: 3 })).diff;
+	assert.equal(long.length, longDiff.length, "the diff came back whole");
+	assert.ok(long.endsWith("last line of the long diff\n"), "to its last line");
+	const bigDiff = Array.from({ length: 36_000 }, (_, i) => hunk(i)).join("");
+	assert.ok(Buffer.byteLength(bigDiff) > 2 * 1024 * 1024);
+	changeStandIn((whole) => void (whole.repos["example/widgets"].diff = bigDiff));
+	const cut = (await client.call("github.diff", { projectId, number: 3 })).diff;
+	assert.ok(cut.startsWith(bigDiff.slice(0, 2 * 1024 * 1024)), "cut at the engine's limit");
+	assert.match(cut, /\n\[pi² cut the diff here: it is longer than 2 MB\. gh pr diff 3 --repo example\/widgets shows all of it\.\]$/);
+	changeStandIn((whole) => delete whole.repos["example/widgets"].diff);
+	step("a diff of a few hundred KB comes back whole through github.diff, and one over 2 MB comes back cut with the engine's line");
+
 	// ---- Every command names the repository
 	for (const { args } of calls()) {
 		if (args[0] === "repo" && args[1] === "view") assert.match(args[2]!, /^example\/(widgets|missing)$/, args.join(" "));

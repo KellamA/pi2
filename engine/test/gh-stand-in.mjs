@@ -111,11 +111,9 @@ const repoName = Object.keys(state0.repos).find((name) => name.toLowerCase() ===
 const now = () => new Date().toISOString();
 const urlOf = (name, kind, number) => `https://github.com/${name}/${kind}/${number}`;
 const pick = (object, fields) => (fields ? Object.fromEntries(String(fields).split(",").map((field) => [field, object[field] ?? null])) : object);
-const printJson = (value) => {
-	const text = `${JSON.stringify(value)}\n`;
-	const bytes = Buffer.from(text);
-	wait(bytes.length);
-	// Written to its end before the process exits: a long listing to a pipe would otherwise be cut short.
+// Written to its end before the process exits: a long answer to a pipe would otherwise be cut short, for the process
+// leaves with only what the pipe had taken written (#977).
+const writeAll = (bytes) => {
 	for (let at = 0; at < bytes.length; ) {
 		try {
 			at += writeSync(1, bytes, at);
@@ -124,6 +122,11 @@ const printJson = (value) => {
 			sleep(1);
 		}
 	}
+};
+const printJson = (value) => {
+	const bytes = Buffer.from(`${JSON.stringify(value)}\n`);
+	wait(bytes.length);
+	writeAll(bytes);
 };
 function repoIn(state) {
 	const repo = state.repos[repoName];
@@ -321,10 +324,13 @@ switch (key) {
 		});
 		done();
 		break;
-	case "pr diff":
-		process.stdout.write(peek().repos[repoName]?.diff ?? `diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+new\n`);
+	case "pr diff": {
+		const bytes = Buffer.from(peek().repos[repoName]?.diff ?? `diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+new\n`);
+		wait(bytes.length);
+		writeAll(bytes);
 		process.exit(0);
 		break;
+	}
 	default:
 		fail(`unknown command "${key}" for the stand-in gh`);
 }
