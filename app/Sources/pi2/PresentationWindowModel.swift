@@ -271,13 +271,49 @@ final class PresentationWindowModel {
     /// Always false without the switch (`PresentedPagePolicy.networkCanBeAllowed`): the engine's record is then not read.
     var networkAllowed: Bool { PresentedPagePolicy.networkCanBeAllowed && version?.network.allowed == true }
 
-    /// Turns the network on or off for the version shown; the record comes back changed, and the page is made again.
-    func setNetwork(_ allow: Bool) async {
-        guard let version else { return }
+    struct NetworkTarget: Equatable {
+        let ref: PresentationRef
+        let version: Int
+    }
+
+    /// The alert reads this snapshot, not the version the window may follow while it is open.
+    private(set) var networkConsent: NetworkTarget?
+
+    var networkTarget: NetworkTarget? {
+        guard PresentedPagePolicy.networkCanBeAllowed, problem == nil, pageKey != nil, let version else { return nil }
+        return NetworkTarget(ref: ref, version: version.version)
+    }
+
+    func askNetworkConsent() {
+        guard networkConsent == nil, !networkAllowed else { return }
+        networkConsent = networkTarget
+    }
+
+    func dismissNetworkConsent() {
+        networkConsent = nil
+    }
+
+    @discardableResult
+    func confirmNetworkConsent(_ target: NetworkTarget) -> Task<Void, Never>? {
+        guard networkTarget == target, !networkAllowed else { return nil }
+        return Task {
+            // The preview can follow a new version even before this task begins. Keep the confirmed target all the
+            // way through the async request; the feed is bound to this window's immutable conversation and presentation.
+            guard networkTarget == target, !networkAllowed else { return }
+            await setNetwork(true, for: target)
+        }
+    }
+
+    func turnNetworkOff() async {
+        guard let target = networkTarget else { return }
+        await setNetwork(false, for: target)
+    }
+
+    private func setNetwork(_ allow: Bool, for target: NetworkTarget) async {
         do {
-            try await feed.setNetwork(version.version, allow)
+            try await feed.setNetwork(target.version, allow)
         } catch {
-            pageProblem = error.localizedDescription
+            if networkTarget == target { pageProblem = error.localizedDescription }
         }
     }
 
@@ -391,6 +427,7 @@ final class PresentationWindowModel {
 
     /// Lets go of the page's view as the window closes: it is ended, and its place given back once its process is gone.
     func close() {
+        dismissNetworkConsent()
         dropPage()
     }
 
