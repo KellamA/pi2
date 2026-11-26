@@ -6,6 +6,24 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 What the next version will have is in [changelog.d](changelog.d/), a file for each entry, until a release gathers them here.
 
+## 0.8.12
+
+### Added
+- On the Mac, agents can present up to six pictures or web-page previews side by side in a conversation card, with labels and captions for comparison. Click **Expand** on the card to open the presentation in its own window and switch between items. Web pages appear as snapshots in the card and open as interactive previews in the window, with network access off by default. An agent can also ask you to pick an option or reply in your own words.
+
+### Changed
+- A paired iPhone's other texts now have bounds of their own, as its messages and answers have had since 1 MB: a task, a reason for sending back a pull request, instructions for compacting, a note for starting afresh, chat or agent instructions, work's text and a schedule's prompt at most 20,000 characters, a schedule's title 200, and the rest of a request at most 65,536 characters in all. A longer one is refused in words the phone shows, before the Mac copies or keeps any of it. The Mac's own app is not held to these bounds.
+
+### Fixed
+- When two agents took the same issue of a project's GitHub repository at once, the one that got it could be told it was held by the other, and the project's Work list named the other as holder until it let go, for good if it never posted its "Released". The earlier take now holds, as the agents are told, throughout; and a `take` is answered as taken only when the issue names its caller as holder, and is otherwise refused, naming who holds it.
+- When the engine had run out of open files just as the app answered for you (an approval, a question), the engine stopped, and with it every conversation and agent. Now that one answer is refused, the engine goes on, and the app's next answer is checked again.
+- **Start Anyway** on a card held by a project's daily spending limit (or its plan share) often did nothing the first time, and sometimes again and again: while the project's agents kept working, it had spent more since the card was made, so the start was held once more with a new reading. Now one press starts that one start, however much more was spent under the same limit that day. A limit made tighter since, another limit now passed, or a new day still holds it, and the card then says plainly that it is still held and nothing started.
+- Computer use now refuses to act on a listed control that is no longer in the window, such as a button on a tab the person switched away from. This applies to actions by control number and to point clicks and context menus that target a listed control in a throwaway test copy, with or without an approval card. The agent is told to look again. If a control named in a point-action approval does not respond through accessibility, no real click is sent in its place. A real click at a numbered control's centre uses its current position.
+- Allow Network in a Mac preview applies only to the version named in the confirmation. If the preview has moved to another version, the network stays off until you confirm again.
+
+### For contributors
+- When the owner's Mac mini is offline or disconnects, the owner can manually re-run the affected App and Engine checks on GitHub's macOS runner without pushing a new commit.
+
 ## 0.8.11
 
 ### Fixed
