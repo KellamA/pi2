@@ -1,19 +1,26 @@
 #!/bin/bash
-# Which of CI's jobs a change needs (#245, #871): the deciding step of ci.yml's first job, "Which jobs the change needs",
-# kept in a file of its own so that scripts/test-ci-changes can hold it to its cases. It decides whether a required check
-# runs or is skipped, and a skipped job reports its check as passed, so it is an owner's path (.github/CODEOWNERS).
+# Which of CI's jobs a change needs (#245, #871, #1034): the deciding step of ci.yml's first job, "Which jobs the change
+# needs", kept in a file of its own so that scripts/test-ci-changes can hold it to its cases. It decides whether a
+# required check runs or is skipped, and a skipped job reports its check as passed, so it is an owner's path
+# (.github/CODEOWNERS).
 #
 #   scripts/ci-changes <event> [<before>]
-#       In a checkout of the commit CI tests, with its first parent (fetch-depth 2). Writes macos=, relay= and iphone= to
-#       the file $GITHUB_OUTPUT names, all three once everything is decided, or none: a job whose condition reads an
-#       output that is not there runs, so if this fails, everything runs.
+#       In a checkout of the commit CI tests, with its first parent (fetch-depth 2). Writes engine=, app=, relay= and
+#       iphone= to the file $GITHUB_OUTPUT names, all four once everything is decided, or none: a job whose condition
+#       reads an output that is not there runs, so if this fails, everything runs.
 #   scripts/ci-changes phone-reads <path>...
 #       Exits 0 if every path is one the iPhone app's job is run for, 1 if any is not (scripts/test-ci-changes).
 #
+# One output per job, since each macOS job builds and reads different parts of the tree (#1034): a pull request that
+# changes the phone alone, or one engine test, used to hold a macOS runner for all three, and now holds none for a job
+# that reads no file of it. Every list below is a proof from the jobs' steps, which ci.yml has in full, and an entry
+# errs towards running: a path not on a list runs every job, and so does anything read by more than one job's steps.
+#
 # What a change makes: for a pull request, the merge commit CI tests against main as it is now (its first parent); for
 # a push, the pushed commit against its first parent, when that parent is `before`, what main was before the push. For
-# any other push, nothing is known. Both names of a moved file count. Names are read as git writes them with -z, never
-# quoted, so that a name with a quote, a backslash, a tab, a line break or a letter outside ASCII is matched as it is.
+# any other push, nothing is known, and every job runs. Both names of a moved file count. Names are read as git writes
+# them with -z, never quoted, so that a name with a quote, a backslash, a tab, a line break or a letter outside ASCII
+# is matched as it is.
 
 set -euo pipefail
 # Bytes, not a locale's letters: [:print:] below is ASCII's, and case is folded for ASCII letters only.
@@ -75,27 +82,55 @@ while IFS= read -r -d '' file; do
 done <"$names"
 [[ $iphone == true ]] || echo "Nothing the iPhone app is built from: skipping its job."
 
-# The macOS jobs run for every push, and for any pull request that changes a file not on this list, which no macOS job
-# reads. Matched as written: a name in another case is not on the list, and runs them.
+# The three macOS jobs. Each name below says which of them builds or runs what the file holds, from the steps ci.yml
+# gives them; the entries that narrow what ran before #1034 carry the reason they are safe in the code's own terms.
+engine=false
+app=false
+relay=false
+need() { # <job>...: the jobs the file in $file needs, and the log line saying so
+	local job
+	for job in "$@"; do
+		case $job in
+		engine) engine=true ;;
+		app) app=true ;;
+		relay) relay=true ;;
+		esac
+	done
+	printf 'Needs %s: %q\n' "$*" "$file"
+}
+
+# Every push runs every macOS job (#1034: whether that stays is the owner's decision), and so does a pull request
+# where what changed is not known. Any other pull request runs the jobs its files are read by.
 if [[ $event != pull_request ]]; then
 	echo "A $event: running every macOS job."
-	macos=true
+	engine=true
+	app=true
+	relay=true
+elif [[ ! -s $names ]]; then
+	echo "No file changed: running every macOS job."
+	engine=true
+	app=true
 	relay=true
 else
-	macos=false
-	relay=false
-	[[ -s $names ]] || { echo "No file changed: running every job."; macos=true; relay=true; }
 	while IFS= read -r -d '' file; do
-		# A name git would have quoted (a quote, a backslash, a control character or a byte outside ASCII) runs them, as
-		# it did when this list was matched against git's quoted names: reading the names with -z for the phone's list
-		# makes nothing skip here that ran before.
+		# A name git would have quoted (a quote, a backslash, a control character or a byte outside ASCII) runs them
+		# all: it is on no list below, and it ran them before.
 		if [[ $file == *[![:print:]]* || $file == *[\"\\]* ]]; then
-			printf "Needs the macOS jobs: %q\n" "$file"
-			macos=true
+			need engine app relay
 			continue
 		fi
 		case $file in
-		# Read by no macOS job. A file one of them starts reading comes off this list.
+		# The App job's step "Check what scripts/test-copy refuses" runs scripts/test-test-copy, which reads this page
+		# (lines 513 and 526) and fails when a section of the app's settings or agent enums is not named there (#768).
+		# No other macOS job reads a doc. Its name in any letter case, as the phone's list is matched: a runner's disk
+		# need not tell docs/Development.md from it. The folder is matched as written, so a docs/ in another case is on
+		# no list at all and runs every macOS job, erring towards running.
+		docs/*)
+			shopt -s nocasematch
+			case $file in docs/development.md) need app ;; esac
+			shopt -u nocasematch ;;
+		# Read by no macOS job but the page above. A file one of them starts reading comes off this list. Unchanged
+		# from before #1034, except docs/development.md.
 		docs/* | README.md | CONTRIBUTING.md | CHANGELOG.md | SECURITY.md | CLAUDE.md) ;;
 		# Changelog entries: Transcript page (tests) checks them on Linux.
 		changelog.d/*) ;;
@@ -104,24 +139,88 @@ else
 		scripts/test-auto-merge | scripts/auto-merge | scripts/rerun-if-no-runner | scripts/test-docs-lists) ;;
 		# Checked by Scripts (tests) with stand-ins; the iPhone app's job, decided above, runs the script itself.
 		scripts/iphone-sim | scripts/test-iphone-sim) ;;
-		# The relay: checked by the Linux job Relay (tests), and by the protocol test, which runs on macOS for it.
-		relay/*) relay=true ;;
-		# Copied into the app's Info.plist by app/build.sh, which drops white space: checked here for what could
-		# break that. A failure here writes no output, so every job runs.
+		# The relay: checked by the Linux job Relay (tests), and here by the protocol test, which starts the relay
+		# itself and builds RemoteKit against it. No other macOS job reads relay/.
+		relay/*) need relay ;;
+		# How files are checked out: every job reads what it writes. A .gitattributes in docs/, changelog.d/ or
+		# relay/ is matched by those lists first, as it always was.
+		.gitattributes | */.gitattributes) need engine app relay ;;
+
+		# ---- The iPhone app alone (#1034). Its own job, decided above by phone_reads, is the only one that builds
+		# iphone/ or reads its tests: no macOS job's steps name iphone/, but the one line below.
+		# The engine checks a phone's longest line against its own, reading Attach.swift (engine/test/devices.ts), so
+		# that file runs every macOS job.
+		iphone/Sources/Connection/Attach.swift) need engine app relay ;;
+		iphone/*) ;;
+
+		# ---- The engine's tests alone (#1034). The Engine job runs them (`npm run test:macos`), and neither other
+		# macOS job reads engine/test/: the App job and the protocol test run engine/src/main.ts, and install the
+		# engine's packages, but no test file.
+		engine/test/*) need engine ;;
+		# The rest of the engine: the Engine job type-checks and tests it; the App job runs it
+		# (pi2-remote-helper-check --engine ../engine/src/main.ts) and build.sh copies engine/src, package.json,
+		# package-lock.json and runs engine/scripts/patch-dependencies.ts into the release bundle; the protocol test
+		# runs it through the same check. A name beside these lists runs every job as well.
+		engine/*) need engine app relay ;;
+
+		# ---- The Mac app. App (build) builds and checks everything under app/ (`swift build`, every pi2-*-check,
+		# build.sh), so it runs for any of it; the other two jobs build or read only these parts.
+		# Read by the App job's steps: app/build.sh:98 puts it in the app's Info.plist and app/check-release-build.mts:88
+		# checks a build against it. build.sh drops every space or tab (`tr -d '[:space:]'`) and the check trims the
+		# ends (`.trim()`), so only one version with white space at the ends alone is read the same by both. Anything
+		# else is not a version: it writes no output, so every job runs. A version needs App (build), which builds and
+		# checks with it, and no other macOS job reads it.
 		app/VERSION)
 			version=$(tr -d '[:space:]' <app/VERSION)
-			[[ $version =~ ^[0-9A-Za-z.+-]+$ ]] || { echo "::error::app/VERSION is not a version: $version"; exit 1; } ;;
-		# Everything else, this script and its test among them: it decides which jobs run, so a change to it runs them.
-		*)
-			printf "Needs the macOS jobs: %q\n" "$file"
-			macos=true ;;
+			[[ $version =~ ^[0-9A-Za-z.+-]+$ ]] || { echo "::error::app/VERSION is not a version: $version"; exit 1; }
+			trimmed=$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' app/VERSION)
+			[[ $trimmed == "$version" ]] || { echo "::error::app/VERSION is not a version: $version"; exit 1; }
+			need app ;;
+		app/*)
+			# The runner's file system ignores case, so App/Sources/RemoteKit/N.swift is checked out into
+			# app/Sources/RemoteKit and built: the folders the other two jobs read or build are matched here in any
+			# letter case. A name in another case on none of them is matched as written below.
+			shopt -s nocasematch
+			case $file in
+			# The engine's tests read three files of these two: Remote.swift and EngineLink.swift for a phone's
+			# longest line (engine/test/devices.ts) and RemoteKit/Frames.swift for the same, and the protocol test
+			# builds both folders.
+			app/Sources/RemoteKit/* | app/Sources/pi2-remote/*)
+				shopt -u nocasematch
+				need engine app relay ;;
+			# What the protocol test builds besides them: `swift build --product pi2-remote-helper`,
+			# `--product pi2-remote-helper-check` and `--product pi2-relay-check`, all in app/.
+			app/Sources/pi2-remote-helper/* | app/Sources/pi2-remote-helper-check/* | app/Sources/pi2-relay-check/*)
+				shopt -u nocasematch
+				need app relay ;;
+			# The package's manifest and its pins decide what every job builds from app/ (SwiftPM, its protected
+			# targets' check, and build.sh), and the phone's job reads them too.
+			app/Package.swift | app/Package@swift-*.swift | app/Package.resolved)
+				shopt -u nocasematch
+				need engine app relay ;;
+			*)
+				shopt -u nocasematch
+				# Matched as written from here: the rest of app/ needs the App job alone, since no other macOS
+				# job's steps name another folder there.
+				case $file in
+				app/*) need app ;;
+				*) need engine app relay ;;
+				esac ;;
+			esac ;;
+
+		# Everything else — a root file, .github/, this script, scripts/test-copy, a name not understood — runs every
+		# job: they decide or check which jobs run, or no list has said what they are.
+		*) need engine app relay ;;
 		esac
 	done <"$names"
-	[[ $macos == true ]] || echo "Only files no macOS job reads: skipping the engine's tests and the app's build."
+	[[ $engine == true ]] || echo "Nothing the Engine job reads: skipping its type-check and tests."
+	[[ $app == true ]] || echo "Nothing the App job reads: skipping its build."
+	[[ $relay == true ]] || echo "Nothing the protocol test reads: skipping it."
 fi
 
 {
-	echo "macos=$macos"
+	echo "engine=$engine"
+	echo "app=$app"
 	echo "relay=$relay"
 	echo "iphone=$iphone"
 } >>"$GITHUB_OUTPUT"
