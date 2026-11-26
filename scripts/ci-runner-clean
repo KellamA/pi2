@@ -32,12 +32,14 @@
 # of its own, where the account's login keychain is locked and may not be asked to open, so the Engine's tests have
 # nothing to write their dummy items to. keychain-start records the present default keychain and the present user
 # search list in $RUNNER_TEMP/pi2-job-keychain, makes $RUNNER_TEMP/pi2-job-<run>-<attempt>.keychain-db with a password
-# made here and thrown away with it, sets it to no timeout and no lock on sleep, unlocks it, puts it first in the user's
-# search list and makes it the default. keychain-end puts the recorded default and search list back, deletes the job's
-# keychain and removes the record, and is safe when keychain-start never ran or half ran. Neither touches the account's
-# login keychain: nothing there is unlocked, deleted or changed, and no -A or -T is used. A keychain's password can do no
-# more than open the keychain, and this one holds test files' dummy items and lives for one job, so it needs no secret;
-# it does pass on security's command line, where another process of the same machine could see it for a moment (ps -E).
+# made here and thrown away with it, gives it no timeout and no lock on sleep (set-keychain-settings with no -t and no
+# -l: -t sets a lock interval, and leaving it out is what Apple's security spells as no timeout), unlocks it, puts it
+# first in the user's search list and makes it the default. keychain-end puts the recorded default and search list back,
+# deletes the job's keychain and removes the record, and is safe when keychain-start never ran or half ran. Neither
+# touches the account's login keychain: nothing there is unlocked, deleted or changed, and no -A or -T is used. A
+# keychain's password can do no more than open the keychain, and this one holds test files' dummy items and lives for
+# one job, so it needs no secret; it does pass on security's command line, where another process of the same machine
+# could see it for a moment (ps -E).
 # Both modes print one line a step with its exit status, and nothing else: no path, never the password, and nothing
 # `security` said.
 #
@@ -446,17 +448,34 @@ keychain_record_read() {
 	return 0
 }
 
-# What the job replaces, unless it is already recorded: a job started twice keeps the record of the first.
+# The job's own keychain, and only that one: a name of ours, directly in the job's temporary folder. The record is a
+# file any step of the job can write, so nothing else from it is acted on, and no other keychain is ever deleted.
+ours() {
+	case ${1##*/} in pi2-job-*.keychain-db) ;; *) return 1 ;; esac
+	[ "$(real "$(dirname -- "$1")")" = "$temp" ]
+}
+
+# What the job replaces, unless it is already recorded: a job started twice keeps the record of the first. Both reads
+# have to work, and to answer with a path: a read that failed is not "nothing to put back", and a record saying so
+# would leave the default naming a keychain the job then deletes. `security` can also answer in words rather than with
+# a path ("No default keychain"), which opens nothing either.
 keychain_capture() {
+	local path
 	[ ! -f "$record" ] || return 0
 	keychain_default=
 	keychain_list=()
-	keychain_answer default-keychain && keychain_default=$answer
-	if keychain_answer list-keychains -d user; then
-		read_paths "$answer"
-		keychain_list=(${paths[@]+"${paths[@]}"})
-	fi
-	keychain_record_write
+	keychain_answer default-keychain && [[ $answer == /* ]] || return 1
+	keychain_default=$answer
+	keychain_answer list-keychains -d user || return 1
+	read_paths "$answer"
+	for path in ${paths[@]+"${paths[@]}"}; do
+		[[ $path == /* ]] || return 1
+		keychain_list+=("$path")
+	done
+	keychain_record_write || {
+		rm -f -- "$record"
+		return 1
+	}
 }
 
 # Puts the recorded default and search list back and deletes the job's keychain: what keychain-end does, and what a
@@ -467,6 +486,11 @@ keychain_put_back() {
 		return 0
 	fi
 	[ -z "$record_keychain" ] || job_keychain=$record_keychain
+	if [ -n "$job_keychain" ] && ! ours "$job_keychain"; then
+		said "$phase: the record names a keychain that is not this job's: not deleting it"
+		failed=1
+		job_keychain=
+	fi
 	if [ -n "$keychain_default" ]; then
 		kc "put the default keychain back" "$security" default-keychain -d user -s "$keychain_default"
 	fi
@@ -494,7 +518,15 @@ keychain_start() {
 	[ -n "${GITHUB_RUN_ID:-}" ] && [ -n "${GITHUB_RUN_ATTEMPT:-}" ] ||
 		refuse "GITHUB_RUN_ID or GITHUB_RUN_ATTEMPT is not set: the job's keychain has no name of its own"
 	job_keychain="$temp/pi2-job-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.keychain-db"
-	keychain_record_read && [ -n "$record_keychain" ] && job_keychain=$record_keychain
+	keychain_record_read
+	if [ -n "$record_keychain" ]; then
+		if ! ours "$record_keychain"; then
+			said "keychain-start: the record names a keychain that is not this job's: not deleting it"
+			failed=1
+			return 1
+		fi
+		job_keychain=$record_keychain
+	fi
 	if keychain_capture; then
 		said "keychain-start: record the default and the search list: exit 0"
 	else
@@ -518,7 +550,7 @@ keychain_start() {
 		keychain_put_back
 		return 1
 	}
-	kc "set no timeout and no lock on sleep" "$security" set-keychain-settings -t 0 "$job_keychain" || {
+	kc "set no timeout and no lock on sleep" "$security" set-keychain-settings "$job_keychain" || {
 		keychain_put_back
 		return 1
 	}

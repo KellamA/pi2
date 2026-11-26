@@ -75,6 +75,8 @@ default-keychain)
 			exit 0
 		fi
 	fi
+	# With default-fails in the test's folder, as a read the session may not make.
+	[ ! -f "$dir/default-fails" ] || { echo "security: interaction not allowed." >&2; exit 36; }
 	[ -f "$state/default-keychain" ] || { echo "security: No default keychain." >&2; exit 1; }
 	printf '    "%s"\n' "$(cat "$state/default-keychain")"
 	;;
@@ -100,9 +102,10 @@ create-keychain)
 	printf '%s\n' "$3" >"$state/password"
 	;;
 set-keychain-settings)
-	# No timeout (0) and no -l: the job's keychain must not lock while its job runs.
-	[ "${2:-}" = -t ] && [ "${3:-}" = 0 ] || exit 2
-	[ -e "${4:-}" ] || exit 44
+	# The keychain and nothing else: leaving -t out is what Apple's `security` spells as no timeout (SecurityTool's
+	# keychain_set_settings.c: -t implies a lock interval, no -t means none), and no -l is no lock when the system sleeps.
+	[ $# = 2 ] || exit 2
+	[ -e "${2:-}" ] || exit 44
 	;;
 unlock-keychain)
 	[ "${2:-}" = -p ] || exit 2
@@ -440,7 +443,7 @@ expect "makes the job's keychain" test -f "$jobkey"
 expect "makes it the default" test "$(cat "$T/state/default-keychain")" = "$jobkey"
 expect "puts it first in the search list" test "$(sed -n 1p "$T/state/user-list")" = "$jobkey"
 expect "keeps the user's own keychain after it" test "$(sed -n 2p "$T/state/user-list")" = "$home/Library/Keychains/login.keychain-db"
-expect "sets it to no timeout and no lock on sleep" grep -qx "set-keychain-settings -t 0 $jobkey" "$log/security"
+expect "sets it to no timeout and no lock on sleep" grep -qx "set-keychain-settings $jobkey" "$log/security"
 expect "unlocks it with the password it made" grep -qx "unlock-keychain -p $password $jobkey" "$log/security"
 expect "prints no path" bash -c '! grep -q / <<<"$1"' _ "$out"
 expect "never prints the password" bash -c '! grep -qF -- "$2" <<<"$1"' _ "$out" "$password"
@@ -461,6 +464,35 @@ expect "never prints the password at the end" bash -c '! grep -qF -- "$2" <<<"$1
 out=$(env_for bash "$script" keychain-end 2>&1)
 expect "a keychain-end with no record exits 0" test $? = 0
 expect "and asks security nothing" test ! -s "$log/security"
+
+# A keychain it cannot read is not one with nothing to put back: keychain-start fails, makes nothing and records
+# nothing, and a keychain-end after it does nothing.
+mkdir -p "$home/Library/Keychains"
+printf '%s\n' "$home/Library/Keychains/login.keychain-db" >"$T/state/default-keychain"
+printf '%s\n' "$home/Library/Keychains/login.keychain-db" >"$T/state/user-list"
+touch "$T/default-fails"
+: >"$log/security"
+out=$(env_for bash "$script" keychain-start 2>&1)
+code=$?
+echo "$out" | sed 's/^/  | /'
+expect "a keychain-start whose default read fails exits 1" test "$code" = 1
+expect "makes no keychain when the default cannot be read" test ! -e "$jobkey"
+expect "leaves no record when the default cannot be read" test ! -e "$temp/pi2-job-keychain"
+expect "prints no path when the default cannot be read" bash -c '! grep -q / <<<"$1"' _ "$out"
+rm -f "$T/default-fails"
+: >"$log/security"
+out=$(env_for bash "$script" keychain-end 2>&1)
+expect "a keychain-end after a failed start exits 0" test $? = 0
+expect "and asks security nothing" test ! -s "$log/security"
+
+# `security` can answer in words rather than with a path: not a keychain to record either.
+printf '%s\n' "No default keychain" >"$T/state/default-keychain"
+out=$(env_for bash "$script" keychain-start 2>&1)
+code=$?
+expect "a keychain-start whose default is not a path exits 1" test "$code" = 1
+expect "and makes no keychain" test ! -e "$jobkey"
+expect "and leaves no record" test ! -e "$temp/pi2-job-keychain"
+printf '%s\n' "$home/Library/Keychains/login.keychain-db" >"$T/state/default-keychain"
 
 : >"$log/security"
 touch "$T/create-fails"
@@ -490,6 +522,23 @@ expect "takes the job's keychain out of the search list" test "$(cat "$T/state/u
 expect "deletes the keychain a killed job left" test ! -e "$temp/pi2-job-1-1.keychain-db"
 expect "deletes the record a killed job left" test ! -e "$temp/pi2-job-keychain"
 expect "says it repaired the keychain" grep -qF "repaired the keychain a killed job left" <<<"$out"
+
+# The record is a file any step of the job can place, so it names only a keychain of the job's own: one naming the
+# login keychain is not given to delete-keychain, and the default and the search list are still put back.
+printf 'default\t%s\nlist\t%s\nkeychain\t%s\n' \
+	"$home/Library/Keychains/login.keychain-db" "$home/Library/Keychains/login.keychain-db" \
+	"$home/Library/Keychains/login.keychain-db" >"$temp/pi2-job-keychain"
+: >"$log/security"
+out=$(env_for bash "$script" keychain-end 2>&1)
+code=$?
+echo "$out" | sed 's/^/  | /'
+expect "a keychain-end whose record names another keychain exits 1" test "$code" = 1
+expect "never gives that path to delete-keychain" bash -c '! grep -q delete-keychain "$1"' _ "$log/security"
+expect "still puts the default back" grep -qxF "default-keychain -d user -s $home/Library/Keychains/login.keychain-db" "$log/security"
+expect "still puts the search list back" grep -qxF "list-keychains -d user -s $home/Library/Keychains/login.keychain-db" "$log/security"
+expect "removes the record it did not act on" test ! -e "$temp/pi2-job-keychain"
+expect "says the record's keychain is not the job's" grep -qF "not this job's" <<<"$out"
+expect "prints no path" bash -c '! grep -q / <<<"$1"' _ "$out"
 
 # ---- A simulator that will not go fails the run, and its record is kept.
 
