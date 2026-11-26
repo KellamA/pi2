@@ -528,7 +528,7 @@ struct DevicesSettings: View {
             Button("Revoke", role: .destructive) { revoke() }
             Button("Cancel", role: .cancel) { revoking = nil }
         } message: {
-            Text("It can no longer reach this Mac, at once: its keys are forgotten, its connection is closed, and pi²’s relay forgets it, its mailbox and its notifications. The iPhone is told when it next reaches this Mac, and wipes what it kept. Its log stays here for 90 days.")
+            Text("It can no longer reach this Mac, at once: its keys are forgotten, its connection is closed, and pi²’s relay forgets it, its mailbox and its notifications. A connected iPhone is told at once and wipes what it kept; one that is not is told nothing, and cannot reach this Mac again. Its log stays here for 90 days.")
         }
         .confirmationDialog(
             store.active.isEmpty ? "Start again at this relay?" : "Unpair every iPhone and start again at this relay?",
