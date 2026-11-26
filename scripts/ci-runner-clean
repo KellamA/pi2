@@ -3,7 +3,7 @@
 # runners are new at each job, and the mini is not. ci.yml runs it after the checkout and, whatever happened, at the end
 # of each macOS job that runs there, and only there (runner.environment == 'self-hosted').
 #
-#   scripts/ci-runner-clean start | end
+#   scripts/ci-runner-clean start | end | keychain-start | keychain-end
 #
 # It removes what the macOS jobs leave behind, and nothing else, as the runner's own standard user, never with sudo:
 #   - every process of this user whose command line names the runner's work folder (the checkout, its builds, the Node
@@ -24,15 +24,32 @@
 # Safe to run twice, and where nothing is left. It prints what it removed, the system, Xcode and Swift in use, and the
 # disk's free space.
 #
+# start also repairs what a job the runner killed left behind: a default keychain, or an entry of the user's search
+# list, that names a job's own keychain (pi2-job-*.keychain-db) or a file that is gone is put back, and the job's
+# keychain files in the job's temporary folder are deleted. It says one line when it repaired something.
+#
+# keychain-start and keychain-end give a job a keychain of its own (#993). A job on the mini runs in a security session
+# of its own, where the account's login keychain is locked and may not be asked to open, so the Engine's tests have
+# nothing to write their dummy items to. keychain-start records the present default keychain and the present user
+# search list in $RUNNER_TEMP/pi2-job-keychain, makes $RUNNER_TEMP/pi2-job-<run>-<attempt>.keychain-db with a password
+# made here and thrown away with it, sets it to no timeout and no lock on sleep, unlocks it, puts it first in the user's
+# search list and makes it the default. keychain-end puts the recorded default and search list back, deletes the job's
+# keychain and removes the record, and is safe when keychain-start never ran or half ran. Neither touches the account's
+# login keychain: nothing there is unlocked, deleted or changed, and no -A or -T is used. A keychain's password can do no
+# more than open the keychain, and this one holds test files' dummy items and lives for one job, so it needs no secret;
+# it does pass on security's command line, where another process of the same machine could see it for a moment (ps -E).
+# Both modes print one line a step with its exit status, and nothing else: no path, never the password, and nothing
+# `security` said.
+#
 # It refuses, before it changes anything, unless it is on that runner: RUNNER_ENVIRONMENT=self-hosted, the runner's work
 # folder (_work, with the runner's own settings file .runner beside it) holding RUNNER_WORKSPACE, RUNNER_TEMP and
 # GITHUB_WORKSPACE, not as root or a member of admin (an administrator's account; the runner's user is standard; in a
 # test this is not checked, since a developer's own account is an administrator's), and no sign of an installed pi² (its data folder or its login item in the account's
 # home, /Applications/pi².app). A Mac where pi² is in use is never cleaned.
 #
-# CI_RUNNER_CLEAN_TEST=<folder> is for scripts/test-ci-runner-clean alone: security, defaults and xcrun are then the
-# stand-ins in <folder>/bin and nothing else, /tmp is <folder>/tmp, and HOME must be inside <folder>, so a test on a
-# Mac in use reaches none of its Keychain, preferences, simulators or /tmp.
+# CI_RUNNER_CLEAN_TEST=<folder> is for scripts/test-ci-runner-clean alone: security, defaults, openssl and xcrun are
+# then the stand-ins in <folder>/bin and nothing else, /tmp is <folder>/tmp, and HOME must be inside <folder>, so a test
+# on a Mac in use reaches none of its Keychain, preferences, simulators or /tmp.
 #
 # Exits 0 once everything is removed, 1 if something could not be, 2 when it refuses.
 
@@ -47,13 +64,18 @@ refuse() {
 }
 
 usage() {
-	echo "usage: scripts/ci-runner-clean start | end" >&2
+	echo "usage: scripts/ci-runner-clean start | end | keychain-start | keychain-end" >&2
 	exit 2
 }
 
 (($# == 1)) || usage
 phase=$1
-case $phase in start | end) ;; *) usage ;; esac
+keychain=0
+case $phase in
+start | end) ;;
+keychain-start | keychain-end) keychain=1 ;;
+*) usage ;;
+esac
 
 # ---- Where it is, checked before anything is touched.
 
@@ -86,12 +108,14 @@ if [[ -n ${CI_RUNNER_CLEAN_TEST:-} ]]; then
 	[[ $(real "$HOME") == "$test_folder"/* ]] || refuse "in a test, HOME is inside the test's folder"
 	security="$test_folder/bin/security"
 	defaults="$test_folder/bin/defaults"
+	openssl="$test_folder/bin/openssl"
 	xcrun="$test_folder/bin/xcrun"
 	shared_tmp="$test_folder/tmp"
 	homes=("$HOME")
 else
 	security=/usr/bin/security
 	defaults=/usr/bin/defaults
+	openssl=/usr/bin/openssl
 	xcrun=/usr/bin/xcrun
 	shared_tmp=/tmp
 	id -Gn 2>/dev/null | tr ' ' '\n' | grep -qx admin &&
@@ -346,10 +370,235 @@ remove_temporary() {
 	fi
 }
 
+# ---- The job's own keychain (keychain-start, keychain-end), and what a killed job left of one.
+
+login_keychain="$HOME/Library/Keychains/login.keychain-db"
+# The record of what the job's keychain replaced: one field a line, a tab, then a path (a path holds no tab).
+record="$temp/pi2-job-keychain"
+job_keychain=
+record_keychain=
+keychain_default=
+keychain_list=()
+answer=
+paths=()
+
+# What `security` answered, one path a line, into $answer: a failure is the return status, and nothing it said is kept.
+keychain_answer() {
+	local raw line
+	answer=
+	raw=$("$security" "$@" 2>/dev/null) || return 1
+	while IFS= read -r line; do
+		line=${line#"${line%%[![:space:]]*}"}
+		line=${line%"${line##*[![:space:]]}"}
+		line=${line#\"}
+		line=${line%\"}
+		[ -n "$line" ] || continue
+		answer="${answer:+$answer$'\n'}$line"
+	done <<<"$raw"
+	return 0
+}
+
+# A newline separated list of paths, into $paths.
+read_paths() {
+	local line
+	paths=()
+	while IFS= read -r line; do
+		[ -z "$line" ] || paths+=("$line")
+	done <<<"$1"
+}
+
+# One step of the job's keychain: one line with its status, and the script's failure if it did not work. Nothing the
+# command said is kept: it can name a path, and it can say what a keychain holds.
+kc() {
+	local what=$1 status
+	shift
+	"$@" >/dev/null 2>&1
+	status=$?
+	said "$phase: $what: exit $status"
+	((status == 0)) || failed=1
+	return "$status"
+}
+
+keychain_record_write() {
+	local path
+	{
+		[ -z "$keychain_default" ] || printf 'default\t%s\n' "$keychain_default"
+		for path in ${keychain_list[@]+"${keychain_list[@]}"}; do
+			printf 'list\t%s\n' "$path"
+		done
+		[ -z "$job_keychain" ] || printf 'keychain\t%s\n' "$job_keychain"
+	} >"$record"
+}
+
+keychain_record_read() {
+	local kind path
+	keychain_default=
+	keychain_list=()
+	record_keychain=
+	[ -f "$record" ] || return 1
+	while IFS=$'\t' read -r kind path; do
+		case $kind in
+		default) keychain_default=$path ;;
+		list) keychain_list+=("$path") ;;
+		keychain) record_keychain=$path ;;
+		esac
+	done <"$record"
+	return 0
+}
+
+# What the job replaces, unless it is already recorded: a job started twice keeps the record of the first.
+keychain_capture() {
+	[ ! -f "$record" ] || return 0
+	keychain_default=
+	keychain_list=()
+	keychain_answer default-keychain && keychain_default=$answer
+	if keychain_answer list-keychains -d user; then
+		read_paths "$answer"
+		keychain_list=(${paths[@]+"${paths[@]}"})
+	fi
+	keychain_record_write
+}
+
+# Puts the recorded default and search list back and deletes the job's keychain: what keychain-end does, and what a
+# failed keychain-start does to undo itself. Safe with no record, and with nothing but the record done.
+keychain_put_back() {
+	if ! keychain_record_read; then
+		said "$phase: nothing to put back: no record of what the job's keychain replaced"
+		return 0
+	fi
+	[ -z "$record_keychain" ] || job_keychain=$record_keychain
+	if [ -n "$keychain_default" ]; then
+		kc "put the default keychain back" "$security" default-keychain -d user -s "$keychain_default"
+	fi
+	if ((${#keychain_list[@]})); then
+		kc "put the user's search list back" "$security" list-keychains -d user -s "${keychain_list[@]}"
+	fi
+	if [ -n "$job_keychain" ]; then
+		kc "delete the job's keychain" "$security" delete-keychain "$job_keychain"
+		if [ -e "$job_keychain" ] || [ -L "$job_keychain" ]; then
+			# security left the file: it is the keychain, and rm -f takes a link as a link.
+			remove "$job_keychain" "$temp" "the job's keychain file"
+		fi
+	fi
+	if rm -f -- "$record"; then
+		said "$phase: remove the record of what the job's keychain replaced: exit 0"
+	else
+		said "$phase: remove the record of what the job's keychain replaced: exit 1"
+		failed=1
+	fi
+	return 0
+}
+
+keychain_start() {
+	local status password path search
+	[ -n "${GITHUB_RUN_ID:-}" ] && [ -n "${GITHUB_RUN_ATTEMPT:-}" ] ||
+		refuse "GITHUB_RUN_ID or GITHUB_RUN_ATTEMPT is not set: the job's keychain has no name of its own"
+	job_keychain="$temp/pi2-job-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.keychain-db"
+	keychain_record_read && [ -n "$record_keychain" ] && job_keychain=$record_keychain
+	if keychain_capture; then
+		said "keychain-start: record the default and the search list: exit 0"
+	else
+		said "keychain-start: record the default and the search list: exit 1"
+		failed=1
+		return 1
+	fi
+	# A repeat in the same job: the keychain it made before goes, and the record of what it replaced stays.
+	if [ -e "$job_keychain" ] || [ -L "$job_keychain" ]; then
+		kc "delete the earlier keychain of this job" "$security" delete-keychain "$job_keychain"
+	fi
+	password=$("$openssl" rand -hex 24 2>/dev/null)
+	status=$?
+	said "keychain-start: make a throwaway password: exit $status"
+	if [ "$status" != 0 ] || [ -z "$password" ]; then
+		failed=1
+		keychain_put_back
+		return 1
+	fi
+	kc "create the keychain" "$security" create-keychain -p "$password" "$job_keychain" || {
+		keychain_put_back
+		return 1
+	}
+	kc "set no timeout and no lock on sleep" "$security" set-keychain-settings -t 0 "$job_keychain" || {
+		keychain_put_back
+		return 1
+	}
+	kc "unlock it" "$security" unlock-keychain -p "$password" "$job_keychain" || {
+		keychain_put_back
+		return 1
+	}
+	search=("$job_keychain")
+	for path in ${keychain_list[@]+"${keychain_list[@]}"}; do
+		search+=("$path")
+	done
+	kc "put it first in the search list" "$security" list-keychains -d user -s "${search[@]}" || {
+		keychain_put_back
+		return 1
+	}
+	kc "make it the default" "$security" default-keychain -d user -s "$job_keychain" || {
+		keychain_put_back
+		return 1
+	}
+	return 0
+}
+
+# A keychain that the default, or the user's search list, names but that a job of its own left behind: one by its name,
+# or one whose file is gone. The account's own login keychain is never one.
+leftover() {
+	case ${1##*/} in pi2-job-*.keychain-db) return 0 ;; esac
+	[ "$1" = "$login_keychain" ] && return 1
+	[ -e "$1" ] || return 0
+	return 1
+}
+
+repair_keychain() {
+	local path status repaired=0 search=()
+	if keychain_answer default-keychain && [ -n "$answer" ] && leftover "$answer"; then
+		"$security" default-keychain -d user -s "$login_keychain" >/dev/null 2>&1
+		status=$?
+		said "start: set the default keychain back to the account's login keychain: exit $status"
+		((status == 0)) || failed=1
+		repaired=1
+	fi
+	if keychain_answer list-keychains -d user; then
+		read_paths "$answer"
+		for path in ${paths[@]+"${paths[@]}"}; do
+			leftover "$path" || search+=("$path")
+		done
+		if ((${#search[@]} != ${#paths[@]})); then
+			((${#search[@]})) || search=("$login_keychain")
+			"$security" list-keychains -d user -s "${search[@]}" >/dev/null 2>&1
+			status=$?
+			said "start: took the job's own keychain out of the search list: exit $status"
+			((status == 0)) || failed=1
+			repaired=1
+		fi
+	fi
+	# The keychains and the record a job did not get to remove.
+	for path in "$temp"/pi2-job-*.keychain-db "$record"; do
+		[ -e "$path" ] || [ -L "$path" ] || continue
+		remove "$path" "$temp" "what a killed job left, $(basename -- "$path")"
+		repaired=1
+	done
+	((repaired)) || return 0
+	said "start: repaired the keychain a killed job left: the account's own keychain is the default again, and the job's one is gone"
+}
+
+if ((keychain)); then
+	if [ "$phase" = keychain-start ]; then keychain_start; else keychain_put_back; fi
+	if ((failed)); then
+		echo "ci-runner-clean: $phase: the job's keychain is not as it should be (above)" >&2
+		echo "::warning title=Runner keychain::The job's own keychain could not be put in place or put back on the owner's runner: see its step's log"
+		exit 1
+	fi
+	said "$phase: done"
+	exit 0
+fi
+
 said "$phase: cleaning $work as $(id -un)"
 stop_processes
 delete_simulators
 clean_checkout
+[[ $phase != start ]] || repair_keychain
 delete_keychain_items
 remove_library
 remove_temporary

@@ -6,7 +6,8 @@
 # test's own folder (one ignores SIGTERM); two more, outside the work folder, must be left running. (A copy of sleep
 # would not do: macOS kills a copied system program as it starts.)
 # It checks what the script refuses before it changes anything, what it removes and keeps, that a second run finds
-# nothing, and that a simulator it cannot delete fails the run.
+# nothing, that a simulator it cannot delete fails the run, and that the job's own keychain (#993) is made and put back
+# without a path or its password ever being printed.
 #
 #   scripts/test-ci-runner-clean
 #
@@ -50,17 +51,68 @@ temp="$work/_temp"
 home="$T/home"
 library="$home/Library"
 log="$T/log"
-mkdir -p "$runner" "$temp" "$checkout" "$library" "$log" "$T/bin" "$T/tmp" "$T/keychain" "$T/outside" "$runner/_work-other"
+mkdir -p "$runner" "$temp" "$checkout" "$library" "$log" "$T/bin" "$T/tmp" "$T/keychain" "$T/state" "$T/outside" "$runner/_work-other"
 printf '{}\n' >"$runner/.runner"
 
 # ---- Stand-ins for the macOS tools, which log what they are asked.
 
 cat >"$T/bin/security" <<'EOF'
 #!/bin/bash
-# Items are files in keychain/, one a service, holding how many items it has.
+# Items are files in keychain/, one a service, holding how many items it has. The default keychain and the user's search
+# list are files in state/, one path a line, and the password a keychain was given is kept in state/password, so that
+# the test can read back what a run did and check that the script never prints the password.
 dir="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 printf '%s\n' "$*" >>"$dir/log/security"
+state="$dir/state"
 case $1 in
+default-keychain)
+	if [ "${2:-}" = -d ]; then
+		shift 3
+		if [ "${1:-}" = -s ]; then
+			shift
+			[ -n "${1:-}" ] || exit 2
+			printf '%s\n' "$1" >"$state/default-keychain"
+			exit 0
+		fi
+	fi
+	[ -f "$state/default-keychain" ] || { echo "security: No default keychain." >&2; exit 1; }
+	printf '    "%s"\n' "$(cat "$state/default-keychain")"
+	;;
+list-keychains)
+	if [ "${2:-}" = -d ]; then
+		shift 2
+		[ -n "${1:-}" ] && shift
+	fi
+	if [ "${1:-}" = -s ]; then
+		shift
+		: >"$state/user-list"
+		for path in "$@"; do printf '%s\n' "$path" >>"$state/user-list"; done
+		exit 0
+	fi
+	[ -f "$state/user-list" ] || exit 1
+	while IFS= read -r path; do printf '    "%s"\n' "$path"; done <"$state/user-list"
+	;;
+create-keychain)
+	# With create-fails in the test's folder, as one that cannot be made.
+	[ ! -f "$dir/create-fails" ] || { echo "security: The keychain could not be created." >&2; exit 1; }
+	[ "${2:-}" = -p ] || exit 2
+	: >"$4"
+	printf '%s\n' "$3" >"$state/password"
+	;;
+set-keychain-settings)
+	# No timeout (0) and no -l: the job's keychain must not lock while its job runs.
+	[ "${2:-}" = -t ] && [ "${3:-}" = 0 ] || exit 2
+	[ -e "${4:-}" ] || exit 44
+	;;
+unlock-keychain)
+	[ "${2:-}" = -p ] || exit 2
+	printf '%s\n' "$3" >"$state/password"
+	[ -e "${4:-}" ] || exit 44
+	;;
+delete-keychain)
+	[ -e "${2:-}" ] || { echo "security: The specified keychain could not be found." >&2; exit 44; }
+	rm -f -- "$2"
+	;;
 dump-keychain)
 	# With dump-fails in the test's folder, as a Keychain that cannot be read: a status of its own, and nothing listed.
 	[[ ! -f $dir/dump-fails ]] || { echo "security: The keychain could not be read." >&2; exit 51; }
@@ -93,7 +145,15 @@ printf '%s\n' "$*" >>"$dir/log/xcrun"
 [[ $* == "simctl list devices" ]] && cat "$dir/simulators-left" 2>/dev/null
 exit 0
 EOF
-chmod +x "$T/bin/security" "$T/bin/defaults" "$T/bin/xcrun"
+cat >"$T/bin/openssl" <<'EOF'
+#!/bin/bash
+# A throwaway password of 48 hexadecimal characters, the same each run so that the test can look for it in the output.
+dir="$(cd -- "$(dirname -- "$0")/.." && pwd)"
+printf '%s\n' "$*" >>"$dir/log/openssl"
+[[ $* == 'rand -hex 24' ]] || exit 2
+printf 'c0ffee9d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f\n'
+EOF
+chmod +x "$T/bin/security" "$T/bin/defaults" "$T/bin/openssl" "$T/bin/xcrun"
 
 # ---- The checkout, with the script itself in it, as on the runner.
 
@@ -150,7 +210,8 @@ alive() {
 
 env_for() { # the environment of a job's step on the runner
 	env -i PATH=/usr/bin:/bin HOME="$home" RUNNER_ENVIRONMENT=self-hosted RUNNER_WORKSPACE="$workspace" \
-		RUNNER_TEMP="$temp" GITHUB_WORKSPACE="$checkout" GITHUB_ENV="$T/github-env" CI_RUNNER_CLEAN_TEST="$T" "$@"
+		RUNNER_TEMP="$temp" GITHUB_WORKSPACE="$checkout" GITHUB_ENV="$T/github-env" GITHUB_RUN_ID=20401 \
+		GITHUB_RUN_ATTEMPT=1 CI_RUNNER_CLEAN_TEST="$T" "$@"
 }
 
 # A program at <path> that sleeps for ten minutes, or until stopped; with a second argument, it ignores SIGTERM.
@@ -360,6 +421,75 @@ expect "leaves the records a link pointed to" test -f "$T/victim/records/ci/udid
 expect "removes a linked job's temporary folder as a link" test -f "$T/victim/temp/keep" -a -d "$temp/tmp" -a ! -L "$temp/tmp"
 expect "warns on the run" grep -q '^::warning' <<<"$out"
 rm -f "$library/WebKit" "$checkout/iphone/build/simulators"
+
+# ---- The job's own keychain: what it replaced put back, the keychain gone, and nothing of it in the output (#993).
+
+mkdir -p "$home/Library/Keychains"
+: >"$home/Library/Keychains/login.keychain-db"
+printf '%s\n' "$home/Library/Keychains/login.keychain-db" >"$T/state/default-keychain"
+printf '%s\n' "$home/Library/Keychains/login.keychain-db" >"$T/state/user-list"
+jobkey="$temp/pi2-job-20401-1.keychain-db"
+: >"$log/security"
+
+out=$(env_for bash "$script" keychain-start 2>&1)
+code=$?
+echo "$out" | sed 's/^/  | /'
+password=$(cat "$T/state/password" 2>/dev/null)
+expect "a keychain-start exits 0" test "$code" = 0
+expect "makes the job's keychain" test -f "$jobkey"
+expect "makes it the default" test "$(cat "$T/state/default-keychain")" = "$jobkey"
+expect "puts it first in the search list" test "$(sed -n 1p "$T/state/user-list")" = "$jobkey"
+expect "keeps the user's own keychain after it" test "$(sed -n 2p "$T/state/user-list")" = "$home/Library/Keychains/login.keychain-db"
+expect "sets it to no timeout and no lock on sleep" grep -qx "set-keychain-settings -t 0 $jobkey" "$log/security"
+expect "unlocks it with the password it made" grep -qx "unlock-keychain -p $password $jobkey" "$log/security"
+expect "prints no path" bash -c '! grep -q / <<<"$1"' _ "$out"
+expect "never prints the password" bash -c '! grep -qF -- "$2" <<<"$1"' _ "$out" "$password"
+expect "never puts the password in GITHUB_ENV" bash -c '! grep -qF -- "$2" "$1"' _ "$T/github-env" "$password"
+
+out=$(env_for bash "$script" keychain-end 2>&1)
+code=$?
+echo "$out" | sed 's/^/  | /'
+expect "a keychain-end exits 0" test "$code" = 0
+expect "puts the default back" test "$(cat "$T/state/default-keychain")" = "$home/Library/Keychains/login.keychain-db"
+expect "puts the search list back" test "$(cat "$T/state/user-list")" = "$home/Library/Keychains/login.keychain-db"
+expect "deletes the job's keychain" test ! -e "$jobkey"
+expect "removes the record of what it replaced" test ! -e "$temp/pi2-job-keychain"
+expect "prints no path at the end" bash -c '! grep -q / <<<"$1"' _ "$out"
+expect "never prints the password at the end" bash -c '! grep -qF -- "$2" <<<"$1"' _ "$out" "$password"
+
+: >"$log/security"
+out=$(env_for bash "$script" keychain-end 2>&1)
+expect "a keychain-end with no record exits 0" test $? = 0
+expect "and asks security nothing" test ! -s "$log/security"
+
+: >"$log/security"
+touch "$T/create-fails"
+out=$(env_for bash "$script" keychain-start 2>&1)
+code=$?
+echo "$out" | sed 's/^/  | /'
+password=$(cat "$T/state/password")
+expect "a keychain-start whose create fails exits 1" test "$code" = 1
+expect "puts the default back after the failure" test "$(cat "$T/state/default-keychain")" = "$home/Library/Keychains/login.keychain-db"
+expect "puts the search list back after the failure" test "$(cat "$T/state/user-list")" = "$home/Library/Keychains/login.keychain-db"
+expect "leaves no keychain of the job's" test ! -e "$jobkey"
+expect "leaves no record after the failure" test ! -e "$temp/pi2-job-keychain"
+expect "prints no path after the failure" bash -c '! grep -q / <<<"$1"' _ "$out"
+expect "never prints the password after the failure" bash -c '! grep -qF -- "$2" <<<"$1"' _ "$out" "$password"
+rm -f "$T/create-fails"
+
+# A default keychain and a search list a killed job left behind, and a file that is gone.
+printf '%s\n' "$temp/pi2-job-1-1.keychain-db" >"$T/state/default-keychain"
+printf '%s\n' "$temp/pi2-job-1-1.keychain-db" "$home/Library/Keychains/old.keychain-db" \
+	"$home/Library/Keychains/login.keychain-db" >"$T/state/user-list"
+: >"$temp/pi2-job-1-1.keychain-db"
+: >"$temp/pi2-job-keychain"
+out=$(env_for bash "$script" start 2>&1)
+expect "a start with a keychain a killed job left exits 0" test $? = 0
+expect "sets the default back to the login keychain" test "$(cat "$T/state/default-keychain")" = "$home/Library/Keychains/login.keychain-db"
+expect "takes the job's keychain out of the search list" test "$(cat "$T/state/user-list")" = "$home/Library/Keychains/login.keychain-db"
+expect "deletes the keychain a killed job left" test ! -e "$temp/pi2-job-1-1.keychain-db"
+expect "deletes the record a killed job left" test ! -e "$temp/pi2-job-keychain"
+expect "says it repaired the keychain" grep -qF "repaired the keychain a killed job left" <<<"$out"
 
 # ---- A simulator that will not go fails the run, and its record is kept.
 
