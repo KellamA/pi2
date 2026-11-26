@@ -139,6 +139,9 @@ else
 		scripts/test-auto-merge | scripts/auto-merge | scripts/rerun-if-no-runner | scripts/test-docs-lists) ;;
 		# Checked by Scripts (tests) with stand-ins; the iPhone app's job, decided above, runs the script itself.
 		scripts/iphone-sim | scripts/test-iphone-sim) ;;
+		# The free-runner decision of ci.yml's first job, and its test (#1041): it decides where a run's open macOS jobs
+		# go, so a change to either runs every macOS job. Scripts (tests) checks the test on Linux.
+		scripts/ci-runner-free | scripts/test-ci-runner-free) need engine app relay ;;
 		# The relay: checked by the Linux job Relay (tests), and here by the protocol test, which starts the relay
 		# itself and builds RemoteKit against it. No other macOS job reads relay/.
 		relay/*) need relay ;;

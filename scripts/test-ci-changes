@@ -112,6 +112,10 @@ decide "Package@swift-6.swift" $PR "true true true true" "" "put app/Package@swi
 decide "Package@swift-6.1.swift" $PR "true true true true" "" "put app/Package@swift-6.1.swift"
 decide "scripts/iphone-sim" $PR "true false false false" "" "put scripts/iphone-sim"
 decide "scripts/test-iphone-sim" $PR "false false false false" "" "put scripts/test-iphone-sim"
+# The free-runner decision of the first job and its test (#1041): a change to either runs every macOS job, as a change
+# to what the first job decides for the others does.
+decide "the free-runner decision" $PR "false true true true" "" "put scripts/ci-runner-free"
+decide "the free-runner decision's test" $PR "false true true true" "" "put scripts/test-ci-runner-free"
 decide "this script" $PR "true true true true" "" "printf '# changed\n' >>scripts/ci-changes"
 decide "this script's test" $PR "false true true true" "" "put scripts/test-ci-changes"
 decide "ci.yml" $PR "true true true true" "" "put .github/workflows/ci.yml"
