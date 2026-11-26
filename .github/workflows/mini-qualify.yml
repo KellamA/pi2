@@ -139,6 +139,11 @@ jobs:
               *) if [ "$status" = 0 ]; then unlocked=yes; fi ;;
             esac
             say "default keychain unlocked" "$(yes_no "$unlocked") (exit $status)"
+            # A status that is not 0 is a keychain this job cannot use, which is what this probe exists to report: with
+            # `bash -e` it ended the step, and with `set +e` it has to be counted here instead. A keychain that answered
+            # 0 and says it is locked is no better, so the line itself has to say yes too.
+            [ "$status" = 0 ] || failures=1
+            [ "$unlocked" = yes ] || failures=1
           fi
 
           # The dummy item goes on any exit, so that the step leaves nothing behind whatever it finds.
