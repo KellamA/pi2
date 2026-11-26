@@ -73,7 +73,7 @@ enum LaunchConversation {
     /// Whether a value can only name a conversation: no page, project, chat mode or other window.
     private static func names(_ value: String) -> Bool {
         guard !value.isEmpty, !ProjectCopyView.reserves(value), Selection(launch: value) == nil, !value.hasPrefix("output:") else { return false }
-        return !["chat", "settings", "palette"].contains { value == $0 || value.hasPrefix($0 + ":") }
+        return !["chat", "settings", "palette", "presentation"].contains { value == $0 || value.hasPrefix($0 + ":") }
     }
 }
 
@@ -382,6 +382,25 @@ struct Pi2App: App {
         .defaultLaunchBehavior(.suppressed)
         .restorationBehavior(.disabled)
 
+        // What an agent presented, one window per presentation, opened by Expand on its card or under Needs you
+        // (PresentationWindow.swift, #946). Never at launch, and not brought back after a restart: the main window starts
+        // the engine, and the card opens it again.
+        WindowGroup("Presentation", id: PresentationWindowScene.id, for: PresentationRef.self) { $ref in
+            Group {
+                if let ref {
+                    PresentationWindow(app: model, ref: ref)
+                } else {
+                    Text("No presentation was chosen.").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .windowMinimum(width: PresentationBar.minimumWidth, height: 460) { model.engine.note($0) }
+            .tint(.piAccent)
+            .launchWindow()
+        }
+        .defaultSize(width: 1180, height: 820)
+        .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
+
         MenuBarExtra {
             MenuBarView(model: model)
                 .watchWindowSize(name: "Menu Bar", threshold: SizeWatch.panelThreshold) { model.engine.note($0) }
@@ -530,6 +549,7 @@ struct RootView: View {
             .columnGivesWay()
         }
         .background(WindowOpener(model: model))
+        .background(PresentationWindowOpener(engine: engine))
         .worktreeDialogs(engine: engine)
         .sheet(isPresented: $model.showingPalette) { PaletteView(model: model) }
         .sheet(item: $model.startPicker) { ask in NewConversationPicker(model: model, ask: ask) }

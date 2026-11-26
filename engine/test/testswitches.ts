@@ -79,11 +79,22 @@ const SWITCHES: Record<string, string> = {
 	PI2_AWAKE_PROGRAM: process.env.PI2_AWAKE_PROGRAM!,
 	PI2_AWAKE_POWER: "ac",
 	PI2_LOCAL_CATALOG: join(work, "catalog.json"),
+	// Paired devices: nothing pairs here, so pi² Remote's stand-in is never started nor App Attest's asked; an empty
+	// PI2_UNPLACED_HANDLER adds no request, so the engine starts, and an empty PI2_DEVICE_FAULT faults no request.
+	PI2_REMOTE_STAND_IN: join(work, "no-remote.mjs"),
+	PI2_APP_ATTEST_STAND_IN: "1",
+	PI2_APP_ATTEST_TEAM: "ABCDE12345",
+	PI2_PAIR_UNATTESTED: "1",
+	PI2_UNPLACED_HANDLER: "",
+	PI2_DEVICE_FAULT: "",
+	PI2_DEVICE_SESSION_MS: "86400000",
+	PI2_APPROVAL_DEPTH_THROWS: "1",
 	// The tunings, at their usual values.
 	PI2_AWAKE_GRACE_MS: "60000",
 	PI2_AWAKE_POLL_MS: "30000",
 	PI2_COMMAND_TIMEOUT_SECONDS: "120",
 	PI2_OUTPUT_WAIT_SECONDS: "30",
+	PI2_PRESENT_DRAW_MS: "20000",
 	PI2_LIMITS_MIN_INTERVAL_MS: "60000",
 	PI2_LIMIT_BACKOFF_MS: "15000",
 	PI2_LIMIT_WAIT_MAX_MS: "21600000",

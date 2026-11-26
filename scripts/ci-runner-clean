@@ -1,0 +1,666 @@
+#!/bin/bash
+# Puts the owner's own CI runner, the Mac mini (docs/ci-runner.md, #990), back as a job expects to find it: GitHub's
+# runners are new at each job, and the mini is not. ci.yml runs it after the checkout and, whatever happened, at the end
+# of each macOS job that runs there, and only there (runner.environment == 'self-hosted').
+#
+#   scripts/ci-runner-clean start | end | keychain-start | keychain-end
+#
+# It removes what the macOS jobs leave behind, and nothing else, as the runner's own standard user, never with sudo:
+#   - every process of this user whose command line names the runner's work folder (the checkout, its builds, the Node
+#     the jobs fetch, the temporary folder below), except this script and the runner processes it runs under: engines,
+#     pi² Remote, the app the release check opens, the relay and Wrangler, stand-ins left by a test;
+#   - the simulators scripts/iphone-sim made in this checkout (by their ids, as it recorded them), and its records;
+#   - whatever git does not track in the checkout, except the build folders kept on purpose, app/.build (Swift's) and
+#     iphone/build/DerivedData (Xcode's): a warm build is most of what the runner is for;
+#   - Keychain items under a test's service, dev.pi2.credentials.<anything>, never dev.pi2.credentials itself;
+#   - the preferences of dev.pi2.app and of dev.pi2.app.<anything> (the release check opens a release build, test
+#     copies have ids of their own), with their caches, cookies, WebKit data and saved window state in ~/Library;
+#   - the data folders of development builds and test copies, ~/Library/Application Support/pi2-<anything>;
+#   - this user's pi2-<anything> in /tmp (the engines' sockets and scratch folders, the checks' folders);
+#   - the job's temporary folder: start points TMPDIR at an empty folder inside the runner's own temporary folder, which
+#     the runner empties after every job, for the job's later steps (through GITHUB_ENV), and end empties it.
+# Nothing is ever removed through a symbolic link: a link is removed as a link, and said so, and a path whose folder is
+# not the one it was looked for in (a folder on the way replaced by a link) is refused, not removed.
+# Safe to run twice, and where nothing is left. It prints what it removed, the system, Xcode and Swift in use, and the
+# disk's free space.
+#
+# start also repairs what a job the runner killed left behind: a default keychain, or an entry of the user's search
+# list, that names a job's own keychain (pi2-job-*.keychain-db) or a file that is gone is put back, and the job's
+# keychain files in the job's temporary folder are deleted. It says one line when it repaired something.
+#
+# keychain-start and keychain-end give a job a keychain of its own (#993). A job on the mini runs in a security session
+# of its own, where the account's login keychain is locked and may not be asked to open, so the Engine's tests have
+# nothing to write their dummy items to. keychain-start records the present default keychain and the present user
+# search list in $RUNNER_TEMP/pi2-job-keychain, makes $RUNNER_TEMP/pi2-job-<run>-<attempt>.keychain-db with a password
+# made here and thrown away with it, gives it no timeout and no lock on sleep (set-keychain-settings with no -t and no
+# -l: -t sets a lock interval, and leaving it out is what Apple's security spells as no timeout), unlocks it, puts it
+# first in the user's search list and makes it the default. keychain-end puts the recorded default and search list back,
+# deletes the job's keychain and removes the record, and is safe when keychain-start never ran or half ran. Neither
+# touches the account's login keychain: nothing there is unlocked, deleted or changed, and no -A or -T is used. A
+# keychain's password can do no more than open the keychain, and this one holds test files' dummy items and lives for
+# one job, so it needs no secret; it does pass on security's command line, where another process of the same machine
+# could see it for a moment (ps -E).
+# Both modes print one line a step with its exit status, and nothing else: no path, never the password, and nothing
+# `security` said.
+#
+# It refuses, before it changes anything, unless it is on that runner: RUNNER_ENVIRONMENT=self-hosted, the runner's work
+# folder (_work, with the runner's own settings file .runner beside it) holding RUNNER_WORKSPACE, RUNNER_TEMP and
+# GITHUB_WORKSPACE, not as root or a member of admin (an administrator's account; the runner's user is standard; in a
+# test this is not checked, since a developer's own account is an administrator's), and no sign of an installed pi² (its data folder or its login item in the account's
+# home, /Applications/pi².app). A Mac where pi² is in use is never cleaned.
+#
+# CI_RUNNER_CLEAN_TEST=<folder> is for scripts/test-ci-runner-clean alone: security, defaults, openssl and xcrun are
+# then the stand-ins in <folder>/bin and nothing else, /tmp is <folder>/tmp, and HOME must be inside <folder>, so a test
+# on a Mac in use reaches none of its Keychain, preferences, simulators or /tmp.
+#
+# Exits 0 once everything is removed, 1 if something could not be, 2 when it refuses.
+
+set -uo pipefail
+export LC_ALL=C
+
+refuse() {
+	echo "ci-runner-clean: refused: $*" >&2
+	# A warning on the run too: the end's clean-up does not fail its job, so it would show only in the step's log.
+	echo "::warning title=Runner clean-up refused::$*"
+	exit 2
+}
+
+usage() {
+	echo "usage: scripts/ci-runner-clean start | end | keychain-start | keychain-end" >&2
+	exit 2
+}
+
+(($# == 1)) || usage
+phase=$1
+keychain=0
+case $phase in
+start | end) ;;
+keychain-start | keychain-end) keychain=1 ;;
+*) usage ;;
+esac
+
+# ---- Where it is, checked before anything is touched.
+
+[[ ${RUNNER_ENVIRONMENT:-} == self-hosted ]] ||
+	refuse "this is not a self-hosted runner (RUNNER_ENVIRONMENT is '${RUNNER_ENVIRONMENT:-}'): it cleans the owner's CI runner only"
+me=$(id -u)
+((me != 0)) || refuse "run as root: the runner's user is a standard one, and nothing here needs more"
+
+# A folder as it really is, or nothing if it is not there.
+real() {
+	(cd -P -- "$1" 2>/dev/null && pwd -P)
+}
+
+for name in RUNNER_WORKSPACE RUNNER_TEMP GITHUB_WORKSPACE HOME; do
+	value=${!name:-}
+	[[ $value == /* ]] || refuse "$name is not an absolute path: '$value'"
+	real "$value" >/dev/null || refuse "$name is not a folder: $value"
+done
+workspace=$(real "$RUNNER_WORKSPACE")
+work=$(dirname -- "$workspace")
+[[ $(basename -- "$work") == _work ]] || refuse "the runner's work folder is not called _work: $work"
+[[ -f $(dirname -- "$work")/.runner ]] || refuse "no .runner, the runner's own settings, beside its work folder $work"
+[[ $(real "$RUNNER_TEMP") == "$work/_temp" ]] || refuse "RUNNER_TEMP is not the work folder's _temp: $RUNNER_TEMP"
+checkout=$(real "$GITHUB_WORKSPACE")
+[[ $checkout == "$workspace"/* ]] || refuse "GITHUB_WORKSPACE is not inside RUNNER_WORKSPACE: $GITHUB_WORKSPACE"
+temp="$work/_temp"
+
+if [[ -n ${CI_RUNNER_CLEAN_TEST:-} ]]; then
+	test_folder=$(real "$CI_RUNNER_CLEAN_TEST") || refuse "CI_RUNNER_CLEAN_TEST is not a folder"
+	[[ $(real "$HOME") == "$test_folder"/* ]] || refuse "in a test, HOME is inside the test's folder"
+	security="$test_folder/bin/security"
+	defaults="$test_folder/bin/defaults"
+	openssl="$test_folder/bin/openssl"
+	xcrun="$test_folder/bin/xcrun"
+	shared_tmp="$test_folder/tmp"
+	homes=("$HOME")
+else
+	security=/usr/bin/security
+	defaults=/usr/bin/defaults
+	openssl=/usr/bin/openssl
+	xcrun=/usr/bin/xcrun
+	shared_tmp=/tmp
+	id -Gn 2>/dev/null | tr ' ' '\n' | grep -qx admin &&
+		refuse "$(id -un) is an administrator: the runner's user is a standard one, and an administrator's account is a person's"
+	# HOME and the account's own home folder, which differ if a caller set HOME.
+	homes=("$HOME")
+	account=$(eval "printf '%s' ~$(id -un)" 2>/dev/null) && [[ -n $account && $account != "$HOME" ]] && homes+=("$account")
+	[[ ! -e "/Applications/pi².app" ]] || refuse "pi² is installed in /Applications: this is a Mac in use, not the runner"
+fi
+for home in "${homes[@]}"; do
+	[[ ! -e "$home/Library/Application Support/pi2" ]] ||
+		refuse "$home has pi²'s data folder: this is a Mac in use, not the runner"
+	[[ ! -e "$home/Library/LaunchAgents/dev.pi2.engine.plist" ]] ||
+		refuse "$home has pi²'s login item: this is a Mac in use, not the runner"
+	[[ ! -e "$home/Applications/pi².app" ]] || refuse "pi² is installed in $home/Applications: this is a Mac in use, not the runner"
+done
+
+failed=0
+fail() {
+	echo "ci-runner-clean: $*" >&2
+	failed=1
+}
+said() {
+	echo "ci-runner-clean: $*"
+}
+
+# ---- Processes. Listed into files, never through $(...): a subshell of this script has its command line, and Bash 3.2
+# has no BASHPID to leave it out by.
+
+list=$(mktemp "$temp/ci-runner-clean.XXXXXX") || refuse "cannot write in $temp"
+found=$(mktemp "$temp/ci-runner-clean.XXXXXX") || refuse "cannot write in $temp"
+trap 'rm -f -- "$list" "$found"' EXIT
+
+# This script and what it runs under (the step's shell, the runner's worker and listener) are never stopped.
+ancestors=" "
+pid=$$
+while [[ $pid =~ ^[0-9]+$ ]] && ((pid > 1)); do
+	ancestors+="$pid "
+	pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+done
+
+# On macOS, ps -E adds each of this user's processes' environment to its command line: a program started by a relative
+# path (.build/debug/pi2-remote-helper-check, from app/) names no folder in its arguments, but every process a job starts
+# inherits GITHUB_WORKSPACE and RUNNER_TEMP. (A test on Linux has its folder in the arguments.)
+ps_flags=(-ww)
+[[ $(uname -s) == Darwin ]] && ps_flags=(-E -ww)
+
+# The processes left, into $found: pid and command, one a line, tab between. Fails if there are none.
+left() {
+	: >"$found"
+	ps -A "${ps_flags[@]}" -o pid= -o uid= -o command= >"$list" 2>/dev/null || { fail "could not list processes"; return 1; }
+	local pid uid command
+	while read -r pid uid command; do
+		[[ $pid =~ ^[0-9]+$ && $uid == "$me" && $ancestors != *" $pid "* ]] || continue
+		[[ $command == *"$work/"* ]] || continue
+		printf '%s\t%s\n' "$pid" "$command" >>"$found"
+	done <"$list"
+	[[ -s $found ]]
+}
+
+# Waits up to ten seconds for every one of them to be gone.
+gone() {
+	local tries=0
+	while ((tries < 20)); do
+		left || return 0
+		sleep 0.5
+		tries=$((tries + 1))
+	done
+	return 1
+}
+
+# A process's name for the log: its program, without its arguments and environment, which may hold what a log should not.
+name_of() {
+	ps -o comm= -p "$1" 2>/dev/null || echo "(gone)"
+}
+
+# Signals a pid only while it is still the process listed (same command), not one that has since taken its number.
+signal() {
+	local signal=$1 pid=$2 command=$3 now
+	now=$(ps "${ps_flags[@]}" -o command= -p "$pid" 2>/dev/null) || return 0
+	read -r now <<<"$now"
+	[[ $now == "$command" ]] || return 0
+	kill "-$signal" "$pid" 2>/dev/null || true
+}
+
+stop_processes() {
+	local pid command stopped=0
+	left || return 0
+	while IFS=$'\t' read -r pid command; do
+		said "stopping $pid, $(name_of "$pid")"
+		signal TERM "$pid" "$command"
+		stopped=$((stopped + 1))
+	done <"$found"
+	if ! gone; then
+		while IFS=$'\t' read -r pid command; do
+			said "killing $pid, $(name_of "$pid"), which did not stop"
+			signal KILL "$pid" "$command"
+		done <"$found"
+		if ! gone; then
+			fail "still running after SIGKILL: $(cut -f 1 "$found" | tr '\n' ' ')"
+			return
+		fi
+	fi
+	said "stopped $stopped process(es)"
+}
+
+# ---- Removing, never through a link.
+
+# remove <path> <folder> <what>: <path> as it was listed in <folder> (the real path of where it was looked for). A link
+# is removed as a link, never what it points to. Anything else only if its folder is still <folder>: a folder on the way
+# replaced by a link since makes it somewhere else, which is refused.
+remove() {
+	local path=$1 folder=$2 what=$3 parent
+	if [[ -L $path ]]; then
+		if rm -f -- "$path"; then said "removed $what, a symbolic link, as a link (not what it points to)"; else fail "could not remove the link $path"; fi
+		return
+	fi
+	[[ -e $path ]] || return 0
+	parent=$(real "$(dirname -- "$path")")
+	if [[ -z $folder || $parent != "$folder" ]]; then
+		fail "refused to remove $path: it is in ${parent:-?}, not ${folder:-?}, where it was looked for"
+		return
+	fi
+	if rm -rf -- "$path"; then said "removed $what"; else fail "could not remove $path"; fi
+}
+
+# inside <parent> <name>: sets $got to <parent>/<name>, a folder that is where it says (not a link, nothing on the way a
+# link), and succeeds; fails if it is not there, and fails and says so if it is anything else. <parent> is a real path.
+# A variable, not $(...), so that the failure is counted here.
+got=
+inside() {
+	local path="$1/$2"
+	got=
+	[[ -e $path || -L $path ]] || return 1
+	if [[ -L $path || ! -d $path || $(real "$path") != "$path" ]]; then
+		fail "refused to look in $path: it is a link, or not a folder, or leads out of $1"
+		return 1
+	fi
+	got=$path
+}
+
+# ---- Simulators, by the ids scripts/iphone-sim recorded in this checkout.
+
+delete_simulators() {
+	local records record udid
+	inside "$checkout" iphone && inside "$got" build && inside "$got" simulators || return 0
+	records=$got
+	for record in "$records"/*; do
+		[[ -e $record || -L $record ]] || continue
+		if [[ -L $record || ! -d $record ]]; then
+			remove "$record" "$records" "the simulators' record $(basename -- "$record")"
+			continue
+		fi
+		udid=
+		[[ -f $record/udid && ! -L $record/udid ]] && udid=$(cat "$record/udid" 2>/dev/null)
+		if [[ $udid =~ ^[0-9A-Fa-f-]{36}$ ]]; then
+			"$xcrun" simctl shutdown "$udid" >/dev/null 2>&1 || true
+			"$xcrun" simctl delete "$udid" >/dev/null 2>&1 || true
+			if "$xcrun" simctl list devices 2>/dev/null | grep -qF -- "$udid"; then
+				fail "could not delete the simulator $udid ($(basename -- "$record"))"
+				continue
+			fi
+			said "deleted the simulator $(basename -- "$record") ($udid)"
+		fi
+		remove "$record" "$records" "the simulators' record $(basename -- "$record")"
+	done
+}
+
+# ---- The checkout: what git does not track, but the build folders.
+
+clean_checkout() {
+	[[ -d $checkout/.git ]] || return 0
+	local top
+	top=$(git -C "$checkout" rev-parse --show-toplevel 2>/dev/null) || return 0
+	[[ $(real "$top") == "$checkout" ]] || return 0
+	git -C "$checkout" clean -ffdxq -e /app/.build/ -e /iphone/build/DerivedData/ || fail "git clean failed in $checkout"
+}
+
+# ---- Keychain items under a test's service.
+
+delete_keychain_items() {
+	local dump status services service count tries
+	# A failure here used to look like "nothing there". It is said in one line, with the status and nothing it printed,
+	# which can be a listing of every item in that keychain.
+	dump=$("$security" dump-keychain 2>/dev/null)
+	status=$?
+	[[ $status == 0 ]] || said "could not read which test Keychain items are there: security dump-keychain exited $status"
+	services=$(printf '%s\n' "$dump" |
+		sed -n 's/^[[:space:]]*"svce"<blob>="\(dev\.pi2\.credentials\.[^"][^"]*\)"[[:space:]]*$/\1/p' | sort -u)
+	[[ -n $services ]] || return 0
+	while IFS= read -r service; do
+		[[ $service == dev.pi2.credentials.?* ]] || continue
+		count=0
+		tries=0
+		while ((tries < 1000)) && "$security" delete-generic-password -s "$service" >/dev/null 2>&1; do
+			count=$((count + 1))
+			tries=$((tries + 1))
+		done
+		said "removed $count Keychain item(s) of $service"
+	done <<<"$services"
+}
+
+# ---- What macOS keeps for dev.pi2.app and dev.pi2.app.<anything>, and the data folders of builds and copies.
+
+remove_library() {
+	local library place file domain folder path
+	inside "$(real "$HOME")" Library || return 0
+	library=$got
+	if inside "$library" Preferences; then
+		place=$got
+		for file in "$place/dev.pi2.app.plist" "$place/"dev.pi2.app.?*.plist; do
+			[[ -e $file || -L $file ]] || continue
+			domain=$(basename -- "$file" .plist)
+			# By its name, from the user's own preferences: defaults reads no path.
+			[[ -L $file ]] || "$defaults" delete "$domain" >/dev/null 2>&1 || true
+			remove "$file" "$place" "the preferences of $domain"
+		done
+	fi
+	for folder in Caches HTTPStorages WebKit "Saved Application State"; do
+		inside "$library" "$folder" || continue
+		place=$got
+		for path in "$place/dev.pi2.app" "$place/"dev.pi2.app.?*; do
+			[[ -e $path || -L $path ]] && remove "$path" "$place" "$folder/$(basename -- "$path")"
+		done
+	done
+	if inside "$library" "Application Support"; then
+		place=$got
+		for path in "$place/"pi2-?*; do
+			[[ -e $path || -L $path ]] && remove "$path" "$place" "Application Support/$(basename -- "$path")"
+		done
+	fi
+}
+
+# ---- This user's pi2-<anything> in /tmp, and the job's own temporary folder.
+
+remove_temporary() {
+	local path place
+	place=$(real "$shared_tmp")
+	if [[ -n $place ]]; then
+		while IFS= read -r -d '' path; do
+			remove "$path" "$place" "$path"
+		done < <(find "$place/" -mindepth 1 -maxdepth 1 -name 'pi2-?*' -user "$me" -print0 2>/dev/null)
+	fi
+	remove "$temp/tmp" "$temp" "the job's temporary folder"
+	if [[ -e $temp/tmp || -L $temp/tmp ]]; then
+		fail "could not empty $temp/tmp"
+	else
+		mkdir -- "$temp/tmp" || fail "could not make $temp/tmp"
+	fi
+	if [[ $phase == start && -n ${GITHUB_ENV:-} ]]; then
+		printf 'TMPDIR=%s\n' "$temp/tmp/" >>"$GITHUB_ENV" || fail "could not set TMPDIR for the job"
+	fi
+}
+
+# ---- The job's own keychain (keychain-start, keychain-end), and what a killed job left of one.
+
+login_keychain="$HOME/Library/Keychains/login.keychain-db"
+# The record of what the job's keychain replaced: one field a line, a tab, then a path (a path holds no tab).
+record="$temp/pi2-job-keychain"
+job_keychain=
+record_keychain=
+keychain_default=
+keychain_list=()
+answer=
+paths=()
+
+# What `security` answered, one path a line, into $answer: a failure is the return status, and nothing it said is kept.
+keychain_answer() {
+	local raw line
+	answer=
+	raw=$("$security" "$@" 2>/dev/null) || return 1
+	while IFS= read -r line; do
+		line=${line#"${line%%[![:space:]]*}"}
+		line=${line%"${line##*[![:space:]]}"}
+		line=${line#\"}
+		line=${line%\"}
+		[ -n "$line" ] || continue
+		answer="${answer:+$answer$'\n'}$line"
+	done <<<"$raw"
+	return 0
+}
+
+# A newline separated list of paths, into $paths.
+read_paths() {
+	local line
+	paths=()
+	while IFS= read -r line; do
+		[ -z "$line" ] || paths+=("$line")
+	done <<<"$1"
+}
+
+# One step of the job's keychain: one line with its status, and the script's failure if it did not work. Nothing the
+# command said is kept: it can name a path, and it can say what a keychain holds.
+kc() {
+	local what=$1 status
+	shift
+	"$@" >/dev/null 2>&1
+	status=$?
+	said "$phase: $what: exit $status"
+	((status == 0)) || failed=1
+	return "$status"
+}
+
+keychain_record_write() {
+	local path
+	{
+		[ -z "$keychain_default" ] || printf 'default\t%s\n' "$keychain_default"
+		for path in ${keychain_list[@]+"${keychain_list[@]}"}; do
+			printf 'list\t%s\n' "$path"
+		done
+		[ -z "$job_keychain" ] || printf 'keychain\t%s\n' "$job_keychain"
+	} >"$record"
+}
+
+keychain_record_read() {
+	local kind path
+	keychain_default=
+	keychain_list=()
+	record_keychain=
+	[ -f "$record" ] || return 1
+	while IFS=$'\t' read -r kind path; do
+		case $kind in
+		default) keychain_default=$path ;;
+		list) keychain_list+=("$path") ;;
+		keychain) record_keychain=$path ;;
+		esac
+	done <"$record"
+	return 0
+}
+
+# The job's own keychain, and only that one: a name of ours, directly in the job's temporary folder, and the file rather
+# than a link, which could lead to another keychain. The record is a file any step of the job can write, so nothing else
+# from it is acted on, and no other keychain is ever deleted.
+ours() {
+	case ${1##*/} in pi2-job-*.keychain-db) ;; *) return 1 ;; esac
+	[ ! -L "$1" ] || return 1
+	[ "$(real "$(dirname -- "$1")")" = "$temp" ]
+}
+
+# What the job replaces, unless it is already recorded: a job started twice keeps the record of the first. Both reads
+# have to work, and to answer with a path: a read that failed is not "nothing to put back", and a record saying so
+# would leave the default naming a keychain the job then deletes. `security` can also answer in words rather than with
+# a path ("No default keychain"), which opens nothing either.
+keychain_capture() {
+	local path
+	[ ! -f "$record" ] || return 0
+	keychain_default=
+	keychain_list=()
+	keychain_answer default-keychain && [[ $answer == /* ]] || return 1
+	keychain_default=$answer
+	keychain_answer list-keychains -d user || return 1
+	read_paths "$answer"
+	for path in ${paths[@]+"${paths[@]}"}; do
+		[[ $path == /* ]] || return 1
+		keychain_list+=("$path")
+	done
+	keychain_record_write || {
+		rm -f -- "$record"
+		return 1
+	}
+}
+
+# Puts the recorded default and search list back and deletes the job's keychain: what keychain-end does, and what a
+# failed keychain-start does to undo itself. Safe with no record, and with nothing but the record done.
+keychain_put_back() {
+	if ! keychain_record_read; then
+		said "$phase: nothing to put back: no record of what the job's keychain replaced"
+		return 0
+	fi
+	[ -z "$record_keychain" ] || job_keychain=$record_keychain
+	if [ -n "$job_keychain" ] && ! ours "$job_keychain"; then
+		said "$phase: the record names a keychain that is not this job's: not deleting it"
+		failed=1
+		job_keychain=
+	fi
+	if [ -n "$keychain_default" ]; then
+		kc "put the default keychain back" "$security" default-keychain -d user -s "$keychain_default"
+	fi
+	if ((${#keychain_list[@]})); then
+		kc "put the user's search list back" "$security" list-keychains -d user -s "${keychain_list[@]}"
+	fi
+	if [ -n "$job_keychain" ]; then
+		kc "delete the job's keychain" "$security" delete-keychain "$job_keychain"
+		if [ -e "$job_keychain" ] || [ -L "$job_keychain" ]; then
+			# security left the file: it is the keychain, and rm -f takes a link as a link.
+			remove "$job_keychain" "$temp" "the job's keychain file"
+		fi
+	fi
+	if rm -f -- "$record"; then
+		said "$phase: remove the record of what the job's keychain replaced: exit 0"
+	else
+		said "$phase: remove the record of what the job's keychain replaced: exit 1"
+		failed=1
+	fi
+	return 0
+}
+
+keychain_start() {
+	local status password path search name
+	[ -n "${GITHUB_RUN_ID:-}" ] && [ -n "${GITHUB_RUN_ATTEMPT:-}" ] ||
+		refuse "GITHUB_RUN_ID or GITHUB_RUN_ATTEMPT is not set: the job's keychain has no name of its own"
+	# The name below is made from these two, so each is digits only: a name of digits and two hyphens is directly in the
+	# job's temporary folder whatever a job sets, and cannot be a folder, a link or `..`.
+	for name in GITHUB_RUN_ID GITHUB_RUN_ATTEMPT; do
+		case ${!name} in
+		'' | *[!0-9]*) refuse "$name is not a number: the job's keychain has no name of its own" ;;
+		esac
+	done
+	job_keychain="$temp/pi2-job-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.keychain-db"
+	keychain_record_read
+	if [ -n "$record_keychain" ]; then
+		if ! ours "$record_keychain"; then
+			said "keychain-start: the record names a keychain that is not this job's: not deleting it"
+			failed=1
+			return 1
+		fi
+		job_keychain=$record_keychain
+	fi
+	if keychain_capture; then
+		said "keychain-start: record the default and the search list: exit 0"
+	else
+		said "keychain-start: record the default and the search list: exit 1"
+		failed=1
+		return 1
+	fi
+	# A repeat in the same job: the keychain it made before goes, and the record of what it replaced stays.
+	if [ -e "$job_keychain" ] || [ -L "$job_keychain" ]; then
+		kc "delete the earlier keychain of this job" "$security" delete-keychain "$job_keychain"
+	fi
+	password=$("$openssl" rand -hex 24 2>/dev/null)
+	status=$?
+	said "keychain-start: make a throwaway password: exit $status"
+	if [ "$status" != 0 ] || [ -z "$password" ]; then
+		failed=1
+		keychain_put_back
+		return 1
+	fi
+	kc "create the keychain" "$security" create-keychain -p "$password" "$job_keychain" || {
+		keychain_put_back
+		return 1
+	}
+	kc "set no timeout and no lock on sleep" "$security" set-keychain-settings "$job_keychain" || {
+		keychain_put_back
+		return 1
+	}
+	kc "unlock it" "$security" unlock-keychain -p "$password" "$job_keychain" || {
+		keychain_put_back
+		return 1
+	}
+	search=("$job_keychain")
+	for path in ${keychain_list[@]+"${keychain_list[@]}"}; do
+		search+=("$path")
+	done
+	kc "put it first in the search list" "$security" list-keychains -d user -s "${search[@]}" || {
+		keychain_put_back
+		return 1
+	}
+	kc "make it the default" "$security" default-keychain -d user -s "$job_keychain" || {
+		keychain_put_back
+		return 1
+	}
+	return 0
+}
+
+# A keychain that the default, or the user's search list, names but that a job of its own left behind: one by its name,
+# or one whose file is gone. The account's own login keychain is never one.
+leftover() {
+	case ${1##*/} in pi2-job-*.keychain-db) return 0 ;; esac
+	[ "$1" = "$login_keychain" ] && return 1
+	[ -e "$1" ] || return 0
+	return 1
+}
+
+repair_keychain() {
+	local path status repaired=0 search=()
+	if keychain_answer default-keychain && [ -n "$answer" ] && leftover "$answer"; then
+		"$security" default-keychain -d user -s "$login_keychain" >/dev/null 2>&1
+		status=$?
+		said "start: set the default keychain back to the account's login keychain: exit $status"
+		((status == 0)) || failed=1
+		repaired=1
+	fi
+	if keychain_answer list-keychains -d user; then
+		read_paths "$answer"
+		for path in ${paths[@]+"${paths[@]}"}; do
+			leftover "$path" || search+=("$path")
+		done
+		if ((${#search[@]} != ${#paths[@]})); then
+			((${#search[@]})) || search=("$login_keychain")
+			"$security" list-keychains -d user -s "${search[@]}" >/dev/null 2>&1
+			status=$?
+			said "start: took the job's own keychain out of the search list: exit $status"
+			((status == 0)) || failed=1
+			repaired=1
+		fi
+	fi
+	# The keychains and the record a job did not get to remove.
+	for path in "$temp"/pi2-job-*.keychain-db "$record"; do
+		[ -e "$path" ] || [ -L "$path" ] || continue
+		remove "$path" "$temp" "what a killed job left, $(basename -- "$path")"
+		repaired=1
+	done
+	((repaired)) || return 0
+	said "start: repaired the keychain a killed job left: the account's own keychain is the default again, and the job's one is gone"
+}
+
+if ((keychain)); then
+	if [ "$phase" = keychain-start ]; then keychain_start; else keychain_put_back; fi
+	if ((failed)); then
+		echo "ci-runner-clean: $phase: the job's keychain is not as it should be (above)" >&2
+		echo "::warning title=Runner keychain::The job's own keychain could not be put in place or put back on the owner's runner: see its step's log"
+		exit 1
+	fi
+	said "$phase: done"
+	exit 0
+fi
+
+said "$phase: cleaning $work as $(id -un)"
+stop_processes
+delete_simulators
+clean_checkout
+[[ $phase != start ]] || repair_keychain
+delete_keychain_items
+remove_library
+remove_temporary
+
+# What the job runs on, which differs from GitHub's image (docs/ci-runner.md).
+if [[ $phase == start && -z ${CI_RUNNER_CLEAN_TEST:-} ]]; then
+	said "macOS $(sw_vers -productVersion 2>/dev/null), $(xcode-select -p 2>/dev/null), $(xcodebuild -version 2>/dev/null | tr '\n' ' ')"
+	said "$(swift --version 2>/dev/null | head -n 1)"
+fi
+for kept in app/.build iphone/build/DerivedData; do
+	[[ -d $checkout/$kept ]] && said "kept $kept: $(du -sh -- "$checkout/$kept" 2>/dev/null | cut -f 1)"
+done
+free=$(df -Pk -- "$work" 2>/dev/null | awk 'NR == 2 { print int($4 / 1048576) }')
+if [[ -n $free ]]; then
+	said "${free} GB free on the runner's disk"
+	((free >= 20)) || echo "::warning title=Runner disk::Only ${free} GB free on the owner's runner (docs/ci-runner.md, Upkeep)"
+fi
+
+if ((failed)); then
+	echo "ci-runner-clean: $phase: something was left (above)" >&2
+	echo "::warning title=Runner clean-up::The clean-up at the job's $phase left something on the owner's runner: see its step's log"
+	exit 1
+fi
+said "$phase: done"

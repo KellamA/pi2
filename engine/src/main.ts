@@ -5,7 +5,7 @@
 
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { connect, createServer } from "node:net";
+import { connect, createServer, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,7 +33,9 @@ import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { USER_ENTRY_KIND, userContent, userEntryData, validateAttachments } from "./attachments.ts";
 import { backupStatus, createBackup, restoreBackup, tidyBackups } from "./backup.ts";
-import { appBundle, AppCheck, checkRequestClasses, personOnly } from "./answers.ts";
+import { appBundle, AppCheck, checkDeviceLists, checkRequestClasses, forTheHelper, ONLY_FROM_THE_HELPER, personOnly } from "./answers.ts";
+import { deviceRequests, devicesClientGone, flushDeviceLog, hidesSomething, wireDevices } from "./devices.ts";
+import { helperRequests, stopRemote, wireRemote } from "./remote.ts";
 import { backgroundForSubChat, hasRunningCommands } from "./background.ts";
 import { bashForSubChat } from "./commands.ts";
 import { BrowserHost } from "./browser.ts";
@@ -44,6 +46,7 @@ import { codemodeExtension } from "./codemode.ts";
 import { automaticCompactionReady, compactionCheckpoint, earlyCompaction, RETENTION_INSTRUCTIONS, SUMMARY_TOKENS, summaryThinking } from "./compaction.ts";
 import { holdingPlaces } from "./sections.ts";
 import { credentialStore } from "./credentials.ts";
+import { knowStoredSecrets, watchingSecrets } from "./secrets.ts";
 import { type Host, pi2Extension } from "./extensions.ts";
 import { type Engine, FEATURES } from "./features.ts";
 import { carriedProjectFor } from "./carryover.ts";
@@ -58,7 +61,7 @@ import { preparedTool } from "./stringargs.ts";
 import { textOf } from "./transcript.ts";
 import { broadcast, type Client, clients, send } from "./clients.ts";
 import { dirtyUsage, overBudget, refreshUsage, scheduleUsageRefresh, Spend, type UsageDocShape, usageById, usageRowsChanged, usageSummary, usageTimer, usageTotals, wireUsage } from "./usage.ts";
-import { checkPersonStart, type Params, startConfirmation, text } from "./requests.ts";
+import { checkPersonStart, type Params, repeated, startConfirmation, text } from "./requests.ts";
 import { providerRequests, refreshDiscoveredProviders, wireProviderRequests } from "./providerrequests.ts";
 import { addCommandRule, agentRequests, saveAgent, wireAgentRequests } from "./agentrequests.ts";
 import { conversationRequests, wireConversationEvents } from "./conversationevents.ts";
@@ -69,6 +72,7 @@ import { armSchedules, scheduleRequests, schedulesEvent, scheduleTimer, setSched
 import { agents, busyConversations, chatOf, conversationsWithWork, isSubChat, library, refreshBusy, rootOf, setAgents, setLibrary, setVersions, setWorking, versions, working } from "./indexes.ts";
 import { McpServers } from "./mcp.ts";
 import { claim } from "./needs.ts";
+import { presentedStorage } from "./presented.ts";
 import { ComputerHost, hasApps } from "./computer.ts";
 import { plainProviderError } from "./providererror.ts";
 import { DEMO_MODEL, DEMO_PROVIDER, defaultThinking, LOCAL_PROVIDER, Providers } from "./providers.ts";
@@ -89,7 +93,7 @@ import { conversationSpend, dayKey, noSpend } from "./projectspend.ts";
 import { refusal } from "./requesterror.ts";
 import { delegateTargets } from "./projectagents.ts";
 import { syncWorkForInput } from "./work.ts";
-import { engineBuild, ignoredLine, ignoredTestSwitches, testSwitch } from "./testswitches.ts";
+import { engineBuild, ignoredLine, ignoredTestSwitches, testCopySuffix, testSwitch } from "./testswitches.ts";
 
 // Every line of engine.log starts with the time it was written (log.ts). Not when restoring a backup: what that writes
 // goes to the app, which reads its output and shows its error to the person as it is.
@@ -200,7 +204,9 @@ tidyBackups(home, log); // copies an engine on this data folder stopped while ma
 
 // ---- Models, tools, harness
 
-const credentials = credentialStore(home);
+// Learning the secrets it reads, to mask them in what a phone is sent (secrets.ts); each stored one is read once now.
+const credentials = watchingSecrets(credentialStore(home));
+void knowStoredSecrets(credentials);
 const providers = new Providers(home, credentials, () => deviceId(), { log });
 const mcp = new McpServers(home, credentials);
 mcp.log = log;
@@ -280,6 +286,7 @@ const engine: Engine = {
 	log,
 	agents: () => agents,
 	library: () => library,
+	conversation: (id) => conversation(id),
 	chatSettings: () => chatSettings(settings.chat),
 	pictureModel: () => settings.pictureModel ?? null,
 	setPictureModel: (model) => {
@@ -524,6 +531,17 @@ wireConversationEvents({ providers, host, context, log, conversation, followedMo
 wireAppEvents({ settings, inbox, host });
 wireDefaultModel({ settings, saveSettings, providers, host, log, followersChanged });
 wireSettingsRequests({ settings, saveSettings, providers, sweepArchive });
+await wireDevices({
+	harness,
+	context,
+	log,
+	release: build !== null,
+	names: { conversation: (id) => library.conversations[String(id)]?.title, project: (id) => {
+		// Its own key only: a name on Object's prototype (`constructor`) is no project.
+		const projects = allProjects();
+		return Object.hasOwn(projects, id) ? projects[id]?.name : undefined;
+	} },
+});
 
 /** A random ID for this installation, made the first time a sign-in asks for one and the same ever after. */
 function deviceId(): string {
@@ -540,7 +558,7 @@ setVersions((await harness.snapshot(Versions, context)) ?? { chats: {} });
 async function conversation(id: unknown): Promise<Conversation> {
 	const shown = typeof id === "number" ? (versions.chats[String(id)]?.current ?? id) : undefined;
 	const found = shown === undefined ? undefined : await harness.conversation(shown as unknown as ConversationId, context);
-	if (found === undefined) throw new Error(`Unknown conversation: ${String(id)}`);
+	if (found === undefined) throw new Error(`Unknown conversation: ${repeated(id)}`);
 	return found;
 }
 
@@ -660,8 +678,11 @@ const appCheck = new AppCheck(appBundle(engineMain, build, process.env), log);
 
 /** Whether `client` may act for the person — answer what waits, or change what the person set — and why. */
 async function mayAnswer(client: Client): Promise<{ allowed: boolean; why: string }> {
+	// A device session is never the app's (docs/iphone.md 4.1): what it may do is its table's (answers.ts, remote.ts).
+	if (client.device !== undefined) return { allowed: false, why: "this is a paired device's session, which is never the app" };
 	if (client.testCopy === true) return { allowed: true, why: "this connection gave the test copy's key" };
-	const verdict = await appCheck.verdict(client.socket);
+	// Every other client is a connection to the socket, made below.
+	const verdict = await appCheck.verdict(client.socket as Socket);
 	return { allowed: verdict.app, why: verdict.why };
 }
 /** Clients that registered as the computer host; the host object is kept per client so the right one is dropped. */
@@ -887,8 +908,10 @@ async function handOverToOrchestrator(projectId: string, agent: AgentProfile, ch
 // ---- Requests
 
 const handlers: Record<string, (params: Params, client: Client) => Promise<unknown>> = {
-	// `backup`: whether the last backup did not finish, for Settings › Storage (backup.ts, #792).
-	"engine.info": async () => ({ build, main: engineMain, pid: process.pid, backup: backupStatus(home) }),
+	// `backup`: whether the last backup did not finish, for Settings › Storage (backup.ts, #792). A device is told no path of
+	// the Mac's, and nothing of its upkeep (docs/iphone.md 5.7).
+	"engine.info": async (_params, client) =>
+		client.device !== undefined ? { build, pid: process.pid } : { build, main: engineMain, pid: process.pid, backup: backupStatus(home), presented: presentedStorage(home) },
 	/** Whether this connection may act for the person (#504): the app asks once it has connected. */
 	"connection.mayAnswer": async (_params, client) => {
 		const { allowed, why } = await mayAnswer(client);
@@ -996,6 +1019,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 			},
 			context,
 		);
+		for (const feature of host.features) await feature.forked?.(sourceId, fork.id as unknown as number);
 		// A fork of a conversation in no project goes into its folder's project (9.9), as one made is.
 		for (const feature of host.features) await feature.made?.(fork.id as unknown as number);
 		return { id: fork.id };
@@ -1285,7 +1309,7 @@ const handlers: Record<string, (params: Params, client: Client) => Promise<unkno
 	// Answered through `claim` (needs.ts), as every answer to what waits for the person is, by whichever route.
 	"inbox.decide": async (params) => {
 		const decision = text(params, "decision");
-		if (!["once", "always", "rule", "deny"].includes(decision)) throw new Error(`Unknown decision: ${decision}`);
+		if (!["once", "always", "rule", "deny"].includes(decision)) throw new Error(`Unknown decision: ${repeated(decision)}`);
 		await claim(text(params, "id"), { kind: "approval", decision: decision as "once" | "always" | "rule" | "deny" });
 		return {};
 	},
@@ -1314,6 +1338,8 @@ Object.assign(
 		touched: (id) => editMeta(id as unknown as ConversationId, (meta) => void (meta.updatedAt = Date.now())),
 	}),
 );
+// Paired devices (devices.ts): pairing and the Devices page, the app's alone, and a device's own two.
+Object.assign(handlers, deviceRequests);
 // Requests that features answer.
 for (const feature of host.features) {
 	for (const [method, handler] of Object.entries(feature.handlers ?? {})) handlers[method] = (params, client) => handler(params, client);
@@ -1505,14 +1531,10 @@ schedulesWatch.start(async (call) => {
 // Only test-copy starts an engine with this switch and the matching copy paths. The fixture implementation is
 // outside src, so an installed engine has neither the handler nor the module, even with the switch in its environment;
 // and a release engine never reads the switch (testswitches.ts).
-const testSuffix = testSwitch("PI2_TEST_COPY");
+const testSuffix = testCopySuffix();
 const checkout = dirname(dirname(dirname(engineMain)));
 const fixtureSource = new URL("../scripts/test-copy-fixture.ts", import.meta.url);
-if (testSuffix !== undefined && testSuffix !== "dev" && /^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/.test(testSuffix)
-	&& home === join(homedir(), "Library", "Application Support", `pi2-${testSuffix}`) && lstatSync(home).isDirectory()
-	&& process.env.PI2_KEYCHAIN_SERVICE === `dev.pi2.credentials.${testSuffix}`
-	&& existsSync(join(checkout, "app", "build", "test-copies", testSuffix, `pi² ${testSuffix}.app`, "Contents", "MacOS", "pi2"))
-	&& existsSync(fixtureSource)) {
+if (testSuffix !== undefined && existsSync(fixtureSource)) {
 	const { fixtureSize, seedTranscript } = await import("../scripts/test-copy-fixture.ts");
 	// The key with which scripts/test-copy answers for the person in this copy (`answer`, `call`; #504), since it is not
 	// the app. A new one at each start, in the copy's own folder in the checkout, which test-copy made and removes at
@@ -1588,14 +1610,17 @@ if (testSuffix !== undefined && testSuffix !== "dev" && /^[a-z0-9]([a-z0-9-]{0,3
 
 // ---- Socket server
 
-// Check only once the features and any test-copy methods have registered, and fail before opening the socket.
+// A request placed in no list, in a development engine's test alone: the check below must stop the engine (#673).
+const unplaced = testSwitch("PI2_UNPLACED_HANDLER");
+if (unplaced !== undefined && unplaced !== "") handlers[unplaced] = async () => ({});
+// Check only once the features and any test-copy methods have registered, and fail before opening the socket: every
+// request in one class of who may send it, and in one of the device lists, pi² Remote's in theirs alone.
+checkDeviceLists(Object.keys(handlers), Object.keys(helperRequests));
 checkRequestClasses(Object.keys(handlers));
 Object.freeze(handlers);
 
-rmSync(socketPath, { force: true }); // a socket file a killed engine left behind
-const server = createServer((socket) => {
-	const client: Client = { socket, subscriptions: new Map(), shown: new Set() };
-	clients.add(client);
+/** What an app is sent as it connects; a device session is sent the same, less what never goes to a device (remote.ts). */
+function greet(client: Client): void {
 	send(client, libraryEvent());
 	send(client, agentsEvent());
 	send(client, inboxEvent());
@@ -1609,6 +1634,27 @@ const server = createServer((socket) => {
 	for (const feature of host.features) for (const event of feature.greeting?.() ?? []) send(client, event);
 	void providersEvent().then((event) => send(client, event));
 	void agentDefaultEvent().then((event) => send(client, event));
+}
+
+/** A connection gone: what it had open is let go, and features are told. Answers whether it was still there. */
+function dropClient(client: Client): boolean {
+	if (!clients.delete(client)) return false;
+	if (computerClients.delete(client)) computer.unregister(computerHostOf.get(client));
+	if (browserClients.delete(client)) browser.unregister(browserHostOf.get(client));
+	for (const subscription of client.subscriptions.values()) void subscription.stop();
+	// An app that quits closes its panes: what they showed is no longer shown (docs/local-models-running.md).
+	if (client.shown.size > 0) for (const feature of host.features) feature.shownChanged?.();
+	for (const feature of host.features) feature.disconnected?.(client);
+	devicesClientGone(client);
+	return true;
+}
+
+
+rmSync(socketPath, { force: true }); // a socket file a killed engine left behind
+const server = createServer((socket) => {
+	const client: Client = { socket, subscriptions: new Map(), shown: new Set() };
+	clients.add(client);
+	greet(client);
 	// A message with pictures is one line of many megabytes, arriving in small chunks. The chunks of an unfinished line
 	// are kept apart and joined once, at its end: searching one growing string for the line break would copy all of it
 	// again for every chunk, seconds of work during which nothing else is answered.
@@ -1638,6 +1684,11 @@ const server = createServer((socket) => {
 				continue;
 			}
 			const method = request.method;
+			// pi² Remote's requests are taken on the connection the engine made for it alone, never here (docs/iphone.md 5.5).
+			if (forTheHelper(method)) {
+				send(client, { id: request.id, error: ONLY_FROM_THE_HELPER });
+				continue;
+			}
 			if (!Object.hasOwn(handlers, method)) {
 				send(client, { id: request.id, error: `Unknown method: ${method}` });
 				continue;
@@ -1664,15 +1715,7 @@ const server = createServer((socket) => {
 			}
 		}
 	});
-	const drop = () => {
-		if (!clients.delete(client)) return;
-		if (computerClients.delete(client)) computer.unregister(computerHostOf.get(client));
-		if (browserClients.delete(client)) browser.unregister(browserHostOf.get(client));
-		for (const subscription of client.subscriptions.values()) void subscription.stop();
-		// An app that quits closes its panes: what they showed is no longer shown (docs/local-models-running.md).
-		if (client.shown.size > 0) for (const feature of host.features) feature.shownChanged?.();
-		for (const feature of host.features) feature.disconnected?.(client);
-	};
+	const drop = () => void dropClient(client);
 	socket.on("close", drop);
 	socket.on("error", drop);
 });
@@ -1685,6 +1728,12 @@ phase = "running";
 if (stopWhenStarted) await stop();
 // Tool calls the last engine left, or anything started early, are decided only from here on (see `Host.ready`).
 markReady();
+// pi² Remote, the engine's own child, and the device sessions it carries (remote.ts): the phone's door opens only now,
+// with the engine ready and the person's PATH set, as the socket's does just below.
+wireRemote({ log, bundle: appBundle(engineMain, build, process.env), handlers, greet, drop: dropClient, approvalSwitch: (id) => inbox.get(id)?.projectSwitch ?? null, approvalHidden: (id) => {
+	const item = inbox.get(id);
+	return item !== undefined && item.kind === "approval" && hidesSomething(item);
+} });
 server.listen(socketPath, () => {
 	log(`listening on ${socketPath}`);
 	harness.resume(); // continue any run the last process left unfinished
@@ -1713,6 +1762,7 @@ async function stop(): Promise<void> {
 	// Scheduling delays inside this stop still count, just as they do toward the app's five-second restore deadline.
 	const began = performance.now();
 	stopLoginShell.abort(); // a shell too slow for start-up and still being listened to
+	stopRemote();
 	server.close();
 	for (const client of clients) client.socket.destroy();
 	clearTimeout(scheduleTimer);
@@ -1720,6 +1770,8 @@ async function stop(): Promise<void> {
 	// What features left running (background commands) goes with the engine.
 	await Promise.all(host.features.map((feature) => feature.stopping?.().catch((error) => log("a feature did not stop cleanly:", error instanceof Error ? error.message : error))));
 	await mcp.stop();
+	// What the devices' log keeps in memory a moment, written before the store closes.
+	await flushDeviceLog().catch((error) => log("devices: the log could not be written at stop:", error instanceof Error ? error.message : error));
 	await harness.close(context);
 	rmSync(socketPath, { force: true });
 	rmSync(runningMarker, { force: true });

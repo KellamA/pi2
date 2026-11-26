@@ -158,6 +158,87 @@ struct HubTests {
         #expect(transport.sent.map { $0.params["projectId"] as? String } == ["a", "b", "b", nil])
     }
 
+    /// Tried against a copy (#688): the hub opened at launch, while the phone still showed its store's last state, sent
+    /// its watch there, where it was refused; the Mac, once reached, was never told. A new connection is told again.
+    @Test func watchIsSentAgainToAConnectionThatComes() async throws {
+        let transport = HubRecordingTransport(refusal: nil)
+        let session = AppSession()
+        session.start(transport, as: .connected(.home))
+        #expect(try await eventually { session.engine.status == .connected })
+        let watch = HubTabWatch()
+
+        // Nothing shown: nothing to tell.
+        watch.resend(session.engine)
+        watch.shows("a", tab: .now, engine: session.engine)
+        watch.resend(session.engine)
+        #expect(try await eventually { transport.sent.count == 2 })
+        #expect(transport.sent.map { $0.params["projectId"] as? String } == ["a", "a"])
+        #expect(transport.sent.map { $0.params["tabs"] as? [String] } == [["now"], ["now"]])
+
+        // Once every tab has gone, a new connection has nothing to be told.
+        watch.hides("a", tab: .now, engine: session.engine)
+        watch.resend(session.engine)
+        #expect(try await eventually { transport.sent.count == 3 })
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(transport.sent.count == 3)
+    }
+
+    /// The watch follows the client's connection: sent again once the Mac is reached after the store's last state, and to
+    /// each new transport (a new session at the engine, which forgets the watch with the old one), whatever screen shows.
+    @Test func watchFollowsTheConnection() async throws {
+        let first = HubRecordingTransport(refusal: nil)
+        let session = AppSession()
+        session.start(first, as: .connecting)
+        #expect(try await eventually { session.engine.status == .connected })
+        let watch = HubTabWatch()
+
+        watch.shows("a", tab: .work, engine: session.engine)
+        #expect(try await eventually { first.sent.count == 1 })
+        // The Mac reached: the same transport, but now the Mac's.
+        session.connection = .connected(.home)
+        #expect(try await eventually { first.sent.count == 2 })
+        #expect(first.sent.last?.params["tabs"] as? [String] == ["work"])
+
+        // A new session on a new transport is told too.
+        let second = HubRecordingTransport(refusal: nil)
+        session.start(second, as: .connected(.home))
+        #expect(try await eventually { second.sent.contains { $0.method == "projects.watch" } })
+        #expect(second.sent.first { $0.method == "projects.watch" }?.params["projectId"] as? String == "a")
+
+        // Out of reach, nothing; reached again, told again.
+        let before = second.sent.count
+        session.connection = .outOfReach(lastSeen: nil)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(second.sent.count == before)
+        session.connection = .connected(.relay)
+        #expect(try await eventually { second.sent.count == before + 1 })
+    }
+
+    /// What the hub sends by itself, not tapped (the watch, the orchestrator's conversation started), waits for the Mac:
+    /// connected, or the demo or the recording, with the client's transport ready.
+    @Test func liveOnlyOnceTheMacIsReached() {
+        #expect(HubRequests.isLive(.connected(.home), engineConnected: true))
+        #expect(HubRequests.isLive(.connected(.direct, relayReachable: false), engineConnected: true))
+        #expect(HubRequests.isLive(.demo, engineConnected: true))
+        #expect(!HubRequests.isLive(.connected(.home), engineConnected: false))
+        #expect(!HubRequests.isLive(.connecting, engineConnected: true))
+        #expect(!HubRequests.isLive(.outOfReach(lastSeen: nil), engineConnected: true))
+        #expect(!HubRequests.isLive(.notPaired, engineConnected: true))
+    }
+
+    /// Tried against a copy (#688): the Chat tab of a project with no conversation asked for one as it opened, before the
+    /// Mac was reached, was refused, and showed "did not start" for good. It asks once the Mac is reached.
+    @Test func chatTabStartsTheConversationOnceTheMacIsReached() async throws {
+        let none = try #require(HubRecordingTransport.project(conversation: nil))
+        let some = try #require(HubRecordingTransport.project(conversation: 9))
+        let archived = try #require(HubRecordingTransport.project(conversation: nil, archived: true))
+        #expect(HubChatTab.startsNow(none, live: true, starting: false))
+        #expect(!HubChatTab.startsNow(none, live: false, starting: false))
+        #expect(!HubChatTab.startsNow(none, live: true, starting: true))
+        #expect(!HubChatTab.startsNow(some, live: true, starting: false))
+        #expect(!HubChatTab.startsNow(archived, live: true, starting: false))
+    }
+
     @Test func dashboardWatchesEveryProjectUntilOneIsChosen() async throws {
         let session = try await replaySession()
         let listed = session.engine.hubListedProjects
@@ -195,13 +276,24 @@ final class HubRecordingTransport: EngineTransport {
     private var handler: (@MainActor (EngineTransportEvent) -> Void)?
     private let events: Data
 
+    /// The project it sends, as the `projects` event has it.
+    static func projectJSON(conversation: Int?, archived: Bool = false) -> [String: Any] {
+        [
+            "id": "p-1", "name": "Hub test", "folder": NSNull(), "repository": NSNull(), "orchestratorId": "orchestrator-1",
+            "conversation": conversation.map { $0 as Any } ?? NSNull(), "archivedAt": archived ? 1_795_359_600_000 as Any : NSNull(),
+            "deletedAt": NSNull(), "lastWords": NSNull(), "ruleTokens": NSNull(),
+        ]
+    }
+
+    /// The same project, read as the client reads it.
+    static func project(conversation: Int?, archived: Bool = false) -> ProjectRow? {
+        guard let data = try? JSONSerialization.data(withJSONObject: projectJSON(conversation: conversation, archived: archived)) else { return nil }
+        return try? JSONDecoder().decode(ProjectRow.self, from: data)
+    }
+
     init(refusal: String?, conversation: Int? = 9) {
         self.refusal = refusal
-        let project: [String: Any] = [
-            "id": "p-1", "name": "Hub test", "folder": NSNull(), "repository": NSNull(), "orchestratorId": "orchestrator-1",
-            "conversation": conversation.map { $0 as Any } ?? NSNull(), "archivedAt": NSNull(), "deletedAt": NSNull(),
-            "lastWords": NSNull(), "ruleTokens": NSNull(),
-        ]
+        let project = Self.projectJSON(conversation: conversation)
         var data = (try? JSONSerialization.data(withJSONObject: ["event": "projects", "projects": [project]])) ?? Data()
         data.append(0x0A)
         events = data

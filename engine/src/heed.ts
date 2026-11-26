@@ -160,7 +160,7 @@ function holding(slot: Slot, args: Record<string, unknown>, approval: boolean): 
 
 /** A call that stops waiting when a message comes, in words: "the wait for sub-chat 12". */
 function giving(slot: Slot, args: Record<string, unknown>): string {
-	if (slot.name === "ask_user") return "its question to you";
+	if (slot.name === "ask_user" || slot.name === "present") return "its question to you";
 	if (slot.name === "background") return `the wait for ${typeof args.id === "string" ? args.id : "a background command"}`;
 	if (slot.name === "sub_chats") return "the wait for its sub-chats";
 	const details = (slot.details ?? {}) as { conversationId?: unknown; agentName?: unknown };
@@ -187,8 +187,9 @@ export function messageWaits(view: ConversationView, conversationId: number, app
 	const ends: string[] = [];
 	for (const slot of slots) {
 		const own = args.get(slot.callId) ?? {};
-		// A call that only waits gives way, and one not yet started that only waits will not wait at all.
-		if (GIVES_WAY.has(slot.name)) {
+		// A call that only waits gives way, and one not yet started that only waits will not wait at all. `present` waits
+		// only with a question it waits on (presented.ts, #946), and then as `ask_user` does.
+		if (GIVES_WAY.has(slot.name) || (slot.name === "present" && typeof own.question === "string" && own.question.trim() !== "" && own.wait !== false)) {
 			if (slot.status === "running") ends.push(giving(slot, own));
 			continue;
 		}

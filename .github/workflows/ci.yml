@@ -8,83 +8,172 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels its run still going. On main, each push has a run of its own, which a later push
+# does not cancel as a whole: the iPhone app's job runs only for a merge that touches the phone, so the next merge's run
+# would not build it again (#871). The macOS jobs that run on every push to main cancel their own runs still going on
+# main, as before, by a concurrency group each.
 concurrency:
-  group: ci-${{ github.ref }}
+  # An owner PR retry must not cancel a newer commit pushed between the controller's last read and its re-run request.
+  # Which runner a job went to does not enter the group (#1041): a re-run goes to GitHub's runners and a job given the
+  # owner's runner is queued like any other, so the runs that cancel each other are the same as before.
+  group: ci-${{ github.event_name == 'pull_request' && (github.run_attempt != '1' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && format('retry-{0}', github.run_id) || github.ref) || github.sha }}
   cancel-in-progress: true
 
 jobs:
-  # Decides whether a pull request needs the macOS jobs, which wait for GitHub's scarcer macOS runners (#245). One that
-  # changes only files no macOS job reads (the docs, the changelog, the version) skips them, and a skipped job reports
-  # its check as passed, so their required checks do not hold it up. Anything else, any doubt, and every push to main
-  # runs them: they run unless this job says "false", so if it fails they run too.
+  # Decides which of the jobs a change needs, one at a time, since each macOS job builds and reads different parts of
+  # the tree and macOS runners are GitHub's scarcer ones (#245, #1034). A job runs for a file its steps read; one for
+  # none of them is skipped, and a skipped job reports its check as passed, so its required check does not hold a pull
+  # request up. Any doubt runs a job: it runs unless this job says "false" for it, so if this job fails they all run,
+  # and so do they for every push to main. The iPhone app's job is decided the other way round, on a push to main too:
+  # it runs only for a change to what the phone is built from, and if this job fails (#871). scripts/ci-changes
+  # decides each, from what the jobs' steps read.
+  #
+  # It also decides where the two macOS jobs run (#1041). GitHub settles `runs-on` when a job is queued, and a queued
+  # job never moves to another runner, so the owner's runner is chosen here, as the run starts, and when it is not free
+  # both macOS jobs go to GitHub's runners. The answer is one word, in the `runner` output.
   changes:
     name: Which jobs the change needs
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      macos: ${{ steps.files.outputs.macos }}
-      # Whether the relay changed, which the protocol test (a macOS job) reads besides what macos covers.
+      # Whether Engine (type-check and tests) runs: engine/, and what its tests read outside it.
+      engine: ${{ steps.files.outputs.engine }}
+      # Whether App (build) runs: app/, the engine it builds into the bundle and runs, and the scripts it checks with.
+      app: ${{ steps.files.outputs.app }}
+      # Whether Relay (protocol test) runs: relay/, and the app's targets it builds against it.
       relay: ${{ steps.files.outputs.relay }}
+      # Whether the iPhone app's job runs.
+      iphone: ${{ steps.files.outputs.iphone }}
+      # Which of the two macOS jobs goes to the owner's runner: "app" or "engine", or empty for GitHub's runners for
+      # both (#1041).
+      runner: ${{ steps.runner.outputs.runner }}
     steps:
+      # Asked before anything of the change is checked out, so that the token this step holds reaches no step that runs
+      # the change's own files, and no other step of this job at all (docs/ci-runner.md, "The free check"). The
+      # conditions are exactly the Engine and App jobs' routing: a pull request from a branch of this repository, opened
+      # and pushed by the owner, on attempt 1, with the variable set — and then the shell asks only when the secret is
+      # not empty. The variable and the secret are checked in the shell rather than here so that the log says why the
+      # owner's runner was not asked for, which a skipped step does not. A pull request from a fork gets no secrets at
+      # all, and the conditions leave one out too, so one never reaches this step.
+      - id: runners
+        if: >-
+          ${{ github.run_attempt == '1' && github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner }}
+        env:
+          # A fine-grained token with read-only Administration for this repository holds this secret, and this one step
+          # is the only place it appears: a workflow's own token cannot read the runners, and a job rather than a step
+          # would give it to every later step. It goes to curl through curl's standard input, so it is in no command
+          # line and no file, and curl's answer goes to the runner's own temporary folder, never into a log. The job's
+          # own scripts/ci-changes runs later with the change's files, and could rewrite that answer; that can only
+          # send the same change's job to the owner's runner, which its own copy of this file can do anyway.
+          CI_RUNNER_STATUS_TOKEN: ${{ secrets.CI_RUNNER_STATUS_TOKEN }}
+          RUNNER_LABEL: ${{ vars.CI_MAC_RUNNER }}
+        run: |
+          if [[ -z $RUNNER_LABEL ]]; then
+            echo "CI_MAC_RUNNER is not set: every macOS job on GitHub's runners."
+          elif [[ -z $CI_RUNNER_STATUS_TOKEN ]]; then
+            echo "No CI_RUNNER_STATUS_TOKEN: every macOS job on GitHub's runners."
+          elif printf 'header = "Authorization: Bearer %s"\n' "$CI_RUNNER_STATUS_TOKEN" |
+            curl --config - --silent --show-error --fail --max-time 5 \
+              --output "$RUNNER_TEMP/ci-runners.json" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runners?per_page=100"; then
+            echo "Asked GitHub for the owner's runner's state."
+          else
+            rm -f "$RUNNER_TEMP/ci-runners.json"
+            echo "The request about the owner's runner failed or took more than five seconds: every macOS job on GitHub's runners."
+          fi
       - uses: actions/checkout@v7
-        if: github.event_name == 'pull_request'
         with:
-          fetch-depth: 2 # the merge commit CI tests, and main's commit it was made on
+          # A pull request: the merge commit CI tests, and main's commit it was made on. A push: the pushed commit and
+          # its first parent, which for a merge is main before it.
+          fetch-depth: 2
           persist-credentials: false
       - id: files
         env:
           EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        # The decision is in the script, which scripts/test-ci-changes holds to its cases (Scripts (tests)).
+        run: scripts/ci-changes "$EVENT" "$BEFORE"
+      - id: runner
+        # The one job, if any, that goes to the owner's runner, from the answer the step above wrote and what this
+        # change needs: "app" or "engine", or nothing. The decision is in scripts/ci-runner-free, which
+        # scripts/test-ci-runner-free holds to its cases, and it is read from the commit this one is merged on (the
+        # first parent), out of git's own objects: the change's own copy of it never runs, so a change to it cannot
+        # answer for itself. It holds no secret. A missing answer, a missing script and a word that is neither job's
+        # name all mean GitHub's runners.
+        env:
+          RUNNER_LABEL: ${{ vars.CI_MAC_RUNNER }}
+          APP_NEEDED: ${{ steps.files.outputs.app }}
+          ENGINE_NEEDED: ${{ steps.files.outputs.engine }}
         run: |
-          set -euo pipefail
-          if [[ $EVENT != pull_request ]]; then
-            echo "A $EVENT: running every job."
-            echo macos=true >> "$GITHUB_OUTPUT"
-            echo relay=true >> "$GITHUB_OUTPUT"
-            exit 0
+          word=
+          answer="$RUNNER_TEMP/ci-runners.json"
+          # No answer file: not asked (a push, or a pull request that is not the owner's), or it did not answer, which
+          # the step above said. Either way nothing goes to the owner's runner.
+          if [[ -f $answer ]]; then
+            if [[ $(git cat-file -t 'HEAD^1:scripts/ci-runner-free' 2>/dev/null) != blob ]]; then
+              echo "The commit this one is merged on has no scripts/ci-runner-free: every macOS job on GitHub's runners."
+            elif git cat-file blob 'HEAD^1:scripts/ci-runner-free' >"$RUNNER_TEMP/ci-runner-free"; then
+              word=$(bash "$RUNNER_TEMP/ci-runner-free" "$RUNNER_LABEL" "$APP_NEEDED" "$ENGINE_NEEDED" <"$answer") || word=
+            fi
           fi
-          # What the commit being tested changes from main as it is now, both names of a moved file.
-          changed=$(git diff --no-renames --name-only HEAD^1 HEAD)
-          macos=false
-          relay=false
-          [[ -n $changed ]] || { echo "No file changed: running every job."; macos=true; relay=true; }
-          while IFS= read -r file; do
-            case $file in
-              "") ;;
-              # Read by no macOS job. A file one of them starts reading comes off this list.
-              docs/* | README.md | CONTRIBUTING.md | CHANGELOG.md | SECURITY.md | CLAUDE.md) ;;
-              # Changelog entries: Transcript page (tests) checks them on Linux.
-              changelog.d/*) ;;
-              # Checked by the Linux job Scripts (tests), or by nothing else in CI (rerun-if-no-runner).
-              scripts/issue | scripts/issue-hook | scripts/test-issue | scripts/test-issue-hook) ;;
-              scripts/test-auto-merge | scripts/auto-merge | scripts/rerun-if-no-runner | scripts/test-docs-lists) ;;
-              # Checked by Scripts (tests) with stand-ins; the iPhone workflow (iphone.yml) runs the script itself.
-              scripts/iphone-sim | scripts/test-iphone-sim) ;;
-              # The relay: checked by the Linux job Relay (tests), and by the protocol test, which runs on macOS for it.
-              relay/*) relay=true ;;
-              # Copied into the app's Info.plist by app/build.sh, which drops white space: checked here for what
-              # could break that.
-              app/VERSION)
-                version=$(tr -d '[:space:]' < app/VERSION)
-                [[ $version =~ ^[0-9A-Za-z.+-]+$ ]] || { echo "::error::app/VERSION is not a version: $version"; exit 1; } ;;
-              *) echo "Needs the macOS jobs: $file"; macos=true ;;
-            esac
-          done <<<"$changed"
-          [[ $macos == true ]] || echo "Only files no macOS job reads: skipping the engine's tests and the app's build."
-          echo "macos=$macos" >> "$GITHUB_OUTPUT"
-          echo "relay=$relay" >> "$GITHUB_OUTPUT"
+          rm -f "$answer" "$RUNNER_TEMP/ci-runner-free"
+          # Only the one word the jobs below read, and only a job's name: nothing of the answer is written out.
+          case $word in
+          app | engine) ;;
+          *)
+            [[ -z $word ]] || echo "The answer was '$word', which is no job's name: every macOS job on GitHub's runners."
+            word=
+            ;;
+          esac
+          printf 'runner=%s\n' "$word" >>"$GITHUB_OUTPUT"
 
   engine:
     name: Engine (type-check and tests)
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' }}
-    runs-on: macos-26
+    if: ${{ !cancelled() && needs.changes.outputs.engine != 'false' }}
+    concurrency:
+      group: ci-engine-${{ github.event_name == 'pull_request' && github.run_id || github.ref }}
+      cancel-in-progress: true
+    # The owner's runner only when the first job found it free and gave this job to it (#1041): this run's attempt 1,
+    # of a pull request the repository's owner opened and pushed from a branch of this repository, with the variable
+    # CI_MAC_RUNNER naming the runner's label (pi2-mini), and one runner with that label online and not busy as the run
+    # started (docs/ci-runner.md). GitHub's macos-26 for everything else: the owner's runner busy, offline or asleep,
+    # the variable unset or empty, a push to main, a fork's pull request, anyone else's, a re-run, or a first job that
+    # failed and left no output. The conditions are repeated here, as the first job has them too, since a job re-run
+    # keeps the outputs it was given and only this expression's own attempt keeps a re-run off the owner's runner.
+    # The author and the actor are both required: with either alone, the owner's push to a collaborator's branch, or a
+    # collaborator's push to the owner's pull request, would send that code to the mini (docs/ci-runner.md, Conditions).
+    # This is routing, not a lock: a pull request runs its own copy of this file and can change it. The lock for
+    # outsiders is GitHub's setting that has the owner approve their runs; for a collaborator who can push, there is none
+    # but trust.
+    runs-on: "${{ github.run_attempt == '1' && needs.changes.outputs.runner == 'engine' && vars.CI_MAC_RUNNER != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && vars.CI_MAC_RUNNER || 'macos-26' }}"
     timeout-minutes: 20
     defaults:
       run:
         working-directory: engine
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      # Pinned by commit (v7), as mini-qualify.yml pins the actions of the jobs that run on the mini, so that a moved
+      # tag cannot change what a job on the owner's runner runs. No later step of this job fetches or pushes with git or
+      # asks gh, so the checkout keeps no credentials.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          # On the owner's runner the build folders stay, and the next step cleans the rest; GitHub's clean everything.
+          clean: ${{ runner.environment != 'self-hosted' }}
+      # Only on the owner's runner, which is not new at each job: what earlier jobs left (scripts/ci-runner-clean).
+      - name: Clean the owner's runner
+        if: runner.environment == 'self-hosted'
+        working-directory: ${{ github.workspace }}
+        run: scripts/ci-runner-clean start
+      # The Engine's tests write dummy items to the default keychain, which in a job's own security session on the owner's
+      # runner is the account's login keychain, locked and unopenable (#993). GitHub's runners get a new one at each job.
+      - name: Make a keychain of the job's own
+        if: runner.environment == 'self-hosted'
+        working-directory: ${{ github.workspace }}
+        run: scripts/ci-runner-clean keychain-start
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 26
           cache: npm
@@ -92,6 +181,15 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm run test:macos
+      - name: Put the job's own keychain back
+        if: always() && runner.environment == 'self-hosted'
+        working-directory: ${{ github.workspace }}
+        run: scripts/ci-runner-clean keychain-end
+      - name: Clean the owner's runner after the job
+        if: always() && runner.environment == 'self-hosted'
+        continue-on-error: true
+        working-directory: ${{ github.workspace }}
+        run: scripts/ci-runner-clean end
 
   engine-linux:
     name: Engine (Linux tests)
@@ -135,6 +233,9 @@ jobs:
     # GitHub issue: the hook's test has a stand-in gh. So does the test of scripts/auto-merge, and it touches no pull
     # request (#553). scripts/test-docs-lists checks that the docs' lists of the engine's files keep up with them (#640).
     # scripts/test-iphone-sim checks scripts/iphone-sim with stand-ins for xcrun and xcodebuild: no simulator (#681).
+    # scripts/test-ci-changes checks what the first job decides, in throwaway repositories, and that every path the
+    # phone's project and links reach outside iphone/ is one its job runs for (#871). scripts/test-ci-runner-free checks
+    # the first job's free-runner decision, from answers written in the test (#1041).
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -148,6 +249,13 @@ jobs:
       # scripts/check-protected-targets against package descriptions made in the test, one for each tampering (#674).
       - run: scripts/test-check-protected-targets
       - run: scripts/test-iphone-sim
+      - run: scripts/test-ci-changes
+      # What the first job makes of GitHub's answer about the owner's runner, which decides where open macOS jobs run
+      # (#1041).
+      - run: scripts/test-ci-runner-free
+      - run: node --test scripts/test-rerun-if-no-runner.mjs
+      # What scripts/ci-runner-clean removes and keeps on the owner's runner, in a stand-in of it with stand-in tools (#990).
+      - run: scripts/test-ci-runner-clean
 
   relay:
     name: Relay (tests)
@@ -182,17 +290,27 @@ jobs:
     # The protocol test (docs/iphone.md 10, #678): RemoteKit's relay client, through the system's WebSocket, against the
     # relay itself, run on the runner under Wrangler's local runtime on 127.0.0.1 (scripts/relay-protocol-test, through
     # relay/scripts/isolated.mjs: a throwaway home, no usage events, no Cloudflare credential). On macOS, since the client
-    # is Swift on CryptoKit and Foundation's WebSocket. Runs whenever the macOS jobs run, and when the relay changed.
-    # Deploys nothing.
+    # is Swift on CryptoKit and Foundation's WebSocket. Runs for a change to the relay, to the app's targets it builds
+    # with it (RemoteKit, pi² Remote and its check, pi2-relay-check, the package's manifest and pins) and to the engine
+    # it runs, and for any doubt (#1034). Deploys nothing.
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.outputs.macos != 'false' || needs.changes.outputs.relay == 'true') }}
-    runs-on: macos-26
-    timeout-minutes: 20
+    if: ${{ !cancelled() && needs.changes.outputs.relay != 'false' }}
+    concurrency:
+      group: ci-relay-protocol-${{ github.ref }}
+      cancel-in-progress: true
+    # As the engine's job, by a second variable, CI_MAC_RUNNER_MORE (docs/ci-runner.md).
+    runs-on: "${{ vars.CI_MAC_RUNNER_MORE != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && vars.CI_MAC_RUNNER_MORE || 'macos-26' }}"
+    # Ten more than before pi² Remote's relay end ran here (#678), which builds the helper and waits out two minutes.
+    timeout-minutes: 30
     steps:
       # Pinned by commit (v7), so that a moved tag cannot change what this job runs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          clean: ${{ runner.environment != 'self-hosted' }}
+      - name: Clean the owner's runner
+        if: runner.environment == 'self-hosted'
+        run: scripts/ci-runner-clean start
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 26
@@ -206,20 +324,62 @@ jobs:
         run: swift build --product pi2-relay-check
       - name: Run the client against the relay
         run: scripts/relay-protocol-test
+      # The relay sees only sealed bytes (docs/iphone.md 10, #683): a marker session of RemoteKit's two ends through the
+      # relay with a recorder at its edge, checked for every marker and secret in what the relay saw, kept and left in its
+      # files, and against the allow-list of what it may see; then a marker planted in clear, which the check must find.
+      - name: Check that the relay sees only sealed bytes
+        if: ${{ !cancelled() }}
+        run: scripts/relay-protocol-test --sealed
+      # pi² Remote's relay end (#678): pi2-remote-helper-check --relay against the same relay, and through a real engine.
+      - name: Install the engine's packages
+        if: ${{ !cancelled() }}
+        working-directory: engine
+        run: npm ci
+      - name: Build pi² Remote and its check
+        if: ${{ !cancelled() }}
+        working-directory: app
+        run: swift build --product pi2-remote-helper && swift build --product pi2-remote-helper-check
+      - name: Run pi² Remote's relay end against the relay
+        if: ${{ !cancelled() }}
+        run: scripts/relay-protocol-test --remote --engine engine/src/main.ts
+      - name: Clean the owner's runner after the job
+        if: always() && runner.environment == 'self-hosted'
+        continue-on-error: true
+        run: scripts/ci-runner-clean end
 
   app:
     name: App (build)
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.macos != 'false' }}
-    runs-on: macos-26
-    timeout-minutes: 20
+    if: ${{ !cancelled() && needs.changes.outputs.app != 'false' }}
+    concurrency:
+      group: ci-app-${{ github.event_name == 'pull_request' && github.run_id || github.ref }}
+      cancel-in-progress: true
+    # As the engine's job, by CI_MAC_RUNNER on attempt 1 only, and only when the first job found the runner free and
+    # gave it this job, the longer one, rather than the Engine job (docs/ci-runner.md, #1041).
+    runs-on: "${{ github.run_attempt == '1' && needs.changes.outputs.runner == 'app' && vars.CI_MAC_RUNNER != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && vars.CI_MAC_RUNNER || 'macos-26' }}"
+    # Five more than before pi² Remote's check (#675), which runs an engine and waits out a session's resume window, and
+    # five again for pi2-presented-check (#979), about four minutes, which with it once had the job cancelled at 25.
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      # Pinned by commit (v7), as the engine's job is, and for the same reason: a moved tag cannot change what a job on
+      # the owner's runner runs. No later step of this job fetches or pushes with git or asks gh, so the checkout keeps
+      # no credentials (`git rev-parse` and `git rev-list` below read the local repository only).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          clean: ${{ runner.environment != 'self-hosted' }}
+      - name: Clean the owner's runner
+        if: runner.environment == 'self-hosted'
+        run: scripts/ci-runner-clean start
+      # As the engine's job: the app's checks and the release check write to the default keychain (#993).
+      - name: Make a keychain of the job's own
+        if: runner.environment == 'self-hosted'
+        run: scripts/ci-runner-clean keychain-start
       # What scripts/test-copy refuses, in a stand-in checkout: it launches nothing. Here and not on Linux because both
       # it and its test read and write the bundle's Info.plist with PlistBuddy, which only macOS has (#235).
       - name: Check what scripts/test-copy refuses
         run: scripts/test-test-copy
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 26
       # app/Package.swift is not an owner's path, but it decides what the targets in the owner's folders are built from:
@@ -268,6 +428,13 @@ jobs:
       - name: Check the conversation page loaded ahead
         working-directory: app
         run: .build/debug/pi2-transcript-check
+      # The sandboxed view an agent's page is drawn in (#964), against hostile pages: the scheme handler serves the
+      # manifest alone, no `file:` address loads, another presentation's origin answers nothing, and nothing reaches the
+      # network. Off-screen windows of its own, 127.0.0.1 alone, about two minutes. Its DNS group reads `log show` for the
+      # check's own WebKit networking process, and says `info` rather than failing where a runner cannot read the log.
+      - name: Check the presented page's view against hostile pages
+        working-directory: app
+        run: .build/debug/pi2-presented-check
       # What the client reads of a recorded session of the engine, compared with what it read before its models moved
       # into PiModels (#669). Reads two files in the checkout; touches nothing.
       - name: Check what the client reads of the engine
@@ -283,6 +450,15 @@ jobs:
       - name: Fuzz RemoteKit's parsers
         working-directory: app
         run: .build/debug/pi2-remote-fuzz --seed 674 --seconds 60
+      # pi² Remote (#675): its exits when the engine did not start it, a release build's Keychain and Secure Enclave logic
+      # with stand-ins, the listener's ranges and limits, that a development build names no Keychain, Secure Enclave or
+      # Bonjour call, then pairing and attaching over loopback with the check as its engine, and through a real engine on
+      # a temporary data folder. No Keychain, no Bonjour, 127.0.0.1 alone; about two minutes, one the resume window.
+      - name: Check pi² Remote
+        working-directory: app
+        run: |
+          npm --prefix ../engine ci --no-audit --no-fund
+          .build/debug/pi2-remote-helper-check --engine ../engine/src/main.ts
       # RemoteKit's relay client (#678): its messages, written and read, and the client against a relay the check plays
       # itself in memory, on a clock it moves. No network. The protocol test against the relay is its own job.
       - name: Check RemoteKit's relay client
@@ -292,3 +468,62 @@ jobs:
       - name: Build RemoteKit for iOS
         working-directory: app
         run: swift build --target RemoteKit --triple arm64-apple-ios18.0 --sdk "$(xcrun --sdk iphoneos --show-sdk-path)" --scratch-path .build/ios
+      - name: Put the job's own keychain back
+        if: always() && runner.environment == 'self-hosted'
+        run: scripts/ci-runner-clean keychain-end
+      - name: Clean the owner's runner after the job
+        if: always() && runner.environment == 'self-hosted'
+        continue-on-error: true
+        run: scripts/ci-runner-clean end
+
+  iphone:
+    name: iPhone app (tests and Release build)
+    # The iPhone app (iphone/, docs/iphone.md section 10, #681): its unit tests in a simulator, then a Release build.
+    # Signs nothing and needs no secret. Runs when the change needs it, and when Which jobs the change needs fails;
+    # skipped otherwise, and a skipped job reports its check as passed, so that this check can be a required one
+    # without holding up a pull request that does not touch the phone (#871).
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.iphone != 'false' }}
+    # On main, one phone job at a time, each newer one waiting for the one before it rather than running beside it on
+    # the scarce macOS runners (#936). None is cancelled: by default a group keeps one job waiting and cancels it for the
+    # next, which would leave that merge with no finished phone job, so `queue: max` keeps every one waiting (up to 100).
+    # GitHub refuses `queue: max` with `cancel-in-progress: true`; a pull request's older job is cancelled with its run
+    # by the workflow's own group above.
+    concurrency:
+      group: ci-iphone-${{ github.ref }}
+      cancel-in-progress: false
+      queue: max
+    # The xcode-27 image (macOS 27) carries Xcode 27.0 to 27.2 and their iOS 27 simulators; macos-26 has only Xcode 26
+    # and iOS 26. The project was made with Xcode 27.2 (LastUpgradeVersion 2720), and its deployment target is iOS 18.
+    # Or the owner's runner, by CI_MAC_RUNNER_MORE, as the relay's protocol test (docs/ci-runner.md): it has Xcode 27.2
+    # at the same path.
+    runs-on: "${{ vars.CI_MAC_RUNNER_MORE != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == github.repository_owner && github.actor == github.repository_owner && vars.CI_MAC_RUNNER_MORE || 'xcode-27' }}"
+    timeout-minutes: 30
+    env:
+      # Named, not the image's default (27.1 when this was written), so that the image moving on changes nothing here.
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          clean: ${{ runner.environment != 'self-hosted' }}
+      - name: Clean the owner's runner
+        if: runner.environment == 'self-hosted'
+        run: scripts/ci-runner-clean start
+      - name: Xcode and its iOS simulators
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes ios
+      # A simulator of the job's own, made by the same script agents use (docs/development.md, Building the iPhone app):
+      # unsigned builds, its derived data in iphone/build.
+      - name: Make a simulator
+        run: scripts/iphone-sim create ci --type "iPhone 18 Pro" --runtime com.apple.CoreSimulator.SimRuntime.iOS-27-2
+      - name: Unit tests
+        run: scripts/iphone-sim test ci
+      # What has none of the #if DEBUG code, as TestFlight's builds will be (unsigned here).
+      - name: Release build
+        run: scripts/iphone-sim build ci --release
+      - name: Clean the owner's runner after the job
+        if: always() && runner.environment == 'self-hosted'
+        continue-on-error: true
+        run: scripts/ci-runner-clean end

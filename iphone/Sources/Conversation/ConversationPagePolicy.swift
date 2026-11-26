@@ -8,7 +8,9 @@ import TranscriptKit
 /// outside the page. Two reads of this same conversation are the only requests a page message leads to, as the owner
 /// decided for #687: its older entries (`conversation.older`) and one of its entries' pictures (`conversation.image`),
 /// each checked against what the conversation holds before it is asked. Any other would have to be a new case here,
-/// read in review.
+/// read in review. A file link opens the file's own screen (#698), as a hand-off's opens its sub-chat's: that screen asks
+/// the engine for the file by the link's text (`files.preview`), and the engine shows only a file this conversation's
+/// agent linked to, under its folder.
 enum ConversationPageResponse: Equatable {
     /// The page has loaded: send it the whole conversation.
     case sendEverything
@@ -19,6 +21,9 @@ enum ConversationPageResponse: Equatable {
     /// Show this sub-chat, which one of the conversation's hand-offs opened, on its own screen, by its route: that
     /// screen opens it, as from Now or Agents (docs/design/iphone.md, "An agent's conversation").
     case openConversation(Int)
+    /// Show the file this link names, by its target as the answer wrote it, on a screen of its own (#698,
+    /// `files.preview`): that screen asks for it, and the engine decides whether it may be shown.
+    case previewFile(String)
     /// Ask the engine for the entries before those the page has (`conversation.older`): a read of this conversation.
     case loadOlder
     /// Ask the engine for one of an entry's pictures (`conversation.image`) and hand it to the page: a read of this
@@ -51,7 +56,10 @@ enum ConversationPagePolicy {
         case .older:
             // Whether there is more, and whether a part is on its way, is the client's to say (`loadOlder`).
             return .loadOlder
-        case .decide, .answer, .answerNeed:
+        case .presentedImage, .expand:
+            // A `present` call's card is not sent to the phone's page yet (#946's piece 6).
+            return .ignore
+        case .decide, .answer, .answerNeed, .choose, .answerPresented:
             // The page is sent no cards to answer on the phone; what waits is answered under Needs you.
             return .notice("Answer it under Needs you, above the message field.")
         case .undo:
@@ -62,8 +70,8 @@ enum ConversationPagePolicy {
             return .notice("Trying again and editing a message are on the Mac for now.")
         case .save, .savePicture, .openDocument, .saveDocument:
             return .notice("Saving to a file is on the Mac for now.")
-        case .showFile:
-            return .notice("That file is on your Mac.")
+        case .showFile(let target):
+            return .previewFile(target)
         case .output:
             return .notice("A background command’s output opens on the Mac for now.")
         case .fileMenu:

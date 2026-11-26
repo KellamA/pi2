@@ -174,9 +174,12 @@ describe("pushes", () => {
 		expect(await push(mac, phone.device)).toEqual(OK);
 
 		// It leaves: its token goes with its slot.
-		client.send({ leave: { signature: await phone.key.sign(proofText("leave", mac.pairing, phone.device, await challengeOf(mac.pairing, phone.device))) } });
+		const notice = await phone.key.sign("a stand-in for the leave notice");
+		const signature = await phone.key.sign(proofText("leave", mac.pairing, phone.device, await challengeOf(mac.pairing, phone.device)));
+		const at = Date.now();
+		client.send({ leave: { signature, at, notice } });
 		await client.refused("left");
-		expect(await mac.client.json()).toEqual({ left: { device: phone.device } });
+		expect(await mac.client.json()).toEqual({ left: { device: phone.device, at, notice } });
 		expect(await storedToken(mac.pairing, phone.device)).toBeUndefined();
 		expect(await push(mac, phone.device)).toEqual(refusal("unknown-device"));
 		expect(standIn.pushes).toHaveLength(1);
@@ -443,7 +446,7 @@ describe("the provider token", () => {
 
 describe("push limits", () => {
 	it("counts each device's alerts and background pushes an hour apart, refusing past the limit without sending", async () => {
-		expect(PUSH_LIMITS).toEqual({ alert: 120, background: 60 });
+		expect(PUSH_LIMITS).toEqual({ alert: 120, background: 60, activity: 60 });
 		const { mac, phone, standIn } = await paired();
 		const other = await paired("development", mac);
 		await setPushLimits(mac.pairing, { alert: 3, background: 2 });

@@ -165,17 +165,24 @@ struct HomeSearchResults: View {
     }
 
     private func row(_ found: HomeSearch.Found) -> some View {
-        Button { openRoute(found.route) } label: {
-            Label {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(found.title).lineLimit(typeSize.isAccessibilitySize ? nil : found.kind == .message ? 3 : 2)
-                    if !found.detail.isEmpty {
-                        Text(found.detail).font(.footnote).foregroundStyle(.secondary).lineLimit(typeSize.isAccessibilitySize ? nil : 2)
-                    }
+        let words = VStack(alignment: .leading, spacing: 2) {
+            Text(found.title).lineLimit(typeSize.isAccessibilitySize ? nil : found.kind == .message ? 3 : 2)
+            if !found.detail.isEmpty {
+                Text(found.detail).font(.footnote).foregroundStyle(.secondary).lineLimit(typeSize.isAccessibilitySize ? nil : 2)
+            }
+        }
+        .foregroundStyle(.primary)
+        return Button { openRoute(found.route) } label: {
+            // At the largest sizes the icon gives its room to the words, as in More's rows: beside them, the title wrapped
+            // under it and the detail did not.
+            if typeSize.isAccessibilitySize {
+                words.frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Label {
+                    words
+                } icon: {
+                    Image(systemName: icon(found.kind)).foregroundStyle(.secondary)
                 }
-                .foregroundStyle(.primary)
-            } icon: {
-                Image(systemName: icon(found.kind)).foregroundStyle(.secondary)
             }
         }
         .tint(.primary)

@@ -15,6 +15,9 @@ enum Formats {
 	static let keyID = AttestKeyID(bytes: Data(repeating: 0xAB, count: 32))!
 	/// A sealed item as the relay takes one: HPKE's encapsulated key, an uncompressed point, first.
 	static let sealed = Data([4]) + Data(repeating: 0x5A, count: 120)
+	/// A device that left, as the relay passes it on (#813): its time and a notice of 64 bytes, as written and as read.
+	static let left = RelayLeft(device: device, at: 1_800_000_000_000, notice: Data(repeating: 3, count: 64))
+	static let leftText = #"{"device":"dev_EBESExQVFhcYGRobHB0eHw","at":1800000000000,"notice":"\#(Base64URL.encode(left.notice))"}"#
 
 	static func run() {
 		Check.section("Formats")
@@ -22,6 +25,7 @@ enum Formats {
 		incoming()
 		refusals()
 		proofAndHash()
+		leaveNotice()
 		backoff()
 		memory()
 	}
@@ -43,7 +47,9 @@ enum Formats {
 		let signature = Data(repeating: 1, count: 64)
 		let signatureText = Base64URL.encode(signature)
 		Check.equal(RelayOutgoing.proof(signature: signature).text, #"{"proof":{"signature":"\#(signatureText)"}}"#, "proof")
-		Check.equal(RelayOutgoing.leave(signature: signature).text, #"{"leave":{"signature":"\#(signatureText)"}}"#, "leave")
+		Check.equal(
+			RelayOutgoing.leave(signature: signature, at: 1_800_000_000_000, notice: left.notice).text,
+			#"{"leave":{"signature":"\#(signatureText)","at":1800000000000,"notice":"\#(Base64URL.encode(left.notice))"}}"#, "leave, with the time and the notice for the Mac")
 		let token = Data(repeating: 2, count: 32)
 		Check.equal(
 			RelayOutgoing.join(pairing: pairing, deviceKey: key.publicKey, attestation: Data([1, 2, 3]), keyId: keyID, token: token).text,
@@ -55,6 +61,12 @@ enum Formats {
 		Check.equal(RelayOutgoing.closeJoin.text, #"{"closeJoin":{}}"#, "closeJoin")
 		Check.equal(RelayOutgoing.deletePairing.text, #"{"deletePairing":{}}"#, "deletePairing")
 		Check.equal(RelayOutgoing.take.text, #"{"take":{}}"#, "take")
+		Check.equal(
+			RelayOutgoing.took(ids: [item, ItemID("AAECAwQFBgcICQoLDA0ODw")!]).text, #"{"took":{"ids":["ICEiIyQlJicoKSorLC0uLw","AAECAwQFBgcICQoLDA0ODw"]}}"#, "took")
+		Check.that((try? RelayOutgoing.took(ids: (0..<RelayLimits.maxTook).map { _ in ItemID.random() }).validate()) != nil, "a took of 200 ids, the most a take brings")
+		Check.refuses("a took of no ids") { try RelayOutgoing.took(ids: []).validate() }
+		Check.refuses("a took of 201 ids") { try RelayOutgoing.took(ids: (0...RelayLimits.maxTook).map { _ in ItemID.random() }).validate() }
+		Check.refuses("a took naming an id twice") { try RelayOutgoing.took(ids: [item, item]).validate() }
 		Check.equal(RelayOutgoing.ping.text, #"{"ping":{}}"#, "ping, as the relay answers without waking its object")
 		Check.equal(
 			RelayOutgoing.addDevice(device, deviceKey: key.publicKey, attestKeyId: keyID).text,
@@ -91,12 +103,17 @@ enum Formats {
 		Check.equal(
 			try? RelayIncoming.parse(#"{"ready":{"devices":[{"device":"dev_EBESExQVFhcYGRobHB0eHw","online":true}],"left":[],"pending":false,"mail":3}}"#, for: .mac),
 			.macReady(RelayMacReady(devices: [RelayDevicePresence(device: device, online: true)], left: [], pending: false, mail: 3)), "a Mac's ready")
+		Check.equal(
+			try? RelayIncoming.parse(#"{"ready":{"devices":[],"left":[\#(leftText)],"pending":false,"mail":0}}"#, for: .mac),
+			.macReady(RelayMacReady(devices: [], left: [left], pending: false, mail: 0)), "a Mac's ready, with a device that left while it was away")
 		Check.equal(try? RelayIncoming.parse(#"{"ready":{"mac":false,"mail":0}}"#, for: .device), .deviceReady(macOnline: false, mail: 0), "a phone's ready")
 		Check.equal(try? RelayIncoming.parse(#"{"joined":{"device":"dev_EBESExQVFhcYGRobHB0eHw"}}"#, for: .joining), .joined(device), "joined, to the phone")
 		Check.equal(
 			try? RelayIncoming.parse(#"{"joined":{"device":"dev_EBESExQVFhcYGRobHB0eHw","deviceKey":"\#(keyText)","keyId":"\#(keyID.text)"}}"#, for: .mac),
 			.phoneJoined(RelayJoinNotice(slot: device, deviceKey: key.publicKey, keyId: keyID)), "joined, to the Mac")
 		Check.equal(try? RelayIncoming.parse(#"{"ok":{"what":"openJoin"}}"#, for: .mac), .ok(.openJoin), "ok")
+		Check.equal(try? RelayIncoming.parse(#"{"ok":{"what":"took"}}"#, for: .mac), .ok(.took), "ok for a took, to the Mac")
+		Check.equal(try? RelayIncoming.parse(#"{"ok":{"what":"took"}}"#, for: .device), .ok(.took), "ok for a took, to a phone")
 		Check.equal(try? RelayIncoming.parse(#"{"refused":{"what":"put","why":"mailbox-full"}}"#, for: .device), .requestRefused(.put, .mailboxFull), "a request refused")
 		Check.equal(try? RelayIncoming.parse(#"{"refused":{"why":"not-listed"}}"#, for: .device), .refused(.notListed), "a refusal")
 		Check.equal((try? RelayIncoming.parse(#"{"refused":{"why":"some-new-word"}}"#, for: .mac)).map { "\($0)" }, "refused(some-new-word)", "a refusal with a word this client does not know")
@@ -116,7 +133,7 @@ enum Formats {
 		Check.equal(try? RelayIncoming.parse(#"{"mail":{}}"#, for: .device), .mail, "mail")
 		Check.equal(try? RelayIncoming.parse(#"{"online":{"device":"dev_EBESExQVFhcYGRobHB0eHw"}}"#, for: .mac), .online(device), "online")
 		Check.equal(try? RelayIncoming.parse(#"{"offline":{"device":"dev_EBESExQVFhcYGRobHB0eHw"}}"#, for: .mac), .offline(device), "offline")
-		Check.equal(try? RelayIncoming.parse(#"{"left":{"device":"dev_EBESExQVFhcYGRobHB0eHw"}}"#, for: .mac), .left(device), "left")
+		Check.equal(try? RelayIncoming.parse(#"{"left":\#(leftText)}"#, for: .mac), .left(left), "left, with the phone's time and notice")
 		Check.equal(try? RelayIncoming.parse(#"{"anotherMac":{}}"#, for: .mac), .anotherMac, "anotherMac")
 		Check.equal(
 			try? RelayIncoming.parse(#"{"held":{"device":"dev_EBESExQVFhcYGRobHB0eHw","until":1800000001000}}"#, for: .mac),
@@ -178,6 +195,15 @@ enum Formats {
 			("a refusal that is not a word", .mac, #"{"refused":{"why":"Not Listed"}}"#),
 			("a refusal with what the client sent", .mac, #"{"refused":{"why":"malformed","said":"x"}}"#),
 			("a flag that is not true or false", .mac, #"{"ready":{"devices":[],"left":[],"pending":1,"mail":0}}"#),
+			// A device that left comes with its phone's time and notice, or not at all (#813).
+			("a left without the phone's notice", .mac, #"{"left":{"device":"dev_EBESExQVFhcYGRobHB0eHw"}}"#),
+			("a left without its time", .mac, #"{"left":{"device":"dev_EBESExQVFhcYGRobHB0eHw","notice":"\#(Base64URL.encode(left.notice))"}}"#),
+			("a left whose notice is 63 bytes", .mac, #"{"left":{"device":"dev_EBESExQVFhcYGRobHB0eHw","at":1800000000000,"notice":"\#(Base64URL.encode(left.notice.prefix(63)))"}}"#),
+			("a left whose time is not one", .mac, #"{"left":{"device":"dev_EBESExQVFhcYGRobHB0eHw","at":0,"notice":"\#(Base64URL.encode(left.notice))"}}"#),
+			("a left whose time is text", .mac, #"{"left":{"device":"dev_EBESExQVFhcYGRobHB0eHw","at":"1800000000000","notice":"\#(Base64URL.encode(left.notice))"}}"#),
+			("a left with more", .mac, #"{"left":{"device":"dev_EBESExQVFhcYGRobHB0eHw","at":1800000000000,"notice":"\#(Base64URL.encode(left.notice))","why":"x"}}"#),
+			("a left to a phone", .device, #"{"left":\#(leftText)}"#),
+			("a ready listing a device that left without its notice", .mac, #"{"ready":{"devices":[],"left":["dev_EBESExQVFhcYGRobHB0eHw"],"pending":false,"mail":0}}"#),
 			("a lone surrogate", .mac, #"{"refused":{"why":"\ud800"}}"#),
 			("an unknown message", .mac, #"{"push":{}}"#),
 			("too long", .mac, #"{"refused":{"why":"\#(String(repeating: "a", count: 48 * 1024))"}}"#),
@@ -192,6 +218,10 @@ enum Formats {
 		// What the client refuses to send, before the relay would.
 		let refusedSends: [(String, RelayOutgoing)] = [
 			("a proof that is not 64 bytes", .proof(signature: Data(count: 63))),
+			("a leave whose signature is not 64 bytes", .leave(signature: Data(count: 63), at: 1, notice: Data(count: 64))),
+			("a leave whose notice is not 64 bytes", .leave(signature: Data(count: 64), at: 1, notice: Data(count: 65))),
+			("a leave with no time", .leave(signature: Data(count: 64), at: 0, notice: Data(count: 64))),
+			("a leave past the year 2286", .leave(signature: Data(count: 64), at: 10_000_000_000_000, notice: Data(count: 64))),
 			("a token hash that is not 32 bytes", .openJoin(tokenHash: Data(count: 31), expires: 1)),
 			("a window with no time", .openJoin(tokenHash: Data(count: 32), expires: 0)),
 			("an item that is not sealed", .put(to: .mac, id: item, item: Data([5]) + sealed.dropFirst(), presence: false)),
@@ -223,6 +253,91 @@ enum Formats {
 		Check.equal(key.publicKey.derRepresentation.count, 91, "a device key's SPKI DER is 91 bytes")
 		Check.refuses("the join's client data hash over a challenge of 31 bytes") { _ = try PairingSecrets.joinClientDataHash(challenge: challenge.prefix(31), deviceKey: key.publicKey) }
 		Check.that(AttestKeyID(bytes: Data(count: 31)) == nil && AttestKeyID(bytes: Data(count: 33)) == nil, "an App Attest key id from bytes that are not 32 is refused, not a trap")
+	}
+
+	/// The leave text for the Mac, and what the Mac takes as a device having left (#813): only the notice its device key
+	/// signed for this pairing, this device and this Mac, dated no more than ten minutes ahead, however old (#929); nothing
+	/// else the device key signs.
+	static func leaveNotice() {
+		let identity = key.publicKey
+		let at: Int64 = 1_800_000_000_000
+		let expected = #"{"v":2,"kind":"leave","pairing":"AAECAwQFBgcICQoLDA0ODw","device":"dev_EBESExQVFhcYGRobHB0eHw","mac":"\#(keyText)","at":1800000000000}"#
+		Check.equal(try? RelayLeaveNotice.text(pairing: pairing, device: device, identityKey: identity, at: at), Data(expected.utf8), "the leave text for the Mac")
+		Check.refuses("a leave text at no time") { _ = try RelayLeaveNotice.text(pairing: pairing, device: device, identityKey: identity, at: 0) }
+		Check.refuses("a leave text past the year 2286") { _ = try RelayLeaveNotice.text(pairing: pairing, device: device, identityKey: identity, at: 10_000_000_000_000) }
+
+		let phone = P256.Signing.PrivateKey()
+		func sign(_ text: Data) -> Data { (try? phone.sign(text)) ?? Data() }
+		let notice = sign(Data(expected.utf8))
+		let now = at + 1000
+		func taken(
+			_ left: RelayLeft, pairing: PairingID = pairing, identity: P256.Signing.PublicKey = identity, deviceKey: P256.Signing.PublicKey = phone.publicKey, now: Int64 = now
+		) -> Bool {
+			left.verified(pairing: pairing, identityKey: identity, deviceKey: deviceKey, now: now) != nil
+		}
+		let signed = RelayLeft(device: device, at: at, notice: notice)
+		let verified = signed.verified(pairing: pairing, identityKey: identity, deviceKey: phone.publicKey, now: now)
+		Check.that(verified?.device == device && verified?.at == at, "a notice the device key signed for this pairing, device and Mac is a leave")
+		Check.that(taken(signed, now: at + 61 * 86_400_000 + 1) && taken(signed, now: at + 3 * 365 * 86_400_000), "61 days on and more, still: a relay keeps a leave until the Mac's next ready, and a pairing lives while a phone connects (#929)")
+		Check.that(taken(RelayLeft(device: device, at: at, notice: otherForm(notice))), "the same signature in its other form (s or n − s), which ECDSA allows as well: the Mac acts on the device, never on the notice's bytes")
+		Check.that(taken(signed, now: at - RelayLeaveNotice.aheadAtMost), "ten minutes ahead of the Mac's clock")
+		Check.that(!taken(signed, now: at - RelayLeaveNotice.aheadAtMost - 1), "not more")
+		Check.that(!taken(signed, pairing: PairingID.random()), "not for another pairing")
+		Check.that(!taken(RelayLeft(device: DeviceID.random(), at: at, notice: notice)), "nor another device")
+		Check.that(!taken(signed, identity: P256.Signing.PrivateKey().publicKey), "nor another Mac")
+		Check.that(!taken(signed, deviceKey: P256.Signing.PrivateKey().publicKey), "nor another device key: a phone paired again has a new one")
+		Check.that(!taken(RelayLeft(device: device, at: at + 1, notice: notice)), "nor another time")
+		var flipped = notice
+		flipped[flipped.startIndex + 10] ^= 1
+		Check.that(!taken(RelayLeft(device: device, at: at, notice: flipped)), "nor a notice with a bit changed")
+		Check.that(!taken(RelayLeft(device: device, at: at, notice: notice.prefix(63))), "nor one of 63 bytes")
+		Check.that(!taken(RelayLeft(device: device, at: at, notice: Data(count: 64))), "nor one of zeros")
+		Check.that(!taken(RelayLeft(device: device, at: .min, notice: notice), now: .max), "times that are none are refused, not a trap")
+		Check.that(!taken(RelayLeft(device: device, at: .max, notice: notice), now: .min), "either way")
+
+		// What else the device key signs is never a leave: the relay's texts, and the JSON of other kinds.
+		let challenge = Data(repeating: 9, count: 32)
+		for purpose in [RelayProof.Purpose.leave, .device] {
+			let relaySigned = sign((try? RelayProof.text(purpose, pairing: pairing, device: device, challenge: challenge)) ?? Data())
+			Check.that(!taken(RelayLeft(device: device, at: at, notice: relaySigned)), "the relay's \(purpose.rawValue) signature is not a notice for the Mac")
+		}
+		let date = Date(timeIntervalSince1970: TimeInterval(at) / 1000)
+		if let attach = try? AttachClaim.make(
+			pairing: pairing, device: device, session: nil, received: nil, binding: challenge, challenge: challenge, build: "1", at: date, deviceKey: phone,
+			presenceKey: P256.Signing.PrivateKey())
+		{
+			Check.that(!taken(RelayLeft(device: device, at: at, notice: attach.statement.signature)), "an attach at the same time is not a leave")
+		} else {
+			Check.that(false, "an attach to compare with")
+		}
+		if let request = try? RequestItem.make(
+			method: "devices.forgetSelf", params: .object([]), pairing: pairing, device: device, id: item, at: date, deviceKey: phone, presenceKey: P256.Signing.PrivateKey())
+		{
+			Check.that(!taken(RelayLeft(device: device, at: at, notice: request.statement.signature)), "nor a request to forget itself")
+		} else {
+			Check.that(false, "a request to compare with")
+		}
+		// Nor can the identity key's items take the kind: no Mac item is ever of kind `leave`.
+		Check.refuses("a Mac item of kind leave") { _ = try MacItem.make(kind: "leave", body: .object([]), pairing: pairing, device: device, id: item, identity: key) }
+	}
+
+	/// The same ECDSA signature in its other form, r and n − s, which verifies as well (#897's security read): what a relay
+	/// can make of a notice it passes on without any key.
+	static func otherForm(_ signature: Data) -> Data {
+		let order: [UInt8] = [
+			0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+			0xBC, 0xE6, 0xFA, 0xAD, 0xA7, 0x17, 0x9E, 0x84, 0xF3, 0xB9, 0xCA, 0xC2, 0xFC, 0x63, 0x25, 0x51,
+		]
+		let s = [UInt8](signature.suffix(32))
+		var out = [UInt8](repeating: 0, count: 32)
+		var borrow = 0
+		for index in stride(from: 31, through: 0, by: -1) {
+			var digit = Int(order[index]) - Int(s[index]) - borrow
+			borrow = digit < 0 ? 1 : 0
+			if digit < 0 { digit += 256 }
+			out[index] = UInt8(digit)
+		}
+		return signature.prefix(32) + Data(out)
 	}
 
 	static func backoff() {

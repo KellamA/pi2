@@ -25,12 +25,13 @@ enum PushDelivery {
     }
 
     /// The notification to show for a push whose payload is `userInfo`, and what happened. `keys` is read only once
-    /// the push is one to open, so a push with no seal reads no Keychain item.
+    /// the push is one to open, so a push with no seal reads no Keychain item. `seen` remembers the pushes opened, so
+    /// that one handed back is not shown again (none in a build without the app group: nothing is remembered then).
     static func deliver(
-        _ userInfo: [AnyHashable: Any], opener: (any PushOpening)?, keys: () throws -> PushKeys?, now: Date = Date()
+        _ userInfo: [AnyHashable: Any], opener: (any PushOpening)?, keys: () throws -> PushKeys?, seen: PushSeen? = nil, now: Date = Date()
     ) -> (content: UNNotificationContent, outcome: Outcome) {
         do {
-            let notice = try open(userInfo, opener: opener, keys: keys, now: now)
+            let notice = try open(userInfo, opener: opener, keys: keys, seen: seen, now: now)
             return (content(for: notice), .shown(notice))
         } catch let refusal as PushRefusal {
             return (placeholder(), .placeholder(refusal))
@@ -42,26 +43,32 @@ enum PushDelivery {
     /// The notice inside a push, opened and verified; throws `PushRefusal` otherwise. A `pushGone` in an alert is
     /// not one to show.
     static func open(
-        _ userInfo: [AnyHashable: Any], opener: (any PushOpening)?, keys: () throws -> PushKeys?, now: Date = Date()
+        _ userInfo: [AnyHashable: Any], opener: (any PushOpening)?, keys: () throws -> PushKeys?, seen: PushSeen? = nil, now: Date = Date()
     ) throws -> PushNotice {
-        guard case let .notice(notice) = try item(userInfo, opener: opener, keys: keys, now: now) else { throw PushRefusal.notANotice }
+        guard case let .notice(notice) = try item(userInfo, opener: opener, keys: keys, seen: seen, now: now) else { throw PushRefusal.notANotice }
         return notice
     }
 
-    /// What a push holds, opened and verified: a notice, or a need whose notification is to be taken away.
+    /// What a push holds, opened and verified: a notice, or the needs whose notifications are to be taken away. A push
+    /// whose id was opened before is refused (`replayed`): only one that opened, verified and was read is remembered, so
+    /// that pushes made up by someone else cannot fill the memory.
     static func item(
-        _ userInfo: [AnyHashable: Any], opener: (any PushOpening)?, keys: () throws -> PushKeys?, now: Date = Date()
+        _ userInfo: [AnyHashable: Any], opener: (any PushOpening)?, keys: () throws -> PushKeys?, seen: PushSeen? = nil, now: Date = Date()
     ) throws -> PushItem {
         let sealed = try SealedPush.read(userInfo)
         guard let opener else { throw PushRefusal.noOpener }
         guard let keys = try? keys() else { throw PushRefusal.noKeys }
-        return try PushItem.read(try opener.open(sealed, keys: keys), now: now)
+        let opened = try opener.open(sealed, keys: keys)
+        let item = try PushItem.read(opened, now: now)
+        if let seen, !seen.firstTime(opened.id, now: now) { throw PushRefusal.replayed }
+        return item
     }
 
     /// A notice as iOS shows it. Made afresh, so nothing of the push's own alert, sound or payload is kept.
     static func content(for notice: PushNotice) -> UNMutableNotificationContent {
         let content = UNMutableNotificationContent()
         content.title = notice.title
+        content.subtitle = notice.subtitle ?? ""
         content.body = notice.body
         content.categoryIdentifier = notice.category ?? ""
         content.threadIdentifier = notice.thread

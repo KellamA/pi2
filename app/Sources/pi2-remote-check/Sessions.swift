@@ -54,6 +54,8 @@ enum Sessions {
 		refusals(mac: mac, phone: phone, pairing: pairing, secret: secret, device: paired.device)
 		refusedClaim(mac: mac, phone: phone, pairing: pairing, secret: secret)
 		refusedAttach(mac: mac, phone: phone, pairing: pairing, device: paired.device)
+		Check.section("Offering a new presence key, in place of attach")
+		offeredKey(mac: mac, phone: phone, pairing: pairing, device: paired.device)
 		Check.section("Sealed items, signed by their writer")
 		sealing(mac: mac, phone: phone, pairing: pairing, device: paired.device)
 	}
@@ -222,6 +224,37 @@ enum Sessions {
 			Check.refuses("nothing is sent on it after") { _ = try macChannel.seal(line: ControlLine.homeKey(HomeKey.random()).line) }
 			subjects += [claimerChannel, macChannel]
 			print("ok   a claim refused: bye alone, no home key")
+
+			// A refusal the Mac gives a word for (#881): pairRefused, then bye, every word sealed to the same lengths.
+			var lengths: [[Int]] = []
+			for why in PairRefusal.Why.allCases {
+				var wire = Wire()
+				let claimer = Phone()
+				let claimerHandshake = try ChannelHandshake.pairingInitiator(payload: scanned, channelKey: claimer.channel)
+				let macHandshake = try ChannelHandshake.pairingResponder(pairing: pairing, secret: secret, channelKey: mac.channel)
+				try macHandshake.readMessage(try wire.carry(try claimerHandshake.writeMessage()))
+				try claimerHandshake.readMessage(try wire.carry(try macHandshake.writeMessage()))
+				let claimerChannel = try claimerHandshake.channel()
+				let macChannel = try macHandshake.channel()
+				claimerChannel.padding = Frame.paddingBlock
+				let proof = try MacProof.make(challenge: Bytes.random(32), pairing: pairing, binding: macChannel.handshakeHash, identity: mac.identity)
+				_ = try send(.mac(proof), from: macChannel, to: claimerChannel, wire: &wire)
+				let claim = try PairClaim.make(
+					device: claimer.description, attestation: nil, keyId: nil, pairing: pairing, binding: claimerChannel.handshakeHash, deviceKey: claimer.device)
+				guard case .pair = try send(.pair(claim), from: claimerChannel, to: macChannel, wire: &wire) else { throw RemoteKitError("check", "not a claim") }
+				let messages = try macChannel.sealPairRefusal(PairRefusal(why))
+				lengths.append(messages.map(\.count))
+				Check.that(macChannel.isOver, "after pairRefused \(why.rawValue) the Mac's end is over")
+				Check.refuses("nothing is sent after pairRefused \(why.rawValue)") { _ = try macChannel.seal(line: ControlLine.homeKey(HomeKey.random()).line) }
+				var events: [ChannelEvent?] = []
+				for message in messages { events.append(try claimerChannel.open(try wire.carry(message))) }
+				Check.that(events.count == 2 && events.last == .bye, "pairRefused \(why.rawValue) comes before bye")
+				guard case let .pairRefused(read) = try line(events.first!) else { throw RemoteKitError("check", "not pairRefused") }
+				Check.that(read.why == why, "the phone reads pairRefused \(why.rawValue)")
+				subjects += [claimerChannel, macChannel]
+			}
+			Check.that(Set(lengths).count == 1 && lengths[0][0] == Frame.paddingBlock + Noise.tagLength, "every word is sealed to the same lengths, its line padded to 256 bytes")
+			print("ok   a claim refused with a word: pairRefused, then bye, no home key, all of one length")
 		} catch {
 			Check.that(false, "refused claim: \(error)")
 		}
@@ -283,7 +316,9 @@ enum Sessions {
 				let over = try mac2.seal(line: Data(repeating: 0x61, count: Lines.firstLinesMaxLength + 1))
 				Check.that(over.count == 2, "a line of 64 KB and a byte goes in two frames")
 				Check.that(try phone2.open(over[0]) == nil, "the first frame is held: it is within the limit")
+				Check.that(phone2.unfinishedLineLength == Frame.maxBodyLength, "and the channel says it holds that frame's body of an unfinished line (#908)")
 				Check.refuses("a line over the limit, at the frame that would pass it") { _ = try phone2.open(over[1]) }
+				Check.that(phone2.unfinishedLineLength == Frame.maxBodyLength, "the frame that would pass the limit is not held")
 			}
 			phoneChannel.maxLineLength = Lines.defaultMaxLength
 			macChannel.maxLineLength = Lines.defaultMaxLength
@@ -299,8 +334,14 @@ enum Sessions {
 			let longMessages = try macChannel.seal(line: long)
 			Check.that(longMessages.count == 4, "a line longer than a frame goes as more frames and a data frame")
 			events = []
-			for message in longMessages { events.append(try phoneChannel.open(try wire.carry(message))) }
+			// What the receiving end holds of the line while it is unfinished, frame by frame (#908), and none once whole.
+			var unfinished: [Int] = []
+			for message in longMessages {
+				events.append(try phoneChannel.open(try wire.carry(message)))
+				unfinished.append(phoneChannel.unfinishedLineLength)
+			}
 			Check.that(events.dropLast().allSatisfy { $0 == nil } && events.last == .line(long), "the long line arrives whole, once")
+			Check.that(unfinished == [Frame.maxBodyLength, 2 * Frame.maxBodyLength, 3 * Frame.maxBodyLength, 0], "the channel says how much of the unfinished line it holds, frame by frame, and none once it is whole (#908)")
 			Check.that(try macChannel.open(try wire.carry(try phoneChannel.sealAck(2))) == .ack(2), "an ack carries its count")
 			Check.that(try phoneChannel.open(try wire.carry(try macChannel.sealPing())) == .ping, "a ping arrives")
 			Check.that(try ControlLine.parse(ControlLine.sessionEnd.line).line == ControlLine.sessionEnd.line, "sessionEnd reads back")
@@ -644,6 +685,56 @@ enum Sessions {
 			print("ok   an attach refused: refused with each reason, then bye, all of one length")
 		} catch {
 			Check.that(false, "refused attach: \(error)")
+		}
+	}
+
+	/// The phone's offer of a new presence key on a connection's channel (#891): read by the Mac from the phone, checked
+	/// as the engine checks it, and answered `presenceKeyAccepted` or `refused` `presence` (the key waits), then `bye`, the
+	/// two of one length, so that the relay cannot tell which; nothing is sent after either.
+	static func offeredKey(mac: Mac, phone: Phone, pairing: PairingID, device: DeviceID) {
+		do {
+			let newKey = P256.Signing.PrivateKey()
+			secrets.append(newKey.rawRepresentation)
+			var lengths: [[Int]] = []
+			for accepted in [false, true] {
+				var wire = Wire()
+				let (phoneChannel, macChannel) = try kk(mac: mac, phone: phone, pairing: pairing, device: device)
+				let challenge = Bytes.random(32)
+				let proof = try MacProof.make(challenge: challenge, pairing: pairing, binding: macChannel.handshakeHash, identity: mac.identity)
+				guard case let .mac(receivedProof) = try send(.mac(proof), from: macChannel, to: phoneChannel, wire: &wire) else { throw RemoteKitError("check", "not a proof") }
+				let offer = try PresenceKeyOffer.make(
+					pairing: pairing, device: device, binding: phoneChannel.handshakeHash, challenge: receivedProof.challenge, build: "1.0.42",
+					deviceKey: phone.device, offeredKey: newKey)
+				guard case let .presenceKey(received) = try send(.presenceKey(offer), from: phoneChannel, to: macChannel, wire: &wire) else {
+					throw RemoteKitError("check", "not an offer")
+				}
+				Check.runs("pi² Remote finds the offer signed by the device on its own list, for this channel") {
+					try received.verifyDevice(deviceKey: phone.device.publicKey, pairing: pairing, device: device, binding: macChannel.handshakeHash)
+				}
+				Check.runs("the offer passes the engine's whole check, signed by the key it offers") {
+					try received.verify(deviceKey: phone.device.publicKey, pairing: pairing, device: device, binding: macChannel.handshakeHash, challenge: challenge)
+				}
+				Check.that(received.presenceKey.derRepresentation == newKey.publicKey.derRepresentation, "and names the new key")
+				let messages = accepted ? try macChannel.sealPresenceKeyAccepted() : try macChannel.sealRefusal(Refusal(.presence))
+				lengths.append(messages.map(\.count))
+				Check.that(macChannel.isOver, "after the answer to an offer the Mac's end is over")
+				var events: [ChannelEvent?] = []
+				for message in messages { events.append(try phoneChannel.open(try wire.carry(message))) }
+				Check.that(events.count == 2 && events.last == .bye, "the answer comes before bye")
+				switch try line(events.first!) {
+				case .presenceKeyAccepted: Check.that(accepted, "the phone reads presenceKeyAccepted")
+				case let .refused(refusal): Check.that(!accepted && refusal.reason == .presence, "the phone reads refused presence: the key waits on the Mac")
+				default: Check.that(false, "the phone reads the answer to its offer")
+				}
+				subjects += [phoneChannel, macChannel]
+			}
+			Check.that(lengths.count == 2 && lengths[0] == lengths[1], "an offer accepted and one that waits are answered in messages of the same lengths")
+			let (_, ended) = try kk(mac: mac, phone: phone, pairing: pairing, device: device)
+			_ = try ended.sealBye()
+			Check.refuses("no presenceKeyAccepted after bye") { _ = try ended.sealPresenceKeyAccepted() }
+			print("ok   an offer of a new presence key: read, checked, answered accepted or waiting, then bye")
+		} catch {
+			Check.that(false, "offered key: \(error)")
 		}
 	}
 

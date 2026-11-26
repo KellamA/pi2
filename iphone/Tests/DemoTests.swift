@@ -10,12 +10,18 @@ import UserNotifications
 
 /// Every screen of the app, opened in the demo mode. **A screen's issue adds its own lines here** (docs/iphone-app.md,
 /// "The demo mode"): the screen's name and the route that opens it, with what it shows taken from the demo. The test
-/// below opens each, checks that it draws, and that no request it sent went unanswered by the demo's script.
+/// below opens each, checks that it draws, and that every request it sent was answered by the demo's script, not refused
+/// as one it does not do or with a thing it does not know. Every case of `Route` must be opened at least once
+/// (`DemoRoute`).
 @MainActor
 enum DemoScreens {
     static func all(in engine: EngineSession<MessageField>) throws -> [(name: String, route: Route)] {
         let project = try #require(engine.projects.first { $0.name == "Demo project" })
         let second = try #require(engine.projects.first { $0.name == "Demo project 2" })
+        // The third project keeps its work on GitHub: an open pull request, the issue it fixes, a closed issue.
+        let site = try #require(engine.projects.first { $0.name == "Demo site" })
+        let pull = try #require(GitHubWork.of(engine.extras["github"], project: site.id)?.pulls.first?.number)
+        let reviewer = try #require(engine.allAgents.first { $0.projectId == site.id && $0.role == nil }?.id)
         let orchestrator = try #require(project.conversation)
         let agent = try #require(engine.rootConversations.first { $0.projectId == project.id && $0.id != orchestrator }?.id)
         // The sub-chat the recording holds at work, its report still to come.
@@ -57,13 +63,61 @@ enum DemoScreens {
             ("Chats and conversations outside projects (#698)", .conversations()),
             ("The archive (#698)", .archive),
             ("Background commands (#698)", .backgroundCommands()),
-            // New project (#698) asks for projects.folders as it opens, which the engine has only once #698's second part
-            // adds it, and the demo with it; a command's output needs a command, and the demo's agents start none.
-            // The demo's projects keep their work in pi², with no repository: the page says it has no pull requests, and
-            // asks the demo nothing.
-            ("A pull request (#695)", .pullRequest(project: project.id, number: 7)),
-            ("A pull request's file (#695)", .pullRequest(project: project.id, number: 7, file: "docs/projects.md")),
+            ("New project, from a folder the Mac offers (#698)", .newProject),
+            // The demo's agents link to no file: the screen says why the Mac does not show it.
+            ("A file a conversation links to (#698)", .filePreview(conversation: agent, path: "notes/plan.md")),
+            // A command's output needs a command, and the demo's agents start none: the page says the output is gone.
+            ("A background command's output, gone (#698)", .backgroundCommands(output: "bg-1")),
+            // A project whose work is kept by pi²: the page says it has no pull requests, and asks the demo nothing.
+            ("A pull request of a project with no repository (#695)", .pullRequest(project: project.id, number: 7)),
+            ("A pull request's file, no repository (#695)", .pullRequest(project: project.id, number: 7, file: "docs/projects.md")),
+            // Demo site's: its pull request with its checks, finding and files, and a file's diff.
+            ("A pull request (#695)", .pullRequest(project: site.id, number: pull)),
+            ("A pull request's file (#695)", .pullRequest(project: site.id, number: pull, file: "docs/walkthrough.md")),
+            ("A pull request that is not listed (#695)", .pullRequest(project: site.id, number: 99)),
+            ("Work on GitHub, the list (#694)", .work(project: site.id)),
+            ("Work on GitHub, an open issue (#694)", .work(project: site.id, item: 3)),
+            ("Work on GitHub, a closed issue read whole (#694)", .work(project: site.id, item: 1)),
+            ("The board's Branches, in a git repository (#696)", .board(project: site.id, page: .branches)),
+            ("The board's Agents, a project on GitHub (#696)", .board(project: site.id, page: .agents)),
+            ("A reviewing agent's page (#696)", .agent(reviewer, project: site.id)),
+            ("Demo site's hub, Now (#688)", .project(site.id, tab: .now)),
+            ("Demo site's hub, Work (#688)", .project(site.id, tab: .work)),
+            // Nothing is written while no Mac is out of reach: the Outbox is the store's, which the demo never opens.
+            ("The Outbox (#692)", .outbox),
         ]
+    }
+}
+
+/// Every case of `Route`, by name. A case added to `Route` stops this file compiling until it is named here, and then
+/// `everyScreenOpensInTheDemoWithNoSocket` fails until `DemoScreens.all` opens a route of that case.
+enum DemoRoute: String, CaseIterable {
+    case home, project, dashboard, conversation, needs, work, pullRequest, board, agent, templates, projectSettings, settings,
+         schedules, usage, conversations, archive, backgroundCommands, newProject, filePreview, outbox
+
+    init(_ route: Route) {
+        switch route {
+        case .home: self = .home
+        case .project: self = .project
+        case .dashboard: self = .dashboard
+        case .conversation: self = .conversation
+        case .needs: self = .needs
+        case .work: self = .work
+        case .pullRequest: self = .pullRequest
+        case .board: self = .board
+        case .agent: self = .agent
+        case .templates: self = .templates
+        case .projectSettings: self = .projectSettings
+        case .settings: self = .settings
+        case .schedules: self = .schedules
+        case .usage: self = .usage
+        case .conversations: self = .conversations
+        case .archive: self = .archive
+        case .backgroundCommands: self = .backgroundCommands
+        case .newProject: self = .newProject
+        case .filePreview: self = .filePreview
+        case .outbox: self = .outbox
+        }
     }
 }
 
@@ -90,19 +144,73 @@ struct DemoTests {
         return (session, transport)
     }
 
-    /// The sockets this process has open, by descriptor.
-    private func sockets() -> Set<Int32> {
-        var open = Set<Int32>()
+    /// A socket this process has open: which one (its device and inode, not its descriptor, which the system gives the
+    /// next file opened once it is closed), and what it reaches.
+    struct OpenSocket: Hashable, CustomStringConvertible {
+        let device: Int64
+        let inode: UInt64
+        /// AF_INET, AF_INET6, AF_UNIX or another family, by number.
+        let family: Int32
+        /// The address at each end, "" where it has none: an IP address, or a Unix socket's path.
+        let local: String
+        let peer: String
+
+        /// Whether it reaches past this Mac: an Internet socket with an end that is not the loopback address. A connection
+        /// to a Mac, a relay or the web is one; the other tests' stand-ins on 127.0.0.1, and the system's own Unix sockets,
+        /// are not.
+        var reachesOut: Bool {
+            guard family == AF_INET || family == AF_INET6 else { return false }
+            let loopback = { (address: String) in address.isEmpty || address == "0.0.0.0" || address == "::" || address.hasPrefix("127.") || address == "::1" }
+            return !loopback(local) || !loopback(peer)
+        }
+
+        var description: String { "family \(family) \(local) → \(peer)" }
+    }
+
+    /// The sockets this process has open.
+    private func sockets() -> Set<OpenSocket> {
+        var open = Set<OpenSocket>()
         for descriptor in 0..<getdtablesize() {
             var info = stat()
-            if fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFSOCK { open.insert(descriptor) }
+            guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFSOCK else { continue }
+            func address(_ read: (UnsafeMutablePointer<sockaddr>, UnsafeMutablePointer<socklen_t>) -> Int32) -> (Int32, String) {
+                var storage = sockaddr_storage()
+                var length = socklen_t(MemoryLayout<sockaddr_storage>.size)
+                let got = withUnsafeMutablePointer(to: &storage) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { read($0, &length) } }
+                guard got == 0 else { return (-1, "") }
+                let family = Int32(storage.ss_family)
+                var text = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
+                switch family {
+                case AF_INET:
+                    var inet = withUnsafePointer(to: &storage) { $0.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee } }
+                    inet_ntop(AF_INET, &inet.sin_addr, &text, socklen_t(text.count))
+                    return (family, String(cString: text))
+                case AF_INET6:
+                    var inet6 = withUnsafePointer(to: &storage) { $0.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { $0.pointee } }
+                    inet_ntop(AF_INET6, &inet6.sin6_addr, &text, socklen_t(text.count))
+                    return (family, String(cString: text))
+                case AF_UNIX:
+                    let path = withUnsafePointer(to: &storage) {
+                        $0.withMemoryRebound(to: sockaddr_un.self, capacity: 1) { unix in
+                            withUnsafeBytes(of: unix.pointee.sun_path) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
+                        }
+                    }
+                    return (family, path)
+                default:
+                    return (family, "")
+                }
+            }
+            let (family, local) = address { getsockname(descriptor, $0, $1) }
+            let (_, peer) = address { getpeername(descriptor, $0, $1) }
+            open.insert(OpenSocket(device: Int64(info.st_dev), inode: UInt64(info.st_ino), family: family, local: local, peer: peer))
         }
         return open
     }
 
     /// Draws `view` in a window of a phone's size, and says whether it drew anything: more than one colour.
     private func draws(_ view: some View, session: AppSession) async throws -> Bool {
-        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        // The host app's scene connects as it launches: run first, this test can be there before it.
+        let scene = try #require(try await eventuallyValue { UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first })
         let window = UIWindow(windowScene: scene)
         window.frame = CGRect(x: 0, y: 0, width: 402, height: 874)
         window.rootViewController = UIHostingController(rootView: view.environment(session))
@@ -117,19 +225,47 @@ struct DemoTests {
         return Set(stride(from: 0, to: data.count, by: 4 * 97).map { data[$0..<min($0 + 3, data.count)] }).count > 1
     }
 
+    /// Waits until the screens have sent nothing more for a moment: what one screen asks for as it opens has been asked.
+    private func settled(_ world: DemoWorld) async throws {
+        var count = -1
+        let end = Date(timeIntervalSinceNow: 5)
+        while count != world.asked.count, Date() < end {
+            count = world.asked.count
+            try await Task.sleep(for: .milliseconds(150))
+        }
+    }
+
+    /// Whether the demo turned a request away as one it does not do, or for a thing it does not know: a screen sending
+    /// it in the demo needs its answer in `Demo/Script/`, or the recording the thing it names.
+    static func notAnswered(_ refusal: String?) -> Bool {
+        guard let refusal else { return false }
+        return refusal.hasPrefix("The demo does not do ") || refusal.localizedCaseInsensitiveContains("unknown")
+    }
+
+    /// Every route of `Route` opens in the demo, inside the Demo bar, and each request a screen sends as it opens is
+    /// answered. No socket is opened that reaches past this Mac: other suites' stand-ins, which run beside this one in the
+    /// same process, listen and connect on 127.0.0.1 only, so a socket counted here is the demo's, whenever it opened.
     @Test func everyScreenOpensInTheDemoWithNoSocket() async throws {
         let before = sockets()
         let (session, transport) = try await demo()
         #expect(session.connection == .demo)
+        let screens = try DemoScreens.all(in: session.engine)
+        let missing = Set(DemoRoute.allCases).subtracting(screens.map { DemoRoute($0.route) })
+        #expect(missing.isEmpty, "routes DemoScreens.all does not open: \(missing.map(\.rawValue).sorted())")
 
         #expect(try await draws(FirstScreen(), session: AppSession()), "the first screen, with Try it without a Mac")
         #expect(try await draws(NavigationStack { RouteView(.home) }.demoBar(), session: session), "the Demo bar")
-        for (name, route) in try DemoScreens.all(in: session.engine) {
+        let world = transport.world
+        for (name, route) in screens {
+            try await settled(world)
+            let from = world.asked.count
             #expect(try await draws(NavigationStack { RouteView(route) }.demoBar(), session: session), "\(name) draws")
+            try await settled(world)
+            for asked in world.asked[from...] where Self.notAnswered(asked.refusal) {
+                Issue.record("\(name) sent \(asked.method), which the demo answered: \(asked.refusal ?? "")")
+            }
         }
-        // What the screens asked for came, and the demo answered all of it.
-        try await Task.sleep(for: .milliseconds(300))
-        #expect(transport.world.unanswered.isEmpty, "requests the demo's script does not answer: \(transport.world.unanswered)")
+        #expect(world.unanswered.isEmpty, "requests the demo's script does not answer: \(world.unanswered)")
 
         // Writing to a conversation and answering a card, the demo's two scripted answers, with the screens above.
         let orchestrator = try #require(session.engine.projects.first?.conversation)
@@ -139,26 +275,38 @@ struct DemoTests {
         let need = try #require(session.engine.needs.first { $0.kind == "question" })
         try await session.engine.call("needs.answer", ["id": need.id, "answer": ["kind": "question", "text": "Everyone"]])
 
-        #expect(sockets().subtracting(before).isEmpty, "the demo opened a socket")
+        let opened = sockets().subtracting(before).filter(\.reachesOut)
+        #expect(opened.isEmpty, "the demo opened a socket: \(opened)")
     }
 
     @Test func theRecordingHoldsEveryKindOfCardItCan() async throws {
         let (session, _) = try await demo()
         let engine = session.engine
-        #expect(engine.projects.map(\.name).sorted() == ["Demo project", "Demo project 2"])
+        #expect(engine.projects.map(\.name).sorted() == ["Demo project", "Demo project 2", "Demo site"])
         #expect(Set(engine.needs.map(\.kind)) == ["approval", "question", "decision", "reach", "rule", "limit"])
         // An approval of each sort: one the inbox holds for an agent's command, and one a project's switch asked for.
         #expect(engine.needs.contains { need in need.kind == "approval" && need.projectSwitch == nil && engine.inbox.contains { $0.id == need.id } })
         #expect(engine.needs.contains { $0.kind == "approval" && $0.projectSwitch == "fileWork" })
         #expect(engine.needs.first { $0.kind == "limit" }?.start?.agentName == "Forge")
-        // Agents at work in both projects, a sub-chat among them whose report is still to come.
-        for project in engine.projects {
+        // Agents at work in the first two projects, a sub-chat among them whose report is still to come.
+        for project in engine.projects where project.name != "Demo site" {
             #expect(engine.hubRuns(project.id).contains { $0.status == "working" }, "\(project.name)")
         }
         let reports = engine.projects.flatMap { engine.extras["reports"]?["projects"]?[$0.id]?.arrayValue ?? [] }
         #expect(reports.filter { $0["ended"] == .null }.count == 1)
         #expect(!engine.agents.isEmpty)
         #expect(engine.rootConversations.count >= 8)
+        // Demo site keeps its work on GitHub: a pull request open, its checks passing, a finding on it, opened by its
+        // orchestrator to fix an issue; and its diff, as the engine answered it.
+        let site = try #require(engine.projects.first { $0.name == "Demo site" })
+        let listing = try #require(GitHubWork.of(engine.extras["github"], project: site.id))
+        let pull = try #require(listing.pulls.first)
+        #expect(pull.state == "open" && pull.checks == "passing" && pull.mergeable == "yes")
+        #expect(pull.findings.map(\.agentName) == ["Atlas"])
+        #expect(pull.openedBy == site.conversation)
+        #expect(listing.issues.contains { $0.id == pull.work && $0.state == "open" })
+        let diff = try #require(DemoTransport.recorded()?.world.recordedAnswer("github.diff", ["projectId": site.id, "number": pull.number])?["diff"] as? String)
+        #expect(PullRequestDiff(text: diff).files.map(\.path).contains("docs/walkthrough.md"))
         // Its times are moved to now: the newest card is from the last day, not from when it was recorded.
         let newest = try #require(engine.needs.map(\.createdAt).max())
         #expect(abs(Date().timeIntervalSince1970 * 1000 - newest) < 86_400_000)
@@ -183,8 +331,9 @@ struct DemoTests {
         #expect(items[items.count - 2].kind == "user")
         #expect(items[items.count - 2].text == "Plan the launch")
         #expect(items.last?.text == DemoReplies.answer(to: "Plan the launch"))
-        #expect(engine.projects.first { $0.conversation == id }?.lastWords?.text == DemoReplies.answer(to: "Plan the launch"))
-        #expect(engine.activity.allSatisfy { $0.conversationId != id })
+        // The activity and the project's last words come in events of their own, after the conversation's (#926).
+        #expect(try await eventually { engine.projects.first { $0.conversation == id }?.lastWords?.text == DemoReplies.answer(to: "Plan the launch") })
+        #expect(try await eventually { engine.activity.allSatisfy { $0.conversationId != id } })
         #expect(transport.world.unanswered.isEmpty)
 
         // Two messages at once: the second waits its turn, and is answered after the first.
@@ -370,7 +519,8 @@ extension DemoTests {
             #expect(engine.needs.count == all - 1)
             #expect(engine.hubNeeds(project).count == inProject - 1)
             #expect(HomeLists.projects(engine).first { $0.id == project }?.needs == listed.map { $0 - 1 })
-            #expect(!engine.inbox.contains { $0.id == need.id })
+            // The inbox comes in an event of its own, after the needs (#926).
+            #expect(try await eventually { !engine.inbox.contains { $0.id == need.id } })
         }
 
         // A question, in the person's words: the orchestrator is told.
@@ -390,7 +540,7 @@ extension DemoTests {
         engine.openConversation(approval.conversationId)
         try await answer(.decide(.once), approval)
         #expect(try await eventually { engine.open[approval.conversationId]?.state?.busy == false })
-        #expect(!engine.hubRuns(approval.projectId ?? "").contains { $0.conversationId == approval.conversationId })
+        #expect(try await eventually { !engine.hubRuns(approval.projectId ?? "").contains { $0.conversationId == approval.conversationId } })
 
         // An approval the second project's fileWork switch asked for: once or deny only; allowed, the work is filed.
         let held = try #require(engine.needs.first { $0.projectSwitch == "fileWork" })
@@ -464,7 +614,7 @@ extension DemoTests {
         let asked = try #require(engine.needs.first { $0.conversationId == waiting.conversationId })
         #expect(await HubRequests.stop(engine, conversation: waiting.conversationId) == nil)
         #expect(try await eventually { !engine.needs.contains { $0.id == asked.id } && !engine.inbox.contains { $0.id == asked.id } })
-        #expect(!engine.hubRuns(project.id).contains { $0.conversationId == waiting.conversationId })
+        #expect(try await eventually { !engine.hubRuns(project.id).contains { $0.conversationId == waiting.conversationId } })
 
         // A message from the Dashboard's field: the orchestrator's answer comes, and is the project's last words.
         let orchestrator = try #require(project.conversation)
@@ -596,6 +746,201 @@ extension DemoTests {
         #expect(actions.failure?.message == "Stop the project's agents first.")
         #expect(engine.hubProject(project.id)?.archivedAt == nil)
 
+        #expect(transport.world.unanswered.isEmpty)
+    }
+}
+
+// MARK: - The screens built since, answered (#684, third part)
+
+extension DemoTests {
+    @Test func aPullRequestIsReadMergedAndSentBack() async throws {
+        let (session, transport) = try await demo()
+        let engine = session.engine
+        let site = try #require(engine.projects.first { $0.name == "Demo site" })
+        let listing = { GitHubWork.of(engine.extras["github"], project: site.id) }
+        let pull = try #require(listing()?.pulls.first)
+        let key = PullRequestStore.Key(project: site.id, number: pull.number)
+        let store = PullRequestStore()
+
+        // Its diff, as the recording kept it, read into files.
+        store.readDiff(key, through: engine)
+        #expect(try await eventually { if case .read = store.diffs[key] { true } else { false } })
+        if case .read(let diff)? = store.diffs[key] {
+            #expect(diff.files.map(\.path) == ["docs/walkthrough.md", "site/steps.json", "README.md"])
+        }
+        // A number the listing does not hold, and a project with no repository, refused in the engine's words.
+        let missing = PullRequestStore.Key(project: site.id, number: 99)
+        store.readDiff(missing, through: engine)
+        #expect(try await eventually { if case .refused = store.diffs[missing] { true } else { false } })
+        let other = try #require(engine.projects.first { $0.name == "Demo project" })
+        if case .failure(let refusal) = await PullRequestRequest.diff(project: other.id, number: 7).send(through: engine) {
+            #expect(refusal.words == "This project has no repository attached.")
+        } else {
+            Issue.record("a project with no repository sent a diff")
+        }
+
+        // Send back: the reason goes to the conversation that opened it, which answers.
+        let opener = try #require(pull.openedBy)
+        engine.openConversation(opener)
+        #expect(try await eventually { engine.open[opener]?.state != nil })
+        store.send(.sendBack(project: site.id, number: pull.number, reason: "Add the timings."), for: key, shown: "Sending back", through: engine)
+        #expect(store.pending[key] == "Sending back")
+        #expect(try await eventually { store.pending[key] == nil })
+        #expect(store.problems[key] == nil)
+        let sent = "The person sent back pull request #\(pull.number): Add the timings."
+        #expect(try await eventually { engine.open[opener]?.items.contains { $0.kind == "marker" && $0.text == sent } == true })
+        #expect(try await eventually { engine.open[opener]?.items.last?.text == DemoReplies.answer(to: sent) })
+        #expect(await PullRequestRequest.sendBack(project: site.id, number: pull.number, reason: " ").send(through: engine)
+            == .failure(PullRequestRefusal(words: "Say why it goes back, in text.")))
+
+        // Merge: merged, and the issue it fixes closed as done.
+        let fixes = try #require(pull.work)
+        store.send(.merge(project: site.id, number: pull.number), for: key, shown: "Merging", through: engine)
+        #expect(try await eventually { listing()?.pull(pull.number)?.state == "merged" })
+        #expect(store.problems[key] == nil)
+        #expect(listing()?.issues.first { $0.id == fixes }?.state == "done")
+        // Merging again changes nothing; a write whose outcome is known is not settled.
+        #expect(await PullRequestRequest.merge(project: site.id, number: pull.number).send(through: engine) == .success(.object([:])))
+        #expect(await PullRequestRequest.settle(project: site.id, intent: "i-1", happened: true).send(through: engine)
+            == .failure(PullRequestRefusal(words: "That write is not waiting to be settled.")))
+
+        // Work opens the closed issue whole, as the recording read it; one GitHub does not have is refused.
+        let closed = try #require(listing()?.issues.first { $0.id == 1 })
+        #expect(closed.text.isEmpty)
+        #expect(await WorkRequests.show(engine, project: site.id, number: 1) == nil)
+        #expect(try await eventually { listing()?.issues.first { $0.id == 1 }?.text == "A page for each step, built from Markdown." })
+        #expect(await WorkRequests.show(engine, project: site.id, number: 98) == "Unknown work item: #98")
+        #expect(await WorkRequests.refresh(engine, project: site.id) == nil)
+        // Filing on GitHub: numbered after the pull request, in the listing.
+        #expect(await WorkRequests.create(engine, project: site.id, title: "Time each step", text: "") == nil)
+        #expect(try await eventually { listing()?.issues.contains { $0.id == pull.number + 1 && $0.title == "Time each step" } == true })
+        #expect(transport.world.unanswered.isEmpty)
+    }
+
+    @Test func theBoardMakesChangesAndRemovesAgents() async throws {
+        let (session, transport) = try await demo()
+        let engine = session.engine
+        let site = try #require(engine.projects.first { $0.name == "Demo site" })
+        let agents = { engine.allAgents.filter { $0.projectId == site.id } }
+
+        // A new agent by hand, then one of the same name refused.
+        guard case .success(let made) = await BoardRequests.newAgent(engine, project: site.id, named: "Quill") else {
+            Issue.record("no agent was made")
+            return
+        }
+        #expect(try await eventually { agents().contains { $0.id == made && $0.name == "Quill" && $0.cwd == site.folder } })
+        #expect(await BoardRequests.newAgent(engine, project: site.id, named: "quill") == .failure(BoardFailure("There is already an agent called quill")))
+
+        // Saved with what the page changed; duplicated; deleted.
+        var draft = try #require(engine.agent(made))
+        let base = draft
+        draft.description = "Writes the walkthrough's pages."
+        #expect(await BoardRequests.save(engine, draft: draft, edited: BoardAgentDraft.edited(draft, from: base)) == nil)
+        #expect(try await eventually { engine.agent(made)?.description == "Writes the walkthrough's pages." })
+        guard case .success(let copy) = await BoardRequests.duplicate(engine, agent: made) else {
+            Issue.record("no copy was made")
+            return
+        }
+        #expect(try await eventually { engine.agent(copy)?.name == "Quill copy" && engine.agent(copy)?.projectId == site.id })
+        #expect(await BoardRequests.delete(engine, agent: copy) == nil)
+        #expect(try await eventually { engine.agent(copy) == nil })
+        #expect(await BoardRequests.delete(engine, agent: site.orchestratorId)?.hasSuffix("is the project's orchestrator. Make another agent the orchestrator first.") == true)
+        #expect(await BoardRequests.restore(engine, agent: made) == nil)
+
+        // A copy of a template changed since: Update from Template says what it brings, then brings it.
+        let scout = try #require(agents().first { $0.template != nil })
+        guard case .success(let changes) = await BoardRequests.templateChanges(engine, agent: scout.id) else {
+            Issue.record("no changes were read")
+            return
+        }
+        #expect(changes.map(\.setting) == ["description"])
+        #expect(await BoardRequests.updateFromTemplate(engine, agent: scout.id) == nil)
+        #expect(try await eventually { engine.agent(scout.id)?.description == engine.agent("scout")?.description })
+        #expect(await BoardRequests.templateChanges(engine, agent: scout.id) == .success([]))
+        // And a template copied in now.
+        guard case .success(let forge) = await BoardRequests.copyTemplate(engine, project: site.id, template: "forge") else {
+            Issue.record("no template was copied")
+            return
+        }
+        #expect(try await eventually { engine.agent(forge)?.template?.id == "forge" })
+
+        // An allowed command, in the project's folder, then taken away.
+        let folder = try #require(site.folder)
+        #expect(await BoardRequests.allowCommand(engine, agent: made, folder: folder, command: "npm test") == nil)
+        let rule = try #require(try await eventuallyValue { engine.agent(made)?.commandRules?.first })
+        #expect(rule.words == ["npm", "test"])
+        #expect(await BoardRequests.allowCommand(engine, agent: made, folder: "/nowhere", command: "npm test") == "Not a folder: /nowhere")
+        #expect(await BoardRequests.allowCommand(engine, agent: made, folder: folder, command: "npm test | tee")?.hasPrefix("“|” is not a plain word") == true)
+        #expect(await BoardRequests.removeCommand(engine, agent: made, rule: rule) == nil)
+        #expect(try await eventually { engine.agent(made)?.commandRules?.isEmpty == true })
+        #expect(await BoardRequests.removeCommand(engine, agent: made, rule: rule) == "That allowed command is already gone")
+
+        // A conversation with the new agent, which answers.
+        guard case .success(let conversation) = await BoardRequests.newConversation(engine, agent: made) else {
+            Issue.record("no conversation was made")
+            return
+        }
+        #expect(try await eventually { engine.conversations.contains { $0.id == conversation && $0.projectId == site.id } })
+        engine.openConversation(conversation)
+        #expect(await engine.submit("Draft the first page", to: conversation, steer: false) == .sent)
+        #expect(try await eventually { engine.open[conversation]?.items.last?.text == DemoReplies.answer(to: "Draft the first page") })
+
+        // The new agent made orchestrator, with a fresh conversation; the one before is an earlier one.
+        let before = try #require(site.conversation)
+        #expect(await BoardRequests.makeOrchestrator(engine, project: site.id, agent: made) == nil)
+        #expect(try await eventually { engine.hubProject(site.id)?.orchestratorId == made })
+        #expect(engine.agent(made)?.role == "orchestrator" && engine.agent(site.orchestratorId)?.role == nil)
+        #expect(engine.hubProject(site.id)?.conversation != before)
+        #expect(engine.conversations.first { $0.id == before }?.orchestrator == "earlier")
+        #expect(await BoardRequests.makeOrchestrator(engine, project: site.id, agent: made)?.hasSuffix("is the project's orchestrator already. To begin again with it, start a fresh conversation.") == true)
+        #expect(transport.world.unanswered.isEmpty)
+    }
+
+    @Test func aConversationGetsAWorktreeOfItsOwnAndGivesItBack() async throws {
+        let (session, transport) = try await demo()
+        let engine = session.engine
+        let site = try #require(engine.projects.first { $0.name == "Demo site" })
+        let id = try #require(site.conversation)
+        let main = try #require(engine.branches[id])
+        #expect(!main.managed && main.branch == "walkthrough-script")
+
+        let suggested = try #require(await BoardRequests.suggestBranch(engine, conversation: id))
+        #expect(suggested.hasPrefix("pi2/"))
+        #expect(await BoardRequests.createWorktree(engine, conversation: id, branch: "") == nil)
+        #expect(try await eventually { engine.branches[id]?.managed == true })
+        let own = try #require(engine.branches[id])
+        #expect(own.branch == suggested && own.worktree && own.base == "walkthrough-script" && own.state == "clean")
+        #expect(BoardData(engine).branchGroups(site.id).flatMap(\.rows).contains { $0.id == id && $0.status.managed })
+        #expect(await BoardRequests.createWorktree(engine, conversation: id, branch: "") == "This conversation already has a worktree of its own")
+        #expect(await BoardRequests.removeWorktree(engine, conversation: id, force: false, deleteBranch: true) == .success(nil))
+        #expect(try await eventually { engine.branches[id] == main })
+        #expect(await BoardRequests.removeWorktree(engine, conversation: id, force: false, deleteBranch: false)
+            == .failure(BoardFailure("This conversation has no worktree of its own")))
+
+        // A conversation outside any git repository.
+        let other = try #require(engine.projects.first { $0.name == "Demo project" }?.conversation)
+        #expect(await BoardRequests.createWorktree(engine, conversation: other, branch: "x") == "This conversation's folder is not in a git repository")
+        #expect(transport.world.unanswered.isEmpty)
+    }
+
+    @Test func aScheduleRunsNow() async throws {
+        let (session, transport) = try await demo()
+        let engine = session.engine
+        // The recording holds no schedule (the settings' tests count on none): one saved as Schedules saves it.
+        let agent = try #require(engine.agents.first { $0.name == "Atlas" }?.id)
+        let made = Schedule(id: "", title: "Morning summary", agentId: agent, prompt: "Summarise what changed overnight.",
+                            repeat: Repeat(kind: "daily", hour: 9, minute: 0), enabled: true)
+        #expect(await SettingsRequest.saveSchedule(made, isNew: true).send(through: engine) == nil)
+        #expect(try await eventually { !engine.schedules.isEmpty })
+        let schedule = try #require(engine.schedules.first)
+        let before = Set(engine.conversations.map(\.id))
+        #expect(await SettingsRequest.runSchedule(schedule.id).send(through: engine) == nil)
+        let ran = try #require(try await eventuallyValue { engine.conversations.first { !before.contains($0.id) } })
+        #expect(ran.title == schedule.title && ran.agentId == schedule.agentId)
+        #expect(try await eventually { engine.schedules.first?.lastConversationId == ran.id })
+        engine.openConversation(ran.id)
+        #expect(try await eventually { engine.open[ran.id]?.items.last?.text == DemoReplies.answer(to: schedule.prompt) })
+        #expect(await SettingsRequest.runSchedule("s-none").send(through: engine) == "Unknown schedule: s-none")
         #expect(transport.world.unanswered.isEmpty)
     }
 }

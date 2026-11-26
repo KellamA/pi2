@@ -165,6 +165,9 @@ try {
 	for (const method of ["conversation.carryOn", "conversation.fork", "work.create", "work.act", "auth.cancel", "backup.create", "endpoints.probe", "mcp.reconnect", "recovery.dismiss", "limits.dismiss", "local.download.pause", "local.download.resume", "local.download.cancel"]) {
 		assert.equal((await other.call(method)).error, SETTINGS_ONLY_IN_THE_APP, method);
 	}
+	// Presenting's (#963, #946): the app's host role and the person's network switch, refused before their handlers are reached.
+	for (const method of ["present.register", "present.drawn", "presented.network"]) assert.equal((await other.call(method, { allow: false })).error, SETTINGS_ONLY_IN_THE_APP, method);
+	for (const method of ["presented.list", "presented.picture", "presented.file"]) assert.equal((await other.call(method)).error, "id must be a conversation's number", `${method} is open to any, and reaches its handler`);
 	for (const method of ["test-copy.answerer", "test-copy.fill", "test-copy.fillProject", "not-a-request"]) {
 		assert.equal((await other.call(method)).error, `Unknown method: ${method}`);
 	}

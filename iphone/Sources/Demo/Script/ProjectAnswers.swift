@@ -154,10 +154,20 @@ enum DemoProjects {
 
     /// A fresh conversation with project `id`'s orchestrator (`startFresh`), refused as the engine refuses it while the
     /// one before still has something under way; the one before becomes an earlier one.
-    static func startFresh(_ id: String, world: DemoWorld) throws -> Int {
+    /// With `agent`, that agent of the project becomes its orchestrator in the same step (`projects.setOrchestrator`).
+    static func startFresh(_ id: String, agent chosen: String? = nil, world: DemoWorld) throws -> Int {
         guard let project = project(id, world: world), !(project["deletedAt"] is NSNumber) else { throw DemoRefusal("Unknown project: \(id)") }
         if project["archivedAt"] is NSNumber { throw DemoRefusal("This project is archived. Restore it first.") }
-        guard let agentID = project["orchestratorId"] as? String else { throw DemoRefusal("The project's orchestrator was deleted") }
+        if let chosen {
+            let found = DemoSettings.agents(world).first { $0["id"] as? String == chosen }
+            guard let found, found["removedAt"] == nil else { throw DemoRefusal("Unknown agent: \(chosen)") }
+            let name = found["name"] as? String ?? chosen
+            if found["projectId"] as? String != id { throw DemoRefusal("\(name) is not an agent of this project") }
+            if chosen == project["orchestratorId"] as? String {
+                throw DemoRefusal("\(name) is the project's orchestrator already. To begin again with it, start a fresh conversation.")
+            }
+        }
+        guard let agentID = chosen ?? project["orchestratorId"] as? String else { throw DemoRefusal("The project's orchestrator was deleted") }
         let before = (project["conversation"] as? NSNumber)?.intValue
         if let before {
             if (world.event("inbox")?["items"] as? [[String: Any]] ?? []).contains(where: { ($0["conversationId"] as? NSNumber)?.intValue == before }) {
@@ -184,9 +194,18 @@ enum DemoProjects {
             world: world
         )
         if let before { world.changeState(of: before) { $0["project"] = ["id": id, "orchestrator": "earlier"] } }
+        if let chosen, let previous = project["orchestratorId"] as? String {
+            DemoAgents.change(world) { agents in
+                for at in agents.indices {
+                    if agents[at]["id"] as? String == previous { agents[at].removeValue(forKey: "role"); agents[at]["updatedAt"] = world.now }
+                    if agents[at]["id"] as? String == chosen { agents[at]["role"] = "orchestrator"; agents[at]["updatedAt"] = world.now }
+                }
+            }
+        }
         change(id, world: world) { project in
             if let before { project["earlier"] = (project["earlier"] as? [Any] ?? []) + [before] }
             project["conversation"] = fresh
+            if let chosen { project["orchestratorId"] = chosen }
             project["updatedAt"] = world.now
         }
         return fresh

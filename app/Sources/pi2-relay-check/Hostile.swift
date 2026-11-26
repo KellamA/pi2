@@ -39,7 +39,7 @@ enum Hostile {
 		_ = try await rig.events.next("the marker") { $0 == .anotherMac ? true : nil }
 		Check.equal(rig.events.all.filter { $0 == .mail }.count, 1, "5,000 mail notices are one until the next take")
 		Check.equal(rig.events.all.filter { $0 == .online(Formats.device) }.count, 1, "100 notices that a device is online are one")
-		let taken = Task { try await rig.client.take() }
+		let taken = Task { try await rig.client.take { $0.ids } }
 		_ = try await socket.nextText("take")
 		socket.say(#"{"taken":{"count":0}}"#)
 		_ = try await taken.value
@@ -118,7 +118,7 @@ enum Hostile {
 		let rig = Sessions.Rig(.mac(Formats.pairing))
 		await rig.client.start()
 		let socket = try await Sessions.macReady(rig)
-		let taken = Task { try await rig.client.take() }
+		let taken = Task { try await rig.client.take { $0.ids } }
 		_ = try await socket.nextText("take")
 		let sealed = Base64URL.encode(Formats.sealed)
 		for _ in 0...RelayLimits.macMailbox {
@@ -141,7 +141,7 @@ enum Hostile {
 				socket.hangUp(code: 4008, reason: "left")
 			}
 		}
-		let left = Task { try await rig.client.leave() }
+		let left = Task { try await rig.client.leave(mac: Formats.key.publicKey) }
 		let finished = Task {
 			try await Task.sleep(for: .seconds(10))
 			left.cancel()
@@ -264,7 +264,7 @@ enum Hostile {
 		await rig.client.start()
 		let start = rig.clock.now()
 		let (socket, _) = try await Sessions.phoneReady(rig)
-		let left = Task { try await rig.client.leave() }
+		let left = Task { try await rig.client.leave(mac: Formats.key.publicKey) }
 		_ = try await socket.nextText("leave")
 		// The relay never answers the leave: at 30 seconds both the watchdog and the leave's deadline look.
 		try await rig.clock.waitForSleeper(until: start + 30_000, count: 2)

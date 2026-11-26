@@ -2,8 +2,8 @@ import CryptoKit
 import Foundation
 
 // The lines a channel carries on top of the engine's own (iphone.md 5.6): its first lines (the Mac's proof, `pair` and
-// `paired`, `attach` and `attached` or `refused`, resuming through `attach`), `presence` inside `attach`, `sessionEnd`,
-// `revoked` and `homeKey`.
+// `paired` or `pairRefused`, `attach` and `attached` or `refused`, resuming through `attach`), `presence` inside `attach`, `sessionEnd`,
+// `revoked` and `homeKey`; and the offer of a new presence key, `presenceKey`, answered `presenceKeyAccepted` or `refused`.
 // Each is one JSON object with one member, named for what it is. Every byte string is base64url; every P-256 public
 // key is SPKI DER, a channel key its 32 raw bytes; every signature is ECDSA P-256 over the exact `signed` text
 // (SignedStatement), and every `signed` is checked field by field, with no field missing and none unknown.
@@ -329,6 +329,12 @@ public struct AttachClaim: Sendable {
 		guard Bytes.constantTimeEqual(self.binding, binding) else { throw RemoteKitError(part, "for another channel") }
 	}
 
+	/// Whether `key` made the presence signature over the signed text: pi² Remote's own check against the presence key on
+	/// its list (#891), which it makes once the engine has taken the attach.
+	public func isPresenceSigned(by key: P256.Signing.PublicKey) -> Bool {
+		SignedStatement.verify(presence, over: Data(statement.text.utf8), by: key)
+	}
+
 	/// The whole check the engine makes (3.4), for a test end or a reader in Swift: both signatures, the binding, the
 	/// challenge issued for this channel, and `at` within two minutes of `now`.
 	public func verify(
@@ -364,6 +370,131 @@ public struct AttachClaim: Sendable {
 		return try AttachClaim(
 			statement: try SignedStatement.read(text: fields.value("signed"), signature: fields.value("signature"), part: part),
 			presence: try fields.bytes("presence", count: SignedStatement.signatureLength), received: received)
+	}
+}
+
+/// The phone's offer of a new presence key, in place of `attach` on a connection's channel, when Face ID was enrolled
+/// again and the old key no longer signs (iphone.md 3.2, #891): `{"presenceKey":{"signed":…,"signature":…,"presence":…}}`.
+/// `signed` is `{"v":2,"kind":"presenceKey","pairing":…,"device":…,"binding":…,"challenge":…,"presenceKey":…,"build":…,"at":…}`,
+/// in exactly that order, as the engine's `readSigned` reads it (devices.ts, `offerPresenceKey`), signed by the device key;
+/// `presence` is the offered key's own signature over the same text, so that the phone proves it holds it. The key is
+/// the uncompressed SPKI DER CryptoKit writes, 91 bytes, the one form `PublicKeys.signingKey` reads. The challenge is the
+/// one the Mac's proof carried on this channel, as an attach's.
+public struct PresenceKeyOffer: Sendable {
+	public let statement: SignedStatement
+	/// The offered key's signature over the signed text.
+	public let presence: Data
+
+	public let pairing: PairingID
+	public let device: DeviceID
+	public let binding: Data
+	public let challenge: Data
+	/// The new presence key.
+	public let presenceKey: P256.Signing.PublicKey
+	public let build: String
+	/// The phone's clock when it signed, in milliseconds since 1970.
+	public let at: Int64
+
+	static let fields = ["v", "kind", "pairing", "device", "binding", "challenge", "presenceKey", "build", "at"]
+
+	/// The exact text the device key and the offered key sign, for a signer that signs asynchronously (the phone's
+	/// presence session) and must sign it before `make` is called with what it made.
+	public static func signedText(
+		pairing: PairingID, device: DeviceID, binding: Data, challenge: Data, presenceKey: P256.Signing.PublicKey, build: String, at date: Date
+	) -> String {
+		JSON.text(signedValue(pairing: pairing, device: device, binding: binding, challenge: challenge, presenceKey: presenceKey, build: build, at: date))
+	}
+
+	private static func signedValue(
+		pairing: PairingID, device: DeviceID, binding: Data, challenge: Data, presenceKey: P256.Signing.PublicKey, build: String, at date: Date
+	) -> JSONValue {
+		.object([
+			("v", .integer(2)), ("kind", .string("presenceKey")), ("pairing", .string(pairing.text)), ("device", .string(device.text)),
+			("binding", .string(Base64URL.encode(binding))), ("challenge", .string(Base64URL.encode(challenge))),
+			("presenceKey", .string(PublicKeys.text(presenceKey))), ("build", .string(build)),
+			("at", .integer(Int64((date.timeIntervalSince1970 * 1000).rounded(.down)))),
+		])
+	}
+
+	/// Signs an offer of `offeredKey`'s public half with the device key and with the offered key itself.
+	public static func make(
+		pairing: PairingID, device: DeviceID, binding: Data, challenge: Data, build: String, at date: Date = Date(), deviceKey: some StatementSigner,
+		offeredKey: some StatementSigner
+	) throws -> PresenceKeyOffer {
+		let part = "presenceKey"
+		guard !Bytes.constantTimeEqual(deviceKey.publicKey.derRepresentation, offeredKey.publicKey.derRepresentation) else {
+			throw RemoteKitError(part, "the device key and the offered key are one key")
+		}
+		let signed = signedValue(pairing: pairing, device: device, binding: binding, challenge: challenge, presenceKey: offeredKey.publicKey, build: build, at: date)
+		let statement = try SignedStatement.make(signed, signer: deviceKey)
+		let presence: Data
+		do {
+			presence = try offeredKey.sign(Data(statement.text.utf8))
+		} catch {
+			throw RemoteKitError(part, "the offered key could not sign")
+		}
+		guard presence.count == SignedStatement.signatureLength else { throw RemoteKitError(part, "a presence signature of the wrong length") }
+		return try PresenceKeyOffer(statement: statement, presence: presence)
+	}
+
+	private init(statement: SignedStatement, presence: Data) throws {
+		let part = "presenceKey"
+		let fields = try Fields(statement.value, part: part, keys: Self.fields)
+		// In the engine's order too, as `readSigned` reads it: one written otherwise would only be refused there.
+		guard case let .object(members) = statement.value, members.count == Self.fields.count, zip(members, Self.fields).allSatisfy({ $0.0.sameBytes($1) }) else {
+			throw RemoteKitError(part, "fields not in the order the engine reads")
+		}
+		try fields.version()
+		guard try fields.string("kind").sameBytes("presenceKey") else { throw RemoteKitError(part, "not an offer of a presence key") }
+		guard let pairing = PairingID(try fields.string("pairing")) else { throw RemoteKitError(part, "pairing is not a pairing's id") }
+		guard let device = DeviceID(try fields.string("device")) else { throw RemoteKitError(part, "device is not a device's id") }
+		guard let key = PublicKeys.signingKey(fromBase64URL: try fields.string("presenceKey")) else { throw RemoteKitError(part, "presenceKey is not a key") }
+		self.statement = statement
+		self.presence = presence
+		self.pairing = pairing
+		self.device = device
+		presenceKey = key
+		binding = try fields.bytes("binding", count: 32)
+		challenge = try fields.bytes("challenge", count: 32)
+		build = try readBuild(fields, part: part)
+		at = try fields.integer("at")
+	}
+
+	/// pi² Remote's own check against its list of device keys (3.4), as for an attach: this device's key signed an offer
+	/// for this pairing and device, bound to this channel. The rest is the engine's to check, and to count.
+	public func verifyDevice(deviceKey: P256.Signing.PublicKey, pairing: PairingID, device: DeviceID, binding: Data) throws {
+		let part = "presenceKey"
+		guard statement.isSigned(by: deviceKey) else { throw RemoteKitError(part, "not signed by the device key") }
+		guard self.pairing == pairing else { throw RemoteKitError(part, "for another pairing") }
+		guard self.device == device else { throw RemoteKitError(part, "for another device") }
+		guard Bytes.constantTimeEqual(self.binding, binding) else { throw RemoteKitError(part, "for another channel") }
+	}
+
+	/// The whole check the engine makes (devices.ts, `offerPresenceKey`), for a test end or a reader in Swift: the device
+	/// key's signature, the offered key's own, a key that is not the device key, the binding, the challenge issued for
+	/// this channel, and `at` within two minutes of `now`.
+	public func verify(deviceKey: P256.Signing.PublicKey, pairing: PairingID, device: DeviceID, binding: Data, challenge: Data, now: Date = Date()) throws {
+		let part = "presenceKey"
+		try verifyDevice(deviceKey: deviceKey, pairing: pairing, device: device, binding: binding)
+		guard SignedStatement.verify(presence, over: Data(statement.text.utf8), by: presenceKey) else { throw RemoteKitError(part, "not signed by the key it offers") }
+		guard !Bytes.constantTimeEqual(presenceKey.derRepresentation, deviceKey.derRepresentation) else { throw RemoteKitError(part, "offers the device key") }
+		guard Bytes.constantTimeEqual(self.challenge, challenge) else { throw RemoteKitError(part, "for another challenge") }
+		let skew = abs(Double(at) / 1000 - now.timeIntervalSince1970)
+		guard skew <= attachClockWindow else { throw RemoteKitError(part, "signed more than two minutes from now") }
+	}
+
+	var json: JSONValue {
+		.object([("presenceKey", .object([
+			("signed", .string(statement.text)), ("signature", .string(statement.signatureText)), ("presence", .string(Base64URL.encode(presence))),
+		]))])
+	}
+
+	static func read(_ value: JSONValue) throws -> PresenceKeyOffer {
+		let part = "presenceKey"
+		let fields = try Fields(value, part: part, keys: ["signed", "signature", "presence"])
+		return try PresenceKeyOffer(
+			statement: try SignedStatement.read(text: fields.value("signed"), signature: fields.value("signature"), part: part),
+			presence: try fields.bytes("presence", count: SignedStatement.signatureLength))
 	}
 }
 
@@ -484,6 +615,44 @@ public struct Refusal: Sendable, Equatable {
 	}
 }
 
+/// pi² Remote's word to a phone whose claim to pair did not end paired, and why, from a fixed list (#881):
+/// `{"pairRefused":{"why":…}}`, sent just before the pairing channel's `bye` (`Channel.sealPairRefusal`), in place of
+/// `paired`. Never free text: the engine's words stay on the Mac. Only a phone that proved the code's secret and sent a
+/// claim reads it, and only for a refusal the Mac gives a word for; any other refusal ends the channel with `bye` alone.
+/// A word this build does not know, from a newer Mac, is read as no word (`why` nil), never as an error.
+public struct PairRefusal: Sendable, Equatable {
+	public enum Why: String, Sendable, CaseIterable {
+		/// The Mac could not save the pairing: the engine's record, or pi² Remote's own list of devices and the home key.
+		case unsaved
+		/// The person closed the pairing on the Mac (Cancel, a new code, Reach from an iPhone turned off).
+		case cancelled
+	}
+
+	/// Nil for a word this build does not know.
+	public var why: Why? { Why.allCases.first { $0.rawValue.sameBytes(text) } }
+
+	/// The word as written: one this build knows, or one of the same form it does not.
+	private let text: String
+
+	public init(_ why: Why) { text = why.rawValue }
+
+	private init(text: String) { self.text = text }
+
+	public static func == (lhs: PairRefusal, rhs: PairRefusal) -> Bool { lhs.text.sameBytes(rhs.text) }
+
+	var json: JSONValue { .object([("pairRefused", .object([("why", .string(text))]))]) }
+
+	static func read(_ value: JSONValue) throws -> PairRefusal {
+		let part = "pairRefused"
+		let fields = try Fields(value, part: part, keys: ["why"])
+		let text = try fields.string("why", maxLength: Refusal.maxReasonLength)
+		guard !text.isEmpty, text.utf8.allSatisfy({ (UInt8(ascii: "a")...UInt8(ascii: "z")).contains($0) }) else {
+			throw RemoteKitError(part, "why is not a word")
+		}
+		return PairRefusal(text: text)
+	}
+}
+
 /// The home path's new key, which pi² Remote gives each remaining device after it revoked one (3.6, 5.4, #845):
 /// `{"homeKey":{"key":<32 bytes>}}`. Mac to phone only, and only on a connection channel after `attached`, so only a
 /// device that proved its device key and presence key reads it; the phone keeps the one it read last, in place of the
@@ -508,10 +677,17 @@ public enum ControlLine: Sendable {
 	case revoked(Revocation)
 	/// pi² Remote did not attach the phone, and says why; the channel's `bye` follows.
 	case refused(Refusal)
+	/// The phone's claim to pair did not end paired, and the Mac says why; the pairing channel's `bye` follows.
+	case pairRefused(PairRefusal)
 	/// The phone's session ended (4.5): `{"sessionEnd":{}}`.
 	case sessionEnd
 	/// The home path's new key, after a revocation (3.6): Mac to phone, on an attached channel.
 	case homeKey(HomeKey)
+	/// The phone's offer of a new presence key, in place of `attach` (3.2, #891).
+	case presenceKey(PresenceKeyOffer)
+	/// The Mac's answer to an offer of the presence key it already uses: `{"presenceKeyAccepted":{}}`, then `bye`. While the
+	/// key waits, the answer is `refused` with `presence`.
+	case presenceKeyAccepted
 
 	/// The two ends of a channel.
 	public enum Side: Sendable, Equatable {
@@ -523,8 +699,8 @@ public enum ControlLine: Sendable {
 	/// Which end writes this line: every line of the channel's own has one writer, and the other end never sends it.
 	public var sender: Side {
 		switch self {
-		case .mac, .paired, .attached, .revoked, .refused, .homeKey: .mac
-		case .pair, .attach, .sessionEnd: .phone
+		case .mac, .paired, .attached, .revoked, .refused, .pairRefused, .homeKey, .presenceKeyAccepted: .mac
+		case .pair, .attach, .sessionEnd, .presenceKey: .phone
 		}
 	}
 
@@ -560,10 +736,16 @@ public enum ControlLine: Sendable {
 		if name.sameBytes("attached") { return .attached(try Attached.read(inner)) }
 		if name.sameBytes("revoked") { return .revoked(try Revocation.read(inner)) }
 		if name.sameBytes("refused") { return .refused(try Refusal.read(inner)) }
+		if name.sameBytes("pairRefused") { return .pairRefused(try PairRefusal.read(inner)) }
 		if name.sameBytes("homeKey") { return .homeKey(try HomeKeyLine.read(inner)) }
 		if name.sameBytes("sessionEnd") {
 			guard case let .object(fields) = inner, fields.isEmpty else { throw RemoteKitError("sessionEnd", "not empty") }
 			return .sessionEnd
+		}
+		if name.sameBytes("presenceKey") { return .presenceKey(try PresenceKeyOffer.read(inner)) }
+		if name.sameBytes("presenceKeyAccepted") {
+			guard case let .object(fields) = inner, fields.isEmpty else { throw RemoteKitError("presenceKeyAccepted", "not empty") }
+			return .presenceKeyAccepted
 		}
 		throw RemoteKitError("channel line", "not one of the channel's lines")
 	}
@@ -578,8 +760,11 @@ public enum ControlLine: Sendable {
 		case let .attached(attached): JSON.write(attached.json)
 		case let .revoked(revocation): JSON.write(revocation.json)
 		case let .refused(refusal): JSON.write(refusal.json)
+		case let .pairRefused(refusal): JSON.write(refusal.json)
 		case .sessionEnd: JSON.write(.object([("sessionEnd", .object([]))]))
 		case let .homeKey(key): JSON.write(HomeKeyLine.json(key))
+		case let .presenceKey(offer): JSON.write(offer.json)
+		case .presenceKeyAccepted: JSON.write(.object([("presenceKeyAccepted", .object([]))]))
 		}
 	}
 }

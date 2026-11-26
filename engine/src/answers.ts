@@ -9,11 +9,17 @@
 // switches): without that, a command could widen its own reach through the socket without answering anything (#513).
 // Every handler must be in exactly one of the three lists below. The engine will not listen if it is not.
 // See "Who may answer for the person" in docs/architecture.md.
+//
+// A paired phone is a second way to be the person (docs/iphone.md section 4, #673): its requests come through the pi²
+// Remote the engine started, in a device session, and each is checked against the device lists further down whatever
+// its class here. Every handler is also in exactly one of those, or the engine will not listen either.
 
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { Socket } from "node:net";
 import { dirname, isAbsolute, join } from "node:path";
+import { MAX_IMAGE_BYTES, MAX_TEXT_CHARACTERS, sizeText } from "./attachments.ts";
+import type { SwitchName } from "./projects.ts";
 
 /** What a connection that is not the app's is told: it reaches an agent that tried, so it says what to do instead. */
 export const ONLY_IN_THE_APP =
@@ -83,7 +89,7 @@ const FOR_THE_PERSON_SETTINGS: Record<string, (params: Record<string, unknown>) 
 	"projects.restoreConversation": (params) => params.dryRun !== true,
 	"projects.startFresh": () => true, // Start fresh
 	"projects.setOrchestrator": () => true, // the orchestrator's role carries its switches and tools
-	"projects.watch": () => true, // a repository attached to a project
+	"projects.watch": () => true, // which of a project's tabs this connection watches; it attaches nothing (iphone.md decision 27)
 	"projects.addAgent": () => true, // making an agent is the person's; through tools it is baseline-gated
 	"projects.rules.add": () => true, // the project's rules
 	"projects.rules.edit": () => true, // as above
@@ -128,6 +134,9 @@ const FOR_THE_PERSON_SETTINGS: Record<string, (params: Record<string, unknown>) 
 	"computer.result": () => true, // the app's half of computer use
 	"browser.register": () => true, // as with the computer
 	"browser.result": () => true, // as above
+	"present.register": () => true, // as with the browser: a command that registered would be sent presented pages to draw (#946)
+	"present.drawn": () => true, // as above: what a page drawn showed, stored as the app's finding
+	"presented.network": () => true, // whether a page an agent presented may reach the network: the person's setting
 	"mcp.save": () => true, // MCP servers and their settings
 	"mcp.reconnect": () => true, // starts the configured program or reconnects using stored credentials
 	"mcp.delete": () => true, // as above
@@ -143,6 +152,21 @@ const FOR_THE_PERSON_SETTINGS: Record<string, (params: Record<string, unknown>) 
 	"local.download.resume": () => true, // as above
 	"local.download.cancel": () => true, // as above
 	"test-copy.fillProject": () => true, // invokes several of these handlers to build a demo project
+	// Paired devices (iphone.md 3, 4.1): every devices.* request but devices.self and devices.forgetSelf. A command that
+	// could call devices.pairStart would be given the pairing's secret, and one that could confirm would pair a phone.
+	"devices.watch": () => true, // the `devices` event, with claims and the devices' keys, goes to the app alone
+	// Turning a switch on, or naming the relay; turning one off is open, as turning Allow everything off is.
+	"devices.set": (params) => params.relayAddress !== undefined || Object.values(params).some((value) => value === true),
+	"devices.pairStart": () => true, // its answer holds the pairing's secret
+	"devices.pairCancel": () => true, // the sheet closed
+	"devices.pairConfirm": () => true, // the digits the person typed
+	"devices.rename": () => true, // the person's name for a device
+	"devices.revoke": () => true, // as the person
+	"devices.resume": () => true, // takes a suspended device back
+	"devices.log": () => true, // what each device did
+	"devices.acceptPresenceKey": () => true, // a phone's new Face ID key, which then opens sessions (3.2)
+	"devices.refusePresenceKey": () => true, // drops it
+	"devices.startAgain": () => true, // unpairs every device and forgets the pairing, to register anew (#917)
 };
 
 export function settingsForThePerson(method: string, params: Record<string, unknown>): boolean {
@@ -201,6 +225,12 @@ const OPEN_TO_ANY = new Set([
 	"memory.delete", // notes never widen (projects.md 7.1)
 	"needs.list",
 	"projects.list",
+	"projects.folders", // the folders offered for a new project: those already used with pi², never a listing (folders.ts)
+	"files.preview", // reads one text file a conversation links to, under its folder; agents read files themselves
+	"presented.list", // reads what agents presented in a conversation (#946); it changes nothing
+	"presented.picture", // reads a presented picture or a page's snapshot, as conversation.image does
+	"presented.file", // reads one file of a presented page, by its manifest's path, which the engine copied
+	"presented.page", // reads a presented page's list of files, its manifest, which the engine made
 	"projects.carryOver", // a dry run alone since carrying over runs by itself at the update (#715): it changes nothing
 	"reports.wake", // waking never widens; the limits bound it
 	"wakes.cancel",
@@ -215,6 +245,10 @@ const OPEN_TO_ANY = new Set([
 	"local.model.try",
 	"test-copy.answerer",
 	"test-copy.fill",
+	"devices.self", // a device's own record and log; refused outside a device session
+	"devices.forgetSelf", // a device unpairing itself; refused outside a device session
+	"pushes.set", // what a device is pushed: its own settings; refused outside a device session (iphone.md 7)
+	"pushes.follow", // which project a device's Live Activity follows; refused outside a device session
 ]);
 
 const REQUEST_CLASSES: readonly ReadonlySet<string>[] = [new Set(Object.keys(FOR_THE_PERSON)), new Set(Object.keys(FOR_THE_PERSON_SETTINGS)), OPEN_TO_ANY];
@@ -227,6 +261,605 @@ export function checkRequestClasses(methods: Iterable<string>, classes = REQUEST
 		if (count !== 1) mistakes.push(`${method} belongs to ${count} request classes (expected one)`);
 	}
 	if (mistakes.length > 0) throw new Error(`Request classes in answers.ts:\n${mistakes.join("\n")}`);
+}
+
+// ---- From a paired device (docs/iphone.md 4.1 and 4.2, #673)
+//
+// Every request in a device session is checked here, whatever its class above: `deviceMay` answers "yes", "face" or
+// "no". "no" is refused before the handler runs. "yes" and "face" are handled as from the app: a session exists only
+// once Face ID opened it, so every request in it is under that Face ID, and none asks again (the owner's choice, 4.5).
+// "face" marks a request that widens reach: it lives an hour in the mailbox, not a day, and the Mac tells the person of
+// it (4.4). What a phone may send is decided by what a request does, not by its name (decision 27), so some rows are
+// functions of the parameters, and of the approval an answer is for.
+//
+// The lists are 4.2's table, which is decision 2's one place. FROM_A_DEVICE holds what a phone may send, "yes" or by its
+// parameters; WITH_FACE_ID what it may send that always widens; MAC_ONLY what only the Mac may do, with the handlers the
+// table does not name ("not named in 4.2"), which stay the Mac's until an issue places them; FOR_THE_HELPER the
+// requests of pi² Remote itself, taken only on the connection the engine made for it. A request added later is placed
+// by the issue that adds it, which tests its refusal from a device. engine/test/devices.ts lists every request of the
+// person's two lists above that a device may send, with its reason, so nothing reaches a phone by default.
+
+/** What a device is told when its table refuses a request. */
+export const ONLY_ON_THE_MAC = "This can be done only on the Mac, in the pi² app.";
+/** What a device is told for a request outside any session. */
+export const OPEN_WITH_FACE_ID = "Open pi² with Face ID.";
+/** What any other connection is told for a `remote.*` request. */
+export const ONLY_FROM_THE_HELPER = "This is taken only from the pi² Remote this engine started, on the connection it made for it.";
+
+export type DeviceAnswer = "yes" | "face" | "no";
+export type DevicePath = "relay" | "home" | "direct" | "mailbox";
+
+/** What `deviceMay` is told of where a request comes from. */
+export type DeviceSession = {
+	path: DevicePath;
+	/** The project switch an approval waiting under `id` asked for, or null for none (or no such approval). */
+	approvalSwitch: (id: string) => SwitchName | null;
+	/**
+	 * Whether the device's copy of the approval waiting under `id` hides part of the call (masked, or too deep), judged
+	 * from the engine's own record of it: then the phone did not see the whole call, and may not allow it.
+	 */
+	approvalHidden: (id: string) => boolean;
+};
+
+/** What a device is told when it would allow an approval it was not shown whole. */
+export const HIDDEN_FROM_THE_PHONE = "Answer this on the Mac: part of this call is hidden from the phone.";
+
+/** Whether `method` with `params` allows an approval part of which the device was not shown. Denying stays open. */
+export function allowsHiddenApproval(method: string, params: Params, session: DeviceSession): boolean {
+	const answer = params.answer as Params | null | undefined;
+	const decision = method === "inbox.decide" ? params.decision : method === "needs.answer" && typeof answer === "object" && answer?.kind === "approval" ? answer.decision : "deny";
+	return decision !== "deny" && typeof params.id === "string" && session.approvalHidden(params.id);
+}
+
+type Params = Record<string, unknown>;
+
+type DeviceRow = {
+	/** Why a phone may send it, in a line. */
+	why: string;
+	/** "yes" when left out. */
+	may?: (params: Params, session: DeviceSession) => DeviceAnswer;
+	/** 4.2's Reading row, which the devices' log leaves out (4.4); with parameters, only those that read. */
+	reading?: true | ((params: Params) => boolean);
+	/** Whether it may also wait in the relay's mailbox as a sealed item (4.2's last column). */
+	mailbox?: (params: Params) => boolean;
+	/** The text it hands a conversation as the person's own words, held to MAX_TYPED_FROM_A_DEVICE (`typedRefusal`, #924). */
+	typed?: Typed;
+	/** The other texts it may carry past MAX_OTHER_FROM_A_DEVICE, each with its own bound (`typedRefusal`, #940). */
+	texts?: Texts;
+};
+
+/** What a request's typed text is, for its refusal's words, and where it is in the parameters (as a `Texts` key). */
+type Typed = { what: "message" | "answer"; at: string };
+
+const typedMessage: Typed = { what: "message", at: "text" };
+const typedAnswer: Typed = { what: "answer", at: "text" };
+
+/**
+ * Texts a device's request may carry beyond MAX_OTHER_FROM_A_DEVICE, by where each sits in the parameters: `a.b` is the
+ * key `b` of the object at `a`, and `a[].b` the key `b` of each object in the list at `a`. Each is at most `max` UTF-16
+ * units, as every bound of the engine counts characters (`.length`), and is text, or left out (undefined or null); `what`
+ * names it in the refusal ("A task").
+ */
+type Texts = Readonly<Record<string, { what: string; max: number }>>;
+
+/** Twenty thousand characters: the bound of `work`'s text and chat instructions, and of each free text below (#940). */
+const FREE_TEXT = 20_000;
+/** A schedule's title, as `work`'s title, and a message's request id (#940). */
+const SHORT_TEXT = 200;
+
+/**
+ * The most a device's request may carry beside the texts its row names (`typed` and `texts`), counted as `typedRefusal`
+ * counts it: each value one, each string its length besides, each key of an object its length (#940). Ids, names,
+ * switches, models, paths, a note of 400 characters, a rule of 1,000, a set-up command of 4,000, an agent's settings
+ * as the phone sends the fields it changed: all are far under it. Over it, the walk stops, so a phone's list
+ * of millions of values, or an id of 66 MiB where a handler names it in a refusal (`Unknown agent: …`), or turns a
+ * list into text (`String(params.id)`), never reaches a handler.
+ */
+export const MAX_OTHER_FROM_A_DEVICE = 64 * 1024;
+
+/**
+ * The most typed text a phone may hand a conversation in one request (#924, the owner's decision): 1 MB of UTF-8. The
+ * Mac's own app is not held to it. The phone says the same before it sends (`TypedTextLimit` in iphone/).
+ */
+export const MAX_TYPED_FROM_A_DEVICE = 1024 * 1024;
+
+/**
+ * Why a device's request is refused for the text it carries, or null; the first thing `deviceRequest` asks, on every
+ * path. First its typed text (#924): a message, an edit, a message handed to an agent, or an answer in words over
+ * MAX_TYPED_FROM_A_DEVICE bytes of UTF-8. Then the rest of its parameters (#940): each text its row names (`texts`, or
+ * TEXTS_WITH_FACE_ID) at most its own bound, and text where it is given; everything else at most
+ * MAX_OTHER_FROM_A_DEVICE in all. Measured in place, before the request is handled, logged or masked, so that refusing
+ * a text of tens of megabytes copies none of it: a string's length is read, never the string (but `Buffer.byteLength`
+ * for a typed text more than a third of its limit in UTF-16 units, which reads it without copying it), and the walk
+ * stops as soon as it is over (but within an object, whose keys `for…in` lists first: at most what the line's own
+ * parse made). A request no device list holds is left to the table, which refuses it.
+ */
+export function typedRefusal(method: string, params: Params): string | null {
+	const row = Object.hasOwn(FROM_A_DEVICE, method) ? FROM_A_DEVICE[method]! : undefined;
+	if (row === undefined && !Object.hasOwn(WITH_FACE_ID, method)) return null;
+	const typed = row?.typed;
+	const text = typed === undefined ? undefined : textAt(params, typed.at);
+	if (typed !== undefined && typeof text === "string" && text.length * 3 > MAX_TYPED_FROM_A_DEVICE) {
+		const bytes = Buffer.byteLength(text, "utf8");
+		// Rounded to a tenth, a text barely over the limit would read as "1.0 MB; at most 1 MB", as a picture's would.
+		const size = sizeText(bytes) === sizeText(MAX_TYPED_FROM_A_DEVICE) ? "just over 1 MB" : sizeText(bytes);
+		if (bytes > MAX_TYPED_FROM_A_DEVICE) {
+			return typed.what === "message"
+				? `A message from a phone can carry at most 1 MB of typed text; this one has ${size}. Shorten it, or send it from the Mac.`
+				: `An answer from a phone can carry at most 1 MB of typed text; this one has ${size}. Shorten it, or answer on the Mac.`;
+		}
+	}
+	return otherTextRefusal(params, textsOf(method));
+}
+
+/** The value at the typed text's `at` (keys, no list) in `params`, or undefined where a step is not an object. */
+function textAt(params: Params, at: string): unknown {
+	let value: unknown = params;
+	for (const key of at.split(".")) value = typeof value === "object" && value !== null && Object.hasOwn(value, key) ? (value as Params)[key] : undefined;
+	return value;
+}
+
+/** A request's named texts, typed and other, as a tree of the steps to each: built once for each request. */
+type TextTree = { keys: Map<string, TextTree>; items?: TextTree; text?: { what: string; max: number } };
+const textTrees = new Map<string, TextTree>();
+
+function textsOf(method: string): TextTree {
+	const built = textTrees.get(method);
+	if (built !== undefined) return built;
+	const row = Object.hasOwn(FROM_A_DEVICE, method) ? FROM_A_DEVICE[method] : undefined;
+	const texts: Record<string, { what: string; max: number }> = { ...row?.texts, ...(Object.hasOwn(TEXTS_WITH_FACE_ID, method) ? TEXTS_WITH_FACE_ID[method] : {}) };
+	// The typed text's own bound is in bytes, measured above; here it is only to be text, and outside the rest's count.
+	if (row?.typed !== undefined) texts[row.typed.at] = { what: row.typed.what === "message" ? "A message" : "An answer", max: Number.POSITIVE_INFINITY };
+	const tree: TextTree = { keys: new Map() };
+	for (const [at, text] of Object.entries(texts)) {
+		let node = tree;
+		for (const step of at.split(".")) {
+			const list = step.endsWith("[]");
+			const key = list ? step.slice(0, -2) : step;
+			if (!node.keys.has(key)) node.keys.set(key, { keys: new Map() });
+			node = node.keys.get(key)!;
+			if (list) node = node.items ??= { keys: new Map() };
+		}
+		node.text = text;
+	}
+	textTrees.set(method, tree);
+	return tree;
+}
+
+const characters = (n: number) => n.toLocaleString("en-US");
+
+/**
+ * Why the parameters are refused for their texts, or null: walked without recursion, a value at a time, each named text
+ * measured where it sits, and the rest counted against MAX_OTHER_FROM_A_DEVICE until the count is spent. A list is read
+ * by its indices, so a long one is read only as far as the count; an object's keys are what `for…in` lists, and it
+ * lists them all before the first is counted, a list of pointers no longer than the object the line's parse made.
+ */
+function otherTextRefusal(params: Params, tree: TextTree): string | null {
+	let left = MAX_OTHER_FROM_A_DEVICE;
+	const over = `A request from a phone can carry at most ${characters(MAX_OTHER_FROM_A_DEVICE)} characters beside its message or its longer texts; this one carries more. Shorten what it holds, or do this on the Mac.`;
+	const waiting: [unknown, TextTree | undefined][] = [];
+	// Each value is measured as it is met, so that what waits to be walked is never more than the count allows.
+	const meet = (value: unknown, node: TextTree | undefined): string | null => {
+		const text = node?.text;
+		if (text !== undefined) {
+			if (value === undefined || value === null) return null;
+			if (typeof value !== "string") return `${text.what} from a phone must be text.`;
+			if (value.length > text.max) return `${text.what} from a phone can be at most ${characters(text.max)} characters; this one has ${characters(value.length)}. Shorten it, or do this on the Mac.`;
+			return null;
+		}
+		left -= typeof value === "string" ? 1 + value.length : 1;
+		if (left < 0) return over;
+		if (typeof value === "object" && value !== null) waiting.push([value, node]);
+		return null;
+	};
+	let refused = meet(params, tree);
+	while (refused === null && waiting.length > 0) {
+		const [value, node] = waiting.pop()!;
+		if (Array.isArray(value)) {
+			for (let index = 0; refused === null && index < value.length; index++) refused = meet(value[index], node?.items);
+		} else {
+			for (const key in value as Params) {
+				if (!Object.hasOwn(value as Params, key)) continue;
+				left -= key.length;
+				refused = meet((value as Params)[key], node?.keys.get(key));
+				if (refused !== null) break;
+			}
+		}
+	}
+	return refused;
+}
+
+/** The switches whose approvals are the person's ordinary acts; an approval for any other widens (4.2). */
+const NARROW_SWITCHES: ReadonlySet<SwitchName> = new Set<SwitchName>(["startAgents", "fileWork", "closeWork"]);
+
+/** An answer to an approval: once or deny, unless once allows what a widening switch holds back; always and rule widen. */
+function approvalAnswer(decision: unknown, id: unknown, session: DeviceSession): DeviceAnswer {
+	if (decision === "deny") return "yes";
+	if (decision === "always" || decision === "rule") return "face";
+	if (decision !== "once") return "no";
+	const asked = typeof id === "string" ? session.approvalSwitch(id) : null;
+	return asked === null || NARROW_SWITCHES.has(asked) ? "yes" : "face";
+}
+
+/** Any request with `confirmLimit` starts work past a limit (4.2, "Answers that widen"). */
+const pastALimit = (params: Params): DeviceAnswer => (params.confirmLimit !== undefined ? "face" : "yes");
+const always = () => true;
+
+const FROM_A_DEVICE: Record<string, DeviceRow> = {
+	// Reading.
+	"engine.info": { why: "reading", reading: true },
+	"engine.lag": { why: "reading", reading: true },
+	"connection.mayAnswer": { why: "reading: it answers false in a device session, with why (4.1)", reading: true },
+	"conversation.open": { why: "reading", reading: true },
+	"conversation.older": { why: "reading", reading: true },
+	"conversation.close": { why: "reading", reading: true },
+	"conversations.shown": { why: "reading", reading: true },
+	"conversation.image": { why: "reading", reading: true },
+	"conversation.export": { why: "reading, and logged, since it copies a transcript out (4.4)" },
+	search: { why: "reading", reading: true },
+	"submission.get": { why: "reading", reading: true },
+	"background.output": { why: "reading", reading: true },
+	"changes.list": { why: "reading", reading: true },
+	"github.refresh": { why: "reading", reading: true },
+	"github.diff": { why: "reading", reading: true },
+	"github.unknown": { why: "reading", reading: true },
+	"needs.list": { why: "reading", reading: true },
+	"projects.list": { why: "reading", reading: true },
+	"projects.watch": { why: "reading: it chooses which of a project's tabs this session watches, and attaches nothing (decision 27)", reading: true },
+	"work.list": { why: "reading", reading: true },
+	"worktree.suggest": { why: "reading", reading: true },
+	"branches.refresh": { why: "reading", reading: true },
+	"limits.refresh": { why: "reading", reading: true },
+	"settings.getCompaction": { why: "reading", reading: true },
+	"local.status": { why: "reading", reading: true },
+	"projects.folders": { why: "reading: the folders the Mac offers for a new project, those already used with pi², never a listing of the disk (folders.ts)", reading: true },
+	"files.preview": { why: "reading a text file the conversation links to, under its folder, not ignored by git, at most 256 KB; logged, since it copies a file out (4.4, 5.7)" },
+	"presented.picture": { why: "reading: a picture an agent presented, or a page's snapshot, as conversation.image is (#946)", reading: true },
+	// Messages, starts and stops.
+	submit: {
+		why: "a message, as the person sends one at the Mac",
+		// Text only, at most 4,000 characters, in the mailbox: never more than 8,000 UTF-16 units, so that a long text is
+		// refused without being spread into characters.
+		mailbox: (params) => params.attachments === undefined && typeof params.text === "string" && params.text.length <= 8_000 && [...params.text].length <= 4_000,
+		typed: typedMessage,
+		// Each attachment's own bound, as `validateAttachments` holds it: a picture of 5 MiB in base64, a text of 400,000.
+		texts: {
+			requestId: { what: "A message's request id", max: SHORT_TEXT },
+			"attachments[].data": { what: "An attached picture", max: 4 * Math.ceil(MAX_IMAGE_BYTES / 3) },
+			"attachments[].text": { what: "An attached text", max: MAX_TEXT_CHARACTERS },
+		},
+	},
+	continue: { why: "a message's ordinary next step" },
+	abort: { why: "stopping only narrows", mailbox: always },
+	withdraw: { why: "taking back a queued message" },
+	"conversation.create": { why: "a new conversation with an agent the person has; past a limit, it widens", may: pastALimit },
+	"chat.continueWithAgent": {
+		why: "Continue with an Agent; with an explicit folder it is the Mac's, past a limit it widens",
+		may: (params) => (params.cwd != null ? "no" : pastALimit(params)),
+		typed: typedMessage,
+	},
+	"conversation.compact": { why: "the person's ordinary act", texts: { instructions: { what: "Instructions for compacting", max: FREE_TEXT } } },
+	"conversation.reset": { why: "the person's ordinary act", texts: { note: { what: "A note for starting afresh", max: FREE_TEXT } } },
+	"conversation.edit": { why: "the person's ordinary act", typed: typedMessage },
+	"conversation.version": { why: "the person's ordinary act" },
+	"conversation.retry": { why: "Try Again, on the same model or another the person has (4.2, two rows)" },
+	"background.stop": { why: "stopping only narrows" },
+	"wakes.cancel": { why: "cancelling only narrows" },
+	"wakes.resume": { why: "the person's ordinary act; the limits bound it" },
+	"reports.wake": { why: "waking never widens; the limits bound it" },
+	"schedules.runNow": { why: "running a schedule the person made; past a limit, it widens", may: pastALimit },
+	// Names, pins, notes.
+	"conversation.rename": { why: "a name" },
+	"conversation.pin": { why: "a pin" },
+	"conversation.dismissCompactionError": { why: "a notice dismissed" },
+	"projects.rename": { why: "a name" },
+	"memory.add": { why: "notes never widen (projects.md 7.1)" },
+	"memory.edit": { why: "notes never widen" },
+	"memory.delete": { why: "notes never widen" },
+	// Answers, and answers that widen.
+	"inbox.decide": {
+		why: "an answer to an approval; always, rule, or once past a widening switch widens",
+		may: (params, session) => approvalAnswer(params.decision, params.id, session),
+		mailbox: always,
+	},
+	"inbox.answer": { why: "an answer to an agent's question", mailbox: always, typed: typedAnswer },
+	"needs.answer": {
+		why: "an answer under Needs you; allowing a reach request or Start anyway on a limit widens",
+		may: (params, session) => {
+			const answer = params.answer as Params | null | undefined;
+			if (typeof answer !== "object" || answer === null) return "no";
+			switch (answer.kind) {
+				case "approval":
+					return approvalAnswer(answer.decision, params.id, session);
+				case "question":
+				case "decision":
+				case "rule":
+					return "yes";
+				case "reach":
+					return answer.allow === false ? "yes" : "face";
+				case "limit":
+					return answer.start === false ? "yes" : "face";
+				default:
+					return "no";
+			}
+		},
+		mailbox: always,
+		// A question's or a decision's answer in words, or a rule's text.
+		typed: { what: "answer", at: "answer.text" },
+	},
+	"work.act": {
+		why: "what the person does by hand on the board; it merges nothing (4.2); past a limit, it widens",
+		may: pastALimit,
+		texts: { text: { what: "Work's text", max: FREE_TEXT }, task: { what: "A task", max: FREE_TEXT } },
+	},
+	"github.settle": {
+		why: "the person's answer to a write whose outcome is unknown; Not done lets the write be made again, which widens",
+		may: (params) => (params.happened === true ? "yes" : "face"),
+	},
+	"projects.restoreConversation": {
+		why: "its dry run reads; restoring puts back what was put away, with its reach, which widens",
+		may: (params) => (params.dryRun === true ? "yes" : "face"),
+		reading: (params) => params.dryRun === true,
+	},
+	"chat.set": {
+		why: "chat mode's settings; turning the web or memory on, or new instructions, widen",
+		may: (params) => (params.web === true || params.memory === true || params.instructions !== undefined ? "face" : "yes"),
+		texts: { instructions: { what: "Chat instructions", max: FREE_TEXT } },
+	},
+	// Changes that narrow, or are the person's ordinary acts.
+	"agents.allowEverything": { why: "turning Allow everything off narrows; on is the Mac's alone (question 5)", may: (params) => (params.on === true ? "no" : "yes") },
+	"conversation.carryOn": { why: "the person's ordinary act" },
+	"conversation.archive": { why: "putting away narrows" },
+	"rules.remove": { why: "removing an allowed command narrows" },
+	"schedules.delete": { why: "deleting a schedule narrows" },
+	"coauthor.set": { why: "the person's ordinary act" },
+	// With a folder only one projects.folders offered, by its exact text (`folderOffered` below), and its handler checks
+	// it again against what is offered at that moment (folders.ts, `offeredFolder`). With a template it copies an agent
+	// with its reach, as agents.duplicate does, so it widens (decision 27).
+	"projects.create": {
+		why: "a new project; with a folder only one the Mac offered (projects.folders), by its exact text; with a template it copies an agent, which widens",
+		may: (params) => (params.folder != null && !folderOffered(params.folder) ? "no" : params.template != null ? "face" : "yes"),
+	},
+	"projects.archive": { why: "putting away narrows" },
+	"projects.startFresh": { why: "the person's ordinary act" },
+	"projects.rules.add": { why: "the person's ordinary act" },
+	"work.create": { why: "filing work, as the person does on the board", texts: { text: { what: "Work's text", max: FREE_TEXT } } },
+	"worktree.create": { why: "the person's ordinary act" },
+	"github.detach": { why: "detaching narrows" },
+	"github.sendBack": { why: "the person's ordinary act", texts: { reason: { what: "A reason for sending back", max: FREE_TEXT } } },
+	"settings.setCompaction": { why: "the person's ordinary act" },
+	"settings.setAutoArchive": { why: "the person's ordinary act" },
+	"settings.setAwake": { why: "the person's ordinary act" },
+	"recovery.dismiss": { why: "a notice dismissed" },
+	"limits.dismiss": { why: "a notice dismissed" },
+	// A device's own (4.2's last paragraph).
+	"devices.self": { why: "its own record and log" },
+	"devices.forgetSelf": { why: "it unpairs itself (3.6)" },
+	// What it is pushed (7, #689): its own settings, which widen nothing; read alone when sent with none.
+	"pushes.set": { why: "its own notifications", reading: (params) => Object.keys(params).length === 0 },
+	"pushes.follow": { why: "its own Live Activities" },
+	// remote.mailboxIn (#678, P10) is pi² Remote's, in FOR_THE_HELPER.
+};
+
+/**
+ * The folders `projects.folders` offered last (folders.ts tells each offering here), by their real paths as sent. A
+ * phone only ever gives `projects.create` a folder back as it was offered, so its exact text is compared, and nothing a
+ * phone names is looked up on the disk: a folder it was not offered is refused here, whatever a handler does (#698).
+ */
+let foldersOffered: ReadonlySet<string> = new Set();
+
+export function offerFolders(paths: Iterable<string>): void {
+	foldersOffered = new Set(paths);
+}
+
+/** Whether `folder` is, by its exact text, one `projects.folders` offered last. */
+export function folderOffered(folder: unknown): boolean {
+	return typeof folder === "string" && foldersOffered.has(folder);
+}
+
+/** What a phone may send that always widens reach: the Mac notifies the person of each (4.4). */
+const WITH_FACE_ID: Record<string, string> = {
+	"agents.save": "an agent's settings, as the person changes them at the Mac",
+	"agents.duplicate": "a copy with the source's reach",
+	"agents.delete": "cannot be undone",
+	"agents.restore": "puts back what was put away, with its reach",
+	"agents.updateFromTemplate": "an agent's settings from a template",
+	"conversation.configure": "a conversation's access, folder and model",
+	"conversation.fork": "copies the conversation's access, agent and project",
+	"conversation.unarchive": "gives an archived conversation back its access",
+	"conversation.delete": "cannot be undone",
+	"memory.setEnabled": "a memory switch turned on plants what an agent read",
+	"rules.add": "an allowed command",
+	"schedules.save": "schedules start work with nobody there",
+	"usage.setBudget": "raising the budget unbinds spending",
+	"changes.undo": "undo can restore what the person narrowed",
+	"projects.addAgent": "making an agent",
+	"projects.setOrchestrator": "the orchestrator's role carries its switches and tools",
+	"projects.set": "the switches of 8.1 and the limits",
+	"projects.unarchive": "puts back what was put away, with its reach",
+	"projects.delete": "cannot be undone",
+	"projects.rules.edit": "a project's rules",
+	"projects.rules.move": "a project's rules",
+	"projects.rules.remove": "a project's rules",
+	"github.attach": "a repository attached",
+	"github.merge": "a merge, as the person merges at the Mac",
+	"worktree.remove": "cannot be undone",
+};
+
+/**
+ * The texts of WITH_FACE_ID's requests that may be longer than MAX_OTHER_FROM_A_DEVICE, as `texts` is for FROM_A_DEVICE's
+ * (#940): a list of its own, since WITH_FACE_ID's rows are their reasons alone. A schedule's prompt becomes a
+ * conversation's first message at each run, `schedules.runNow` among them, and an agent's instructions go to the model
+ * at every turn.
+ */
+const TEXTS_WITH_FACE_ID: Record<string, Texts> = {
+	"agents.save": { "agent.instructions": { what: "An agent's instructions", max: FREE_TEXT } },
+	"schedules.save": { "schedule.prompt": { what: "A schedule's prompt", max: FREE_TEXT }, "schedule.title": { what: "A schedule's title", max: SHORT_TEXT } },
+	"projects.addAgent": { "agent.instructions": { what: "An agent's instructions", max: FREE_TEXT } },
+};
+
+/** What only the Mac may do, with why. `NOT_NAMED`: a handler 4.2 does not name, kept to the Mac until one places it. */
+const NOT_NAMED = "not named in 4.2's table";
+const MAC_ONLY: Record<string, string> = {
+	// Secrets and sign-ins.
+	"variables.set": "a secret",
+	"variables.remove": "a secret",
+	"providers.setKey": "a secret",
+	"providers.login": "a sign-in",
+	"providers.logout": "a sign-in",
+	"providers.addModel": "providers.*",
+	"providers.removeModel": "providers.*",
+	"providers.setHiddenModels": "providers.*",
+	"providers.draftModel": "providers.*",
+	"providers.ask": "providers.*",
+	"auth.answer": "a sign-in",
+	"auth.cancel": "a sign-in",
+	"endpoints.save": "endpoints.*",
+	"endpoints.remove": "endpoints.*",
+	"endpoints.probe": "endpoints.*",
+	// The models that spend on pictures.
+	"pictures.setModel": "spends on pictures",
+	"look.setModel": "spends on pictures",
+	// Programs started on the Mac.
+	"mcp.save": "a program started on the Mac",
+	"mcp.reconnect": "a program started on the Mac",
+	"mcp.delete": "a program started on the Mac",
+	"mcp.setVariable": "a program started on the Mac",
+	"mcp.removeVariable": "a program started on the Mac",
+	"local.start": "a program started on the Mac",
+	"local.stop": "a program started on the Mac",
+	"local.model.try": "a program started on the Mac",
+	"local.engine.install": "a program installed on the Mac",
+	"local.engine.remove": "a program installed on the Mac",
+	"local.model.install": "a program installed on the Mac",
+	"local.model.remove": "a program installed on the Mac",
+	"local.model.configure": "a program started on the Mac",
+	"local.model.folder": "a program started on the Mac",
+	"local.download.pause": "a program installed on the Mac",
+	"local.download.resume": "a program installed on the Mac",
+	"local.download.cancel": "a program installed on the Mac",
+	// The app's host roles.
+	"computer.register": "the app's host role",
+	"computer.result": "the app's host role",
+	"browser.register": "the app's host role",
+	"browser.result": "the app's host role",
+	"present.register": "the app's host role",
+	"present.drawn": "the app's host role",
+	// Presenting (#946): the phone reads presented.picture alone (FROM_A_DEVICE), for now.
+	"presented.network": "a presented page's network switch, the person's setting at the Mac",
+	"presented.list": "presenting's window, the Mac's for now",
+	"presented.file": "a presented page's files, the Mac's for now",
+	"presented.page": "a presented page's list of files, the Mac's for now",
+	// The Mac's upkeep.
+	"backup.create": "the Mac's upkeep",
+	"priority.set": "the Mac's upkeep",
+	"settings.finishOnboarding": "the Mac's upkeep",
+	"projects.carryOver": "the Mac's upkeep",
+	"projects.retrySecrets": "the Mac's upkeep",
+	// Throwaway copies.
+	"test-copy.answerer": "test-copy.*",
+	"test-copy.fill": "test-copy.*",
+	"test-copy.fillProject": "test-copy.*",
+	// Every devices.* request but devices.self and devices.forgetSelf: pairing, and what decides who the person is.
+	"devices.watch": "devices.*",
+	"devices.set": "devices.*",
+	"devices.pairStart": "devices.*",
+	"devices.pairCancel": "devices.*",
+	"devices.pairConfirm": "devices.*",
+	"devices.rename": "devices.*",
+	"devices.revoke": "devices.*",
+	"devices.resume": "devices.*",
+	"devices.log": "devices.*",
+	"devices.acceptPresenceKey": "devices.*", // a phone never accepts its own new Face ID key, nor another's (3.2)
+	"devices.refusePresenceKey": "devices.*",
+	"devices.startAgain": "devices.*", // unpairs every device: the person's, at the Mac (#917)
+	// The handlers the table does not name, listed for the owner in #673's pull request.
+	"github.show": NOT_NAMED,
+	"settings.setAgentDefault": NOT_NAMED,
+};
+
+/**
+ * pi² Remote's own requests, taken only on the connection the engine made for the helper it started (5.5), never on
+ * its listening socket and never in a device session; remote.mailboxIn (#678, P10) among them.
+ */
+const FOR_THE_HELPER: ReadonlySet<string> = new Set(["remote.hello", "remote.state", "remote.pairClaim", "remote.pairWrong", "remote.pairRefused", "remote.pairUnkept", "remote.attachBegin", "remote.attach", "remote.sessionEnd", "remote.presenceKey", "remote.mailboxIn", "remote.pushRefused", "remote.left"]);
+
+export function forTheHelper(method: string): boolean {
+	return FOR_THE_HELPER.has(method);
+}
+
+/**
+ * Whether a device may send `method` with `params`, from `session`: "yes", "face" (it widens reach) or "no". What the
+ * table does not hold is "no". From the mailbox, only what its row lets wait there (5.3).
+ */
+export function deviceMay(method: string, params: Params, session: DeviceSession): DeviceAnswer {
+	if (FOR_THE_HELPER.has(method) || allowsHiddenApproval(method, params, session)) return "no";
+	if (Object.hasOwn(WITH_FACE_ID, method)) return session.path === "mailbox" ? "no" : "face";
+	if (!Object.hasOwn(FROM_A_DEVICE, method)) return "no";
+	const row = FROM_A_DEVICE[method]!;
+	if (session.path === "mailbox" && row.mailbox?.(params) !== true) return "no";
+	return row.may?.(params, session) ?? "yes";
+}
+
+/** Whether a request from a device goes in the devices' log: all but 4.2's Reading row (4.4). */
+export function deviceLogged(method: string, params: Params): boolean {
+	const reading = Object.hasOwn(FROM_A_DEVICE, method) ? FROM_A_DEVICE[method]!.reading : undefined;
+	return reading === undefined ? true : reading !== true && !reading(params);
+}
+
+export type DevicePlacement = "FROM_A_DEVICE" | "WITH_FACE_ID" | "MAC_ONLY" | "FOR_THE_HELPER";
+
+/** Which device list holds `method`, and its reason there: for the tests, and for the pull request's list. */
+export function devicePlacement(method: string): { list: DevicePlacement; why: string } | null {
+	if (Object.hasOwn(FROM_A_DEVICE, method)) return { list: "FROM_A_DEVICE", why: FROM_A_DEVICE[method]!.why };
+	if (Object.hasOwn(WITH_FACE_ID, method)) return { list: "WITH_FACE_ID", why: WITH_FACE_ID[method]! };
+	if (Object.hasOwn(MAC_ONLY, method)) return { list: "MAC_ONLY", why: MAC_ONLY[method]! };
+	if (FOR_THE_HELPER.has(method)) return { list: "FOR_THE_HELPER", why: "pi² Remote's own" };
+	return null;
+}
+
+/** Every request a device may send, from FROM_A_DEVICE and WITH_FACE_ID: for the test that each is walked (#940). */
+export function deviceRequestsListed(): string[] {
+	return [...Object.keys(FROM_A_DEVICE), ...Object.keys(WITH_FACE_ID)];
+}
+
+/** The requests that answer for the person or change what they set, which a device's table must place with care. */
+export const PERSON_REQUESTS: readonly string[] = [...Object.keys(FOR_THE_PERSON), ...Object.keys(FOR_THE_PERSON_SETTINGS)];
+
+const DEVICE_LISTS: readonly ReadonlySet<string>[] = [new Set(Object.keys(FROM_A_DEVICE)), new Set(Object.keys(WITH_FACE_ID)), new Set(Object.keys(MAC_ONLY))];
+
+/** The requests only a throwaway copy's engine has (main.ts): listed, and absent from every other engine. */
+const ONLY_IN_TEST_COPIES: ReadonlySet<string> = new Set(["test-copy.answerer", "test-copy.fill", "test-copy.fillProject"]);
+
+/**
+ * Validate the device lists against the completed tables before serving requests (4.1): every handler of the socket
+ * in exactly one of FROM_A_DEVICE, WITH_FACE_ID and MAC_ONLY, and in no FOR_THE_HELPER; every handler of the helper's
+ * connection in FOR_THE_HELPER alone, and in no request class above, so that no other connection can reach one. And
+ * every name in a list has its handler: nothing is placed for a device ahead of the request it names, which would let
+ * that request through from a phone the day it is added (but a test copy's own, which other engines have not).
+ */
+export function checkDeviceLists(methods: Iterable<string>, helperMethods: Iterable<string>, lists = DEVICE_LISTS, helper = FOR_THE_HELPER): void {
+	const mistakes: string[] = [];
+	const handled = new Set(methods);
+	const helperHandled = new Set(helperMethods);
+	for (const list of lists) {
+		for (const method of list) if (!handled.has(method) && !ONLY_IN_TEST_COPIES.has(method)) mistakes.push(`${method} is in a device list and has no handler`);
+	}
+	for (const method of helper) if (!helperHandled.has(method)) mistakes.push(`${method} is in FOR_THE_HELPER and has no handler on pi² Remote's connection`);
+	for (const method of handled) {
+		const count = lists.filter((list) => list.has(method)).length;
+		if (count !== 1) mistakes.push(`${method} belongs to ${count} device lists (expected one)`);
+		if (helper.has(method)) mistakes.push(`${method} is pi² Remote's (FOR_THE_HELPER), and cannot be a handler of the socket`);
+	}
+	for (const method of helperHandled) {
+		if (!helper.has(method)) mistakes.push(`${method} is a handler of pi² Remote's connection, and is not in FOR_THE_HELPER`);
+		if (lists.some((list) => list.has(method)) || REQUEST_CLASSES.some((list) => list.has(method))) {
+			mistakes.push(`${method} is pi² Remote's, and is in a list of the socket's requests too`);
+		}
+	}
+	// A text bound named for a request a phone sends with Face ID only once it is in WITH_FACE_ID (#940).
+	for (const method of Object.keys(TEXTS_WITH_FACE_ID)) if (!Object.hasOwn(WITH_FACE_ID, method)) mistakes.push(`${method} has texts in TEXTS_WITH_FACE_ID and is not in WITH_FACE_ID`);
+	if (mistakes.length > 0) throw new Error(`Device lists in answers.ts:\n${mistakes.join("\n")}`);
 }
 
 /**
@@ -263,11 +896,17 @@ export class AppCheck {
 	verdict(socket: Socket): Promise<Verdict> {
 		const known = this.#verdicts.get(socket);
 		if (known !== undefined) return known;
-		const asked = this.#ask(socket).then(({ verdict, lasting }) => {
-			if (!lasting) this.#verdicts.delete(socket);
-			this.#log("answers:", verdict.why, verdict.app ? "(may answer for the person)" : "(may not answer for the person)");
-			return verdict;
-		});
+		// Nothing in a check is meant to throw; should something (#932), the connection is not the app's, and is asked again.
+		const asked = this.#ask(socket)
+			.catch((error: unknown) => ({
+				verdict: { app: false, why: `the connection could not be checked: ${error instanceof Error ? error.message : String(error)}` },
+				lasting: false,
+			}))
+			.then(({ verdict, lasting }) => {
+				if (!lasting) this.#verdicts.delete(socket);
+				this.#log("answers:", verdict.why, verdict.app ? "(may answer for the person)" : "(may not answer for the person)");
+				return verdict;
+			});
 		this.#verdicts.set(socket, asked);
 		return asked;
 	}
@@ -303,16 +942,41 @@ export class AppCheck {
 			} catch (error) {
 				unchecked(error instanceof Error ? error.message : String(error));
 				return;
+			} finally {
+				// libuv (1.53, Node 26's) starts the helper with posix_spawn, on macOS and, where it can, on Linux, and first clears
+				// O_NONBLOCK on each descriptor it hands over, in this process: on the open file description the connection is,
+				// so this end of it too (#927). Left so, the next write to an app that is not reading would hold the engine's one
+				// thread until it read. It is set back before spawn's caller goes on: nothing else of the engine's runs in
+				// between, so nothing can write to it blocking. But for a synchronous subscriber to Node's
+				// `tracing:child_process.spawn:end` or `:error` diagnostics channel, which runs inside spawn after libuv: one
+				// that wrote to a connection would do so blocking. The engine subscribes only to `:start` (processes.ts), which
+				// runs before. A duplicate would share the flag, and the helper only asks the socket about its other end.
+				// Should that fail, the connection is closed rather than kept blocking; the app connects again.
+				if ((socket as unknown as { _handle?: { setBlocking?: (blocking: boolean) => number } })._handle?.setBlocking?.(false) !== 0) {
+					this.#log("answers: a connection could not be made non-blocking again after its check, so it is closed");
+					socket.destroy();
+				}
 			}
-			const timer = setTimeout(() => {
-				child.kill("SIGKILL");
-				unchecked(`${helper} did not answer within ${this.#patienceMs / 1000} seconds`, true);
-			}, this.#patienceMs);
-			child.stdout!.setEncoding("utf8").on("data", (text: string) => (output += text));
+			// Out of descriptors, Node's spawn returns a child with no stdout, and emits `error` on the next tick (#932). It is
+			// listened to before anything else, so that nothing can leave it to end the engine as an uncaught exception.
+			let timer: ReturnType<typeof setTimeout> | undefined;
 			child.once("error", (error) => {
 				clearTimeout(timer);
 				unchecked(error.message);
 			});
+			try {
+				timer = setTimeout(() => {
+					child.kill("SIGKILL");
+					unchecked(`${helper} did not answer within ${this.#patienceMs / 1000} seconds`, true);
+				}, this.#patienceMs);
+				// No stdout: the `error` above says why, and the timer stands in should it not come.
+				child.stdout?.setEncoding("utf8").on("data", (text: string) => (output += text));
+			} catch (error) {
+				clearTimeout(timer);
+				unchecked(error instanceof Error ? error.message : String(error));
+				child.kill("SIGKILL");
+				return;
+			}
 			child.once("close", (code) => {
 				clearTimeout(timer);
 				try {

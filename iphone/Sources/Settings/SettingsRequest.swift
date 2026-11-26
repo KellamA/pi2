@@ -8,6 +8,15 @@ import PiModels
 struct SettingsRequest {
     let method: String
     let params: [String: Any]
+    /// Said before the engine's refusal when the row it shows under does not name what was refused: on a list of
+    /// schedules, which one ("“Morning brief” did not start: Past the project's limit…").
+    var lead: String?
+
+    init(method: String, params: [String: Any], lead: String? = nil) {
+        self.method = method
+        self.params = params
+        self.lead = lead
+    }
 
     // MARK: A project (ProjectSettingsTab.swift; the switches: ProjectAgentsTab.swift)
 
@@ -124,16 +133,18 @@ struct SettingsRequest {
     static func setSchedule(_ schedule: Schedule, enabled: Bool) -> SettingsRequest {
         var changed = schedule
         changed.enabled = enabled
-        return saveSchedule(changed, isNew: false)
+        var request = saveSchedule(changed, isNew: false)
+        request.lead = "“\(schedule.title)” was not turned \(enabled ? "on" : "off")"
+        return request
     }
 
-    static func deleteSchedule(_ id: String) -> SettingsRequest {
-        SettingsRequest(method: "schedules.delete", params: ["id": id])
+    static func deleteSchedule(_ id: String, title: String? = nil) -> SettingsRequest {
+        SettingsRequest(method: "schedules.delete", params: ["id": id], lead: title.map { "“\($0)” was not deleted" })
     }
 
     /// Never with `confirmLimit`: a run held by a limit is refused, and the refusal says so.
-    static func runSchedule(_ id: String) -> SettingsRequest {
-        SettingsRequest(method: "schedules.runNow", params: ["id": id])
+    static func runSchedule(_ id: String, title: String? = nil) -> SettingsRequest {
+        SettingsRequest(method: "schedules.runNow", params: ["id": id], lead: title.map { "“\($0)” did not start" })
     }
 
     // MARK: Sending
@@ -146,7 +157,13 @@ struct SettingsRequest {
             _ = try await engine.call(method, params)
             return nil
         } catch {
-            return error.localizedDescription
+            return Self.refusal(error.localizedDescription, lead: lead)
         }
+    }
+
+    /// The engine's words, after the lead if there is one.
+    static func refusal(_ words: String, lead: String?) -> String {
+        guard let lead else { return words }
+        return "\(lead): \(words)"
     }
 }

@@ -342,7 +342,9 @@ public final class EngineSession<Draft: MessageDraft> {
     /// Until the engine has it, and then until the conversation shows it, the message is in `outgoing`, which the
     /// message field shows. When no answer comes because the engine is not connected or the connection goes, the message
     /// is sent again once the engine is back, with the same request id, which makes the engine find the submission it
-    /// may already have taken rather than take it twice. After a minute without an engine, acceptance is unknown.
+    /// may already have taken rather than take it twice. After a minute without an engine, acceptance is unknown. A message
+    /// cut on its way while the connection goes on (`EngineTransportEvent.cut`, a phone's channel that dropped mid-line) is
+    /// sent again so too, `cutTries` times in all: then it is refused, and the message field gives it back.
     @discardableResult
     public func submit(_ text: String, attachments: [[String: Any]] = [], to id: Int, steer: Bool) async -> SubmitOutcome {
         let requestId = UUID().uuidString
@@ -355,6 +357,7 @@ public final class EngineSession<Draft: MessageDraft> {
         let lastBefore = open[id]?.items.last?.id
         let deadline = ContinuousClock.now + .seconds(60)
         var unanswered = false
+        var cuts = 0
         while true {
             do {
                 let result = try await call("submit", params)
@@ -375,6 +378,14 @@ public final class EngineSession<Draft: MessageDraft> {
                 return .sent
             } catch let error as EngineError where error.unanswered {
                 unanswered = true
+                if error.cut { cuts += 1 }
+                if cuts >= Self.cutTries {
+                    // A connection that cuts this message every time, as pi² Remote does a line too slow or too large for
+                    // it (#908): sending it again would never end.
+                    dropOutgoing(requestId, from: id)
+                    lastError = "The connection dropped each time it was on its way (\(cuts) tries). If it shows in the conversation after all, it arrived."
+                    return .refused
+                }
                 if await connected(by: deadline) { continue }
                 dropOutgoing(requestId, from: id)
                 lastError = "The engine did not come back for a minute. The message may have been sent before it stopped. Check the conversation before sending it again."
@@ -389,6 +400,9 @@ public final class EngineSession<Draft: MessageDraft> {
             }
         }
     }
+
+    /// How many times a message is sent over a connection that cuts it on its way before it is given back.
+    public static var cutTries: Int { 3 }
 
     private func dropOutgoing(_ requestId: String, from id: Int) {
         outgoing[id]?.removeAll { $0.id == requestId }
@@ -472,6 +486,11 @@ public final class EngineSession<Draft: MessageDraft> {
                 self.host?.note("connection lost: \(why)")
                 self.status = .restarting
                 self.retry()
+            case .cut(let ids):
+                // The connection goes on, so nothing else is asked again: only these calls fail, as unanswered.
+                for id in ids {
+                    self.pending.removeValue(forKey: id)?.resume(throwing: EngineError(message: "The connection dropped while this was on its way, so it may not have arrived.", cut: true))
+                }
             }
         }
     }
@@ -715,8 +734,9 @@ public final class EngineSession<Draft: MessageDraft> {
                 update(\.conversationNeeds, shown)
             case "projectRules":
                 update(\.projectRules, try decoder.decode(ProjectRulesEvent.self, from: line).projects)
-            case "auth", "computer", "browser":
-                // The host's alone: sign-in, and the Mac's host roles.
+            case "auth", "computer", "browser", "devices", "conversation.presented", "present.draw":
+                // The host's alone: sign-in, the Mac's host roles, the paired devices (docs/iphone.md 3.3), and what agents
+                // presented and the pages the Mac draws for them (docs/design/presenting.md).
                 try host?.handle(envelope.event ?? "", line, decoder: decoder)
             case "limits", "memory", "coauthor", "priority", "local", "chat", "compactionSettings", "work", "github", "reports", "awake", "agentDefault":
                 // Events that belong to a feature in a file of its own; it reads its latest one from `extras`.

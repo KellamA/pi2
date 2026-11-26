@@ -7,11 +7,25 @@ import Foundation
 /// refusals the engine gives for what the demo's world has none of (no background command, no deleted project). Each
 /// change sends the event it changes again whole.
 ///
-/// Not answered yet: `projects.folders`, which the engine does not have until #698's second part, and `projects.create`,
-/// which makes a project, its orchestrator and its conversation in one step; both are refused as the demo refuses what it
-/// does not do, and the New project screen says so.
+/// And a new project (`engine/src/folders.ts`, `projects.ts`): the folders the Mac offers, and a project made from one,
+/// or with none, with its orchestrator and an empty conversation with it, as the engine makes them in one step.
 extension DemoScript {
     static let conversationsScreens: [String: DemoAnswer] = [
+        // `{}`: the folders already used with pi², as `offeredFolders` lists them.
+        "projects.folders": { _, world in
+            ["folders": DemoNewProject.folders(world)]
+        },
+        // `{ id, path }`: a file the conversation's agent linked to. The demo's agents' answers link to no file, so the
+        // engine's refusal for one not linked (`NOT_LINKED`, folders.ts).
+        "files.preview": { request, world in
+            _ = try DemoConversations.known(request, world: world)
+            guard request.params["path"] is String else { throw DemoRefusal("That is not the path of a file on the Mac.") }
+            throw DemoRefusal(DemoConversations.notLinked)
+        },
+        // `{ folder, name?, template? }`: from a phone, a folder only among those offered; answers `{ id, conversation }`.
+        "projects.create": { request, world in
+            try DemoNewProject.create(request, world: world)
+        },
         // `{ id, title }`: the title, trimmed and at most 120 characters; the engine names it no more from its messages.
         "conversation.rename": { request, world in
             let id = try DemoConversations.known(request, world: world)
@@ -75,9 +89,165 @@ extension DemoScript {
     ]
 }
 
+/// A new project in the demo (#698), as `projects.folders` and `projects.create` make it in the engine.
+@MainActor
+enum DemoNewProject {
+    /// The engine's words for a folder it does not offer (`NOT_OFFERED` in folders.ts).
+    static let notOffered = "That folder is not one your Mac offers for a new project. Choose one it offers, or make the project on the Mac."
+
+    private static func time(_ value: Any?) -> Double { (value as? NSNumber)?.doubleValue ?? 0 }
+
+    /// The folders the projects, the agents and the conversations of the world use, as `offeredFolders` lists them: free
+    /// ones first, the one used last first, then the projects', at most 50, and none in the Mac's data folder. The
+    /// recording's two folders are in its copy's data folder (`~/Library/Application Support/pi2-demo`), where
+    /// `test-copy fill` makes them, so the demo's Mac offers none, as a real one would not.
+    static func folders(_ world: DemoWorld) -> [[String: Any]] {
+        var used: [String: Double] = [:]
+        func use(_ path: Any?, _ at: Double) {
+            guard let path = path as? String, path.hasPrefix("/"), path != "/", !inDataFolder(path) else { return }
+            used[path] = max(used[path] ?? 0, at)
+        }
+        let projects = DemoProjects.all(world).filter { !($0["deletedAt"] is NSNumber) }
+        for project in projects { use(project["folder"], time(project["updatedAt"])) }
+        for agent in DemoSettings.agents(world) where !(agent["removedAt"] is NSNumber) {
+            use(agent["cwd"], max(time(agent["updatedAt"]), time(agent["createdAt"])))
+        }
+        for row in DemoLibrary.rows(world) + DemoLibrary.archivedRows(world) where !(row["parent"] is NSNumber) && row["chat"] as? Bool != true {
+            guard let id = (row["id"] as? NSNumber)?.intValue else { continue }
+            use((world.conversations[id]?.state["agent"] as? [String: Any])?["cwd"], time(row["updatedAt"]))
+        }
+        let owner = Dictionary(projects.compactMap { project in (project["folder"] as? String).map { ($0, project) } }) { first, _ in first }
+        let ordered = used.sorted { a, b in
+            let (takenA, takenB) = (owner[a.key] != nil, owner[b.key] != nil)
+            return takenA != takenB ? !takenA : a.value != b.value ? a.value > b.value : a.key < b.key
+        }
+        return ordered.prefix(50).map { path, _ in
+            let url = URL(fileURLWithPath: path)
+            var folder: [String: Any] = ["path": path, "name": url.lastPathComponent, "where": shown(url.deletingLastPathComponent().path)]
+            if let project = owner[path] {
+                folder["project"] = project["name"] ?? ""
+                if let repository = project["repository"] as? [String: Any], let name = repository["name"] as? String, let of = repository["owner"] as? String {
+                    folder["repository"] = "\(of)/\(name)"
+                }
+            }
+            return folder
+        }
+    }
+
+    /// Whether `path` is in a pi² data folder (`~/Library/Application Support/pi2`, or a copy's `pi2-<suffix>`), which
+    /// the engine never offers.
+    private static func inDataFolder(_ path: String) -> Bool {
+        path.range(of: #"^/Users/[^/]+/Library/Application Support/pi2(-[a-z0-9-]+)?(/|$)"#, options: .regularExpression) != nil
+    }
+
+    /// A path with the Mac's home folder written `~`: the recording's Mac's home is `/Users/<name>`.
+    private static func shown(_ path: String) -> String {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: true)
+        guard path.hasPrefix("/Users/"), parts.count >= 2 else { return path }
+        return (["~"] + parts.dropFirst(2)).joined(separator: "/")
+    }
+
+    /// `projects.create` from the phone: checked as the engine checks it, then the project, its orchestrator (a copy of
+    /// the template, or pi²'s default orchestrator) and its empty conversation, each sent in its event.
+    static func create(_ request: DemoRequest, world: DemoWorld) throws -> [String: Any] {
+        guard let given = request.params["folder"] else { throw DemoRefusal("folder must be a folder's path, or null") }
+        var folder: String?
+        if !(given is NSNull) {
+            guard let path = given as? String, !path.trimmingCharacters(in: .whitespaces).isEmpty else {
+                throw DemoRefusal("folder must be a folder's path, or null")
+            }
+            guard folders(world).contains(where: { $0["path"] as? String == path }) else { throw DemoRefusal(notOffered) }
+            folder = path
+        }
+        var name: String?
+        if let typed = request.params["name"], !(typed is NSNull) {
+            guard let typed = typed as? String, !typed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw DemoRefusal("Give the project a name") }
+            let trimmed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.contains(where: { $0.isNewline }) { throw DemoRefusal("A project's name must be a single line") }
+            if trimmed.count > 80 { throw DemoRefusal("A project's name can be 80 characters at most; this one is \(trimmed.count)") }
+            name = trimmed
+        }
+        var template: [String: Any]?
+        if let chosen = request.params["template"], !(chosen is NSNull) {
+            template = DemoSettings.agents(world).first {
+                $0["id"] as? String == chosen as? String && $0["projectId"] == nil && !($0["removedAt"] is NSNumber)
+            }
+            if template == nil { throw DemoRefusal("Unknown agent: \(chosen)") }
+        }
+        let live = DemoProjects.all(world).filter { !($0["deletedAt"] is NSNumber) }
+        if let folder, let same = live.first(where: { $0["folder"] as? String == folder }) {
+            throw DemoRefusal("There is already a project for this folder: \(same["name"] ?? "")\(same["archivedAt"] is NSNumber ? "; restore it instead" : "")")
+        }
+        let taken = { (candidate: String) in live.contains { ($0["name"] as? String)?.lowercased() == candidate.lowercased() } }
+        if let name, taken(name) { throw DemoRefusal("There is already a project called \(name)") }
+        var chosenName = name ?? ""
+        if name == nil {
+            let base = folder.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "No folder"
+            var number = 1
+            while chosenName.isEmpty || taken(chosenName) {
+                let suffix = number == 1 ? "" : " \(number)"
+                chosenName = String(base.prefix(80 - suffix.count)).trimmingCharacters(in: .whitespaces) + suffix
+                number += 1
+            }
+        }
+
+        let now = world.now
+        let projectID = "p-\(UUID().uuidString.lowercased())"
+        var agent: [String: Any]
+        if let template {
+            agent = template
+            for key in ["allowEverything", "variables", "madeBy", "removedAt"] { agent[key] = nil }
+            agent["template"] = ["id": template["id"] ?? "", "copiedAt": now, "templateUpdatedAt": template["updatedAt"] ?? template["createdAt"] ?? now]
+        } else {
+            // pi²'s default orchestrator, as the recording's projects have it.
+            agent = DemoSettings.agents(world).first { $0["role"] as? String == "orchestrator" && $0["template"] == nil } ?? ["name": "Orchestrator", "access": "ask"]
+            agent["template"] = nil
+        }
+        let agentName = agent["name"] as? String ?? "Orchestrator"
+        let slug = agentName.lowercased().replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        agent["id"] = "\(slug.isEmpty ? "agent" : slug)-\(UUID().uuidString.lowercased())"
+        agent["cwd"] = folder ?? NSNull()
+        agent["delegates"] = [String]()
+        agent["createdAt"] = now
+        agent["updatedAt"] = now
+        agent["projectId"] = projectID
+        agent["role"] = "orchestrator"
+        let agentID = agent["id"] as? String ?? ""
+        world.change("agents") { event in event["agents"] = (event["agents"] as? [[String: Any]] ?? []) + [agent] }
+
+        let conversation = world.newItemID()
+        let state: [String: Any] = [
+            "model": agent["model"] ?? ["provider": "demo", "modelId": "demo-1"], "thinkingLevel": agent["thinkingLevel"] ?? NSNull(),
+            "cwd": folder ?? NSNull(), "access": agent["access"] ?? "ask", "agentId": agentID, "parent": NSNull(),
+        ]
+        DemoLibrary.add(
+            DemoLibrary.newRow(conversation, title: "", agentId: agentID, parent: nil, projectId: projectID, chat: false, orchestrator: "current", now: now),
+            state: DemoLibrary.newState(title: "", chat: false, agent: state, project: ["id": projectID, "orchestrator": "current"]),
+            world: world
+        )
+        let project: [String: Any] = [
+            "id": projectID, "name": chosenName, "folder": folder ?? NSNull(), "repository": NSNull(), "orchestratorId": agentID,
+            "conversation": conversation, "earlier": [Int](),
+            "settings": [
+                "wakeOnReports": false,
+                "withoutAsking": ["startAgents": true, "fileWork": true, "closeWork": true, "makeAgents": true, "addRules": true,
+                                  "merge": false, "release": false, "passLimits": false],
+                "limits": ["planShare": 90, "dailySpend": NSNull()],
+            ],
+            "createdAt": now, "updatedAt": now, "folderMissing": false, "ruleTokens": ["orchestrator": 0, "agents": 0], "lastWords": NSNull(),
+        ]
+        world.change("projects") { event in event["projects"] = (event["projects"] as? [[String: Any]] ?? []) + [project] }
+        return ["id": projectID, "conversation": conversation]
+    }
+}
+
 @MainActor
 enum DemoConversations {
     /// The conversation a request names, in the list or the Archive, or the engine's refusal.
+    /// The engine's words for a file the conversation does not link to (`NOT_LINKED`, `engine/src/folders.ts`).
+    static let notLinked = "The conversation does not link to that file. Only a file its agent's answers link to is shown on the phone."
+
     static func known(_ request: DemoRequest, world: DemoWorld) throws -> Int {
         guard let id = request.int("id"), DemoLibrary.row(id, world: world) != nil || DemoLibrary.isArchived(id, world: world) else {
             throw DemoRefusal("Unknown conversation: \(request.params["id"] ?? "")")

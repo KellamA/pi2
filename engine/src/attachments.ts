@@ -27,6 +27,25 @@ const IMAGE_TYPES: Record<string, { label: string; matches: (head: Buffer) => bo
 	"image/webp": { label: "WebP", matches: (head) => head.subarray(0, 4).toString("latin1") === "RIFF" && head.subarray(8, 12).toString("latin1") === "WEBP" },
 };
 
+/**
+ * Which of those formats a file is, by its first bytes, as an attached picture is checked: for presenting (presented.ts,
+ * #946), which takes the same four. Undefined for anything else.
+ */
+export function pictureType(head: Buffer): { mimeType: string; label: string } | undefined {
+	const found = Object.entries(IMAGE_TYPES).find(([, type]) => type.matches(head));
+	return found === undefined ? undefined : { mimeType: found[0], label: found[1].label };
+}
+
+/**
+ * Whether `data` is base64, in its one plain form, of a picture of `mimeType`: one of the four types, starting as a
+ * file of that type starts. What a paired phone is sent of a picture's bytes unmasked (remote.ts) has passed it.
+ */
+export function isPicture(mimeType: unknown, data: unknown): boolean {
+	if (typeof mimeType !== "string" || !Object.hasOwn(IMAGE_TYPES, mimeType) || typeof data !== "string") return false;
+	if (data === "" || data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) return false;
+	return IMAGE_TYPES[mimeType]!.matches(Buffer.from(data.slice(0, 24), "base64"));
+}
+
 const count = (n: number) => n.toLocaleString("en-US");
 
 /** A size as a person reads it: "340 KB", "1.4 MB". */

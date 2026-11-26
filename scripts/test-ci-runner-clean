@@ -1,0 +1,602 @@
+#!/bin/bash
+# Checks scripts/ci-runner-clean (#990) in a temporary folder made to look like the owner's runner: a work folder with
+# the runner's .runner beside it, a checkout that is a git repository, a home folder of its own, and stand-ins for
+# security, defaults and xcrun (CI_RUNNER_CLEAN_TEST), so that nothing of this computer's Keychain, preferences,
+# simulators or /tmp is read or changed. The processes it stops are stand-ins this test starts, perl programs in the
+# test's own folder (one ignores SIGTERM); two more, outside the work folder, must be left running. (A copy of sleep
+# would not do: macOS kills a copied system program as it starts.)
+# It checks what the script refuses before it changes anything, what it removes and keeps, that a second run finds
+# nothing, that a simulator it cannot delete fails the run, and that the job's own keychain (#993) is made and put back
+# without a path or its password ever being printed.
+#
+#   scripts/test-ci-runner-clean
+#
+# Runs on Linux too (Scripts (tests)), where none of the macOS tools is there to be reached.
+
+set -uo pipefail
+export LC_ALL=C
+
+root="$(cd -P -- "$(dirname -- "$0")/.." && pwd -P)"
+T=$(mktemp -d "${TMPDIR:-/tmp}/test-ci-runner-clean.XXXXXX") || exit 1
+T=$(cd -P -- "$T" && pwd -P)
+started=()
+
+cleanup() {
+	local pid
+	for pid in ${started[@]+"${started[@]}"}; do
+		# Only what this test started, while it is still that process.
+		[[ $(ps -ww -o command= -p "$pid" 2>/dev/null) == *"$T/"* ]] && kill -KILL "$pid" 2>/dev/null
+	done
+	rm -rf -- "$T"
+}
+trap cleanup EXIT
+
+failures=0
+pass() { echo "ok: $*"; }
+bad() {
+	echo "FAIL: $*" >&2
+	failures=$((failures + 1))
+}
+expect() { # expect <description> <command...>
+	local what=$1
+	shift
+	if "$@"; then pass "$what"; else bad "$what"; fi
+}
+
+runner="$T/runner"
+work="$runner/_work"
+workspace="$work/pi2"
+checkout="$workspace/pi2"
+temp="$work/_temp"
+home="$T/home"
+library="$home/Library"
+log="$T/log"
+mkdir -p "$runner" "$temp" "$checkout" "$library" "$log" "$T/bin" "$T/tmp" "$T/keychain" "$T/state" "$T/outside" "$runner/_work-other"
+printf '{}\n' >"$runner/.runner"
+
+# ---- Stand-ins for the macOS tools, which log what they are asked.
+
+cat >"$T/bin/security" <<'EOF'
+#!/bin/bash
+# Items are files in keychain/, one a service, holding how many items it has. The default keychain and the user's search
+# list are files in state/, one path a line, and the password a keychain was given is kept in state/password, so that
+# the test can read back what a run did and check that the script never prints the password.
+dir="$(cd -- "$(dirname -- "$0")/.." && pwd)"
+printf '%s\n' "$*" >>"$dir/log/security"
+state="$dir/state"
+case $1 in
+default-keychain)
+	if [ "${2:-}" = -d ]; then
+		shift 3
+		if [ "${1:-}" = -s ]; then
+			shift
+			[ -n "${1:-}" ] || exit 2
+			printf '%s\n' "$1" >"$state/default-keychain"
+			exit 0
+		fi
+	fi
+	# With default-fails in the test's folder, as a read the session may not make.
+	[ ! -f "$dir/default-fails" ] || { echo "security: interaction not allowed." >&2; exit 36; }
+	[ -f "$state/default-keychain" ] || { echo "security: No default keychain." >&2; exit 1; }
+	printf '    "%s"\n' "$(cat "$state/default-keychain")"
+	;;
+list-keychains)
+	if [ "${2:-}" = -d ]; then
+		shift 2
+		[ -n "${1:-}" ] && shift
+	fi
+	if [ "${1:-}" = -s ]; then
+		shift
+		: >"$state/user-list"
+		for path in "$@"; do printf '%s\n' "$path" >>"$state/user-list"; done
+		exit 0
+	fi
+	[ -f "$state/user-list" ] || exit 1
+	while IFS= read -r path; do printf '    "%s"\n' "$path"; done <"$state/user-list"
+	;;
+create-keychain)
+	# With create-fails in the test's folder, as one that cannot be made.
+	[ ! -f "$dir/create-fails" ] || { echo "security: The keychain could not be created." >&2; exit 1; }
+	[ "${2:-}" = -p ] || exit 2
+	: >"$4"
+	printf '%s\n' "$3" >"$state/password"
+	;;
+set-keychain-settings)
+	# The keychain and nothing else: leaving -t out is what Apple's `security` spells as no timeout (SecurityTool's
+	# keychain_set_settings.c: -t implies a lock interval, no -t means none), and no -l is no lock when the system sleeps.
+	[ $# = 2 ] || exit 2
+	[ -e "${2:-}" ] || exit 44
+	;;
+unlock-keychain)
+	[ "${2:-}" = -p ] || exit 2
+	printf '%s\n' "$3" >"$state/password"
+	[ -e "${4:-}" ] || exit 44
+	;;
+delete-keychain)
+	[ -e "${2:-}" ] || { echo "security: The specified keychain could not be found." >&2; exit 44; }
+	rm -f -- "$2"
+	;;
+dump-keychain)
+	# With dump-fails in the test's folder, as a Keychain that cannot be read: a status of its own, and nothing listed.
+	[[ ! -f $dir/dump-fails ]] || { echo "security: The keychain could not be read." >&2; exit 51; }
+	for file in "$dir/keychain"/*; do
+		[[ -f $file ]] || continue
+		for ((i = 0; i < $(cat "$file"); i++)); do
+			printf 'keychain: "%s/login.keychain-db"\nclass: "genp"\nattributes:\n    "acct"<blob>="x"\n    "svce"<blob>="%s"\n' "$dir" "$(basename -- "$file")"
+		done
+	done
+	;;
+delete-generic-password)
+	[[ $2 == -s ]] || exit 2
+	file="$dir/keychain/$3"
+	[[ -f $file && $(cat "$file") -gt 0 ]] || { echo "security: The specified item could not be found in the keychain." >&2; exit 44; }
+	echo $(($(cat "$file") - 1)) >"$file"
+	;;
+*) exit 2 ;;
+esac
+EOF
+cat >"$T/bin/defaults" <<'EOF'
+#!/bin/bash
+dir="$(cd -- "$(dirname -- "$0")/.." && pwd)"
+printf '%s\n' "$*" >>"$dir/log/defaults"
+EOF
+cat >"$T/bin/xcrun" <<'EOF'
+#!/bin/bash
+# `simctl list devices` lists the ids in simulators-left, one a line.
+dir="$(cd -- "$(dirname -- "$0")/.." && pwd)"
+printf '%s\n' "$*" >>"$dir/log/xcrun"
+[[ $* == "simctl list devices" ]] && cat "$dir/simulators-left" 2>/dev/null
+exit 0
+EOF
+cat >"$T/bin/openssl" <<'EOF'
+#!/bin/bash
+# A throwaway password of 48 hexadecimal characters, the same each run so that the test can look for it in the output.
+dir="$(cd -- "$(dirname -- "$0")/.." && pwd)"
+printf '%s\n' "$*" >>"$dir/log/openssl"
+[[ $* == 'rand -hex 24' ]] || exit 2
+printf 'c0ffee9d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f\n'
+EOF
+chmod +x "$T/bin/security" "$T/bin/defaults" "$T/bin/openssl" "$T/bin/xcrun"
+
+# ---- The checkout, with the script itself in it, as on the runner.
+
+git -C "$checkout" init -q
+printf 'node_modules/\napp/.build/\napp/build/\niphone/build/\n' >"$checkout/.gitignore"
+mkdir -p "$checkout/scripts" "$checkout/src"
+cp "$root/scripts/ci-runner-clean" "$checkout/scripts/ci-runner-clean"
+echo tracked >"$checkout/src/tracked"
+git -C "$checkout" add .gitignore scripts src
+git -C "$checkout" -c user.name=test -c user.email=test@example.invalid commit -qm test
+script="$checkout/scripts/ci-runner-clean"
+
+# What a job leaves: run() fills it again before each run that removes it.
+UDID=0A1B2C3D-0000-4000-8000-00000000C1C1
+leave() {
+	mkdir -p "$checkout/node_modules/x" "$checkout/app/build/pi².app" "$checkout/app/.build/debug" \
+		"$checkout/iphone/build/DerivedData/Build" "$checkout/iphone/build/simulators/ci" "$checkout/iphone/build/simulators/odd"
+	echo leftover >"$checkout/untracked"
+	echo o >"$checkout/app/.build/debug/kept.o"
+	echo d >"$checkout/iphone/build/DerivedData/Build/kept"
+	echo "$UDID" >"$checkout/iphone/build/simulators/ci/udid"
+	echo "not an id" >"$checkout/iphone/build/simulators/odd/udid"
+	echo changed >"$checkout/src/tracked"
+
+	echo 1 >"$T/keychain/dev.pi2.credentials"
+	echo 2 >"$T/keychain/dev.pi2.credentials.test-addedmodels-77"
+	echo 1 >"$T/keychain/dev.pi2.credentials.release-check-9"
+	echo 1 >"$T/keychain/dev.pi2.credentialsx"
+	echo 1 >"$T/keychain/com.example.other"
+
+	mkdir -p "$library/Preferences" "$library/Caches/dev.pi2.app" "$library/Caches/dev.pi2.app.test-7" \
+		"$library/Caches/com.example" "$library/HTTPStorages" "$library/WebKit/dev.pi2.app.test-7" \
+		"$library/Saved Application State/dev.pi2.app.savedState" "$library/Application Support/pi2-test-7" \
+		"$library/Application Support/pi2-dev" "$library/Application Support/other"
+	for name in dev.pi2.app dev.pi2.app.test-7 dev.pi2.apps com.example; do echo p >"$library/Preferences/$name.plist"; done
+	echo c >"$library/HTTPStorages/dev.pi2.app.binarycookies"
+
+	mkdir -p "$T/tmp/pi2-501/scratch-1" "$T/tmp/pi2-check-app-abc" "$T/tmp/pi2"
+	echo keep >"$T/tmp/keep-me"
+	mkdir -p "$temp/tmp/left"
+}
+
+# A process started in the background of a subshell, so that it is not this test's child and is reaped once stopped.
+start() { # start <pidfile> <command...>
+	local file=$1
+	shift
+	("$@" >/dev/null 2>&1 &
+		echo $! >"$file")
+	started+=("$(cat "$file")")
+}
+alive() {
+	kill -0 "$1" 2>/dev/null && [[ $(ps -o stat= -p "$1" 2>/dev/null) != Z* ]]
+}
+
+env_for() { # the environment of a job's step on the runner
+	env -i PATH=/usr/bin:/bin HOME="$home" RUNNER_ENVIRONMENT=self-hosted RUNNER_WORKSPACE="$workspace" \
+		RUNNER_TEMP="$temp" GITHUB_WORKSPACE="$checkout" GITHUB_ENV="$T/github-env" GITHUB_RUN_ID=20401 \
+		GITHUB_RUN_ATTEMPT=1 CI_RUNNER_CLEAN_TEST="$T" "$@"
+}
+
+# A program at <path> that sleeps for ten minutes, or until stopped; with a second argument, it ignores SIGTERM.
+perl=$(command -v perl) || { echo "test-ci-runner-clean: needs perl" >&2; exit 1; }
+stand_in() {
+	local ignore=
+	[[ -z ${2:-} ]] || ignore='$SIG{TERM} = "IGNORE"; '
+	mkdir -p "$(dirname -- "$1")"
+	printf '#!%s\n%ssleep 600;\n' "$perl" "$ignore" >"$1"
+	chmod +x "$1"
+}
+
+# ---- Stand-ins that must be left running whatever happens.
+
+stand_in "$T/outside/sleep"
+stand_in "$runner/_work-other/sleep"
+start "$T/outside.pid" "$T/outside/sleep"
+start "$T/other.pid" "$runner/_work-other/sleep"
+outside=$(cat "$T/outside.pid")
+other=$(cat "$T/other.pid")
+
+# ---- Refusals, each before anything is changed.
+
+leave
+stand_in "$checkout/app/.build/debug/standin-engine"
+start "$T/engine.pid" "$checkout/app/.build/debug/standin-engine"
+engine=$(cat "$T/engine.pid")
+
+refused() { # refused <description> <env assignments...>
+	local what=$1 out code
+	shift
+	out=$(env_for "$@" bash "$script" start 2>&1)
+	code=$?
+	if [[ $code == 2 && $out == *refused* ]] && alive "$engine" && [[ -f $checkout/untracked && ! -s $log/security && ! -s $log/defaults && ! -s $log/xcrun ]]; then
+		pass "refuses $what"
+	else
+		bad "refuses $what (exit $code): $out"
+	fi
+}
+refused "with no RUNNER_ENVIRONMENT" RUNNER_ENVIRONMENT=
+refused "on GitHub's runners" RUNNER_ENVIRONMENT=github-hosted
+refused "a RUNNER_TEMP outside the work folder" RUNNER_TEMP="$T/tmp"
+refused "a GITHUB_WORKSPACE outside RUNNER_WORKSPACE" GITHUB_WORKSPACE="$T/outside"
+refused "a relative RUNNER_WORKSPACE" RUNNER_WORKSPACE=_work/pi2
+refused "a work folder not called _work" RUNNER_WORKSPACE="$T/outside" GITHUB_WORKSPACE="$T/outside"
+refused "a test whose HOME is outside its folder" HOME=/
+mv "$runner/.runner" "$runner/.runner-moved"
+refused "a work folder with no .runner beside it"
+mv "$runner/.runner-moved" "$runner/.runner"
+mkdir -p "$library/Application Support/pi2"
+refused "a home with pi²'s data folder"
+rmdir "$library/Application Support/pi2"
+mkdir -p "$library/LaunchAgents" && echo x >"$library/LaunchAgents/dev.pi2.engine.plist"
+refused "a home with pi²'s login item"
+rm -rf "$library/LaunchAgents"
+out=$(env_for bash "$script" 2>&1)
+expect "refuses no argument" test $? = 2
+out=$(env_for bash "$script" middle 2>&1)
+expect "refuses an argument it does not know" test $? = 2
+
+# ---- A run at a job's start.
+
+stand_in "$temp/tmp/standin-remote"
+start "$T/remote.pid" "$temp/tmp/standin-remote"
+remote=$(cat "$T/remote.pid")
+stand_in "$T/stubborn" ignore-term
+start "$T/stubborn.pid" "$T/stubborn" "$checkout/relay/node_modules/standin-workerd"
+stubborn=$(cat "$T/stubborn.pid")
+# Started with nothing of the folder in its arguments, as app/'s checks are (by a relative path): only its environment
+# names it. macOS shows the environment of a program that is not Apple's own (perl is): node, where there is one.
+node=$(command -v node || true)
+if [[ $(uname -s) == Darwin && -n $node ]]; then
+	start "$T/check.pid" env GITHUB_WORKSPACE="$checkout" "$node" -e 'setTimeout(() => {}, 600000)'
+	check=$(cat "$T/check.pid")
+else
+	echo "skipped: a process named only by its environment (macOS with node only)"
+fi
+# Symbolic links where the script removes things, each to a folder outside, which must be left as it is: the link is
+# removed as a link, and the log says so (the security read of #991 found the simulators' records followed).
+victim() { # victim <name>: a folder outside everything the script cleans, with a file in it
+	mkdir -p "$T/victim/$1" && echo keep >"$T/victim/$1/keep"
+}
+victim sim && ln -s "$T/victim/sim" "$checkout/iphone/build/simulators/evil"
+victim tmp && ln -s "$T/victim/tmp" "$T/tmp/pi2-link"
+victim cache && ln -s "$T/victim/cache" "$library/Caches/dev.pi2.app.evil"
+victim data && ln -s "$T/victim/data" "$library/Application Support/pi2-evil"
+echo keep >"$T/victim/plist" && ln -s "$T/victim/plist" "$library/Preferences/dev.pi2.app.test-8.plist"
+
+sleep 0.5
+: >"$T/github-env"
+
+out=$(env_for bash "$script" start 2>&1)
+code=$?
+echo "$out" | sed 's/^/  | /'
+expect "a run at the start exits 0" test "$code" = 0
+expect "stops a process run from the checkout" bash -c "! kill -0 $engine 2>/dev/null"
+expect "stops a process run from the job's temporary folder" bash -c "! kill -0 $remote 2>/dev/null"
+expect "kills a process that ignores SIGTERM" bash -c "! kill -0 $stubborn 2>/dev/null"
+if [[ -n ${check:-} ]]; then
+	expect "stops a process started by a relative path, by its environment" bash -c "! kill -0 $check 2>/dev/null"
+fi
+expect "leaves a process outside the work folder" alive "$outside"
+expect "leaves a process in a folder whose name only begins like the work folder's" alive "$other"
+
+expect "deletes the recorded simulator by its id" grep -qx "simctl delete $UDID" "$log/xcrun"
+expect "shuts it down first" grep -qx "simctl shutdown $UDID" "$log/xcrun"
+expect "deletes nothing else in simctl" test "$(grep -c '^simctl delete' "$log/xcrun")" = 1
+expect "forgets the simulators' records" test ! -e "$checkout/iphone/build/simulators"
+
+expect "removes an untracked file" test ! -e "$checkout/untracked"
+expect "removes ignored node_modules" test ! -e "$checkout/node_modules"
+expect "removes app/build" test ! -e "$checkout/app/build"
+expect "keeps app/.build" test -f "$checkout/app/.build/debug/kept.o"
+expect "keeps iphone/build/DerivedData" test -f "$checkout/iphone/build/DerivedData/Build/kept"
+expect "keeps the script itself" test -f "$script"
+expect "leaves tracked files to the checkout" test "$(cat "$checkout/src/tracked")" = changed
+
+expect "removes both items of a test's service" test "$(cat "$T/keychain/dev.pi2.credentials.test-addedmodels-77")" = 0
+expect "removes the release check's item" test "$(cat "$T/keychain/dev.pi2.credentials.release-check-9")" = 0
+expect "never deletes under dev.pi2.credentials itself" bash -c "! grep -q -- '-s dev.pi2.credentials\$' '$log/security'"
+expect "keeps dev.pi2.credentials's item" test "$(cat "$T/keychain/dev.pi2.credentials")" = 1
+expect "keeps a service that only begins like it" test "$(cat "$T/keychain/dev.pi2.credentialsx")" = 1
+expect "keeps another app's item" test "$(cat "$T/keychain/com.example.other")" = 1
+
+expect "deletes dev.pi2.app's preferences" grep -qx "delete dev.pi2.app" "$log/defaults"
+expect "deletes a copy's preferences" grep -qx "delete dev.pi2.app.test-7" "$log/defaults"
+expect "deletes no other domain" test "$(wc -l <"$log/defaults" | tr -d ' ')" = 2
+for gone in Preferences/dev.pi2.app.plist Preferences/dev.pi2.app.test-7.plist Caches/dev.pi2.app Caches/dev.pi2.app.test-7 \
+	HTTPStorages/dev.pi2.app.binarycookies WebKit/dev.pi2.app.test-7 "Saved Application State/dev.pi2.app.savedState" \
+	"Application Support/pi2-test-7" "Application Support/pi2-dev"; do
+	expect "removes ~/Library/$gone" test ! -e "$library/$gone"
+done
+for kept in Preferences/dev.pi2.apps.plist Preferences/com.example.plist Caches/com.example "Application Support/other"; do
+	expect "keeps ~/Library/$kept" test -e "$library/$kept"
+done
+
+expect "removes /tmp/pi2-<uid>" test ! -e "$T/tmp/pi2-501"
+expect "removes /tmp/pi2-check-app-…" test ! -e "$T/tmp/pi2-check-app-abc"
+expect "keeps /tmp/pi2, which is not pi2-<anything>" test -d "$T/tmp/pi2"
+expect "keeps /tmp's other files" test -f "$T/tmp/keep-me"
+expect "empties the job's temporary folder" test -d "$temp/tmp" -a ! -e "$temp/tmp/left"
+expect "points TMPDIR at it for the job's next steps" grep -qx "TMPDIR=$temp/tmp/" "$T/github-env"
+for name in sim tmp cache data; do
+	expect "leaves what a link pointed to ($name)" test -f "$T/victim/$name/keep"
+done
+expect "leaves the file a preferences link pointed to" test -f "$T/victim/plist"
+for link in "$checkout/iphone/build/simulators/evil" "$T/tmp/pi2-link" "$library/Caches/dev.pi2.app.evil" \
+	"$library/Application Support/pi2-evil" "$library/Preferences/dev.pi2.app.test-8.plist"; do
+	expect "removes the link $(basename -- "$link")" test ! -L "$link"
+done
+for said in "the simulators' record evil" "$T/tmp/pi2-link" "Caches/dev.pi2.app.evil" "Application Support/pi2-evil" \
+	"the preferences of dev.pi2.app.test-8"; do
+	expect "says $said was a link" grep -qF "removed $said, a symbolic link, as a link" <<<"$out"
+done
+expect "asks defaults about no linked preferences" bash -c "! grep -q test-8 '$log/defaults'"
+expect "leaves no list of its own in RUNNER_TEMP" bash -c "! ls '$temp' | grep -q ci-runner-clean"
+
+# ---- At the end, and again, with nothing left: nothing to do, and no TMPDIR written again.
+
+: >"$log/security"
+: >"$log/defaults"
+: >"$log/xcrun"
+before=$(cat "$T/github-env")
+out=$(env_for bash "$script" end 2>&1)
+expect "a run at the end with nothing left exits 0" test $? = 0
+expect "says it stopped nothing" bash -c "! grep -q stopping <<<\"\$1\"" _ "$out"
+expect "the end leaves GITHUB_ENV as it was" test "$(cat "$T/github-env")" = "$before"
+expect "calls no simctl with no records" test ! -s "$log/xcrun"
+expect "deletes no preferences when there are none" test ! -s "$log/defaults"
+out=$(env_for bash "$script" end 2>&1)
+expect "runs twice" test $? = 0
+expect "still keeps app/.build" test -f "$checkout/app/.build/debug/kept.o"
+expect "still leaves the processes outside" alive "$outside"
+
+# ---- With no checkout yet (a job whose checkout failed): nothing to clean there, and no failure.
+
+rm -rf "$checkout/.git"
+out=$(env_for bash "$script" end 2>&1)
+expect "a checkout that is not a repository is left alone" test $? = 0 -a -f "$checkout/src/tracked"
+
+# ---- A Keychain it cannot read: one line with the status, nothing it printed, and the run still ends cleanly.
+
+echo 1 >"$T/keychain/dev.pi2.credentials.test-unreadable"
+: >"$T/dump-fails"
+out=$(env_for bash "$script" end 2>&1)
+expect "a Keychain it cannot read still exits 0" test $? = 0
+expect "says that the dump failed, with its status" grep -qx "ci-runner-clean: could not read which test Keychain items are there: security dump-keychain exited 51" <<<"$out"
+expect "prints nothing the Keychain said" bash -c "! grep -q 'could not be read' <<<\"\$1\"" _ "$out"
+expect "removes nothing of a service it could not read" test "$(cat "$T/keychain/dev.pi2.credentials.test-unreadable")" = 1
+rm -f "$T/dump-fails"
+
+# ---- A folder on the way replaced by a link: refused, nothing removed through it, and the run fails.
+
+rm -rf "$library/WebKit"
+mkdir -p "$T/victim/webkit/dev.pi2.app.test-9" && ln -s "$T/victim/webkit" "$library/WebKit"
+mkdir -p "$checkout/iphone/build" "$T/victim/records/ci" && echo "$UDID" >"$T/victim/records/ci/udid"
+ln -s "$T/victim/records" "$checkout/iphone/build/simulators"
+rm -rf "$temp/tmp"
+victim temp && ln -s "$T/victim/temp" "$temp/tmp"
+: >"$log/xcrun"
+out=$(env_for bash "$script" end 2>&1)
+expect "a folder replaced by a link fails the run" test $? = 1
+expect "says it refused the linked WebKit folder" grep -qF "refused to look in $(cd -P "$library" && pwd -P)/WebKit" <<<"$out"
+expect "removes nothing in the folder ~/Library/WebKit pointed to" test -d "$T/victim/webkit/dev.pi2.app.test-9"
+expect "reads no simulators' record through a link" test ! -s "$log/xcrun"
+expect "leaves the records a link pointed to" test -f "$T/victim/records/ci/udid"
+expect "removes a linked job's temporary folder as a link" test -f "$T/victim/temp/keep" -a -d "$temp/tmp" -a ! -L "$temp/tmp"
+expect "warns on the run" grep -q '^::warning' <<<"$out"
+rm -f "$library/WebKit" "$checkout/iphone/build/simulators"
+
+# ---- The job's own keychain: what it replaced put back, the keychain gone, and nothing of it in the output (#993).
+
+mkdir -p "$home/Library/Keychains"
+: >"$home/Library/Keychains/login.keychain-db"
+printf '%s\n' "$home/Library/Keychains/login.keychain-db" >"$T/state/default-keychain"
+printf '%s\n' "$home/Library/Keychains/login.keychain-db" >"$T/state/user-list"
+jobkey="$temp/pi2-job-20401-1.keychain-db"
+: >"$log/security"
+
+out=$(env_for bash "$script" keychain-start 2>&1)
+code=$?
+echo "$out" | sed 's/^/  | /'
+password=$(cat "$T/state/password" 2>/dev/null)
+expect "a keychain-start exits 0" test "$code" = 0
+expect "makes the job's keychain" test -f "$jobkey"
+expect "makes it the default" test "$(cat "$T/state/default-keychain")" = "$jobkey"
+expect "puts it first in the search list" test "$(sed -n 1p "$T/state/user-list")" = "$jobkey"
+expect "keeps the user's own keychain after it" test "$(sed -n 2p "$T/state/user-list")" = "$home/Library/Keychains/login.keychain-db"
+expect "sets it to no timeout and no lock on sleep" grep -qx "set-keychain-settings $jobkey" "$log/security"
+expect "unlocks it with the password it made" grep -qx "unlock-keychain -p $password $jobkey" "$log/security"
+expect "prints no path" bash -c '! grep -q / <<<"$1"' _ "$out"
+expect "never prints the password" bash -c '! grep -qF -- "$2" <<<"$1"' _ "$out" "$password"
+expect "never puts the password in GITHUB_ENV" bash -c '! grep -qF -- "$2" "$1"' _ "$T/github-env" "$password"
+
+out=$(env_for bash "$script" keychain-end 2>&1)
+code=$?
+echo "$out" | sed 's/^/  | /'
+expect "a keychain-end exits 0" test "$code" = 0
+expect "puts the default back" test "$(cat "$T/state/default-keychain")" = "$home/Library/Keychains/login.keychain-db"
+expect "puts the search list back" test "$(cat "$T/state/user-list")" = "$home/Library/Keychains/login.keychain-db"
+expect "deletes the job's keychain" test ! -e "$jobkey"
+expect "removes the record of what it replaced" test ! -e "$temp/pi2-job-keychain"
+expect "prints no path at the end" bash -c '! grep -q / <<<"$1"' _ "$out"
+expect "never prints the password at the end" bash -c '! grep -qF -- "$2" <<<"$1"' _ "$out" "$password"
+
+: >"$log/security"
+out=$(env_for bash "$script" keychain-end 2>&1)
+expect "a keychain-end with no record exits 0" test $? = 0
+expect "and asks security nothing" test ! -s "$log/security"
+
+# A keychain it cannot read is not one with nothing to put back: keychain-start fails, makes nothing and records
+# nothing, and a keychain-end after it does nothing.
+mkdir -p "$home/Library/Keychains"
+printf '%s\n' "$home/Library/Keychains/login.keychain-db" >"$T/state/default-keychain"
+printf '%s\n' "$home/Library/Keychains/login.keychain-db" >"$T/state/user-list"
+touch "$T/default-fails"
+: >"$log/security"
+out=$(env_for bash "$script" keychain-start 2>&1)
+code=$?
+echo "$out" | sed 's/^/  | /'
+expect "a keychain-start whose default read fails exits 1" test "$code" = 1
+expect "makes no keychain when the default cannot be read" test ! -e "$jobkey"
+expect "leaves no record when the default cannot be read" test ! -e "$temp/pi2-job-keychain"
+expect "prints no path when the default cannot be read" bash -c '! grep -q / <<<"$1"' _ "$out"
+rm -f "$T/default-fails"
+: >"$log/security"
+out=$(env_for bash "$script" keychain-end 2>&1)
+expect "a keychain-end after a failed start exits 0" test $? = 0
+expect "and asks security nothing" test ! -s "$log/security"
+
+# `security` can answer in words rather than with a path: not a keychain to record either.
+printf '%s\n' "No default keychain" >"$T/state/default-keychain"
+out=$(env_for bash "$script" keychain-start 2>&1)
+code=$?
+expect "a keychain-start whose default is not a path exits 1" test "$code" = 1
+expect "and makes no keychain" test ! -e "$jobkey"
+expect "and leaves no record" test ! -e "$temp/pi2-job-keychain"
+printf '%s\n' "$home/Library/Keychains/login.keychain-db" >"$T/state/default-keychain"
+
+: >"$log/security"
+touch "$T/create-fails"
+out=$(env_for bash "$script" keychain-start 2>&1)
+code=$?
+echo "$out" | sed 's/^/  | /'
+password=$(cat "$T/state/password")
+expect "a keychain-start whose create fails exits 1" test "$code" = 1
+expect "puts the default back after the failure" test "$(cat "$T/state/default-keychain")" = "$home/Library/Keychains/login.keychain-db"
+expect "puts the search list back after the failure" test "$(cat "$T/state/user-list")" = "$home/Library/Keychains/login.keychain-db"
+expect "leaves no keychain of the job's" test ! -e "$jobkey"
+expect "leaves no record after the failure" test ! -e "$temp/pi2-job-keychain"
+expect "prints no path after the failure" bash -c '! grep -q / <<<"$1"' _ "$out"
+expect "never prints the password after the failure" bash -c '! grep -qF -- "$2" <<<"$1"' _ "$out" "$password"
+rm -f "$T/create-fails"
+
+# The job's keychain is named from GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT, so each has to be digits: anything else is
+# refused before anything is made, in one line that names no value, and security is asked nothing.
+for bad in 2040a '2040/1' '..'; do
+	: >"$log/security"
+	out=$(env_for GITHUB_RUN_ID="$bad" bash "$script" keychain-start 2>&1)
+	code=$?
+	expect "a keychain-start whose run id is '$bad' is refused" test "$code" = 2
+	expect "and refuses it in a line that names no value ($bad)" bash -c '[[ $1 == *refused* && $1 != *"$2"* ]]' _ "$out" "$bad"
+	expect "and asks security nothing ($bad)" test ! -s "$log/security"
+	expect "and makes no keychain ($bad)" bash -c '! ls "$1" | grep -q "^pi2-job-"' _ "$temp"
+	expect "and leaves no record ($bad)" test ! -e "$temp/pi2-job-keychain"
+	expect "and prints no path ($bad)" bash -c '! grep -q / <<<"$1"' _ "$out"
+done
+# Empty, as it is outside GitHub's runner, is refused as it was before: one line, exit 2, and nothing made.
+: >"$log/security"
+out=$(env_for GITHUB_RUN_ID= bash "$script" keychain-start 2>&1)
+code=$?
+expect "a keychain-start with an empty run id is refused" test "$code" = 2
+expect "with the line it had before" grep -qF "GITHUB_RUN_ID or GITHUB_RUN_ATTEMPT is not set" <<<"$out"
+expect "and asks security nothing when it is empty" test ! -s "$log/security"
+expect "and makes no keychain when it is empty" bash -c '! ls "$1" | grep -q "^pi2-job-"' _ "$temp"
+expect "and leaves no record when it is empty" test ! -e "$temp/pi2-job-keychain"
+expect "and prints no path when it is empty" bash -c '! grep -q / <<<"$1"' _ "$out"
+
+# A default keychain and a search list a killed job left behind, and a file that is gone.
+printf '%s\n' "$temp/pi2-job-1-1.keychain-db" >"$T/state/default-keychain"
+printf '%s\n' "$temp/pi2-job-1-1.keychain-db" "$home/Library/Keychains/old.keychain-db" \
+	"$home/Library/Keychains/login.keychain-db" >"$T/state/user-list"
+: >"$temp/pi2-job-1-1.keychain-db"
+: >"$temp/pi2-job-keychain"
+out=$(env_for bash "$script" start 2>&1)
+expect "a start with a keychain a killed job left exits 0" test $? = 0
+expect "sets the default back to the login keychain" test "$(cat "$T/state/default-keychain")" = "$home/Library/Keychains/login.keychain-db"
+expect "takes the job's keychain out of the search list" test "$(cat "$T/state/user-list")" = "$home/Library/Keychains/login.keychain-db"
+expect "deletes the keychain a killed job left" test ! -e "$temp/pi2-job-1-1.keychain-db"
+expect "deletes the record a killed job left" test ! -e "$temp/pi2-job-keychain"
+expect "says it repaired the keychain" grep -qF "repaired the keychain a killed job left" <<<"$out"
+
+# The record is a file any step of the job can place, so it names only a keychain of the job's own: one naming the
+# login keychain is not given to delete-keychain, and the default and the search list are still put back.
+printf 'default\t%s\nlist\t%s\nkeychain\t%s\n' \
+	"$home/Library/Keychains/login.keychain-db" "$home/Library/Keychains/login.keychain-db" \
+	"$home/Library/Keychains/login.keychain-db" >"$temp/pi2-job-keychain"
+: >"$log/security"
+out=$(env_for bash "$script" keychain-end 2>&1)
+code=$?
+echo "$out" | sed 's/^/  | /'
+expect "a keychain-end whose record names another keychain exits 1" test "$code" = 1
+expect "never gives that path to delete-keychain" bash -c '! grep -q delete-keychain "$1"' _ "$log/security"
+expect "still puts the default back" grep -qxF "default-keychain -d user -s $home/Library/Keychains/login.keychain-db" "$log/security"
+expect "still puts the search list back" grep -qxF "list-keychains -d user -s $home/Library/Keychains/login.keychain-db" "$log/security"
+expect "removes the record it did not act on" test ! -e "$temp/pi2-job-keychain"
+expect "says the record's keychain is not the job's" grep -qF "not this job's" <<<"$out"
+expect "prints no path" bash -c '! grep -q / <<<"$1"' _ "$out"
+
+# A record naming a link is not one naming the job's keychain either: the link may lead to another keychain, so it is
+# never given to delete-keychain, the default and the search list are still put back, and the run fails with one line
+# and no path.
+mkdir -p "$T/victim/kc"
+echo keep >"$T/victim/kc/keychain-db"
+ln -s "$T/victim/kc/keychain-db" "$temp/pi2-job-linked.keychain-db"
+printf 'default\t%s\nlist\t%s\nkeychain\t%s\n' \
+	"$home/Library/Keychains/login.keychain-db" "$home/Library/Keychains/login.keychain-db" \
+	"$temp/pi2-job-linked.keychain-db" >"$temp/pi2-job-keychain"
+: >"$log/security"
+out=$(env_for bash "$script" keychain-end 2>&1)
+code=$?
+echo "$out" | sed 's/^/  | /'
+expect "a keychain-end whose record names a link exits 1" test "$code" = 1
+expect "never gives that link to delete-keychain" bash -c '! grep -q delete-keychain "$1"' _ "$log/security"
+expect "leaves the link and what it points to" test -L "$temp/pi2-job-linked.keychain-db" -a -s "$T/victim/kc/keychain-db"
+expect "still puts the default back" grep -qxF "default-keychain -d user -s $home/Library/Keychains/login.keychain-db" "$log/security"
+expect "still puts the search list back" grep -qxF "list-keychains -d user -s $home/Library/Keychains/login.keychain-db" "$log/security"
+expect "says the link's keychain is not the job's" grep -qF "not this job's" <<<"$out"
+expect "removes the record it did not act on" test ! -e "$temp/pi2-job-keychain"
+expect "prints no path" bash -c '! grep -q / <<<"$1"' _ "$out"
+
+# ---- A simulator that will not go fails the run, and its record is kept.
+
+mkdir -p "$checkout/iphone/build/simulators/ci"
+echo "$UDID" >"$checkout/iphone/build/simulators/ci/udid"
+echo "    ci ($UDID) (Booted)" >"$T/simulators-left"
+out=$(env_for bash "$script" end 2>&1)
+expect "a simulator it could not delete exits 1" test $? = 1
+expect "and keeps its record" test -f "$checkout/iphone/build/simulators/ci/udid"
+
+if ((failures)); then
+	echo "test-ci-runner-clean: $failures check(s) failed" >&2
+	exit 1
+fi
+echo "test-ci-runner-clean: every check passed."

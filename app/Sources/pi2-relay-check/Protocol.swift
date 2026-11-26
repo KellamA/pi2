@@ -117,24 +117,47 @@ enum ProtocolTest {
 		_ = try await macEvents.next("online") { $0 == .online(device) ? true : nil }
 		try await phoneClient.setPushToken(String(repeating: "c0", count: 32), environment: .development)
 
+		// Pushes (#689): this relay has no push key and no stand-in for Apple's service, so a push it would send is
+		// `unavailable`; each refusal comes back as the relay's word, on a socket that stays open.
+		let push = Data([4]) + Bytes.random(695)
+		Check.equal(try await macClient.push(.sealed(device: device, kind: .alert, sealed: push, collapse: Bytes.random(32))), .refused(.unavailable), "a sealed push, with no push key: unavailable")
+		Check.equal(try await macClient.push(.sealed(device: DeviceID.random(), kind: .background, sealed: push, collapse: nil)), .refused(.unknownDevice), "to a device that is not the pairing's: unknown-device")
+		let pushNow = SystemRelayClock().now()
+		let activity = ItemID.random()
+		Check.equal(try await macClient.push(.activity(device: device, activity: activity, event: .update, numbers: ActivityNumbers(working: 1, needs: 0, finished: 0, at: pushNow)!)), .refused(RelayWhy(word: "no-token")!), "a Live Activity with no token: no-token")
+		Check.equal(try await macClient.push(.activity(device: device, activity: activity, event: .update, numbers: ActivityNumbers(working: 1, needs: 0, finished: 0, at: pushNow - 2 * 86_400_000)!)), .refused(RelayWhy(word: "clock")!), "numbers counted two days ago: clock")
+		Check.equal(try await macClient.push(.activity(device: device, activity: activity, event: .end, numbers: ActivityNumbers(working: 1, needs: 0, finished: 0, at: pushNow + 600_000)!)), .refused(RelayWhy(word: "clock")!), "or ten minutes ahead: clock")
+		try await phoneClient.setActivityToken(String(repeating: "d1", count: 40), environment: .development, for: activity)
+		Check.equal(try await macClient.push(.activity(device: device, activity: activity, event: .update, numbers: ActivityNumbers(working: 1, needs: 0, finished: 0, at: pushNow)!)), .refused(.unavailable), "with the phone's token for it, and no push key: unavailable")
+		try await phoneClient.dropActivity(activity)
+		await Check.throwsError("a push from a phone", .wrongEnd) { try await phoneClient.push(.sealed(device: device, kind: .alert, sealed: push, collapse: nil)) }
+		await Check.throwsError("a Live Activity's token from the Mac", .wrongEnd) { try await macClient.setActivityToken(String(repeating: "d1", count: 40), environment: .development, for: activity) }
+
 		// The mailbox, both ways.
 		let sealed = Data([4]) + Bytes.random(200)
 		let toMac = ItemID.random()
 		Check.equal(try await phoneClient.put(sealed, id: toMac, to: .mac), .stored, "a phone's item for the Mac")
 		Check.equal(try await phoneClient.put(sealed, id: toMac, to: .mac), .alreadyThere, "the same put again")
 		_ = try await macEvents.next("mail") { $0 == .mail ? true : nil }
-		let macTook = try await macClient.take()
-		Check.equal(macTook.items, [RelayMailItem(from: .device(device), id: toMac, item: sealed, presence: false)], "the Mac takes it")
-		Check.equal(try await macClient.take().items, [], "and it is gone")
+		// A take whose caller could not keep it acknowledges nothing, and the relay hands the item over again.
+		struct NotKept: Error {}
+		do {
+			_ = try await macClient.take { _ -> Set<ItemID> in throw NotKept() }
+			Check.that(false, "a take whose caller throws throws")
+		} catch is NotKept {}
+		let macTook = try await macClient.take { $0.ids }
+		Check.equal(macTook.items, [RelayMailItem(from: .device(device), id: toMac, item: sealed, presence: false)], "the Mac takes it, handed over again since it was not kept")
+		Check.equal(try await macClient.take { $0.ids }.items, [], "and once acknowledged it is gone")
 		let face = ItemID.random()
 		_ = try await phoneClient.put(sealed, id: face, to: .mac, presence: true)
-		Check.equal(try await macClient.take().items.map(\.presence), [true], "an item marked presence keeps its flag")
+		Check.equal(try await macClient.take { $0.ids }.items.map(\.presence), [true], "an item marked presence keeps its flag")
 		let toPhone = ItemID.random()
 		let state = ItemID.random()
 		Check.equal(try await macClient.put(sealed, id: toPhone, to: .device(device)), .stored, "the Mac's item for the phone")
 		try await macClient.putState(sealed, id: state, for: device)
 		_ = try await phoneEvents.next("mail") { $0 == .mail ? true : nil }
-		let phoneTook = try await phoneClient.take()
+		let phoneTook = try await phoneClient.take { $0.ids }
+		Check.equal(try await phoneClient.take { $0.ids }, RelayTaken(items: [], state: nil, repeats: 0), "and once acknowledged, the item and the state are gone")
 		Check.equal(phoneTook.items.map(\.id), [toPhone], "the phone takes the Mac's item")
 		Check.equal(phoneTook.state, RelayStateItem(id: state, item: sealed), "and its state")
 		await Check.throwsError("an item for a device not listed", .refused(.unknownDevice)) {
@@ -172,8 +195,18 @@ enum ProtocolTest {
 		Check.that(!macEvents.all.contains { if case .disconnected = $0 { true } else { false } }, "the Mac, pinging every second, was answered and never dropped")
 
 		// Leaving, and what is left after.
-		try await phoneClient.leave()
-		_ = try await macEvents.next("left") { $0 == .left(device) ? true : nil }
+		// The phone's notice reaches the Mac as it signed it, and the Mac takes it only with its own identity key (#813).
+		let identity = P256.Signing.PrivateKey().publicKey
+		try await phoneClient.leave(mac: identity)
+		let left = try await macEvents.next("left") { (event: RelayEvent) -> RelayLeft? in if case let .left(left) = event { left } else { nil } }
+		Check.equal(left.device, device, "the Mac is told the phone left")
+		let leftSeen = SystemRelayClock().now()
+		Check.equal(
+			left.verified(pairing: pairing, identityKey: identity, deviceKey: deviceKey.publicKey, now: leftSeen)?.device, device,
+			"and the phone's notice, passed on by the relay, verifies against the device key the Mac holds")
+		Check.that(
+			left.verified(pairing: pairing, identityKey: relayKey.publicKey, deviceKey: deviceKey.publicKey, now: leftSeen) == nil,
+			"and for no other Mac's key")
 		Check.equal(try await phoneEvents.next("stopped") { (event: RelayEvent) -> RelayStop? in if case let .stopped(why) = event { why } else { nil } }, RelayStop.refused(.left), "a phone that left stops")
 		try await macClient.removeDevice(device)
 		let gone = try RelayClient(relay: url, role: .device(pairing, device), build: phone, signer: RelaySigner(deviceKey), connector: connector, options: options())

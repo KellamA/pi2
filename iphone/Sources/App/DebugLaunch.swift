@@ -6,7 +6,10 @@ import PiModels
 /// in the simulator without a tap (docs/iphone-app.md). `xcrun simctl launch` passes `SIMCTL_CHILD_<NAME>` to the app as
 /// `<NAME>`. None of it is compiled into a release build.
 ///
-/// - `PI2_TRANSPORT=replay`: connect to the recorded session (`ReplayTransport`).
+/// - `PI2_TRANSPORT=replay`: connect to the recorded session (`ReplayTransport`); `demo`: the demo mode; `remote`: the
+///   paired Mac, as with no value (`Launch.choice`).
+/// - `PI2_PAIR=<the payload's text>`: a code, as if scanned (`PairingDebugLaunch`); the first screen opens pairing with
+///   it at launch, and goes on by itself once paired, since the simulator cannot be tapped (`FirstScreen`).
 /// - `PI2_CONNECTION=not-paired | demo | connecting | home | relay | direct | home-relay-down | out-of-reach`: what the
 ///   connection bar says. With the replay it is `home` unless given; without it, `not-paired`.
 /// - `PI2_SHOW=<route>`: the route to open: `home`, `dashboard[:<project>]`, `project:<project>[#chat|now|work|more]`,
@@ -14,11 +17,17 @@ import PiModels
 ///   known. `face-id-check` opens the Face ID check from the first screen (`FirstScreen`). And the next screens':
 ///   `work:<project>[#<number>]`, `pull-request:<project>#<number>[:<file>]`, `board:<project>[#agents|rules|notes|branches]`,
 ///   `agent:<id>` (a template) or `agent:<project>#<id>`, `templates`, `project-settings:<project>`, `settings`,
-///   `schedules`, `usage`, `conversations[:<project>]`, `archive`, `background-commands[:<id>]`, `new-project`.
+///   `schedules`, `usage`, `conversations[:<project>]`, `archive`, `background-commands[:<id>]`, `new-project`, `outbox`, `file:<conversation>:<a link's target>`.
 struct DebugLaunch {
     var transport: String?
     var connection: String?
     var show: String?
+
+    /// Whether this run is the unit tests' host: the tests run inside the app, which then reaches for no Mac.
+    static let isTestHost: Bool = {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["XCTestConfigurationFilePath"] != nil || environment["XCTestSessionIdentifier"] != nil
+    }()
 
     static let current: DebugLaunch? = {
         let environment = ProcessInfo.processInfo.environment
@@ -120,6 +129,13 @@ struct DebugLaunch {
         case "usage" where argument == nil: return .usage
         case "archive" where argument == nil: return .archive
         case "new-project" where argument == nil: return .newProject
+        case "file":
+            // `file:<conversation>:<the link's target>`.
+            guard let argument else { return nil }
+            let named = argument.split(separator: ":", maxSplits: 1).map(String.init)
+            guard named.count == 2, let id = Int(named[0]), !named[1].isEmpty else { return nil }
+            return .filePreview(conversation: id, path: named[1])
+        case "outbox" where argument == nil: return .outbox
         default:
             return nil
         }

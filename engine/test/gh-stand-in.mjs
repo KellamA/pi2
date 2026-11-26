@@ -11,7 +11,8 @@
 //   arguments contain `match`) fail as gh does then.
 // - `block: { match, when: "before" | "after" }` makes the first command whose arguments contain `match` stop before
 //   or after it changes anything, write its process id to `<state>.blocked`, and wait until it is killed or
-//   `<state>.release` appears.
+//   `<state>.release` appears. `block` may also be a list of them, each with a `name`, to hold several commands at once
+//   and let each go by itself: `<state>.blocked.<name>` and `<state>.release.<name>` (#928).
 // Every command is logged, one JSON line each, to `<state>.log`, with when it began and ended (`at`, `ended`).
 //
 // For measuring (#599), GH_STAND_IN_DELAY makes each command take as long as the real gh does: `400-900` waits a random
@@ -94,10 +95,11 @@ if (state0.fail && (!state0.fail.match || line.includes(state0.fail.match))) {
 	if (state0.fail.kind === "signed_out") fail("To get started with GitHub CLI, please run:  gh auth login\nAlternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.", 4);
 }
 
-const block = state0.block && line.includes(state0.block.match) ? state0.block : undefined;
+const block = [state0.block ?? []].flat().find((one) => line.includes(one.match));
 function hold() {
-	writeFileSync(`${file}.blocked`, String(process.pid));
-	while (!existsSync(`${file}.release`)) sleep(20);
+	const named = block.name === undefined ? "" : `.${block.name}`;
+	writeFileSync(`${file}.blocked${named}`, String(process.pid));
+	while (!existsSync(`${file}.release${named}`)) sleep(20);
 }
 if (block?.when === "before") hold();
 
@@ -109,11 +111,9 @@ const repoName = Object.keys(state0.repos).find((name) => name.toLowerCase() ===
 const now = () => new Date().toISOString();
 const urlOf = (name, kind, number) => `https://github.com/${name}/${kind}/${number}`;
 const pick = (object, fields) => (fields ? Object.fromEntries(String(fields).split(",").map((field) => [field, object[field] ?? null])) : object);
-const printJson = (value) => {
-	const text = `${JSON.stringify(value)}\n`;
-	const bytes = Buffer.from(text);
-	wait(bytes.length);
-	// Written to its end before the process exits: a long listing to a pipe would otherwise be cut short.
+// Written to its end before the process exits: a long answer to a pipe would otherwise be cut short, for the process
+// leaves with only what the pipe had taken written (#977).
+const writeAll = (bytes) => {
 	for (let at = 0; at < bytes.length; ) {
 		try {
 			at += writeSync(1, bytes, at);
@@ -122,6 +122,11 @@ const printJson = (value) => {
 			sleep(1);
 		}
 	}
+};
+const printJson = (value) => {
+	const bytes = Buffer.from(`${JSON.stringify(value)}\n`);
+	wait(bytes.length);
+	writeAll(bytes);
 };
 function repoIn(state) {
 	const repo = state.repos[repoName];
@@ -319,10 +324,13 @@ switch (key) {
 		});
 		done();
 		break;
-	case "pr diff":
-		process.stdout.write(peek().repos[repoName]?.diff ?? `diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+new\n`);
+	case "pr diff": {
+		const bytes = Buffer.from(peek().repos[repoName]?.diff ?? `diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old\n+new\n`);
+		wait(bytes.length);
+		writeAll(bytes);
 		process.exit(0);
 		break;
+	}
 	default:
 		fail(`unknown command "${key}" for the stand-in gh`);
 }

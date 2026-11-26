@@ -32,7 +32,10 @@ struct ConversationView: View {
     private var data: OpenConversation<MessageField>? { engine.open[conversationID] }
     private var state: ConversationState? { data?.state }
     private var summary: ConversationSummary? { engine.conversations.first { $0.id == conversationID } }
+    private var archivedRow: ArchivedConversation? { engine.archived.first { $0.id == conversationID } }
     private var agent: AgentProfile? { engine.agent(state?.agent.agentId ?? summary?.agentId) }
+    /// A chat with pi²'s own assistant: no agent to name, in the header, the empty page or the field.
+    private var isChat: Bool { ConversationNames.isChat(summary: summary, archived: archivedRow, state: state) }
     private var requests: ConversationRequests { ConversationRequests(engine: engine, conversationID: conversationID) }
     private var pictures: ConversationPictures { ConversationPictures.of(conversationID) }
 
@@ -40,7 +43,7 @@ struct ConversationView: View {
         let status = ConversationStatus.make(
             conversationID: conversationID, state: state, agentName: agent?.name, outgoing: engine.outgoing[conversationID] ?? [],
             connected: engine.status == .connected, inbox: engine.inbox, needs: engine.conversationNeeds,
-            archivedInLibrary: engine.archived.contains { $0.id == conversationID }, models: engine.allModels
+            archivedInLibrary: archivedRow != nil, models: engine.allModels, chat: isChat
         )
         #if DEBUG
         if let sample = ConversationSample.current { return sample.status(over: status) }
@@ -76,7 +79,9 @@ struct ConversationView: View {
                 Text("An agent wrote it: \(url.absoluteString)")
             }
             #if DEBUG
-            .task { await ConversationSample.current?.act(sending: sendText, pictures: pictures) }
+            .task { await ConversationSample.current?.act(sending: { sendText($0) }, pictures: pictures) }
+            .task(id: pageShown) { if pageShown { await debugControls.run(ConversationDebugAct.current) } }
+            .onAppear { ConversationDebugControls.note("conversation \(conversationID) appeared; acts: \(ConversationDebugAct.current.count)") }
             #endif
     }
 
@@ -86,10 +91,11 @@ struct ConversationView: View {
     private var transcript: some View {
         if let folder = TranscriptPage.folder {
             if let state, isEmpty(state) {
+                let words = ConversationNames.emptyWords(chat: isChat, agentName: agent?.name)
                 ContentUnavailableView {
-                    Label("Nothing here yet", systemImage: "bubble.left.and.bubble.right")
+                    Label(words.title, systemImage: "bubble.left.and.bubble.right")
                 } description: {
-                    Text("Write to \(agent?.name ?? "the agent") below. It works on your Mac.")
+                    Text(words.text)
                 }
             } else if notOnTheMac {
                 ContentUnavailableView {
@@ -116,6 +122,7 @@ struct ConversationView: View {
                         },
                         onLink: { link = $0 },
                         onOpenConversation: { openRoute(.conversation($0)) },
+                        onFile: { openRoute(.filePreview(conversation: conversationID, path: $0)) },
                         loadOlder: { engine.loadOlder(conversationID) },
                         fetchPicture: { entry, index in await requests.picture(entry: entry, index: index) }
                     )
@@ -139,7 +146,7 @@ struct ConversationView: View {
 
     /// The engine has sent its list of conversations, and this one is not in it: the client let the request go.
     private var notOnTheMac: Bool {
-        engine.hasLoadedLibrary && data == nil && summary == nil && !engine.archived.contains { $0.id == conversationID }
+        engine.hasLoadedLibrary && data == nil && summary == nil && archivedRow == nil
     }
 
     private var projectID: String? {
@@ -149,10 +156,9 @@ struct ConversationView: View {
     private func header(_ status: ConversationStatus) -> ConversationHeader {
         let model = ConversationNames.shortModelName(state?.agent.model ?? agent?.model, engine: engine)
         let project = projectID.flatMap { id in engine.projects.first { $0.id == id }?.name }
-        let place = state?.agent.parent != nil ? "sub-chat \(conversationID)" : project ?? summary?.title
-        return ConversationHeader(
-            name: agent?.name ?? summary?.title ?? state?.title ?? "Conversation \(conversationID)", color: agent?.color,
-            subtitle: [model, place].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "), busy: status.busy
+        return ConversationNames.header(
+            conversationID: conversationID, summary: summary, archived: archivedRow, state: state, agent: agent,
+            model: model, project: project, busy: status.busy
         )
     }
 
@@ -165,9 +171,10 @@ struct ConversationView: View {
         sendText(text)
     }
 
-    private func sendText(_ text: String) {
+    private func sendText(_ text: String, steer: Bool? = nil) {
         let carried = pictures.takeReady()
-        let steered = status.busy && steer
+        // A chat's messages always wait for the answer, as on the Mac: it has no agent to steer.
+        let steered = status.busy && !status.isChat && (steer ?? self.steer)
         problem = nil
         Task {
             switch await requests.send(text, pictures: carried, steer: steered) {
@@ -201,6 +208,22 @@ struct ConversationView: View {
     private func restore(_ root: Int?) {
         Task { if let why = await requests.restore(root ?? conversationID) { problem = why } }
     }
+
+    #if DEBUG
+    /// The screen's controls, for `PI2_CONVERSATION_ACT`.
+    private var debugControls: ConversationDebugControls {
+        ConversationDebugControls(
+            missing: {
+                data?.state == nil ? "the conversation's state" : engine.status != .connected ? "the engine (\(engine.status))" : nil
+            },
+            status: { status },
+            send: { sendText($0, steer: $1) },
+            stop: stop, withdraw: withdraw, carryOn: carryOn, restore: restore,
+            pictures: pictures,
+            page: { ConversationPageBridge.shown }
+        )
+    }
+    #endif
 }
 
 /// What only a whole screen has: the header in the navigation bar. Inline, in a hub's Chat tab, the hub draws its own.

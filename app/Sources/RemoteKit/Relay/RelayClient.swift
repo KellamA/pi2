@@ -20,14 +20,21 @@ import Foundation
 //   verified and kept them, for 25 hours (`RelayItemMemory`), and a repeat is dropped: the relay can deliver an item
 //   twice, and a Mac item that is not a state has no number to refuse it by. Only verified items are remembered, so
 //   that items the relay made up cannot fill the memory. The memory is the user's to keep across launches.
+// - A take is acknowledged (#806): the relay deletes nothing as it hands items over, and `take` tells it what this end
+//   is done with (`took`) only once its user's closure has returned the ids it kept, or found certainly not genuine,
+//   and the repeats the memory dropped. A closure that throws, or an app that ends first, acknowledges nothing, and the
+//   relay hands the items over again at the next take; the memory drops those already kept, and they are acknowledged
+//   then. Takes go one at a time, from the request to its `took`, so that two are never given the same items.
 // - Everything the relay says is its word, not a fact: a hint to show, never a reason to forget, revoke, wipe or
-//   register again (remotekit.md, "What a caller must and must not do").
+//   register again (remotekit.md, "What a caller must and must not do"). A `left` carries the phone's own notice, which
+//   its caller checks (`RelayLeft.verified`) before it takes the device for gone (#813).
 // - What it reports is bounded (`RelayOptions.eventBuffer`): a caller that does not read cannot be made to hold what a
 //   relay sends without end. Past the bound the socket is closed and opened again; repeated `mail` and presence
 //   notices are sent once.
 
 /// A key that proves an end at the relay: the Mac's relay key, or the phone's device key (iphone.md 3.2, 3.4). It signs
-/// only `RelayProof`'s labelled text over a challenge of exactly 32 bytes.
+/// only `RelayProof`'s labelled text over a challenge of exactly 32 bytes, and a phone's the leave text for its Mac
+/// (`RelayLeaveNotice`).
 public struct RelaySigner: Sendable {
 	public let publicKey: P256.Signing.PublicKey
 	private let sign: @Sendable (Data) throws -> Data
@@ -45,7 +52,21 @@ public struct RelaySigner: Sendable {
 	/// The signature for a `proof` or a `leave`, checked against the public key before it is sent, so that a key that
 	/// is not the one on record is found here and not refused as `signature` by the relay.
 	func prove(_ purpose: RelayProof.Purpose, pairing: PairingID?, device: DeviceID?, challenge: Data) throws -> Data {
-		let text = try RelayProof.text(purpose, pairing: pairing, device: device, challenge: challenge)
+		try signChecked(try RelayProof.text(purpose, pairing: pairing, device: device, challenge: challenge))
+	}
+
+	/// The notice a phone leaves for its Mac (3.6): the device key's signature over the leave text, checked as a proof is.
+	func leaveNotice(pairing: PairingID, device: DeviceID, identityKey: P256.Signing.PublicKey, at: Int64) throws -> Data {
+		let text: Data
+		do {
+			text = try RelayLeaveNotice.text(pairing: pairing, device: device, identityKey: identityKey, at: at)
+		} catch let error as RemoteKitError {
+			throw RelayClientError.invalid(error)
+		}
+		return try signChecked(text)
+	}
+
+	private func signChecked(_ text: Data) throws -> Data {
 		let signature: Data
 		do {
 			signature = try sign(text)
@@ -57,6 +78,12 @@ public struct RelaySigner: Sendable {
 		}
 		return signature
 	}
+}
+
+/// The relay's answer to a push: sent (Apple took it), or refused with its word.
+public enum RelayPushAnswer: Equatable, Sendable {
+	case sent
+	case refused(RelayWhy)
 }
 
 /// Why a call to the relay's client did not do what it asked.
@@ -150,8 +177,10 @@ public enum RelayEvent: Equatable, Sendable {
 	/// The relay says a phone joined the window. Its key and App Attest key id are the relay's word: `addDevice` sends
 	/// the engine's, from the claim the engine verified, never these.
 	case phoneJoined(RelayJoinNotice)
-	/// The relay says a device left. Its word alone: nothing is revoked or forgotten on it without a proof.
-	case left(DeviceID)
+	/// The relay says a device left, and passes on what its phone signed for the Mac. Its word alone until
+	/// `RelayLeft.verified` has checked the notice against the device key the caller holds: only a verified leave is the
+	/// device having left; any other is a hint, "the relay says this device left", and nothing is revoked or forgotten on it.
+	case left(RelayLeft)
 	/// The relay says another copy of pi² Remote holding the relay key tried to connect as this Mac (3.4). A hostile
 	/// relay can say it too: shown as what the relay says.
 	case anotherMac
@@ -213,8 +242,19 @@ public enum RelayPutResult: Equatable, Sendable {
 public struct RelayTaken: Equatable, Sendable {
 	public let items: [RelayMailItem]
 	public let state: RelayStateItem?
-	/// Items dropped as repeats of ones remembered in the last 25 hours, or twice in this take.
+	/// Items dropped as repeats of ones remembered in the last 25 hours, or twice in this take. They are acknowledged with
+	/// the rest, so that the relay deletes them.
 	public let repeats: Int
+
+	public init(items: [RelayMailItem], state: RelayStateItem?, repeats: Int) {
+		self.items = items
+		self.state = state
+		self.repeats = repeats
+	}
+
+	/// The ids of everything given: the items and the state. For `take`'s closure to return only once all of it is kept
+	/// or certainly not genuine.
+	public var ids: Set<ItemID> { Set(items.map(\.id) + (state.map { [$0.id] } ?? [])) }
 }
 
 /// What a phone gives to App Attest at `join`, and what it gets back (3.3 step 2): its attestation of a new key, made
@@ -274,6 +314,9 @@ public actor RelayClient {
 	private var pending: Pending?
 	private var requestBusy = false
 	private var requestQueue: [CheckedContinuation<Void, Never>] = []
+	/// Takes, one at a time from the `take` request to its `took` (#806).
+	private var takeBusy = false
+	private var takeQueue: [CheckedContinuation<Void, Never>] = []
 	private var endWaiters: [Int: CheckedContinuation<RelayStop?, Never>] = [:]
 	private var nextWaiter = 0
 	private var memory: RelayItemMemory
@@ -390,6 +433,19 @@ public actor RelayClient {
 		try await expectOK(.state(device: device, id: id, item: item), .state)
 	}
 
+	/// Asks the relay to push to a device (#689; relay/README.md, "Pushes", "Live Activities"): `sent` once Apple took
+	/// it, or the relay's word for why not (`no-token`, `token-dead`, `push-limit`, `push-later`, `unavailable`,
+	/// `unknown-device`, `clock`, or a word this client does not know), which is the caller's to pass on. Nothing is sent
+	/// again here: what to ask again is the engine's to decide. Throws as any request does when it could not be asked.
+	public func push(_ push: RelayPush) async throws -> RelayPushAnswer {
+		try requireMac()
+		switch try await request(.push(push), .push) {
+		case .ok: return .sent
+		case let .refused(why): return .refused(why)
+		case .taken: throw RelayClientError.unreadable
+		}
+	}
+
 	/// Sends the channel's bytes to a device; the relay puts nothing round them but takes the id off. If the device is not
 	/// connected, the relay answers `offline`, which the client reports only if it last reported the device online.
 	public func send(_ bytes: Data, to device: DeviceID) async throws {
@@ -416,17 +472,39 @@ public actor RelayClient {
 		try await expectOK(.token(apns: apns, environment: environment), .token)
 	}
 
+	/// Gives the relay a Live Activity's push token, for the activity this phone started under `activity` (7).
+	public func setActivityToken(_ apns: String, environment: RelayPushEnvironment, for activity: ItemID) async throws {
+		try requireDevice()
+		try await expectOK(.activityToken(activity: activity, apns: apns, environment: environment), .activityToken)
+	}
+
+	/// Takes a Live Activity's push token back: the activity ended on the phone.
+	public func dropActivity(_ activity: ItemID) async throws {
+		try requireDevice()
+		try await expectOK(.dropActivity(activity), .dropActivity)
+	}
+
 	/// Removes this phone from the pairing at the relay (3.6), signed with the device key over this connection's
-	/// challenge. The relay closes the socket, and the client stops with `left`. Throws `lost` if no answer came within
+	/// challenge, and leaves its Mac the notice it believes (`RelayLeft`): the device key's signature over the leave text
+	/// for this pairing, this device, `identityKey` (the Mac's, as the phone keeps it from pairing) and the time now. The
+	/// relay closes the socket, and the client stops with `left`. Throws `lost` if no answer came within
 	/// `RelayOptions.answerWithin`. The phone's Unpair does not wait on it: its keys are deleted either way (3.6).
-	public func leave() async throws {
+	public func leave(mac identityKey: P256.Signing.PublicKey) async throws {
 		guard case let .device(pairing, device) = role else { throw RelayClientError.wrongEnd }
 		guard !finished else { throw RelayClientError.stopped }
 		guard ready, let socket, let challenge else { throw RelayClientError.notConnected }
 		let signature = try signer.prove(.leave, pairing: pairing, device: device, challenge: challenge)
+		let at = options.clock.now()
+		let notice = try signer.leaveNotice(pairing: pairing, device: device, identityKey: identityKey, at: at)
+		let message = RelayOutgoing.leave(signature: signature, at: at, notice: notice)
+		do {
+			try message.validate()
+		} catch let error as RemoteKitError {
+			throw RelayClientError.invalid(error)
+		}
 		let sentOn = generation
 		do {
-			try await socket.send(.text(RelayOutgoing.leave(signature: signature).text))
+			try await socket.send(.text(message.text))
 		} catch {
 			throw RelayClientError.disconnected
 		}
@@ -467,16 +545,50 @@ public actor RelayClient {
 		}
 	}
 
-	/// Takes what waits in this end's mailbox. The relay deletes each item as it hands it over. Items remembered in the
-	/// last 25 hours (`remember`), or given twice in this take, are dropped as repeats; the caller remembers the others
-	/// once it has opened, verified and kept them.
-	public func take() async throws -> RelayTaken {
+	/// Takes what waits in this end's mailbox, hands what is new to `keep`, and once `keep` has returned tells the relay
+	/// to delete what `keep` said it is done with (`took`, #806); gives back what `keep` was given.
+	///
+	/// The relay deletes nothing as it hands items over: only what this end names in `took`. **`keep` returns the ids,
+	/// among those it was given (the items' and the state's), that it is done with**, and only those are acknowledged:
+	/// - **kept**: opened, verified, stored or handed on, `remember`ed, and the item memory saved in the same write as what
+	///   was kept, all before `keep` returns;
+	/// - or **certainly not genuine**, so that it never will be kept: its seal does not open with the reader's key, its
+	///   signature does not verify, its writer or its address is not what it says. Only that: nothing that could pass.
+	///
+	/// **A failure that could pass later is not an answer**: the reader's key not available (before the first unlock, in
+	/// the notification service extension), the Keychain or the store not writable, the device's record not loaded. Then
+	/// `keep` leaves the id out, or throws (nothing is acknowledged, and `take` throws what `keep` threw), and the relay
+	/// hands the item over again at the next take, until it expires. An id `keep` names that this take did not bring is
+	/// passed over. Items remembered in the last 25 hours (`remember`) are dropped as repeats and not given to `keep`, but
+	/// acknowledged: they were kept before, and a redelivery after an acknowledgement that was lost is deleted. An item
+	/// given twice in this take is given to `keep` once, and acknowledged as `keep` says of it.
+	///
+	/// **One take at a time**: a take waits for the one before it until that one's `took` has been sent, or its `keep`
+	/// threw, so that two takes are never given the same items, which the first had not yet remembered. Callers of one
+	/// end share one client, or at least one take at a time and one item memory (the app and its extension).
+	///
+	/// An acknowledgement that does not reach the relay (the socket dropped, the client stopped) is not an error: what
+	/// `keep` kept stays kept, and the relay hands those items over again, which the memory drops and the next take
+	/// acknowledges. A closure, rather than a token the caller acknowledges later, so that acknowledging cannot be left
+	/// out, or done before the items are kept; and it names what it is done with, so that nothing is acknowledged by
+	/// default.
+	public func take(_ keep: @Sendable (RelayTaken) async throws -> Set<ItemID>) async throws -> RelayTaken {
+		await acquireTake()
+		defer { releaseTake() }
 		mailReported = false
 		guard case let .taken(items, state) = try await request(.take, .take) else { throw RelayClientError.unreadable }
 		let now = options.clock.now()
 		var seen = Set<String>()
+		let remembered = Set(items.filter { memory.contains($0, at: now) }.map(\.id))
 		let fresh = items.filter { !memory.contains($0, at: now) && seen.insert("\($0.from.text) \($0.id.text)").inserted }
-		return RelayTaken(items: fresh, state: state, repeats: items.count - fresh.count)
+		let taken = RelayTaken(items: fresh, state: state, repeats: items.count - fresh.count)
+		let done = try await keep(taken)
+		// What `keep` is done with, and the repeats it was not given, each once, in the take's order: at most a mailbox's
+		// items and a state, which `took` holds.
+		var named = Set<ItemID>()
+		let ids = (items.map(\.id) + (state.map { [$0.id] } ?? [])).filter { (remembered.contains($0) || done.contains($0)) && named.insert($0).inserted }
+		if !ids.isEmpty { try? await expectOK(.took(ids: ids), .took) }
+		return taken
 	}
 
 	// MARK: Registering and joining, each on a socket of its own
@@ -721,9 +833,9 @@ public actor RelayClient {
 		case let .phoneJoined(notice):
 			know(notice.slot)
 			post(.phoneJoined(notice))
-		case let .left(device):
-			presence[device] = nil
-			post(.left(device))
+		case let .left(left):
+			presence[left.device] = nil
+			post(.left(left))
 		case .anotherMac: post(.anotherMac)
 		case let .held(device, until): post(.held(device, until: until))
 		case let .macOnline(online):
@@ -846,6 +958,8 @@ public actor RelayClient {
 		pending = nil
 		for waiter in requestQueue { waiter.resume() }
 		requestQueue = []
+		for waiter in takeQueue { waiter.resume() }
+		takeQueue = []
 		stopReason = reason
 		resumeEndWaiters(reason)
 		emit.yield(.stopped(reason))
@@ -942,6 +1056,18 @@ public actor RelayClient {
 
 	private func release() {
 		if requestQueue.isEmpty { requestBusy = false } else { requestQueue.removeFirst().resume() }
+	}
+
+	private func acquireTake() async {
+		guard takeBusy else {
+			takeBusy = true
+			return
+		}
+		await withCheckedContinuation { takeQueue.append($0) }
+	}
+
+	private func releaseTake() {
+		if takeQueue.isEmpty { takeBusy = false } else { takeQueue.removeFirst().resume() }
 	}
 
 	private func requireMac() throws {

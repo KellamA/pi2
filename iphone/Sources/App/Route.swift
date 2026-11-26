@@ -44,6 +44,12 @@ enum Route: Hashable, Sendable {
     case backgroundCommands(output: String? = nil)
     /// A new project, from a folder the Mac offers (#698, `Conversations/`).
     case newProject
+    /// A text file a conversation links to, by the link's target as its answer wrote it, opened from a file link in its
+    /// transcript (#698, `Conversations/`: `files.preview`).
+    case filePreview(conversation: Int, path: String)
+    /// What the person wrote while the Mac was out of reach, each saying whether it went (#692, `Outbox/`): from the line
+    /// under the projects list that counts what waits.
+    case outbox
 }
 
 /// The board's pages a project's hub lists under More (docs/design/iphone.md, "A project's hub"), besides its settings.
@@ -118,6 +124,8 @@ struct RouteView: View {
         case .archive: ArchiveView()
         case .backgroundCommands(let output): BackgroundCommandsView(commandID: output)
         case .newProject: NewProjectView()
+        case .filePreview(let conversation, let path): FilePreviewView(conversationID: conversation, path: path)
+        case .outbox: OutboxView()
         }
     }
 }

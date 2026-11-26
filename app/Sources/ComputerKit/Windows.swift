@@ -76,6 +76,36 @@ package struct ServerWindow {
     }
 }
 
+/// Which of the controls an action names, from the last look, a read of the window finds again (#955, #969). A control
+/// the app has removed can go on answering its role, its old frame and its press (a SwiftUI view on a tab switched
+/// away does), so only being among the window's controls read now says it is still there. The read is a look's own
+/// walk (`WindowReader`), which stops once every one is found, so one read serves an action naming several.
+package struct Seeking<E: Equatable> {
+    private var missing: [E]
+
+    package init(_ wanted: [E]) { missing = wanted }
+
+    /// Whether every control sought has been found.
+    package var done: Bool { missing.isEmpty }
+
+    /// A control the walk lists, in the listing's terms (`CFEqual` for an AXUIElement).
+    package mutating func saw(_ element: E) { missing.removeAll { $0 == element } }
+
+    package enum Outcome: Equatable {
+        /// Every one is among the window's controls now.
+        case found
+        /// The walk read the whole window, within its bounds, and some are not in it: the window changed.
+        case gone
+        /// The walk ran out (its bounds, as a look's: elements, depth, time) before finding them all, so it cannot say.
+        case unsure
+    }
+
+    /// What the walk found, once it is over; `truncated` is whether it ran out before reading the whole window.
+    package func outcome(truncated: Bool) -> Outcome {
+        done ? .found : truncated ? .unsure : .gone
+    }
+}
+
 package enum WindowChoice {
     /// A focused element can outlive its window, or lack a frame. Try the next candidate rather than losing the app.
     package static func first<E>(in candidates: [E], minimized: (E) -> Bool, frame: (E) -> CGRect?) -> (E, CGRect)? {
@@ -123,13 +153,31 @@ package enum AtPoint {
         return WindowChoice.innermost(containing: point, in: listed.map(\.frame)).map { listed[$0].element }
     }
 
+    /// Whether a parked copy's hit is something in the window read, `window`, so that `target` acts on it as it is:
+    /// an element of the copy's own process (`ofCopy`) inside that window, by its enclosing window (`enclosing`, nil
+    /// where it has none). Where a hit test finds none of the app's windows at the point, as off the screen, it can
+    /// answer with the application element, which has no window. That once counted as in, so the listed control at
+    /// the point was never reached, and the click went as a real one, which the copy ignored (#879). So an element
+    /// with no window counts as outside, and so does the window itself, which names nothing in it: either way the
+    /// listed control there is taken. With no window read, nothing counts as in it.
+    package static func inWindow<E: Equatable>(_ hit: E, ofCopy: Bool, enclosing: E?, window: E?) -> Bool {
+        guard ofCopy, let window else { return false }
+        return hit != window && enclosing == window
+    }
+
     /// Whether `chosen`, what the approval card named, is still what is at the point after the wait: `target` gives
     /// it again now (`now`), and where it was a listed control, not the hit test's own find, the control is still
-    /// there and still holds the point (`frameNow`, read again; nil once it is gone).
-    package static func holds<E: Equatable>(_ chosen: E?, now: E?, hit: E?, at point: CGPoint, frameNow: (E) -> CGRect?) -> Bool {
+    /// there to be seen and still holds the point (`frameNow`, read again; nil once it is gone).
+    ///
+    /// "Still there" is `present`: among the window's controls read again now. A frame proves nothing alone: SwiftUI
+    /// keeps the element of a view it has removed, such as a tab switched away, answering its old frame and its press,
+    /// with no parent; a press on it runs the removed button's action (#955). `present` is the costly part, a read of
+    /// the window, so it is asked last, and only of a listed control, which only a parked copy's click falls back to.
+    package static func holds<E: Equatable>(_ chosen: E?, now: E?, hit: E?, at point: CGPoint, frameNow: (E) -> CGRect?,
+                                            present: (E) -> Bool) -> Bool {
         guard chosen == now else { return false }
         guard let chosen, chosen != hit else { return true }
-        return frameNow(chosen)?.contains(point) == true
+        return frameNow(chosen)?.contains(point) == true && present(chosen)
     }
 
     /// What the approval cards for actions at a point named, kept until each action comes. The action acts on that
@@ -145,23 +193,52 @@ package enum AtPoint {
         package mutating func keep(_ element: E?, for key: String) { chosen[key] = .some(element) }
 
         /// What the action for `key` acts on: what was chosen now (`now`, with the hit test's own find `hit`) when
-        /// nothing was kept for it; the card's choice when it holds; `.changed` when it does not, and the action is
-        /// refused. The kept choice is used once.
-        package mutating func settle(_ now: E?, hit: E?, for key: String, at point: CGPoint, frameNow: (E) -> CGRect?) -> Settled<E> {
-            guard let card = chosen.removeValue(forKey: key) else { return .act(now) }
-            return AtPoint.holds(card, now: now, hit: hit, at: point, frameNow: frameNow) ? .act(card) : .changed
+        /// nothing was kept for it; the card's choice when it holds, `.only` where that is a listed control rather
+        /// than the hit test's find; `.changed` when it does not hold, and the action is refused. The kept choice is
+        /// used once, and `present` is asked only for a card's listed control (see `holds`).
+        package mutating func settle(_ now: E?, hit: E?, for key: String, at point: CGPoint, frameNow: (E) -> CGRect?,
+                                     present: (E) -> Bool) -> Settled<E> {
+            guard let card = chosen.removeValue(forKey: key) else {
+                // No card: a listed control from the last look, not the hit test's own find, is acted on only while it
+                // is still there and at the point, as a card's is (#969). The hit test's find, or nothing, as before.
+                if let now, now != hit, !AtPoint.holds(now, now: now, hit: hit, at: point, frameNow: frameNow, present: present) { return .stale }
+                return .act(now)
+            }
+            guard AtPoint.holds(card, now: now, hit: hit, at: point, frameNow: frameNow, present: present) else { return .changed }
+            if let card, card != hit { return .only(card) }
+            return .act(card)
         }
     }
 
     package enum Settled<E: Equatable>: Equatable {
         /// Act on this element, or with nil by a real click at the point.
         case act(E?)
-        /// What the card named is gone or no longer at the point: refuse, and say to look again.
+        /// Act on this element through accessibility alone, never by a real click at the point in its place: the card
+        /// named a listed control the hit test does not find there, so a real click is not sure to reach it. In the
+        /// live trial of #955 one was sent all the same, after the press of a control the app had removed failed.
+        case only(E)
+        /// What the card named is gone, no longer in the window, or no longer at the point: refuse, and say to look again.
         case changed
+        /// No card was shown, and the listed control from the last look at the point is gone, no longer in the window,
+        /// or no longer at the point: refuse, and say to look again (#969).
+        case stale
     }
 
-    /// What the agent is told when the window changed during the wait for approval, so the action was not taken.
+    /// What the agent is told when no card was shown and the listed control its last look had at the point is no
+    /// longer there, so the action was not taken (#969).
+    package static func stale(_ undone: String, x: Double, y: Double) -> String {
+        "The window changed since the last look: the control it had at (\(Int(x)), \(Int(y))) is no longer there, so \(undone). Take a screenshot to look again, then try again."
+    }
+
+    /// What the agent is told when the window changed after its last look, before the card or while it waited, so
+    /// what the approval named is no longer at the point and the action was not taken.
     package static func changed(_ undone: String, x: Double, y: Double) -> String {
-        "The window changed while this waited for approval: what is at (\(Int(x)), \(Int(y))) is not what the approval named, so \(undone). Take a screenshot to look again, then try again."
+        "The window changed since the last look, or while this waited for approval: what is at (\(Int(x)), \(Int(y))) is not what the approval named, so \(undone). Take a screenshot to look again, then try again."
+    }
+
+    /// What the agent is told when what the approval named (`named`, as "the “Send” button") did not answer through
+    /// accessibility, and a real click at the point, which is not sure to reach it, was not sent in its place.
+    package static func unanswered(_ named: String, _ undone: String, x: Double, y: Double) -> String {
+        "\(named.prefix(1).uppercased() + named.dropFirst()), which the approval named, did not answer through accessibility, and a real click at (\(Int(x)), \(Int(y))) is not sure to reach it, so \(undone). Take a screenshot to look again."
     }
 }

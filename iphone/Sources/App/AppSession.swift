@@ -9,8 +9,8 @@ import PiModels
 /// screen reads the engine's state from `engine` (its projects, needs, conversations and the rest, as on the Mac) and
 /// sends its requests through it; none holds a transport or a client of its own.
 ///
-/// For now `connection` is set from outside: by the debug launch arguments, and later by pairing and the channel (the
-/// rest of #680) and the demo mode (#684), which also choose the transport (`Launch`).
+/// `connection` is set from outside: by `PhoneLink`, which mirrors the paired Mac's connection into it, by the demo mode
+/// (#684), and by a debug build's launch values; they also choose the transport (`Launch`).
 @MainActor
 @Observable
 final class AppSession: EngineSessionHost {
@@ -47,6 +47,10 @@ final class AppSession: EngineSessionHost {
     let engine = EngineSession<MessageField>()
 
     @ObservationIgnored private let log = Logger(subsystem: "dev.pi2.ios", category: "session")
+    /// Called when the client's transport is ready (the greeting comes next): `PhoneLink` sends the Outbox then.
+    @ObservationIgnored var onConnected: (() -> Void)?
+    /// Called when the client let its transport go (it closed or failed): `PhoneLink` connects it to the next one.
+    @ObservationIgnored var onLost: (() -> Void)?
 
     init(connection: Connection = .notPaired) {
         self.connection = connection
@@ -56,6 +60,8 @@ final class AppSession: EngineSessionHost {
     /// Connects the client over `transport`, and says how the bar is to describe it.
     func start(_ transport: any EngineTransport, as connection: Connection) {
         self.connection = connection
+        // The client lets an old transport go only when it closes; one replaced while it runs is let go here.
+        if let old = engine.transport, old !== transport { old.cancel() }
         engine.connect(transport)
     }
 
@@ -63,6 +69,14 @@ final class AppSession: EngineSessionHost {
 
     func note(_ message: String) {
         log.notice("\(message, privacy: .public)")
+    }
+
+    func sessionConnected() {
+        onConnected?()
+    }
+
+    func sessionLost() {
+        onLost?()
     }
 }
 

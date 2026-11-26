@@ -181,8 +181,12 @@ struct ProjectNowTab: View {
     private func answer(_ need: NeedItem, _ reply: [String: Any]) {
         Task {
             do {
-                try await engine.call("needs.answer", ["id": need.id, "answer": reply])
-                problems[need.id] = nil
+                let result = try await engine.call("needs.answer", ["id": need.id, "answer": reply])
+                // Start Anyway past a limit the card did not cover (made tighter, another limit, a new day): nothing
+                // started, and the card stays with the new reading (`{ held: true, limit }`, docs/projects.md, 8.3).
+                problems[need.id] = result["held"] == .bool(true)
+                    ? "Still held, so nothing started: the limit changed since this card was shown. Read it again above, and start it anyway again if you still want it."
+                    : nil
                 words[need.id] = nil
             } catch {
                 problems[need.id] = error.localizedDescription
@@ -418,7 +422,10 @@ struct NeedCard: View {
     /// A decision: a button for each choice, and a field to answer in one's own words when it allows that.
     private var decisionCard: some View {
         own("decision") {
-            Text(need.question ?? "").textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            // A `present` question's pictures, small, under it; a click opens its window (#946).
+            NeedPresentationPictures(engine: engine, need: need) {
+                Text(need.question ?? "").textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }
             if let choices = need.choices {
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 8) {

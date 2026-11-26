@@ -11,7 +11,9 @@ enum Formats {
 		payload()
 		lines()
 		refusedLine()
+		pairRefusedLine()
 		homeKeyLines()
+		presenceKeyLine()
 		directions()
 		homeTag()
 	}
@@ -108,6 +110,14 @@ enum Formats {
 		Check.refuses("a line longer than allowed") {
 			_ = try assembler.take(try Frame(.more, Data(repeating: 0x61, count: 6)))
 			_ = try assembler.take(try Frame(.data, Data(repeating: 0x61, count: 6)))
+		}
+		Check.that(assembler.unfinishedLength == 6, "the frame that would pass the limit is not held: 6 bytes of the line are (#908)")
+		var growing = LineAssembler(maxLength: 100)
+		Check.runs("an assembler says how much of an unfinished line it holds, and none once the line is whole (#908)") {
+			guard growing.unfinishedLength == 0, try growing.take(try Frame(.more, Data(repeating: 0x61, count: 7))) == nil, growing.unfinishedLength == 7,
+				try growing.take(try Frame(.more, Data(repeating: 0x61, count: 5))) == nil, growing.unfinishedLength == 12,
+				try growing.take(try Frame(.data, Data("b".utf8)))?.count == 13, growing.unfinishedLength == 0
+			else { throw RemoteKitError("check", "unfinishedLength") }
 		}
 		var empty = LineAssembler()
 		Check.refuses("an empty data frame alone") { _ = try empty.take(try Frame(.data)) }
@@ -270,6 +280,48 @@ enum Formats {
 		Check.that((try? ControlLine.parse(Data(#"{"refused":{"reason":"\#(longest)"}}"#.utf8))) != nil, "a reason of 32 letters is read")
 	}
 
+	/// The pairRefused line (#881): a word from a fixed list, a word of the same form this build does not know read as no
+	/// word, and nothing else.
+	static func pairRefusedLine() {
+		Check.section("The pairRefused line")
+		Check.that(PairRefusal.Why.allCases.map(\.rawValue) == ["unsaved", "cancelled"], "the words are exactly the two listed")
+		for why in PairRefusal.Why.allCases {
+			let written = ControlLine.pairRefused(PairRefusal(why)).line
+			Check.that(written == Data(#"{"pairRefused":{"why":"\#(why.rawValue)"}}"#.utf8), "pairRefused \(why.rawValue) is written as remotekit.md says")
+			guard case let .pairRefused(read)? = try? ControlLine.parse(written, from: .mac) else {
+				Check.that(false, "pairRefused \(why.rawValue) reads")
+				continue
+			}
+			Check.that(read.why == why && read == PairRefusal(why), "pairRefused \(why.rawValue) reads back as itself")
+			Check.refuses("pairRefused \(why.rawValue) from a phone") { _ = try ControlLine.parse(written, from: .phone) }
+		}
+		let unknown = Data(#"{"pairRefused":{"why":"moonphase"}}"#.utf8)
+		if case let .pairRefused(read)? = try? ControlLine.parse(unknown) {
+			Check.that(read.why == nil, "a word this build does not know is no word")
+			Check.that(ControlLine.pairRefused(read).line == unknown, "and is written back as it came")
+		} else {
+			Check.that(false, "a word this build does not know is read, not refused")
+		}
+		for (text, why) in [
+			(#"{"pairRefused":{}}"#, "no word"),
+			(#"{"pairRefused":{"why":"unsaved","text":"The Mac could not save the pairing."}}"#, "a field beside the word"),
+			(#"{"pairRefused":{"why":"unsaved","why":"cancelled"}}"#, "the word twice"),
+			(#"{"pairRefused":{"why":""}}"#, "an empty word"),
+			(#"{"pairRefused":{"why":"Unsaved"}}"#, "a word with a capital"),
+			(#"{"pairRefused":{"why":"not-saved"}}"#, "a word with a hyphen"),
+			(#"{"pairRefused":{"why":"The Mac could not save the pairing. Start again."}}"#, "the engine's words"),
+			(#"{"pairRefused":{"why":"abcdefghijklmnopqrstuvwxyzabcdefg"}}"#, "a word of 33 letters"),
+			(#"{"pairRefused":{"why":1}}"#, "a word that is a number"),
+			(#"{"pairRefused":{"why":null}}"#, "a word that is null"),
+			(#"{"pairRefused":"unsaved"}"#, "a word that is not in an object"),
+			(#"{"pairRefused":{"why":"unsaved"},"x":1}"#, "a second member"),
+			(#"{"pairRefused":{"reason":"unsaved"}}"#, "the refused line's member in place of why"),
+			(#"{"pairRefused":{"why":"уnsaved"}}"#, "a word with a Cyrillic letter"),
+		] {
+			Check.refuses("a pairRefused line with \(why)") { _ = try ControlLine.parse(Data(text.utf8)) }
+		}
+	}
+
 	/// The home key in `paired` and in the `homeKey` line (#845): exactly 32 bytes of base64url, never missing, and
 	/// nothing beside it.
 	static func homeKeyLines() {
@@ -326,6 +378,108 @@ enum Formats {
 		Check.that(!String(describing: paired).contains(keyText) && !String(reflecting: paired).contains(keyText), "a paired's description shows no home key")
 	}
 
+	/// The phone's offer of a new presence key (#891): its signed text byte for byte as the engine's `readSigned` reads
+	/// it (compact, exactly these fields in this order), signed by the device key and by the offered key, the key in the
+	/// one form RemoteKit reads; the Mac's `presenceKeyAccepted`; and what each reader refuses.
+	static func presenceKeyLine() {
+		Check.section("The offer of a new presence key")
+		do {
+			let deviceKey = P256.Signing.PrivateKey()
+			let offered = P256.Signing.PrivateKey()
+			let pairing = PairingID(Base64URL.encode(Data(repeating: 1, count: 16)))!
+			let device = DeviceID("dev_" + Base64URL.encode(Data(repeating: 2, count: 16)))!
+			let binding = Data(repeating: 3, count: 32)
+			let challenge = Data(repeating: 4, count: 32)
+			let at = Date(timeIntervalSince1970: 1_800_000_000.5)
+			let offer = try PresenceKeyOffer.make(pairing: pairing, device: device, binding: binding, challenge: challenge, build: "1.0.42", at: at, deviceKey: deviceKey, offeredKey: offered)
+			let keyText = PublicKeys.text(offered.publicKey)
+			let expected = #"{"v":2,"kind":"presenceKey","pairing":"AQEBAQEBAQEBAQEBAQEBAQ","device":"dev_AgICAgICAgICAgICAgICAg","binding":"AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM","challenge":"BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ","presenceKey":"\#(keyText)","build":"1.0.42","at":1800000000500}"#
+			Check.that(offer.statement.text.utf8.elementsEqual(expected.utf8), "the offer's signed text is compact, with exactly the engine's fields in its order (devices.ts, offerPresenceKey)")
+			Check.that(PresenceKeyOffer.signedText(pairing: pairing, device: device, binding: binding, challenge: challenge, presenceKey: offered.publicKey, build: "1.0.42", at: at).utf8.elementsEqual(expected.utf8),
+				"and signedText gives the same text, for a signer that signs asynchronously")
+			Check.that(Base64URL.decode(keyText)?.count == 91 && Base64URL.decode(keyText) == offered.publicKey.derRepresentation, "the offered key is the uncompressed SPKI DER CryptoKit writes, 91 bytes")
+			let line = ControlLine.presenceKey(offer).line
+			let written = #"{"presenceKey":{"signed":"\#(expected.replacingOccurrences(of: "\"", with: "\\\""))","signature":"\#(offer.statement.signatureText)","presence":"\#(Base64URL.encode(offer.presence))"}}"#
+			Check.that(line == Data(written.utf8), "the presenceKey line is written as remotekit.md says")
+			guard case let .presenceKey(read)? = try? ControlLine.parse(line, from: .phone) else { return Check.that(false, "the presenceKey line reads from the phone") }
+			Check.that(read.statement.text.utf8.elementsEqual(expected.utf8) && read.presenceKey.derRepresentation == offered.publicKey.derRepresentation && read.device == device && read.pairing == pairing
+				&& read.binding == binding && read.challenge == challenge && read.build == "1.0.42" && read.at == 1_800_000_000_500, "and reads back as itself")
+			Check.runs("an offer passes the engine's whole check: the device key's signature and the offered key's, binding, challenge, time") {
+				try read.verify(deviceKey: deviceKey.publicKey, pairing: pairing, device: device, binding: binding, challenge: challenge, now: at)
+			}
+			Check.refuses("an offer read against another device key") { try read.verifyDevice(deviceKey: offered.publicKey, pairing: pairing, device: device, binding: binding) }
+			Check.refuses("an offer for another channel") { try read.verifyDevice(deviceKey: deviceKey.publicKey, pairing: pairing, device: device, binding: Bytes.random(32)) }
+			Check.refuses("an offer for another device") { try read.verifyDevice(deviceKey: deviceKey.publicKey, pairing: pairing, device: DeviceID.random(), binding: binding) }
+			Check.refuses("an offer for another pairing") { try read.verifyDevice(deviceKey: deviceKey.publicKey, pairing: PairingID.random(), device: device, binding: binding) }
+			Check.refuses("an offer with another challenge") { try read.verify(deviceKey: deviceKey.publicKey, pairing: pairing, device: device, binding: binding, challenge: Bytes.random(32), now: at) }
+			Check.refuses("an offer signed three minutes ago") {
+				try read.verify(deviceKey: deviceKey.publicKey, pairing: pairing, device: device, binding: binding, challenge: challenge, now: at.addingTimeInterval(180))
+			}
+			Check.refuses("an offer of the device key itself") {
+				_ = try PresenceKeyOffer.make(pairing: pairing, device: device, binding: binding, challenge: challenge, build: "1", deviceKey: deviceKey, offeredKey: deviceKey)
+			}
+
+			// An offer whose presence signature is another key's than the one it offers: read, and refused by the whole check.
+			let other = P256.Signing.PrivateKey()
+			let forged = written.replacingOccurrences(of: Base64URL.encode(offer.presence), with: Base64URL.encode(try other.sign(Data(expected.utf8))))
+			if case let .presenceKey(forgedOffer)? = try? ControlLine.parse(Data(forged.utf8)) {
+				Check.refuses("an offer not signed by the key it offers") {
+					try forgedOffer.verify(deviceKey: deviceKey.publicKey, pairing: pairing, device: device, binding: binding, challenge: challenge, now: at)
+				}
+			} else {
+				Check.that(false, "an offer with another presence signature still reads")
+			}
+
+			// Signed texts the engine would not read: each signed by the device key, so only the reader refuses them.
+			func offerLine(_ signed: JSONValue) throws -> Data {
+				let statement = try SignedStatement.make(signed, signer: deviceKey)
+				return JSON.write(.object([("presenceKey", .object([
+					("signed", .string(statement.text)), ("signature", .string(statement.signatureText)), ("presence", .string(Base64URL.encode(try offered.sign(Data(statement.text.utf8))))),
+				]))]))
+			}
+			guard case let .object(members) = offer.statement.value else { return Check.that(false, "an offer's signed text is an object") }
+			func replacing(_ name: String, _ value: JSONValue) -> JSONValue { .object(members.map { $0.0 == name ? ($0.0, value) : $0 }) }
+			for (signed, why) in [
+				(JSONValue.object(members.reversed()), "its fields in another order than the engine reads"),
+				(.object([members[1], members[0]] + members.dropFirst(2)), "v and kind the other way round"),
+				(.object(members.filter { $0.0 != "build" }), "no build, as #786 first wrote it"),
+				(.object(members + [("session", .null)]), "a field the engine does not read"),
+				(replacing("kind", .string("attach")), "the kind of an attach"),
+				(replacing("v", .integer(1)), "another version"),
+				(replacing("presenceKey", .string(Base64URL.encode(offered.publicKey.x963Representation))), "a key that is not SPKI"),
+				(replacing("presenceKey", .string(Base64URL.encode(offered.publicKey.compressedRepresentation))), "a compressed key"),
+				(replacing("presenceKey", .string(Base64URL.encode(offered.publicKey.derRepresentation.dropLast()))), "a key cut short"),
+				(replacing("presenceKey", .null), "no key"),
+				(replacing("binding", .string(Base64URL.encode(Bytes.random(31)))), "a binding of 31 bytes"),
+				(replacing("challenge", .string(Base64URL.encode(Bytes.random(33)))), "a challenge of 33 bytes"),
+				(replacing("device", .string("dev_x")), "a device id of no form"),
+				(replacing("build", .string("")), "an empty build"),
+				(replacing("at", .string("1800000000500")), "a time that is text"),
+			] {
+				let bad = try offerLine(signed)
+				Check.refuses("an offer with \(why)") { _ = try ControlLine.parse(bad) }
+			}
+			for (text, why) in [
+				(written.replacingOccurrences(of: #""}}"#, with: #"","received":0}}"#), "received beside it, which only an attach has"),
+				(written.replacingOccurrences(of: #""}}"#, with: #"","binding":"\#(Base64URL.encode(binding))"}}"#), "a binding of the phone's beside it"),
+				(written.replacingOccurrences(of: #","presence":"\#(Base64URL.encode(offer.presence))""#, with: ""), "no presence signature"),
+				(written.replacingOccurrences(of: "{\"presenceKey\":{", with: "{\"presenceKey\":{\"v\":2,"), "a version beside it"),
+				(#"{"presenceKeyAccepted":{"key":"x"}}"#, "a presenceKeyAccepted that is not empty"),
+				(#"{"presenceKeyAccepted":null}"#, "a presenceKeyAccepted that is null"),
+			] {
+				Check.refuses("a line with \(why)") { _ = try ControlLine.parse(Data(text.utf8)) }
+			}
+			Check.that(ControlLine.presenceKeyAccepted.line == Data(#"{"presenceKeyAccepted":{}}"#.utf8), "presenceKeyAccepted is written as remotekit.md says")
+			if case .presenceKeyAccepted? = try? ControlLine.parse(Data(#"{"presenceKeyAccepted":{}}"#.utf8), from: .mac) {
+				Check.that(true, "and reads from the Mac")
+			} else {
+				Check.that(false, "presenceKeyAccepted reads from the Mac")
+			}
+		} catch {
+			Check.that(false, "the offer of a new presence key: \(error)")
+		}
+	}
+
 	/// Every channel line has one writer (#845): read as from the other end, it is refused.
 	static func directions() {
 		Check.section("Which end sends each line")
@@ -345,12 +499,16 @@ enum Formats {
 				(.attached(Attached(session: SessionID("s1")!, resume: false)), .mac, "attached"),
 				(.revoked(try Revocation.make(pairing: pairing, device: device, identity: identity)), .mac, "revoked"),
 				(.refused(Refusal(.update)), .mac, "refused"),
+				(.pairRefused(PairRefusal(.unsaved)), .mac, "pairRefused"),
 				(.homeKey(HomeKey.random()), .mac, "homeKey"),
 				(.pair(try PairClaim.make(device: description, attestation: nil, keyId: nil, pairing: pairing, binding: binding, deviceKey: deviceKey)), .phone, "pair"),
 				(.attach(try AttachClaim.make(
 					pairing: pairing, device: device, session: nil, received: nil, binding: binding, challenge: Bytes.random(32), build: "1.0",
 					deviceKey: deviceKey, presenceKey: presenceKey)), .phone, "attach"),
 				(.sessionEnd, .phone, "sessionEnd"),
+				(.presenceKey(try PresenceKeyOffer.make(
+					pairing: pairing, device: device, binding: binding, challenge: Bytes.random(32), build: "1.0", deviceKey: deviceKey, offeredKey: presenceKey)), .phone, "presenceKey"),
+				(.presenceKeyAccepted, .mac, "presenceKeyAccepted"),
 			]
 			for (line, side, name) in lines {
 				let other: ControlLine.Side = side == .mac ? .phone : .mac

@@ -1,0 +1,23 @@
+// The relay as the sealed-bytes check runs it (worker.ts beside this file, #683): the protocol test's relay, with the
+// recorder at its edge and its objects able to read back what they keep. For local runs through scripts/isolated.mjs
+// only; nothing deploys it. Every setting is given on the command line by `scripts/relay-protocol-test --sealed`.
+{
+	"$schema": "../../node_modules/wrangler/config-schema.json",
+	"name": "pi2-relay-sealed-test",
+	"main": "worker.ts",
+	"compatibility_date": "2026-11-01",
+	"compatibility_flags": ["no_nodejs_compat", "no_nodejs_compat_v2"],
+	"send_metrics": false,
+	"observability": {
+		"enabled": false,
+		"logs": { "enabled": false, "invocation_logs": false }
+	},
+	"durable_objects": {
+		"bindings": [
+			{ "name": "PAIRINGS", "class_name": "Pairing" },
+			{ "name": "ATTEST_KEYS", "class_name": "AttestKey" },
+			{ "name": "ADDRESSES", "class_name": "Address" }
+		]
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["Pairing", "AttestKey", "Address"] }]
+}

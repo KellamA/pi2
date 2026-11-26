@@ -121,7 +121,9 @@ public struct RelayWhy: Hashable, Sendable, CustomStringConvertible {
 
 /// The Mac's requests and the ends' mailbox requests, as the relay names them in `ok { what }` and `refused { what }`.
 public enum RelayRequestKind: String, Sendable, CaseIterable {
-	case openJoin, closeJoin, addDevice, removeDevice, deletePairing, state, put, take, token
+	case openJoin, closeJoin, addDevice, removeDevice, deletePairing, state, put, take, took, token
+	/// The Mac's push (#689), and a phone's Live Activity token and its taking back.
+	case push, activityToken, dropActivity
 }
 
 /// A device as the Mac's `ready` lists it.
@@ -140,14 +142,15 @@ public struct RelayDevicePresence: Equatable, Sendable {
 public struct RelayMacReady: Equatable, Sendable {
 	/// The listed devices, and whether each is connected.
 	public let devices: [RelayDevicePresence]
-	/// Devices the relay says left while the Mac was away (3.6). Its word alone: a hostile relay can name any device.
-	public let left: [DeviceID]
+	/// Devices the relay says left while the Mac was away (3.6), each with what its phone signed for the Mac. Its word
+	/// alone, a hostile relay can name any device, until `RelayLeft.verified` has checked one.
+	public let left: [RelayLeft]
 	/// Whether the pairing is still pending: no device added yet, deleted 15 minutes after it was registered.
 	public let pending: Bool
 	/// How many items wait in its mailbox.
 	public let mail: Int
 
-	public init(devices: [RelayDevicePresence], left: [DeviceID], pending: Bool, mail: Int) {
+	public init(devices: [RelayDevicePresence], left: [RelayLeft], pending: Bool, mail: Int) {
 		self.devices = devices
 		self.left = left
 		self.pending = pending
@@ -228,7 +231,7 @@ public enum RelayIncoming: Equatable, Sendable {
 	case online(DeviceID)
 	case offline(DeviceID)
 	case phoneJoined(RelayJoinNotice)
-	case left(DeviceID)
+	case left(RelayLeft)
 	case anotherMac
 	case held(DeviceID, until: Int64)
 	// A phone's.
@@ -249,6 +252,9 @@ public enum RelayLimits {
 	/// The most items a mailbox holds (5.3): the Mac's 200, a device's 100, and its state besides.
 	public static let macMailbox = 200
 	public static let deviceMailbox = 100
+	/// The most ids one `took` names (`MAX_TOOK` in `relay/src/protocol.ts`): the most a take hands over, the Mac's 200
+	/// items (a phone's is 100 and its state).
+	public static let maxTook = 200
 
 	/// The most items, not counting a state, that a `take` can bring to this end.
 	static func mailbox(for end: RelayEnd) -> Int { end == .mac ? macMailbox : deviceMailbox }
@@ -294,10 +300,7 @@ extension RelayIncoming {
 				return RelayDevicePresence(device: try deviceID(device, "device"), online: try bool(device, "online"))
 			}
 			guard case let .array(gone)? = fields.value("left"), gone.count <= 64 else { throw RemoteKitError(fields.part, "left is not a list") }
-			let left = try gone.map { entry in
-				guard let text = entry.stringValue, let device = DeviceID(text) else { throw RemoteKitError(fields.part, "left holds what is not a device") }
-				return device
-			}
+			let left = try gone.map { entry in try leftDevice(try Fields(entry, part: "relay ready", keys: ["device", "at", "notice"])) }
 			return .macReady(RelayMacReady(devices: devices, left: left, pending: try bool(fields, "pending"), mail: try count(fields, "mail")))
 		case ("ready", .device):
 			let fields = try Fields(body, part: "relay ready", keys: ["mac", "mail"])
@@ -355,7 +358,7 @@ extension RelayIncoming {
 		case ("offline", .mac):
 			return .offline(try deviceID(try Fields(body, part: "relay offline", keys: ["device"]), "device"))
 		case ("left", .mac):
-			return .left(try deviceID(try Fields(body, part: "relay left", keys: ["device"]), "device"))
+			return .left(try leftDevice(try Fields(body, part: "relay left", keys: ["device", "at", "notice"])))
 		case ("anotherMac", .mac):
 			_ = try Fields(body, part: "relay anotherMac", keys: [])
 			return .anotherMac
@@ -378,6 +381,11 @@ extension RelayIncoming {
 	private static func deviceID(_ fields: Fields, _ key: String) throws -> DeviceID {
 		guard let id = DeviceID(try fields.string(key)) else { throw RemoteKitError(fields.part, "\(key) is not a device's id") }
 		return id
+	}
+
+	/// A device that left, with its phone's time and notice for the Mac (#813): read whole, checked later by its reader.
+	private static func leftDevice(_ fields: Fields) throws -> RelayLeft {
+		RelayLeft(device: try deviceID(fields, "device"), at: try time(fields, "at"), notice: try fields.bytes("notice", count: SignedStatement.signatureLength))
 	}
 
 	private static func itemID(_ fields: Fields, _ key: String) throws -> ItemID {
@@ -420,9 +428,9 @@ extension RelayIncoming {
 		// A phone sends only its own requests; the Mac sends no `token`.
 		let mine: Bool
 		switch kind {
-		case .openJoin, .closeJoin, .addDevice, .removeDevice, .deletePairing, .state: mine = end == .mac
-		case .token: mine = end == .device
-		case .put, .take: mine = true
+		case .openJoin, .closeJoin, .addDevice, .removeDevice, .deletePairing, .state, .push: mine = end == .mac
+		case .token, .activityToken, .dropActivity: mine = end == .device
+		case .put, .take, .took: mine = true
 		}
 		guard mine else { throw RemoteKitError(fields.part, "what is not a request this end sends") }
 		return kind
@@ -444,9 +452,17 @@ public enum RelayOutgoing: Sendable {
 	case state(device: DeviceID, id: ItemID, item: Data)
 	case put(to: RelayAddress, id: ItemID, item: Data, presence: Bool)
 	case take
+	/// What the reader has kept of what its takes handed over, by id: the relay deletes those, and only those (#806).
+	case took(ids: [ItemID])
 	case token(apns: String, environment: RelayPushEnvironment)
-	case leave(signature: Data)
+	/// The relay's signature over this connection's challenge, and the time and notice for the Mac (`RelayLeft`).
+	case leave(signature: Data, at: Int64, notice: Data)
 	case ping
+	/// The Mac's push to one device: sealed, or a Live Activity's four numbers (#689).
+	case push(RelayPush)
+	/// A phone's Live Activity push token, for the activity it started under that id; and its taking one back.
+	case activityToken(activity: ItemID, apns: String, environment: RelayPushEnvironment)
+	case dropActivity(ItemID)
 
 	public var text: String {
 		JSON.text(.object([(name, .object(body))]))
@@ -466,9 +482,13 @@ public enum RelayOutgoing: Sendable {
 		case .state: "state"
 		case .put: "put"
 		case .take: "take"
+		case .took: "took"
 		case .token: "token"
 		case .leave: "leave"
 		case .ping: "ping"
+		case .push: "push"
+		case .activityToken: "activityToken"
+		case .dropActivity: "dropActivity"
 		}
 	}
 
@@ -481,8 +501,10 @@ public enum RelayOutgoing: Sendable {
 			if let device { body.append(("device", .string(device.text))) }
 			body.append(("build", .string(build.text)))
 			return body
-		case let .proof(signature), let .leave(signature):
+		case let .proof(signature):
 			return [("signature", .string(Base64URL.encode(signature)))]
+		case let .leave(signature, at, notice):
+			return [("signature", .string(Base64URL.encode(signature))), ("at", .integer(at)), ("notice", .string(Base64URL.encode(notice)))]
 		case let .join(pairing, deviceKey, attestation, keyId, token):
 			return [
 				("pairing", .string(pairing.text)), ("deviceKey", .string(PublicKeys.text(deviceKey))),
@@ -503,8 +525,23 @@ public enum RelayOutgoing: Sendable {
 			// The flag is left out rather than written false: the relay takes only `true` for it.
 			if presence { body.append(("presence", .bool(true))) }
 			return body
+		case let .took(ids):
+			return [("ids", .array(ids.map { .string($0.text) }))]
 		case let .token(apns, environment):
 			return [("apns", .string(apns)), ("environment", .string(environment.rawValue))]
+		case let .push(.sealed(device, kind, sealed, collapse)):
+			var body: [(String, JSONValue)] = [("device", .string(device.text)), ("kind", .string(kind.rawValue)), ("sealed", .string(Base64URL.encode(sealed)))]
+			if let collapse { body.append(("collapse", .string(Base64URL.encode(collapse)))) }
+			return body
+		case let .push(.activity(device, activity, event, numbers)):
+			return [
+				("device", .string(device.text)), ("kind", .string("activity")), ("activity", .string(activity.text)), ("event", .string(event.rawValue)),
+				("state", numbers.json),
+			]
+		case let .activityToken(activity, apns, environment):
+			return [("activity", .string(activity.text)), ("apns", .string(apns)), ("environment", .string(environment.rawValue))]
+		case let .dropActivity(activity):
+			return [("activity", .string(activity.text))]
 		}
 	}
 
@@ -513,8 +550,13 @@ public enum RelayOutgoing: Sendable {
 	public func validate() throws {
 		let part = "relay \(name)"
 		switch self {
-		case let .proof(signature), let .leave(signature):
+		case let .proof(signature):
 			guard signature.count == SignedStatement.signatureLength else { throw RemoteKitError(part, "a signature is not 64 bytes") }
+		case let .leave(signature, at, notice):
+			guard signature.count == SignedStatement.signatureLength, notice.count == SignedStatement.signatureLength else {
+				throw RemoteKitError(part, "a signature is not 64 bytes")
+			}
+			guard at > 0, at <= RelayLimits.maxTime else { throw RemoteKitError(part, "at is not a time") }
 		case let .join(_, _, attestation, _, token):
 			guard !attestation.isEmpty, attestation.count <= RelayLimits.maxAttestation else { throw RemoteKitError(part, "an attestation of a wrong size") }
 			guard token.count == 32 else { throw RemoteKitError(part, "a token is not 32 bytes") }
@@ -525,10 +567,23 @@ public enum RelayOutgoing: Sendable {
 			guard item.count >= RelayLimits.minItem, item.count <= RelayLimits.maxItem, item.first == 0x04 else {
 				throw RemoteKitError(part, "not a sealed item")
 			}
-		case let .token(apns, _):
+		case let .took(ids):
+			guard (1...RelayLimits.maxTook).contains(ids.count) else { throw RemoteKitError(part, "not 1 to \(RelayLimits.maxTook) ids") }
+			guard Set(ids.map(\.text)).count == ids.count else { throw RemoteKitError(part, "an id twice") }
+		case let .token(apns, _), let .activityToken(_, apns, _):
 			let bytes = Array(apns.utf8)
 			let hex = bytes.allSatisfy { ($0 >= UInt8(ascii: "0") && $0 <= UInt8(ascii: "9")) || ($0 >= UInt8(ascii: "a") && $0 <= UInt8(ascii: "f")) }
 			guard hex, bytes.count % 2 == 0, (64...200).contains(bytes.count) else { throw RemoteKitError(part, "not a push token") }
+		case let .push(.sealed(_, kind, sealed, collapse)):
+			// Exactly what the relay takes (relay/src/protocol.ts, `push`): one of the three sizes, a sealed item's first
+			// byte, and a collapse id of 32 bytes on an alert alone. Anything else would close the socket `malformed`.
+			guard PushSealing.sizes.contains(sealed.count), sealed.first == 0x04 else { throw RemoteKitError(part, "not a sealed push") }
+			guard collapse == nil || (kind == .alert && collapse?.count == 32) else { throw RemoteKitError(part, "a collapse id that is not an alert's 32 bytes") }
+		case let .push(.activity(_, _, _, numbers)):
+			// Held to their shape again (`ActivityNumbers` is made only so), since one out of range closes the socket.
+			guard ActivityNumbers(working: numbers.working, needs: numbers.needs, finished: numbers.finished, at: numbers.at) != nil else {
+				throw RemoteKitError(part, "a Live Activity's numbers out of range")
+			}
 		default:
 			break
 		}

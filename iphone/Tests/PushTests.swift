@@ -1,27 +1,30 @@
 import CryptoKit
 import Foundation
+import RemoteKit
 import Testing
 import UserNotifications
 @testable import pi2
 
-// The notification service extension's logic, in `iphone/Sources/Push/` (docs/iphone.md section 7, #690): opening a
+// The notification service extension's logic, in `iphone/Sources/Push/` (docs/iphone.md section 7, #690, #689): opening a
 // sealed push and verifying it, always replacing the text, the category and its buttons, the thread, the Lock Screen's
 // placeholders, the extension's own file and taking a notification away. `xcrun simctl push` does not run the service
 // extension in an unsigned build (docs/iphone-app.md "The extensions"), so it is tested here.
 //
-// The sealed pushes below were recorded with RemoteKit itself (`MacItem.make` and `SealedItem.seal`, compiled with a
-// program of #690's), under test keys nobody holds: they are sample values, for these tests only. RemoteKit is not
-// linked into the app or its tests yet, so they are opened here by `CheckOpener`, an opening worked out apart with
-// CryptoKit as docs/remotekit.md describes the bytes; once RemoteKit is linked, the test under `canImport(RemoteKit)`
-// opens them with RemoteKit's own opener too, which the extension then uses.
+// The sealed pushes below are made by RemoteKit's `PushSealing.seal`, the very call pi² Remote seals the engine's pushes
+// with (app/Sources/pi2-remote/Push, #689), under test keys nobody holds, from bodies in the engine's own shape
+// (docs/iphone.md 7.1, engine/src/pushes.ts). They are opened by the extension's own code (`PushDelivery` and
+// `RemoteKitPushOpener`), and by `CheckOpener` too, an opening worked out apart with CryptoKit from docs/remotekit.md's
+// description of the bytes, so that a change to both sides of RemoteKit at once is still caught.
 
-// MARK: Recorded pushes
+// MARK: Pushes, sealed as pi² Remote seals them
 
 enum Recorded {
     // Test keys: the phone's record key is 32 bytes of 0x11, the Mac's record key 0x22, its identity key 0x33.
     static let phoneRecordKey = Data(repeating: 0x11, count: 32)
-    static let macRecordKey = try! P256.KeyAgreement.PrivateKey(rawRepresentation: Data(repeating: 0x22, count: 32)).publicKey
-    static let macIdentityKey = try! P256.Signing.PrivateKey(rawRepresentation: Data(repeating: 0x33, count: 32)).publicKey
+    static let macRecord = try! P256.KeyAgreement.PrivateKey(rawRepresentation: Data(repeating: 0x22, count: 32))
+    static let macIdentity = try! P256.Signing.PrivateKey(rawRepresentation: Data(repeating: 0x33, count: 32))
+    static let macRecordKey = macRecord.publicKey
+    static let macIdentityKey = macIdentity.publicKey
     static let pairing = "AQEBAQEBAQEBAQEBAQEBAQ"
     static let device = "dev_AgICAgICAgICAgICAgICAg"
     /// When they were signed: 2026-11-23, 00:00 UTC.
@@ -31,14 +34,44 @@ enum Recorded {
         pairing: pairing, device: device, recordKey: phoneRecordKey,
         macRecordKey: macRecordKey.derRepresentation, macIdentityKey: macIdentityKey.derRepresentation)
 
-    /// `push`, an approval shown whole: "Forge needs approval", "Demo project · bash: npm test". 696 bytes.
-    static let approval = "CgoKCgoKCgoKCgoKCgoKCgTeJJAkokPZ40dZRkjcZl49Z20PQKo-eZrJ6SRRw2O1n1-6WzCAVyCU-2L6XT-NVJk59SEyY4JSJcr9oSzS8pQ2Ew1ZSMK_8LTnxc7IlAtHIsilHuIYM8E1kUCLm6nE4xUHuk1oh8Wt0zQag0uIJ4zoS9ND9VdDoQHT7VUVMNZ97U6Ns4-LsG_n4c4vNZROVD989G8_oOPaMC5-b1v2w--O7ac-CjyP1rgyrMHwNrG603fHezpK8VnRvpObaAQcxLa06lRP02lehYhCpgIUMDIx-LabbaK1Ufcq4WPtZeIqCvB_vL2J_YVacuH7GVH57y6j2qLAs5H1I8KiJ1sXSqG04aSHVTGRd70OE2sO6RFnFRLlLremaQ4CayYflP5-KoxDWedtn1_Sr4ejnInsGWAapYcq0-oRj6bDTEYiRQXpc7XidOt3r7wWoyIwubfFW1i8K5mmpV_476il0zTyK73laYO3j_uBIrFBasutiI7qEQcLSDQ3IoCLS6vZzUg8KK8LuFUnfB2-6UO-NLe3wBGxA6met9COAtIfH1tPI7UcGJLDeA9ivHWYYKK3LU2iENz_ZdgXvdVvw1H2vr7PPz-au2l7rmbyfwH0-HjFD4yHY0UQkzuyhZhM1Xxa-wlfi4t2c5m0MCq4ihUlQC0gusghQS497NSnS_mCDuB7o9GtifO1KQSgjfDn0SfkdYUQDdEKiN-sJ2i9ofruSwnOxApubDopkeYVkSxQKETfRgf3NZA0VUZs5i5Bhac7iMbuT-e99t9d7gsnYXdlxjfIREaoTEw-iL3g_p23Se2Bsn3b2GDCRL30uykbGYAcd_JGYeK0A2kDaMa8KmNtVzQh9bK11xUG46NR4cJ3BOUnSBh8OkqmBXHBR9J9V5LWDNpvSUZNcjYq5vZb"
-    /// `push`, an approval whose call was cut at 180 characters (`whole: false`). 1,464 bytes.
-    static let approvalCut = "CwsLCwsLCwsLCwsLCwsLCwTlBUkDXGg_6br99UxH4GUsiXMyLMkGJDlJVUKUiGiba_7gaTbiMgamAOmaEKFyru3nj7mKb5Pvc2BPXslsUx0-bvPrtfkbAHMLXjmtnAAuWzccyyRasTuy5nIaPI-NyJqgArdKyM7J8SPZs3XwM5w9YQyG-1R6S6xCQI_6mAJN2ktTCwbzCrz3DidcZQDawBS0fgUNYi_FOPI_5n-GxHk2P82V_QsqHGdqIrkagLxvUBRvQXGfhcKwNQsMSw1_SG0sKbcJXOzSGmxFyP4oOXhEAjvuB_n2O6rpT07jAtYibI20hTREJEYp0dvZQbqgsWblCyBBBDQUjbVnfEiCVfWHDkUVowNpxwceSgx7YEwUQ0s8rGIJvP35IUWKSlHHNRjI2q_qW-fF7vT0nifrfAOZRvL1JDm8c1rdFPs7Sey6vyG1jv06SnWp8eIckEhHXTlk76ivtZ_DBPYVcgMZ_aNPlAO_Th4DSA1xnpSo0D4Q67b45jF6jO__eB1FUr-51wL6YePZVXGXCWTFqB_A2vliYYuxSl3Bw_F3Ah_sAYlcwBU9hkY7oouEyuhgzl1mvPuIQfOgnfVD5PxnpMH_u87Bkt1PEemnmNu5Fk2L-9WDVt-B8D_IO44-ShsoJAR-c_q9OPD33awlEWIKNKjjIyUKejmyrOB6ZPwC5FSQcv1cg4KKxK0aGv375ne_AvG71DEfQyVr4ROHzWfeei6DjUFdXVVJeMw6dwaX_sUBHKbwWiCfrJVDIlxVUhEadytwR4YNSHARrnFzPDfXQzK75tGmGZ4pzGfVA90rXmdnGzGUpyxPeHR21l8Pwt1Re0WXH3WVYBQ5OTWWZY8U237bQ_TBKT7PqABBXiqnJ6BYOoiqvlzCgCkZ_-S2S6UACOxTjgL7Ui5qtBI_vwqt8f-fCTNEXmprfrLEUfv2C6wOiHy2FjfiWc5qObx_aVaquj8Hbz5JI3DQOP7VFi7s9ciBdITNy_3XAk_ESOdvLd0qrF17fNCG-s-mL7F6EzN4AbOJTtsIWzRM2UTkAi-Kfx0M0qJpXx8Eu0lxnb_decvz8jLJbQSWWVVwU61ODNzOTW13tvO1fSJRH4aP-mqm9MkouhCNmy22ow0QeUPxWXRV575G88EWdQuLvYhCflpKZ7vH8ky_6sqeGq7AEJFBtiv_FUraMcdu5OcE-rHUuVyDXC9VdXmXnTkaIcRvltUJ8zv1UPrQeeZ_npZrXT8-3_hr4buMMPRz9AOf1QO6p0ZME4iiQFozyzy1VtIvYvRoQlumXcJ12ogmCuF6e5JfD8SWRA8q3-YTaRlpc3asOWVIUhhY88E-qY9L-lm3Xx6v2-SYngweiLaV2SkDua2Mhy-Isj41x17IvoCc0SU638DhIPInJNAk7seQUTq1kcVxHjogG5FSnkYF8jB76XFWCpn5me9-BzQhX-UAoKRiLDB3Vh1ce5fnpufW-vvhUCTPS23YQwTh5FqUo4Sezds__8Q6_YF0ovNMQu6bs8OZdiKQqtnLXdEZAXaZ0VsLfX20PCMb7uIVsYlh0iGD_JnTKNUScnZHtxqXvuc63l7uyjU1FYoInzJ2r6nUG0jDqNOOS4oqB7xJM_q_PPsFxeGIXy6mlqjv5N4fs5wFY3gED5OEaSsKIzUQmBUNglyNfs_MlBeN_AyJ2xECHyT09rMt1iS3R-Iw9azqO312WU6vFdqWj779lhO0PsJhh9wM19Ef7HgO3boyMcZjdEoJP3CWZM9J5k4KYF9x6V5cyjffBzmCBYuZ7wIS8aC6AsvQW7r0s_Ciixv0VTUfi4Fc-njlatI7zM9R4bPq-NX5yiaMVx6LcnTnbWHvnSZ56B9Yxt9JsPfG0jn4Yy_ceVQ_PORpWNopS_gARu2XeAnEyeSures33YX-kQ436QYtt-p_6ov0-ZMb6mnS49buT23h"
-    /// `push`, a question: "Scribe has a question", in Demo project 2. 696 bytes.
-    static let question = "DAwMDAwMDAwMDAwMDAwMDARbkAZHpAMvinm5OusG8l1s7g4Z1VguX70fhnySeqfbBYBt3lNoCFfdEnd8uT3e5qa-D9F0qbRGwIkHHNNzZLSYeBbPdtcmo-y2VJY3u8NKfm-sPTpihhvQR9qmHPcmQvvg-F5ysTDlJyBisqj1wU0X3V9VFXgGgZuT_k0d_Vt01vLIWLV3emxYyti-AH-TYJu03feavCOpkkXB0-bEzX5mBcFTBp5eq3G_8inHScj3cYxnaX_hGdHsIhDArr7tIH-6AyVz3wNlZAcmj9-WvrSGp8HiQXTiQRKwf5ddJMb68AE_x_X5lyedQxfUyObgMYJXd3gDLpu1CamY4XbjnkWaGJX10lSAkI-3t7o3T_DaHIMrfLoT_mzR3omc6HQrkjVzLvFxuRfse92u5yptxGw8wwanNkY1uSJR97yRscKEBePvu-sbDru4dnLClrrZtcmVHCpyRXL2O13sWxvUZsPbMgT2gu9gMq-bJjRlnsxMPHu4z9gTVif1v0EDTdFgNTZrOJGTW80CQOgUOltd06pMl43UvAaUP-sjZ2gpndIvQ5y0UCtL615Dx6E6FfcCMGrt4xmldeH0F7WQ6CcSxfOzedtMp7b1gVTELr7Tgey3F7B__8ezjtRUHCbn7NJR-cNoKXWg2MXz9lVgpMRMIbLprTTonvKOr09UcLRLQWydsO6mm0Ph5lUIUEaIT5VRljWzzj5hCfhQqR_tVi8eJfm3ADLzderD8pkWb-3l1YwT8eTFEpHbHrz2zkYY9dAFtQBvSmQ_W0QV3NTu3cQFvnc97uX74ugYSmB3f215wqgltA7xbT3Dl2t65Mjl2q5T64r788_npWILMfNdFgPH8XJ00vE8B2s0EQ2N_Kk28vzreO5uEUssagxpM5Y739nSR-j2Z83uxTvs"
-    /// `pushGone`, the background push that takes the approval's notification away. 696 bytes.
-    static let gone = "DQ0NDQ0NDQ0NDQ0NDQ0NDQSUPJ5c5exicTa-tTvr7ZVkuHOTrUEExu0EX1cFk3bEgbcl80TOmSAgMvw7lYEYIRe4GqeR_36FGYZdj1pgJcuEDybTnY2xGtu9fr7XR0DbRe0Bg866UnaszIvP13T-7CFv4x0VnhXkh8Agv3xIIOwCzx-UgjKSLQSAJzMfeG4xhQBB1iCaKkj44JEFXVRZ7QS35anFyanw1DaRiBNdVF80Y-g93u9omoN0_8b0RJuMPHkwKdy3FoL8s-_VSBRxbyt9_n9y49Hx0Ly5MECoC6Wi0hAitMWDdcXSwdvPzPYArccwnOmX7ZbWssn2GV6AtvWGJzCY5bgJK6b_sG4b35VheqZBT-Tu38mpHQ74GRytjS3ChAMqgL8MAVpkGKT1RSZ0g2xjicYCpWFMztb3ROHho8vIrtfgIi15JYveQ2rkv6K1byvdn_lx3HON6i-RD2MGWsEUGTHcD84gN6ygXuCJdsWXQNLwjg73lKDPNEdrsTGF9vW-qoufi3F_7aPW19E1daIzf31D-y9rZmgMwTsjIxXEOqFojzdnw1KTQDeIw-k43evSRl179eCAh-i3y04OJTnKLRoSkNRBri6Ebxu3OM3RgsdAZTzpsElmNHqUgSDVrN-8lFUVqjlK2EO3DzHpSvlkWdSzBtRCYYcoKKXFeLSqLFnqdp2FSpidC2GnO8kUAQZO3CbMnRmQM35QnNk3Ng8YjqIG7fnoRvY9K80Tg8jB8BAuli4Zn47xLtj3ELpubADvGNSUPD8f5aBpfpuuNGy9EJfRKsq-ARt7Vy6FHZRLkHQgfJOreu46ZV9c2a5tkaqROd7k6vd_nroM3SBxrQ8z7te-OxXOW8knS6T7qRK2sl-zDwiDRapsDyqH7y9cfhVL9rxnbA5Y14TixyQ71rlee6Zf"
+    /// Seals an engine's body as pi² Remote does, under the item id of 16 bytes of `idByte`.
+    static func seal(_ body: String, kind: PushSealing.Kind = .alert, idByte: UInt8 = 0x0a, at date: Date = at,
+                     identity: P256.Signing.PrivateKey = macIdentity, device: String = device) -> String {
+        let sealed = try! PushSealing.seal(
+            try! JSON.parse(body), kind: kind, pairing: PairingID(pairing)!, device: DeviceID(device)!,
+            deviceRecordKey: try! P256.KeyAgreement.PrivateKey(rawRepresentation: phoneRecordKey).publicKey, recordKey: macRecord,
+            identity: identity, id: ItemID(PushBase64URL.encode(Data(repeating: idByte, count: 16)))!, at: date)
+        return PushBase64URL.encode(sealed)
+    }
+
+    /// An alert's body as the engine writes it (7.1's `AlertBody`).
+    static func alert(
+        _ category: String, title: String, subtitle: String? = "Demo project", body: String, type: String = "need",
+        need: String? = "need-1", projectId: String? = "project-demo", conversationId: Int? = 9, whole: Bool = true
+    ) -> String {
+        var members = [#""v":1"#, #""type":"\#(type)""#, #""category":"\#(category)""#, #""title":"\#(title)""#]
+        if let subtitle { members.append(#""subtitle":"\#(subtitle)""#) }
+        members.append(#""body":"\#(body)""#)
+        if let projectId { members.append(#""projectId":"\#(projectId)""#) }
+        if let need { members.append(#""need":"\#(need)""#) }
+        if let conversationId { members.append(#""conversationId":\#(conversationId)"#) }
+        members.append(#""whole":\#(whole)"#)
+        members.append(#""at":1795392000000"#)
+        return "{" + members.joined(separator: ",") + "}"
+    }
+
+    static let cutCall = String(repeating: "x", count: 166) + "…"
+
+    /// An approval shown whole: "Forge needs approval", "Demo project", "bash: npm test". 1,464 bytes, the least an alert has.
+    static let approval = seal(alert("pi2.approval", title: "Forge needs approval", body: "bash: npm test", need: "need-approval-1"), idByte: 0x0a)
+    /// An approval whose call was cut at 180 characters (`whole: false`).
+    static let approvalCut = seal(alert("pi2.approval", title: "Forge needs approval", body: "bash: rm -rf " + cutCall, need: "need-approval-2", whole: false), idByte: 0x0b)
+    /// A question: "Scribe has a question", in Demo project 2.
+    static let question = seal(alert(
+        "pi2.question", title: "Scribe has a question", subtitle: "Demo project 2", body: "Which branch should the release notes go on?",
+        need: "need-question-1", projectId: "project-demo-2", conversationId: 139), idByte: 0x0c)
+    /// The background push that takes the approval's notification away.
+    static let gone = seal(#"{"v":1,"type":"gone","needs":["need-approval-1"],"at":1795392000000}"#, kind: .background, idByte: 0x0d)
 
     /// The payload Apple hands the phone, as the relay posts it.
     static func payload(_ sealed: String) -> [AnyHashable: Any] {
@@ -48,13 +81,14 @@ enum Recorded {
 
 // MARK: Stand-ins
 
-/// Opens a sealed push as docs/remotekit.md says the bytes are, worked out apart from RemoteKit with CryptoKit: HPKE's
-/// authenticated mode with `info` = "pi2-item-v2", 0, the pairing, 0, the reader, 0, the item's id; then `{"v":2,
-/// "signed":…,"signature":…}`, the identity key's signature over the exact `signed` text, and `signed`'s pairing, device
-/// and nonce. Only the checks the bytes need; RemoteKit's own strict reading is RemoteKit's checks'.
+/// Opens a sealed push as docs/remotekit.md says the bytes are, worked out apart from RemoteKit with CryptoKit: the item,
+/// then its 16-byte id; HPKE's authenticated mode with `info` = "pi2-push-v1", 0, the pairing, 0, the reader, 0, the
+/// item's id; then `{"v":2,"signed":…,"signature":…}`, the identity key's signature over the exact `signed` text,
+/// `signed`'s pairing, device and nonce, and its body `{"body":…,"pad":"000…"}`. Only the checks the bytes need;
+/// RemoteKit's own strict reading is RemoteKit's checks'.
 struct CheckOpener: PushOpening {
     func open(_ push: SealedPush, keys: PushKeys) throws -> OpenedPush {
-        var info = Data("pi2-item-v2".utf8)
+        var info = Data("pi2-push-v1".utf8)
         for part in [keys.pairing, keys.device, push.idText] {
             info.append(0)
             info.append(Data(part.utf8))
@@ -79,7 +113,9 @@ struct CheckOpener: PushOpening {
               let statement = try JSONSerialization.jsonObject(with: Data(signed.utf8)) as? [String: Any],
               statement["pairing"] as? String == keys.pairing, statement["device"] as? String == keys.device,
               statement["nonce"] as? String == push.idText,
-              let kind = statement["kind"] as? String, let at = statement["at"] as? Int64, let body = statement["body"]
+              let kind = statement["kind"] as? String, let at = statement["at"] as? Int64,
+              let wrapped = statement["body"] as? [String: Any], wrapped.count == 2,
+              let pad = wrapped["pad"] as? String, pad.allSatisfy({ $0 == "0" }), let body = wrapped["body"]
         else { throw PushRefusal.doesNotOpen }
         return OpenedPush(kind: kind, at: at, id: push.idText, body: try JSONSerialization.data(withJSONObject: body))
     }
@@ -121,6 +157,9 @@ struct PushTests {
             let push = try SealedPush.read(sealed)
             #expect(SealedPush.sizes.contains(push.id.count + push.item.count))
             #expect(push.id.count == 16)
+            // A sealed item first, as the relay takes it (relay/src/protocol.ts: `sealed[0] === 0x04`), its id after it.
+            #expect(push.item.first == 0x04)
+            #expect(push.bytes == PushBase64URL.decode(sealed))
             // The relay's payload stays within Apple's sizes for its class (relay/README.md, "Pushes").
             #expect(sealed.utf8.count <= 4_000)
         }
@@ -144,7 +183,8 @@ struct PushTests {
         let (content, outcome) = deliver(Recorded.approval)
         guard case let .shown(notice) = outcome else { Issue.record("not shown: \(outcome)"); return }
         #expect(content.title == "Forge needs approval")
-        #expect(content.body == "Demo project · bash: npm test")
+        #expect(content.subtitle == "Demo project")
+        #expect(content.body == "bash: npm test")
         #expect(content.categoryIdentifier == "pi2.approval")
         #expect(content.threadIdentifier == "project-demo")
         #expect(content.userInfo[PushUserInfo.need] as? String == "need-approval-1")
@@ -169,7 +209,8 @@ struct PushTests {
     @Test func aRecordedQuestionHasReplyInItsOwnThread() throws {
         let (content, _) = deliver(Recorded.question)
         #expect(content.title == "Scribe has a question")
-        #expect(content.body == "Demo project 2 · Which branch should the release notes go on?")
+        #expect(content.subtitle == "Demo project 2")
+        #expect(content.body == "Which branch should the release notes go on?")
         #expect(content.categoryIdentifier == "pi2.question")
         #expect(content.threadIdentifier == "project-demo-2")
         let category = try #require(PushCategories.all.first { $0.identifier == "pi2.question" })
@@ -198,7 +239,7 @@ struct PushTests {
         // Moved: the approval's item under the question's id, so HPKE's `info` is not the one it was sealed for.
         let approval = try #require(PushBase64URL.decode(Recorded.approval))
         let question = try #require(PushBase64URL.decode(Recorded.question))
-        placeholder(deliver(PushBase64URL.encode(question.prefix(16) + approval.dropFirst(16))), .doesNotOpen)
+        placeholder(deliver(PushBase64URL.encode(approval.dropLast(16) + question.suffix(16))), .doesNotOpen)
 
         // Sealed for another device, another pairing, or by another Mac.
         let keys = Recorded.keys
@@ -222,6 +263,15 @@ struct PushTests {
         placeholder(PushDelivery.deliver(
             Recorded.payload(Recorded.approval), opener: CheckOpener(), keys: { Recorded.keys },
             now: Recorded.at.addingTimeInterval(PushItem.oldest + 60)), .tooOld)
+
+        // Dated more than an hour ahead of the phone's clock (a Mac whose clock runs fast); an hour less a minute is shown.
+        placeholder(PushDelivery.deliver(
+            Recorded.payload(Recorded.approval), opener: CheckOpener(), keys: { Recorded.keys },
+            now: Recorded.at.addingTimeInterval(-PushItem.newest - 60)), .tooNew)
+        let ahead = PushDelivery.deliver(
+            Recorded.payload(Recorded.approval), opener: CheckOpener(), keys: { Recorded.keys },
+            now: Recorded.at.addingTimeInterval(-PushItem.newest + 60))
+        if case .shown = ahead.outcome {} else { Issue.record("a push an hour less a minute ahead is shown: \(ahead.outcome)") }
 
         // A background push's content in an alert is not one to show.
         placeholder(deliver(Recorded.gone), .notANotice)
@@ -253,12 +303,91 @@ struct PushTests {
         #endif
     }
 
+    // MARK: The round trip: sealed by pi² Remote's code, opened by the extension's (#689)
+
+    /// Every kind of alert the engine pushes (docs/iphone.md 7.1), sealed as pi² Remote seals it and delivered as the
+    /// extension delivers it, through RemoteKit's opener.
+    @Test func everyKindOfAlertSealedAsPiRemoteSealsItOpensInTheExtension() throws {
+        let alerts: [(String, String, String, String, String)] = [
+            ("pi2.approval", "need", "Forge needs approval", "bash: npm test", "pi2.approval"),
+            ("pi2.question", "need", "Scribe has a question", "Which branch?", "pi2.question"),
+            ("pi2.decision", "need", "The orchestrator asks for a decision", "Ship it now or wait for review", "pi2.decision"),
+            ("pi2.reach", "need", "The orchestrator asks for more reach", "Read ~/Documents", "pi2.reach"),
+            ("pi2.rule", "need", "Forge proposes a rule", "everyone: run the tests first", "pi2.rule"),
+            ("pi2.limit", "limit", "Forge is held back by a limit", "Claude: usage limit reached", "pi2.limit"),
+            ("pi2.notice", "answer", "The orchestrator answered", "In Demo project", "pi2.notice"),
+        ]
+        for (index, (category, type, title, body, shown)) in alerts.enumerated() {
+            let sealed = Recorded.seal(Recorded.alert(category, title: title, body: body, type: type), idByte: UInt8(0x40 + index))
+            let (content, outcome) = deliver(sealed, opener: RemoteKitPushOpener())
+            guard case let .shown(notice) = outcome else { Issue.record("\(category) not shown: \(outcome)"); continue }
+            #expect(content.title == title && content.subtitle == "Demo project" && content.body == body, "\(category)")
+            #expect(content.categoryIdentifier == shown && notice.kind?.category == category, "\(category)")
+            #expect(content.threadIdentifier == "project-demo" && content.userInfo[PushUserInfo.need] as? String == "need-1")
+            // And the independent opening reads the same.
+            #expect(deliver(sealed).content.body == body)
+        }
+        // The background push, as the app takes it.
+        #expect(try PushDelivery.item(Recorded.payload(Recorded.gone), opener: RemoteKitPushOpener(), keys: { Recorded.keys }, now: now)
+            == .gone(needs: ["need-approval-1"]))
+        let two = Recorded.seal(#"{"v":1,"type":"gone","needs":["n1","n2"],"at":1795392000000}"#, kind: .background, idByte: 0x50)
+        #expect(try PushDelivery.item(Recorded.payload(two), opener: RemoteKitPushOpener(), keys: { Recorded.keys }, now: now) == .gone(needs: ["n1", "n2"]))
+        // Each size: the smallest of 1,464 and 3,000 that holds the body, an alert never 696.
+        #expect(PushBase64URL.decode(Recorded.gone)?.count == 696)
+        for (characters, size) in [(10, 1_464), (300, 1_464), (600, 3_000)] {
+            let sealed = Recorded.seal(Recorded.alert("pi2.limit", title: "Forge", body: String(repeating: "é", count: characters), type: "limit"), idByte: 0x51)
+            #expect(PushBase64URL.decode(sealed)?.count == size)
+            #expect(deliver(sealed, opener: RemoteKitPushOpener()).content.body.count == min(characters, PushItem.bodyLimit))
+        }
+    }
+
+    @Test func aWrongKeyAReplayedPushAndACutOneAreRefused() throws {
+        func refused(_ result: (content: UNNotificationContent, outcome: PushDelivery.Outcome), _ why: PushRefusal) {
+            #expect(result.outcome == .placeholder(why))
+            #expect(result.content.title == "pi²" && result.content.body == "Something needs you" && result.content.categoryIdentifier.isEmpty)
+        }
+        let opener = RemoteKitPushOpener()
+        // A wrong key: another phone's record key, another Mac's identity, sealed for another device.
+        let keys = Recorded.keys
+        let stranger = P256.KeyAgreement.PrivateKey().rawRepresentation
+        refused(deliver(Recorded.approval, opener: opener, keys: PushKeys(
+            pairing: keys.pairing, device: keys.device, recordKey: stranger, macRecordKey: keys.macRecordKey, macIdentityKey: keys.macIdentityKey)), .doesNotOpen)
+        refused(deliver(Recorded.seal(Recorded.alert("pi2.approval", title: "Forge needs approval", body: "ls"), identity: P256.Signing.PrivateKey()), opener: opener), .doesNotOpen)
+        refused(deliver(Recorded.seal(Recorded.alert("pi2.approval", title: "Forge needs approval", body: "ls"), device: "dev_AwMDAwMDAwMDAwMDAwMDAw"), opener: opener), .doesNotOpen)
+
+        // Replayed: the same push again, as a relay or anyone who recorded it could hand it back.
+        let folder = FileManager.default.temporaryDirectory.appending(path: "push-seen-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let seen = PushSeen(folder: folder)
+        func delivered(_ sealed: String, at time: Date) -> PushDelivery.Outcome {
+            PushDelivery.deliver(Recorded.payload(sealed), opener: opener, keys: { Recorded.keys }, seen: seen, now: time).outcome
+        }
+        guard case .shown = delivered(Recorded.approval, at: now) else { Issue.record("the first time is shown"); return }
+        #expect(delivered(Recorded.approval, at: now.addingTimeInterval(60)) == .placeholder(.replayed))
+        guard case .shown = delivered(Recorded.question, at: now.addingTimeInterval(60)) else { Issue.record("another push is shown"); return }
+        // A push that does not open is not remembered, so made-up pushes cannot fill the memory.
+        var changed = try #require(PushBase64URL.decode(Recorded.approvalCut))
+        changed[100] ^= 1
+        _ = delivered(PushBase64URL.encode(changed), at: now)
+        guard case .shown = delivered(Recorded.approvalCut, at: now.addingTimeInterval(60)) else { Issue.record("a push whose copy did not open is shown"); return }
+        // After a day the push is refused for its age anyway; the memory lets its id go after 25 hours.
+        #expect(delivered(Recorded.approval, at: now.addingTimeInterval(PushItem.oldest + 60)) == .placeholder(.tooOld))
+        #expect(seen.firstTime(PushBase64URL.encode(Data(repeating: 0x0a, count: 16)), now: now.addingTimeInterval(PushSeen.keptFor + 1)))
+        #expect(seen.firstTime("not-an-id", now: now), "an id of another shape names no file, and is not guarded")
+
+        // Cut: shorter than a push's size, or cut and made up to one again.
+        let whole = try #require(PushBase64URL.decode(Recorded.question))
+        refused(deliver(PushBase64URL.encode(whole.prefix(680)), opener: opener), .wrongSize)
+        refused(deliver(PushBase64URL.encode(whole.prefix(600) + Data(count: 96)), opener: opener), .doesNotOpen)
+        refused(deliver(PushBase64URL.encode(whole.dropLast(16).prefix(600) + Data(count: 80) + whole.suffix(16)), opener: opener), .doesNotOpen)
+    }
+
     // MARK: What a push says, once opened
 
     @Test func whatTheMacWroteIsShownOnOneLineAndHeldToItsLength() throws {
         let long = String(repeating: "x", count: 400)
         let (content, outcome) = deliver(Recorded.approval, opener: GivenOpener(kind: "push", body: [
-            "kind": "approval", "title": "Forge\nneeds approval\u{7}", "body": "Demo · rm\u{0}-rf \(long)", "whole": true,
+            "v": 1, "type": "need", "category": "pi2.approval", "title": "Forge\nneeds approval\u{7}", "body": "rm\u{0}-rf \(long)", "whole": true, "at": 1,
         ]))
         #expect(content.title == "Forge needs approval")
         #expect(content.body.count == 180 && !content.body.contains("\u{0}"))
@@ -269,25 +398,43 @@ struct PushTests {
     }
 
     @Test func onlyJSONTrueMakesACallWhole() {
+        let base: [String: Any & Sendable] = ["v": 1, "type": "need", "category": "pi2.approval", "title": "Forge needs approval", "body": "ls", "at": 1]
         for whole: (any Sendable)? in [nil, 1, "true", false] {
-            var body: [String: Any & Sendable] = ["kind": "approval", "title": "Forge needs approval", "body": "Demo · ls"]
+            var body = base
             if let whole { body["whole"] = whole }
             #expect(deliver(Recorded.approval, opener: GivenOpener(kind: "push", body: body)).content.categoryIdentifier == "pi2.approval.cut")
         }
+        var whole = base
+        whole["whole"] = true
+        #expect(deliver(Recorded.approval, opener: GivenOpener(kind: "push", body: whole)).content.categoryIdentifier == "pi2.approval")
+        // Part hidden by the Mac's masks: never Allow once, whatever `whole` says (7.1).
+        whole["partHidden"] = true
+        #expect(deliver(Recorded.approval, opener: GivenOpener(kind: "push", body: whole)).content.categoryIdentifier == "pi2.approval.cut")
     }
 
     @Test func everyKindHasItsCategoryAndAnUnknownOneNone() {
         for kind in PushKind.allCases {
             let content = deliver(Recorded.approval, opener: GivenOpener(kind: "push", body: [
-                "kind": kind.rawValue, "title": "Forge", "body": "Demo · it", "whole": true, "projectId": "p",
+                "v": 1, "type": "need", "category": kind.category, "title": "Forge", "body": "it", "whole": true, "projectId": "p", "at": 1,
             ])).content
             #expect(content.categoryIdentifier == kind.category)
         }
-        let newer = deliver(Recorded.approval, opener: GivenOpener(kind: "push", body: ["kind": "survey", "title": "Forge asks", "body": "Demo"]))
+        let newer = deliver(Recorded.approval, opener: GivenOpener(kind: "push", body: [
+            "v": 1, "type": "need", "category": "pi2.survey", "title": "Forge asks", "body": "Demo", "whole": false, "at": 1,
+        ]))
         #expect(newer.content.title == "Forge asks" && newer.content.categoryIdentifier.isEmpty)
-        // A push with no title, or of a kind of Mac item that is not a notification, is not shown as the Mac wrote it.
-        #expect(deliver(Recorded.approval, opener: GivenOpener(kind: "push", body: ["body": "Demo"])).outcome == .placeholder(.notANotice))
-        #expect(deliver(Recorded.approval, opener: GivenOpener(kind: "state", body: ["title": "x", "body": "y"])).outcome == .placeholder(.notANotice))
+        // A push with no title, of another version, whose type is not its kind's, or of a kind of Mac item that is not a
+        // notification, is not shown as the Mac wrote it.
+        let notices: [(String, [String: Any & Sendable])] = [
+            ("push", ["v": 1, "type": "need", "category": "pi2.approval", "body": "Demo", "at": 1]),
+            ("push", ["v": 2, "type": "need", "category": "pi2.approval", "title": "x", "body": "y", "at": 1]),
+            ("push", ["v": 1, "type": "gone", "needs": ["n1"], "at": 1]),
+            ("pushGone", ["v": 1, "type": "need", "category": "pi2.approval", "title": "x", "body": "y", "at": 1]),
+            ("state", ["v": 1, "type": "need", "title": "x", "body": "y", "at": 1]),
+        ]
+        for (kind, body) in notices {
+            #expect(deliver(Recorded.approval, opener: GivenOpener(kind: kind, body: body)).outcome == .placeholder(.notANotice))
+        }
     }
 
     // MARK: The categories
@@ -375,7 +522,7 @@ struct PushTests {
 
     @Test func aBackgroundPushNamesTheNeedWhoseNotificationGoes() throws {
         #expect(try PushDelivery.item(Recorded.payload(Recorded.gone), opener: CheckOpener(), keys: { Recorded.keys }, now: now)
-            == .gone(need: "need-approval-1"))
+            == .gone(needs: ["need-approval-1"]))
         let shown: [(String, [AnyHashable: Any])] = [
             ("a", deliver(Recorded.approval).content.userInfo), ("b", deliver(Recorded.question).content.userInfo), ("c", [:]),
         ]
@@ -397,7 +544,7 @@ struct PushTests {
         #expect(try folder.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == true)
         let entries = try inbox.take()
         #expect(entries.map(\.need) == ["need-approval-1", "need-question-1"])
-        #expect(entries.first?.title == "Forge needs approval" && entries.first?.whole == true)
+        #expect(entries.first?.title == "Forge needs approval" && entries.first?.subtitle == "Demo project" && entries.first?.whole == true)
         #expect(try inbox.take().isEmpty)
         try inbox.wipe()
         #expect(!FileManager.default.fileExists(atPath: folder.path))

@@ -14,6 +14,8 @@ struct ConversationRequests {
     /// `EngineSession.submit`, which keeps it in `outgoing` until the conversation shows it). `steer` while the agent
     /// works and the person chose Steer; queued otherwise.
     func send(_ text: String, pictures: [ConversationPicture], steer: Bool) async -> SendOutcome {
+        // Refused here as the engine would refuse it (#924), and given back to the field without a request.
+        if let tooLong = TypedTextLimit.refusal(text) { return .refused(Self.sentence("Not sent.", tooLong)) }
         let outcome = await engine.submit(text, attachments: pictures.map(\.payload), to: conversationID, steer: steer)
         switch outcome {
         case .sent:
@@ -57,9 +59,21 @@ struct ConversationRequests {
     /// One of an entry's pictures, for the page: `conversation.image`, as the Mac's page bridge asks for it
     /// (`TranscriptBridge.sendPicture`). Nil when it could not be had.
     func picture(entry: Int, index: Int) async -> (data: String, mimeType: String)? {
-        guard let result = try? await engine.call("conversation.image", ["id": conversationID, "entryId": entry, "index": index]),
-              let data = result["data"]?.stringValue, let type = result["mimeType"]?.stringValue else { return nil }
-        return (data, type)
+        do {
+            let result = try await engine.call("conversation.image", ["id": conversationID, "entryId": entry, "index": index])
+            guard let data = result["data"]?.stringValue, let type = result["mimeType"]?.stringValue else {
+                #if DEBUG
+                ConversationDebugControls.note("picture \(entry)/\(index) came without data: \(String(describing: result).prefix(200))")
+                #endif
+                return nil
+            }
+            return (data, type)
+        } catch {
+            #if DEBUG
+            ConversationDebugControls.note("picture \(entry)/\(index) not had: \(error.localizedDescription)")
+            #endif
+            return nil
+        }
     }
 
     private func request(_ method: String, _ params: [String: Any], failing: String) async -> String? {

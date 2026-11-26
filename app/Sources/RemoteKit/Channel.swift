@@ -221,6 +221,11 @@ public final class Channel: Sendable, CustomStringConvertible, CustomDebugString
 		set { state.withLock { $0.assembler.maxLength = newValue } }
 	}
 
+	/// How much of a line from the other side it holds, begun and not finished, in bytes: zero between lines. What the
+	/// other side makes this end keep until its line is whole; pi² Remote counts it across its phones' channels and
+	/// times it (#908). A `ping` does not change it; a frame refused for the limit is not held.
+	public var unfinishedLineLength: Int { state.withLock { $0.assembler.unfinishedLength } }
+
 	public func isExpired(at instant: ContinuousClock.Instant = .now) -> Bool { instant - openedAt >= Self.lifetime }
 
 	/// Whether it has ended, with `bye` either way, or failed.
@@ -273,7 +278,32 @@ public final class Channel: Sendable, CustomStringConvertible, CustomDebugString
 	/// `bye` alone; refuse a `refused` line that arrives from a phone, which never sends one; and never turn the engine's
 	/// "revoked" into another reason: a revoked device is sent `bye` alone, or the signed `revoked` line.
 	public func sealRefusal(_ refusal: Refusal, at instant: ContinuousClock.Instant = .now) throws -> [Data] {
-		let frames = try Lines.frames(for: ControlLine.refused(refusal).line)
+		try sealLast(ControlLine.refused(refusal).line, at: instant)
+	}
+
+	/// pi² Remote's last messages to a phone whose claim to pair did not end paired (#881): the `pairRefused` line, then
+	/// `bye`, padded as `sealRefusal` pads, so that its length tells the relay or the network nothing of the word.
+	///
+	/// The caller's duties (remotekit.md, "The pairRefused line"): call it only on a pairing channel whose claimer proved
+	/// the code's secret and sent a claim, in place of `paired`; and refuse a `pairRefused` line from a phone.
+	public func sealPairRefusal(_ refusal: PairRefusal, at instant: ContinuousClock.Instant = .now) throws -> [Data] {
+		try sealLast(ControlLine.pairRefused(refusal).line, at: instant)
+	}
+
+	/// pi² Remote's last messages to a phone whose offer of a new presence key named the key the Mac uses already (#891):
+	/// `presenceKeyAccepted`, then `bye`, padded as `sealRefusal` pads, so that its length tells the relay or the network
+	/// nothing of whether the key was accepted or waits (which is answered `refused` with `presence`).
+	///
+	/// The caller's duties (remotekit.md, "The channel's own lines"): call it only on a connection's channel whose offer
+	/// was signed by the device key on pi² Remote's own list for this channel, and only when the engine answered it
+	/// `accepted`; and refuse a `presenceKeyAccepted` line from a phone.
+	public func sealPresenceKeyAccepted(at instant: ContinuousClock.Instant = .now) throws -> [Data] {
+		try sealLast(ControlLine.presenceKeyAccepted.line, at: instant)
+	}
+
+	/// A last line, padded to 256 bytes whatever this end's padding, then `bye`.
+	private func sealLast(_ line: Data, at instant: ContinuousClock.Instant) throws -> [Data] {
+		let frames = try Lines.frames(for: line)
 		return try state.withLock { state in
 			try usable(state, at: instant)
 			var messages = try frames.map { try Self.seal($0, &state, padTo: max(state.padding ?? 0, Frame.paddingBlock)) }

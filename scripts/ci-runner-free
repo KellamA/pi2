@@ -1,0 +1,71 @@
+#!/bin/bash
+# Which of a run's macOS jobs goes to the owner's own runner, from GitHub's answer about the runners (#1041): the
+# deciding step of ci.yml's first job, "Which jobs the change needs", kept in a file of its own so that
+# scripts/test-ci-runner-free can hold it to its cases. It decides where an open macOS job runs, and a job on the
+# owner's machine runs the pull request's code there, so it is an owner's path (.github/CODEOWNERS).
+#
+#   .../actions/runners?per_page=100 | scripts/ci-runner-free <label> <app> <engine>
+#
+# Prints one word on standard output, and one line saying why on standard error, nothing of the answer but whether a
+# runner is online, offline or busy:
+#
+#   app      the runner is free and the change needs the App job, which is the longer one;
+#   engine   the runner is free, the change does not need the App job, and it needs the Engine job;
+#   (nothing) the runner is not free, the answer cannot be read, or the change needs neither job.
+#
+# "Free" is exactly one runner carrying <label>, with its status "online" and its busy false. Anything else is not
+# free: no runner with the label, two of them, offline, busy, a missing field. The token's absence, a failed or slow
+# request and an answer that is not JSON are the caller's to turn into the same nothing.
+#
+# <app> and <engine> are ci.yml's outputs for the two jobs, which run a job unless they say "false"; a missing one
+# means the job runs, as it does there. The word is validated by the caller before it is written anywhere.
+#
+# The caller is ci.yml's first job, which reads this file out of the commit the pull request is merged on, never out of
+# the pull request's own tree: the step that asks GitHub holds a token, and runs no code the pull request can change.
+
+set -uo pipefail
+export LC_ALL=C
+
+usage() {
+	echo "usage: scripts/ci-runner-free <label> <app> <engine>, with the runners' answer on standard input" >&2
+	exit 2
+}
+
+[[ $# -eq 3 ]] || usage
+label=$1 app=$2 engine=$3
+[[ -n $label ]] || { echo "No runner label: every macOS job on GitHub's runners." >&2; exit 0; }
+
+answer=$(cat)
+
+# One of six words, from the answer alone. A field that is not what GitHub documents is not free: busy must be false,
+# status must be online, and two runners with the label are two, whatever they are doing.
+state=$(jq -r --arg label "$label" '
+	(if (.runners? | type) != "array" then empty
+	else [.runners[] | select((.labels? | type) == "array" and any(.labels[]; (.name? // "") == $label))] as $found
+		| if ($found | length) == 0 then "nolabel"
+		  elif ($found | length) > 1 then "many"
+		  elif $found[0].status != "online" then "offline"
+		  elif $found[0].busy != false then "busy"
+		  else "free" end
+	end)
+' <<<"$answer" 2>/dev/null)
+
+case ${state:-} in
+free)
+	if [[ $app != false ]]; then
+		echo "The runner $label is free: the App job goes to it, and the Engine job stays on GitHub's." >&2
+		echo app
+	elif [[ $engine != false ]]; then
+		echo "The runner $label is free: the Engine job goes to it, and the change needs no App job." >&2
+		echo engine
+	else
+		echo "The runner $label is free, but the change needs neither macOS job." >&2
+	fi
+	;;
+nolabel) echo "No runner carries the label $label: every macOS job on GitHub's runners." >&2 ;;
+many) echo "Two or more runners carry the label $label: every macOS job on GitHub's runners." >&2 ;;
+offline) echo "The runner $label is offline: every macOS job on GitHub's runners." >&2 ;;
+busy) echo "The runner $label is busy with another job: every macOS job on GitHub's runners." >&2 ;;
+*) echo "The answer about the runners cannot be read: every macOS job on GitHub's runners." >&2 ;;
+esac
+exit 0

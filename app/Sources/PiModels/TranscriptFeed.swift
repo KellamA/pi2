@@ -169,6 +169,13 @@ public struct TranscriptFeed: Sendable {
         public var names: Names?
         public var palette: [String: String]?
         public var chat: Chat?
+        /// What `present` calls showed (#946): the conversation's records that changed since last sent, each whole.
+        public var presented: Presented?
+    }
+
+    /// The `presented` field: `{ records }` (docs/design/presenting.md, "The transcript page").
+    public struct Presented: Encodable, Sendable {
+        public var records: [PresentationRecord]
     }
 
     /// The page is sent a long conversation newest first, as the engine sends it to the app (#380, engine/src/opening.ts):
@@ -193,6 +200,8 @@ public struct TranscriptFeed: Sendable {
     private var names: Names?
     private var palette: [String: String]?
     private var chat: Chat?
+    /// The presentations the page was sent, by id, as sent.
+    private var presentedSent: [String: PresentationRecord] = [:]
     private var startOver = false
 
     /// Forget what was sent and start the page's list over: for a page that has just loaded (or reloaded after its
@@ -205,7 +214,7 @@ public struct TranscriptFeed: Sendable {
     /// The update that brings the page from what it was last sent to this, or nil when nothing changed.
     /// `earlier` is how many older entries the engine is still to send the app; with `withOlder` false, older entries the
     /// app has wait (the page has not yet drawn the part before them).
-    public mutating func update(items: [Item], earlier: Int = 0, older: Older = .none, state: ConversationState?, inbox: [InboxItem], changes: [ProjectChangeLine] = [], needs: [Need] = [], names: Names, palette: [String: String], chat: Chat = .none, withOlder: Bool = true) -> Message? {
+    public mutating func update(items: [Item], earlier: Int = 0, older: Older = .none, state: ConversationState?, inbox: [InboxItem], changes: [ProjectChangeLine] = [], needs: [Need] = [], names: Names, palette: [String: String], chat: Chat = .none, presented: [PresentationRecord] = [], withOlder: Bool = true) -> Message? {
         var message = Message()
         var changed = false
 
@@ -290,6 +299,14 @@ public struct TranscriptFeed: Sendable {
         if chat != self.chat {
             message.chat = chat
             self.chat = chat
+            changed = true
+        }
+        // A page that starts over has forgotten every record; otherwise only those that changed go.
+        if message.reset == true { presentedSent = [:] }
+        let records = presented.filter { presentedSent[$0.id] != $0 }
+        if !records.isEmpty {
+            message.presented = Presented(records: records)
+            for record in records { presentedSent[record.id] = record }
             changed = true
         }
         return changed ? message : nil

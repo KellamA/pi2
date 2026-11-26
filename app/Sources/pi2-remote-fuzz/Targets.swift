@@ -29,6 +29,7 @@ enum Targets {
 			requestItem(world),
 			macItem(world),
 			relayMessages(world),
+			relayLeave(world),
 		]
 	}
 
@@ -285,11 +286,17 @@ enum Targets {
 			pairing: world.pairing, device: world.device, session: nil, received: nil, binding: binding, challenge: challenge, build: "1.0",
 			deviceKey: world.deviceKey, presenceKey: world.presenceKey)))
 		lines.append(.attached(Attached(session: SessionID("s1")!, resume: true)))
+		// The offer of a new presence key (#891), signed by the device key and by the key it offers; and the Mac's answer.
+		lines.append(.presenceKey(try! PresenceKeyOffer.make(
+			pairing: world.pairing, device: world.device, binding: binding, challenge: challenge, build: "1.0", deviceKey: world.deviceKey,
+			offeredKey: world.presenceKey)))
+		lines.append(.presenceKeyAccepted)
 		lines.append(.revoked(try! Revocation.make(pairing: world.pairing, device: world.device, identity: world.identity)))
 		lines.append(.sessionEnd)
 		lines += Refusal.Reason.allCases.map { .refused(Refusal($0)) }
-		// A reason from a newer Mac, which this build reads as a plain refusal.
-		return lines.map { Array($0.line) } + [Array(#"{"refused":{"reason":"later"}}"#.utf8)]
+		lines += PairRefusal.Why.allCases.map { .pairRefused(PairRefusal($0)) }
+		// A reason and a word from a newer Mac, which this build reads as a plain refusal.
+		return lines.map { Array($0.line) } + [Array(#"{"refused":{"reason":"later"}}"#.utf8), Array(#"{"pairRefused":{"why":"later"}}"#.utf8)]
 	}
 
 	static func controlLines(_ world: World) -> Target {
@@ -297,7 +304,8 @@ enum Targets {
 			name: "control-lines", seeds: controlLineSeeds(world),
 			dictionary: words([
 				"\\\"", "\\\\", "null", "true", "\"v\\\":2", "\"session\"", "\"received\":", "dev_", ",", "{}", "\\u0000", "\"refused\"", "\"reason\"",
-				"\"update\"", "\\u0061", "\"homeKey\"", "\"key\"", "=", "AA",
+				"\"update\"", "\"pairRefused\"", "\"why\"", "\"unsaved\"", "\\u0061", "\"homeKey\"", "\"key\"", "=", "AA",
+				"\"presenceKey\"", "\"presenceKeyAccepted\"", "\\\"presenceKey\\\":", "\\\"build\\\":", "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE",
 			]),
 			maxLength: 8192
 		) { input in
@@ -310,6 +318,9 @@ enum Targets {
 			if case let .refused(refusal) = line!, let reason = refusal.reason, written != ControlLine.refused(Refusal(reason)).line {
 				Fuzz.violation("control-lines", "read a refusal as a reason it does not say", input)
 			}
+			if case let .pairRefused(refusal) = line!, let why = refusal.why, written != ControlLine.pairRefused(PairRefusal(why)).line {
+				Fuzz.violation("control-lines", "read a pairing's refusal as a word it does not say", input)
+			}
 			// A home key, in paired or in homeKey, is exactly 32 bytes, and what was written is what it holds.
 			switch line! {
 			case let .homeKey(key):
@@ -318,6 +329,12 @@ enum Targets {
 				}
 			case let .paired(paired):
 				if paired.homeKey.rawRepresentation.count != HomeKey.length { Fuzz.violation("control-lines", "read a paired whose home key is not 32 bytes", input) }
+			case let .presenceKey(offer):
+				// An offer is taken only with its signed text in the engine's order and its key in the one form RemoteKit reads,
+				// written back as the text said.
+				guard case let .object(members) = offer.statement.value, members.map(\.0) == ["v", "kind", "pairing", "device", "binding", "challenge", "presenceKey", "build", "at"],
+				      members[6].1.stringValue.map({ $0.utf8.elementsEqual(PublicKeys.text(offer.presenceKey).utf8) }) == true
+				else { Fuzz.violation("control-lines", "read an offer whose signed text the engine would not read, or whose key is not as written", input) }
 			default: break
 			}
 			// Each line has one writer: read as from it, it is taken; as from the other end, refused.
@@ -337,10 +354,12 @@ enum Targets {
 		let item = Base64URL.encode(Data(repeating: 1, count: 16))
 		let key = PublicKeys.text(world.deviceKey.publicKey)
 		let keyID = Data(repeating: 2, count: 32).base64EncodedString()
+		let left = #"{"device":"\#(device)","at":1800000000000,"notice":"\#(Base64URL.encode(Data(repeating: 4, count: 64)))"}"#
 		let texts: [(UInt8, String)] = [
 			(0, #"{"challenge":"\#(Base64URL.encode(Data(repeating: 3, count: 32)))"}"#),
 			(0, #"{"registered":{"pairing":"\#(world.pairing.text)"}}"#),
-			(1, #"{"ready":{"devices":[{"device":"\#(device)","online":true}],"left":["\#(device)"],"pending":false,"mail":2}}"#),
+			(1, #"{"ready":{"devices":[{"device":"\#(device)","online":true}],"left":[\#(left)],"pending":false,"mail":2}}"#),
+			(1, #"{"left":\#(left)}"#),
 			(2, #"{"ready":{"mac":true,"mail":0}}"#),
 			(3, #"{"joined":{"device":"\#(device)"}}"#),
 			(1, #"{"joined":{"device":"\#(device)","deviceKey":"\#(key)","keyId":"\#(keyID)"}}"#),
@@ -370,6 +389,25 @@ enum Targets {
 				Fuzz.violation("relay-messages", "read one text two ways", input)
 			}
 			return true
+		}
+	}
+
+	/// The Mac's check of a phone's leave notice (#813): the input is a device's 16 bytes, a time's 8 and a notice's 64,
+	/// as the relay could pass them on; only the very notice the device key signed, for that device and time, is taken.
+	static func relayLeave(_ world: World) -> Target {
+		let at: Int64 = 1_800_000_000_000
+		let text = try! RelayLeaveNotice.text(pairing: world.pairing, device: world.device, identityKey: world.identity.publicKey, at: at)
+		let notice = try! world.deviceKey.sign(text)
+		let deviceBytes = Base64URL.decode(String(world.device.text.dropFirst(4)), count: 16)!
+		let seed = Array(deviceBytes) + withUnsafeBytes(of: at.bigEndian) { Array($0) } + Array(notice)
+		return Target(name: "relay-leave", seeds: [seed], maxLength: 88) { input in
+			guard input.count == 88 else { return false }
+			let device = DeviceID("dev_" + Base64URL.encode(Data(input[0..<16])))!
+			let time = input[16..<24].reduce(Int64(0)) { $0 << 8 | Int64($1) }
+			let left = RelayLeft(device: device, at: time, notice: Data(input[24...]))
+			let taken = left.verified(pairing: world.pairing, identityKey: world.identity.publicKey, deviceKey: world.deviceKey.publicKey, now: at) != nil
+			if taken, input != seed { Fuzz.violation("relay-leave", "took a leave the device key did not sign", input) }
+			return taken
 		}
 	}
 

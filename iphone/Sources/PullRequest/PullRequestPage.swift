@@ -21,12 +21,22 @@ struct PullRequestPage: View {
     @State private var unfolded: Set<String> = []
 
     private static let end = "end"
+    /// How many files the diff read has, or -1 while it is not read: what the debug scroll follows.
+    private var diffFiles: Int {
+        if case .read(let read)? = diff { read.files.count } else { -1 }
+    }
     private var store: PullRequestStore { .shared }
     private var pending: String? { store.pending[key] }
+    /// The engine's words when it would not read this closed pull request whole for a phone.
+    private var wholeRefusal: String? {
+        if case .refused(let words)? = store.wholes[key] { words } else { nil }
+    }
     private var problem: String? { store.problems[key] }
+    /// Whether a request reaches the Mac now, rather than the store's cache, which refuses it.
+    private var live: Bool { sample || PullRequestSource.live(session.connection) }
     /// Whether Merge and Send back can be pressed: the read went well, nothing is on its way, and the Mac is there.
     private var canAct: Bool {
-        pull.isOpen && !listing.troubled && pending == nil && session.engine.status == .connected
+        pull.isOpen && !listing.troubled && pending == nil && session.engine.status == .connected && live
     }
 
     var body: some View {
@@ -42,8 +52,9 @@ struct PullRequestPage: View {
             }
             .listStyle(.insetGrouped)
             #if DEBUG
-            .task {
-                // `PI2_PR_SCROLL=bottom`: the files, for a picture, once the list is drawn.
+            .task(id: diffFiles) {
+                // `PI2_PR_SCROLL=bottom`: the files, for a picture, once the list is drawn, and again once the diff is read,
+                // which from a Mac can come seconds later.
                 guard PullRequestSamples.bottom else { return }
                 try? await Task.sleep(for: .milliseconds(600))
                 proxy.scrollTo(Self.end, anchor: .bottom)
@@ -66,10 +77,22 @@ struct PullRequestPage: View {
             Text(mergeWords)
         }
         .sheet(isPresented: $sendingBack) {
-            PullRequestSendBack(pull: pull, reason: $reason, send: sendBack)
+            PullRequestSendBack(pull: pull, opener: opener, reason: $reason, send: sendBack)
         }
         #if DEBUG
-        .onAppear { PullRequestSamples.press(merge: { confirmingMerge = true }, sendBack: { sendingBack = true }, mergeNow: merge) }
+        .task(id: live) {
+            // Once the Mac answers, so that what is pressed reaches it rather than the store's cache.
+            guard live else { return }
+            try? await Task.sleep(for: .milliseconds(600))
+            PullRequestSamples.press(merge: { confirmingMerge = true }, sendBack: { sendingBack = true }, mergeNow: merge,
+                                     sendBackNow: { words in sendBack(words) },
+                                     refresh: {
+                                         Task {
+                                             await store.refresh(key, through: session.engine)
+                                             store.readDiff(key, through: session.engine, again: true)
+                                         }
+                                     })
+        }
         #endif
     }
 
@@ -94,7 +117,7 @@ struct PullRequestPage: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityLabel("From \(pull.head) into \(pull.base)")
                 if !pull.author.isEmpty {
-                    Text("Opened by \(pull.author)\(pull.openedBy.map { " through pi², in sub-chat \($0)" } ?? "")")
+                    Text("Opened by \(pull.author)\(opener.map { " through pi², from \($0)" } ?? "")")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -122,8 +145,16 @@ struct PullRequestPage: View {
     @ViewBuilder
     private var notices: some View {
         let lines = noticeLines
-        if !lines.isEmpty || pending != nil || problem != nil {
+        let done = store.dones[key]
+        if !lines.isEmpty || pending != nil || problem != nil || done != nil {
             Section {
+                if let done {
+                    Label {
+                        Text(done).fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                    }
+                }
                 if let pending {
                     HStack(spacing: 10) {
                         ProgressView()
@@ -165,10 +196,20 @@ struct PullRequestPage: View {
             if pull.mergeable == "no" { lines.append("GitHub says it conflicts with \(pull.base), so it cannot be merged as it is.") }
             if pull.draft { lines.append("It is a draft: GitHub will not merge it until it is marked ready, on GitHub.") }
         }
-        if session.engine.status != .connected, !sample {
-            lines.append("Your Mac is not connected: nothing can be merged or sent back until it is.")
+        if !sample, session.engine.status != .connected || !live {
+            if case .outOfReach = session.connection {
+                lines.append("Your Mac can't be reached: what it last sent is shown, and nothing can be merged or sent back until it is.")
+            } else {
+                lines.append("Your Mac is not connected: nothing can be merged or sent back until it is.")
+            }
         }
         return lines
+    }
+
+    /// The conversation that opened it through pi², as the session knows it: "sub-chat 166", "the orchestrator's
+    /// conversation", "Forge's conversation", or "conversation 9".
+    private var opener: String? {
+        pull.openedBy.map { PullRequestLook.opener($0, conversations: session.engine.conversations, agents: session.engine.allAgents) }
     }
 
     // MARK: - Writes whose outcome is not known
@@ -208,10 +249,19 @@ struct PullRequestPage: View {
     private var checks: some View {
         Section("Checks") {
             if pull.partial {
-                Text("Not read: your Mac lists a closed pull request without its checks. The Mac reads them when it is opened there, and GitHub has them.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                if store.wholes[key] == .reading {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text("Asking your Mac to read it whole…").foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
+                } else {
+                    Text(PullRequestLook.notReadWords(refusal: wholeRefusal))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
             } else {
                 Label {
                     Text(pull.pageChecksWords)
@@ -245,7 +295,7 @@ struct PullRequestPage: View {
     private var findings: some View {
         Section("What reviewing agents found") {
             if pull.partial {
-                Text("Not read: a closed pull request is listed without what reviewing agents found.")
+                Text("Not read: a closed pull request is listed without what reviewing agents found. The Mac shows it when it is opened there.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -273,6 +323,18 @@ struct PullRequestPage: View {
     private var files: some View {
         Section {
             switch diff {
+            case nil where !live:
+                if case .outOfReach = session.connection {
+                    Text("Your Mac can't be reached: its files show once it is.")
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                        Text("Waiting for your Mac…").foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
             case nil, .reading?:
                 HStack(spacing: 10) {
                     ProgressView()
@@ -301,7 +363,7 @@ struct PullRequestPage: View {
                         PullRequestFileRow(file: file)
                     }
                 }
-                if let cut = read.cutNote {
+                if let cut = PullRequestLook.cutWords(read) {
                     Text(cut)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -364,11 +426,15 @@ struct PullRequestPage: View {
     }
 
     private func sendBack() {
-        let words = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        sendBack(reason)
+    }
+
+    private func sendBack(_ typed: String) {
+        let words = typed.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !words.isEmpty else { return }
         reason = ""
         store.send(.sendBack(project: key.project, number: pull.number, reason: words), for: key, shown: "Sending back",
-                   through: session.engine, failed: { _ in
+                   done: PullRequestLook.sentBackWords(opener: opener), through: session.engine, failed: { _ in
                        // What was typed comes back to the field, so nothing is lost.
                        if reason.isEmpty { reason = words }
                    })
@@ -378,6 +444,8 @@ struct PullRequestPage: View {
 /// Send back's sheet: what to put right, and who is told.
 struct PullRequestSendBack: View {
     let pull: GitHubPull
+    /// The conversation that opened it, as `PullRequestLook.opener` says it.
+    let opener: String?
     @Binding var reason: String
     let send: () -> Void
 
@@ -395,7 +463,7 @@ struct PullRequestSendBack: View {
                         .focused($focused)
                         .accessibilityLabel("What to put right on pull request #\(pull.number)")
                 } footer: {
-                    Text(pull.openedBy.map { "The reason is posted on the pull request and given to sub-chat \($0), which opened it." }
+                    Text(opener.map { "The reason is posted on the pull request and given to \($0), which opened it." }
                         ?? "The reason is posted on the pull request. Nobody opened it through pi², so no agent is told.")
                 }
             }
@@ -600,6 +668,49 @@ enum PullRequestLook {
         case "closed": "xmark.circle"
         default: pull.draft ? "pencil.circle" : "arrow.triangle.pull"
         }
+    }
+
+    /// What the page says once a pull request is sent back: it stays open, and the reason is a comment rather than a
+    /// finding, so nothing else on the page changes.
+    static func sentBackWords(opener: String?) -> String {
+        opener.map { "Sent back: your reason is on the pull request, and goes to \($0), which opened it." }
+            ?? "Sent back: your reason is on the pull request. Nobody opened it through pi², so no agent was told."
+    }
+
+    /// What the checks of a closed pull request say, listed without them: with the engine's words when it would not read
+    /// it whole for a phone (`github.show`, which 4.2 does not name).
+    static func notReadWords(refusal: String?) -> String {
+        guard let refusal else {
+            return "Not read: your Mac lists a closed pull request without its checks. The Mac reads them when it is opened there, and GitHub has them."
+        }
+        return "Not read: your Mac lists a closed pull request without its checks, and would not read it whole for this iPhone: “\(refusal)” Open it on the Mac or on GitHub to see them."
+    }
+
+    /// What the page says under its files of a diff the engine cut at 2 MB, in a phone's words: the engine's own line
+    /// ends with a `gh` command to run on the Mac. Nil for a whole diff.
+    static func cutWords(_ diff: PullRequestDiff) -> String? {
+        guard diff.cutNote != nil else { return nil }
+        let last = diff.files.last { $0.cut }.map { "\($0.path) stops short there, and " } ?? ""
+        return "The diff is longer than 2 MB, so your Mac sent its first 2 MB: \(last)any file after it is not listed. GitHub and the Mac show all of it."
+    }
+
+    /// The conversation that opened a pull request through pi² (its `openedBy`), named as the person knows it, from the
+    /// library's row: a sub-chat by its number, the project's conversation with its orchestrator as that (an orchestrator
+    /// opens pull requests too, in its own conversation, whatever it is named), another agent's own conversation by the
+    /// agent, and one the session does not list (not loaded yet, archived, deleted) by its number alone, which claims
+    /// nothing it cannot know.
+    static func opener(_ id: Int, conversations: [ConversationSummary], agents: [AgentProfile]) -> String {
+        guard let conversation = conversations.first(where: { $0.id == id }) else { return "conversation \(id)" }
+        if conversation.parent != nil { return "sub-chat \(id)" }
+        switch conversation.orchestrator {
+        case "current": return "the orchestrator's conversation"
+        case "earlier": return "an earlier conversation with the orchestrator"
+        default: break
+        }
+        if let agentID = conversation.runsAs ?? conversation.agentId, let agent = agents.first(where: { $0.id == agentID }) {
+            return "\(agent.name)'s conversation"
+        }
+        return "conversation \(id)"
     }
 
     /// "Added", "Deleted", "Renamed from …", "Binary"; nil for a file changed in place.

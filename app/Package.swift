@@ -11,6 +11,8 @@ let package = Package(
         .library(name: "PiModels", targets: ["PiModels"]),
         .library(name: "EngineKit", targets: ["EngineKit"]),
         .library(name: "TranscriptKit", targets: ["TranscriptKit"]),
+        // The channel to pi² Remote, pairing and the relay's client, for the phone's side of them (#680).
+        .library(name: "RemoteKit", targets: ["RemoteKit"]),
     ],
     dependencies: [
         // Updates for release builds. build.sh copies the framework into the app.
@@ -86,7 +88,10 @@ let package = Package(
         // Checks FileLinkKit against files it makes in a temporary folder of its own. Shows nothing in Finder.
         .executableTarget(name: "pi2-file-link-check", dependencies: ["FileLinkKit"], path: "Sources/pi2-file-link-check"),
         // Checks TranscriptKit: pages loaded ahead and handed over, in off-screen windows of its own (#441).
-        .executableTarget(name: "pi2-transcript-check", dependencies: ["TranscriptKit"], path: "Sources/pi2-transcript-check"),
+        .executableTarget(name: "pi2-transcript-check", dependencies: ["TranscriptKit", "PiModels"], path: "Sources/pi2-transcript-check"),
+        // Checks TranscriptKit's PresentedPageView, the sandboxed view an agent's page is drawn in (#964), against hostile
+        // pages it writes into a temporary folder: offscreen windows of its own, listeners on 127.0.0.1 alone.
+        .executableTarget(name: "pi2-presented-check", dependencies: ["TranscriptKit"], path: "Sources/pi2-presented-check"),
         // The engine's helper that answers whether a connection is the app's (#504). build.sh copies it into the app as
         // Contents/MacOS/pi2-peer, where the engine finds it.
         .executableTarget(name: "pi2-peer", dependencies: ["PeerKit"], path: "Sources/pi2-peer"),
@@ -102,6 +107,17 @@ let package = Package(
         // Runs every parser in RemoteKit that reads bytes from the network against mutated and random input, from a fixed
         // seed for a bounded time (#674).
         .executableTarget(name: "pi2-remote-fuzz", dependencies: ["RemoteKit"], path: "Sources/pi2-remote-fuzz"),
+        // pi² Remote (#675, docs/pi2-remote.md): the helper inside the app's bundle that holds the Mac's ends of the paths
+        // to a phone, its keys and the channels, started by the engine. Its code is a library so that its check can drive
+        // it; its program is pi2-remote-helper, which build.sh copies into the app as Contents/Helpers/pi² Remote.app.
+        // PI2_DEVELOPMENT as for the app: loopback mode and keys in a file are compiled only into a development build, the
+        // Keychain, the Secure Enclave and Bonjour only into a release one. Relay/ is the relay's end (#678).
+        .target(name: "pi2-remote", dependencies: ["RemoteKit"], path: "Sources/pi2-remote", swiftSettings: [.define("PI2_DEVELOPMENT", .when(configuration: .debug))]),
+        .executableTarget(name: "pi2-remote-helper", dependencies: ["pi2-remote"], path: "Sources/pi2-remote-helper"),
+        // Checks pi² Remote: its start-up checks and its exits, its keys and list of devices, the listener's ranges and
+        // limits, and, with --engine, a phone of its own pairing and attaching over loopback through a real engine in a
+        // temporary folder. Touches no Keychain, advertises nothing, listens on 127.0.0.1 alone.
+        .executableTarget(name: "pi2-remote-helper-check", dependencies: ["pi2-remote", "RemoteKit"], path: "Sources/pi2-remote-helper-check"),
         // Checks RemoteKit's relay client (#678): its messages, and the client against a relay of its own in memory; with
         // --relay, the protocol test against the relay itself on this computer (scripts/relay-protocol-test).
         .executableTarget(name: "pi2-relay-check", dependencies: ["RemoteKit"], path: "Sources/pi2-relay-check"),

@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { crc32, deflateSync } from "node:zlib";
+import { dayKey } from "../src/projectspend.ts";
 import { newestOnly } from "../src/providers.ts";
 import { usageWords } from "../src/subchatusage.ts";
 import { ARCHIVED_PAGE, archivedPage } from "../src/subchats.ts";
@@ -221,6 +222,8 @@ let backupPath = "";
 let restoredId = -1;
 let engine = startEngine();
 try {
+	// The day the run began on, for the usage step, which cannot say "all of it was spent today" once the day has changed (#1032).
+	const startedOn = dayKey();
 	let client = await Client.attach();
 	await client.until("providers", () => client.providers.length > 0);
 	await assert.rejects(client.call("test-copy.fill", { entries: 600 }), /Unknown method: test-copy\.fill/);
@@ -231,7 +234,15 @@ try {
 	const { id: a } = await client.call("conversation.create");
 	await client.call("conversation.open", { id: a });
 	const firstSubmission = await client.call("submit", { id: a, text: "hello there", requestId: "r1" });
+	// The same message sent again with its request id while it is answered, and once more after, as a client sends it
+	// when its connection dropped before the copy that arrived was counted (a phone's channel cut mid-line, #939): the
+	// submission it already has, and no second message.
+	const sentAgain = await client.call("submit", { id: a, text: "hello there", requestId: "r1" });
+	assert.equal(sentAgain.submissionId, firstSubmission.submissionId, "sent again while answered: the same submission");
 	let conv = await client.idle(a);
+	const sentLate = await client.call("submit", { id: a, text: "hello there", requestId: "r1" });
+	assert.equal(sentLate.submissionId, firstSubmission.submissionId, "sent again once answered: the same submission");
+	conv = await client.idle(a);
 	assert.deepEqual(conv.items.map((i) => i.kind), ["user", "assistant"]);
 	assert.ok(conv.items[1]!.text.endsWith("Done."));
 	assert.equal(client.library.find((c) => c.id === a)?.title, "hello there");
@@ -241,7 +252,7 @@ try {
 	assert.equal(firstOutcome.busy, false);
 	await assert.rejects(client.call("submission.get", { id: a, submissionId: "bad" }), /must be a number/);
 	await assert.rejects(client.call("submission.get", { id: a, submissionId: 99999999 }), /No such submission/);
-	step("create, submit, streamed answer, automatic title, exact submission outcome");
+	step("create, submit, streamed answer, automatic title, exact submission outcome; the same request id sent again is taken once");
 
 	// ---- Tool access: off by default
 	await client.call("submit", { id: a, text: "/bash echo should-not-run" });
@@ -2732,7 +2743,8 @@ try {
 	assert.ok(conv.state.usage.tokens > 0 && conv.state.usage.cost > 0, "a conversation counts its own tokens and cost");
 	assert.ok(conv.state.context.used > 0 && conv.state.context.window !== null, "and how full its context is");
 	const usage = await client.until("usage summary", () => (client.usage?.total.tokens > 0 ? client.usage : undefined));
-	assert.ok(Math.abs(usage.today.cost - usage.total.cost) < 1e-9 && usage.today.tokens === usage.total.tokens, "everything spent so far was spent today");
+	if (dayKey() === startedOn) assert.ok(Math.abs(usage.today.cost - usage.total.cost) < 1e-9 && usage.today.tokens === usage.total.tokens, "everything spent so far was spent today");
+	else assert.ok(usage.today.cost <= usage.total.cost + 1e-9 && usage.today.tokens <= usage.total.tokens && usage.total.tokens > 0, "after midnight, today's spend is part of the total");
 	assert.ok(usage.models.some((m: any) => m.key === "demo/demo-1"));
 	assert.ok(usage.agents.some((x: any) => x.agentId === "atlas") && usage.conversations.length > 0);
 	await client.call("usage.setBudget", { daily: 0.000001 });

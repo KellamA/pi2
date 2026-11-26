@@ -1,0 +1,96 @@
+#!/bin/bash
+# Checks scripts/ci-runner-free, which decides which of a run's macOS jobs goes to the owner's runner (#1041): what it
+# makes of GitHub's answer about the runners, and of what the change needs. Every case is an answer written here, so it
+# touches no network and no GitHub, and it runs on Linux as on a Mac.
+#
+#   scripts/test-ci-runner-free
+
+set -uo pipefail
+
+root="$(cd -P -- "$(dirname -- "$0")/.." && pwd -P)"
+script="$root/scripts/ci-runner-free"
+T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT
+failures=0
+fail() { echo "FAIL: $*" >&2; failures=$((failures + 1)); }
+
+# A runners answer with one runner, carrying the label and the state given.
+one() { # <status> <busy> [<label>]
+	printf '{"total_count":1,"runners":[{"id":7,"name":"pi2-mini","os":"macOS","status":"%s","busy":%s,"labels":[{"id":1,"name":"self-hosted","type":"read-only"},{"id":2,"name":"%s","type":"custom"}]}]}' \
+		"$1" "$2" "${3:-pi2-mini}"
+}
+
+# ask <name> <answer> <label> <app> <engine> <word or ->, with what the reason line must hold.
+ask() {
+	local name=$1 answer=$2 label=$3 app=$4 engine=$5 wanted=$6 said=${7:-}
+	local out status log
+	[[ $wanted != - ]] || wanted=''
+	out=$(printf '%s' "$answer" | "$script" "$label" "$app" "$engine" 2>"$T/log")
+	status=$?
+	log=$(cat "$T/log")
+	if [[ $status != 0 ]]; then
+		fail "$name: exited $status"
+	fi
+	if [[ $out != "$wanted" ]]; then
+		fail "$name: answered '$out', wanted '$wanted'"
+	fi
+	if [[ -n ${said:-} && $log != *"$said"* ]]; then
+		fail "$name: said '$log', which does not hold '$said'"
+	fi
+	# Nothing of the answer but whether a runner is online, offline or busy: no field, no value, no marker.
+	if [[ $log == *'{'* || $log == *'"'* || $log == *'SECRET-MARKER'* ]]; then
+		fail "$name: its line holds something of the answer: $log"
+	fi
+	if (($(wc -l <<<"$log") > 1)); then
+		fail "$name: its line is more than one line: $log"
+	fi
+}
+
+busy='{"total_count":1,"runners":[{"id":7,"name":"pi2-mini","status":"online","busy":true,"labels":[{"id":2,"name":"pi2-mini"}]}]}'
+offline='{"total_count":1,"runners":[{"id":7,"name":"pi2-mini","status":"offline","busy":false,"labels":[{"id":2,"name":"pi2-mini"}]}]}'
+nolabel='{"total_count":2,"runners":[{"id":7,"name":"pi2-mini","status":"online","busy":false,"labels":[{"id":1,"name":"self-hosted"},{"id":2,"name":"macos-26"}]},{"id":8,"name":"other","status":"online","busy":false,"labels":[{"id":3,"name":"pi2"}]}]}'
+two='{"total_count":2,"runners":[{"id":7,"name":"pi2-mini","status":"online","busy":false,"labels":[{"id":2,"name":"pi2-mini"}]},{"id":8,"name":"pi2-mini-2","status":"online","busy":false,"labels":[{"id":4,"name":"pi2-mini"}]}]}'
+# Two runners, one of them with the label: the other one is not a second.
+beside='{"total_count":2,"runners":[{"id":7,"name":"pi2-mini","status":"online","busy":false,"labels":[{"id":2,"name":"pi2-mini"}]},{"id":8,"name":"macos","status":"online","busy":false,"labels":[{"id":5,"name":"macos-26"}]}]}'
+
+# A token in the answer, which no line of the log and no output may hold.
+marked='{"total_count":1,"runners":[{"id":7,"name":"pi2-mini","status":"online","busy":false,"token":"SECRET-MARKER","labels":[{"id":2,"name":"pi2-mini"}]}]}'
+
+# Free, and what the change needs: the App job first, since it is the longer one; the Engine job when there is no App
+# job; nothing when there is neither.
+ask "online and idle, both needed" "$(one online false)" pi2-mini true true app "is free"
+ask "online and idle, both needed and the answer marked" "$marked" pi2-mini true true app "is free"
+ask "online and idle, only the App job" "$(one online false)" pi2-mini true false app "is free"
+ask "online and idle, only the Engine job" "$(one online false)" pi2-mini false true engine "is free"
+ask "online and idle, an App output that is missing" "$(one online false)" pi2-mini '' true app "is free"
+ask "online and idle, neither job" "$(one online false)" pi2-mini false false - "neither macOS job"
+# A need that is not "false" is a job that runs, as the jobs' own conditions read it.
+ask "online and idle, needs that are not false" "$(one online false)" pi2-mini maybe yes app "is free"
+ask "two runners, one with the label" "$beside" pi2-mini true true app "is free"
+
+# Not free, for every reason, and every one of them answers nothing.
+ask "busy" "$busy" pi2-mini true true - "busy"
+ask "offline" "$offline" pi2-mini true true - "offline"
+ask "no such label" "$nolabel" pi2-mini true true - "No runner carries the label"
+ask "two runners with the label" "$two" pi2-mini true true - "Two or more runners"
+# The label is the runner's, not a part of it: pi2-mini-2 does not carry pi2-mini's label.
+ask "a label that is a prefix of a name" "$two" pi2-mini-3 true true - "No runner carries the label"
+# Anything but the documented fields is not free.
+ask "no status" '{"runners":[{"name":"pi2-mini","busy":false,"labels":[{"name":"pi2-mini"}]}]}' pi2-mini true true - "offline"
+ask "a busy that is not false" '{"runners":[{"name":"pi2-mini","status":"online","busy":"false","labels":[{"name":"pi2-mini"}]}]}' pi2-mini true true - "busy"
+ask "a label of another shape" '{"runners":[{"name":"pi2-mini","status":"online","busy":false,"labels":["pi2-mini"]}]}' pi2-mini true true - "No runner carries the label"
+ask "not JSON" 'this is not JSON' pi2-mini true true - "cannot be read"
+ask "an empty answer" '' pi2-mini true true - "cannot be read"
+ask "a JSON answer without runners" '{"total_count":0}' pi2-mini true true - "cannot be read"
+ask "runners that are not a list" '{"runners":{"name":"pi2-mini"}}' pi2-mini true true - "cannot be read"
+ask "no label at all" "$(one online false)" '' true true - "No runner label"
+
+# What it refuses: a call with the wrong number of arguments.
+"$script" pi2-mini true </dev/null >/dev/null 2>&1 && fail "two arguments: exited 0"
+"$script" pi2-mini true true extra </dev/null >/dev/null 2>&1 && fail "four arguments: exited 0"
+
+if ((failures)); then
+	echo "test-ci-runner-free: $failures failed" >&2
+	exit 1
+fi
+echo "test-ci-runner-free: all passed"

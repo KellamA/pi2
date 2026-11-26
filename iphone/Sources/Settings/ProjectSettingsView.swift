@@ -92,16 +92,23 @@ struct ProjectSettingsForm: View {
                 orchestratorSection.id("orchestrator")
                 switchesSection.id("switches")
                 reportsSection.id("reports")
+                ProjectLiveActivitySection(project: project).id("live-activity")
                 limitsSection.id("limits")
                 schedulesSection.id("schedules")
                 lifecycleSection.id("lifecycle")
             }
             #if DEBUG
-            .task {
-                if connected, SettingsSamples.shouldPress("reports") {
+            .task { await SettingsSamples.scroll(proxy) }
+            // Once the Mac is reached: drawn first from the phone's last state, a change would only be refused.
+            .task(id: connected) {
+                guard connected else { return }
+                if SettingsSamples.shouldPress("reports") {
                     send(.wakeOnReports(project: project.id, on: !(project.settings?.wakeOnReports ?? false)), row: "reports")
                 }
-                await SettingsSamples.scroll(proxy)
+                if let amount = SettingsSamples.pressArgument("daily-spend") {
+                    dailySpend = amount
+                    saveDailySpend()
+                }
             }
             #endif
         }

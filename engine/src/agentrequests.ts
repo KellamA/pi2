@@ -19,7 +19,8 @@ import { validateReferenceFiles } from "./reference.ts";
 import { type Params, text } from "./requests.ts";
 import { type CommandRule, ruleFolder, ruleRefusal, sameFolder, wordsOf } from "./rules.ts";
 import { validateScheduleSettings } from "./selfschedule.ts";
-import { ACCESS_LEVELS, type AgentProfile, Agents } from "./state.ts";
+import { ACCESS_LEVELS, type AgentProfile, Agents, type ModelRef } from "./state.ts";
+import { THINKING_LEVELS } from "./thinkingretry.ts";
 import { inRepository, madeWorktrees } from "./worktrees.ts";
 
 // What this file uses of the running engine, handed over by main.ts once it has them (`wireAgentRequests`).
@@ -30,6 +31,36 @@ let host: Host;
 
 export function wireAgentRequests(parts: { harness: Harness; context: Context; log: typeof log; host: Host }): void {
 	({ harness, context, log, host } = parts);
+}
+
+// The colour names the apps offer for an agent's mark (the Mac's app/Sources/pi2/AgentViews.swift, `AgentColor.names`;
+// the phone's iphone/Sources/App/Shared/AgentMark.swift has the same list). Anything else, the apps would draw as the
+// default colour anyway.
+const AGENT_COLORS = ["violet", "blue", "teal", "green", "yellow", "orange", "pink", "gray"] as const;
+
+// A value to name in an error message, cut so the message stays short.
+const shown = (value: unknown): string => (typeof value === "string" ? value : JSON.stringify(value) ?? String(value)).slice(0, 40);
+
+// `model` as a request gave it: `null`, or a model ref holding only its two fields, everything else dropped (ModelRef
+// is { provider, modelId }, state.ts).
+function validateModelRef(input: unknown): ModelRef | null {
+	if (input === null) return null;
+	const given = input as Partial<ModelRef>;
+	if (typeof given?.provider !== "string" || given.provider.length < 1 || given.provider.length > 200 || typeof given?.modelId !== "string" || given.modelId.length < 1 || given.modelId.length > 200) {
+		throw new Error(`The model must be { provider, modelId }, each 1 to 200 characters, or nothing: ${shown(input)}`);
+	}
+	return { provider: given.provider, modelId: given.modelId };
+}
+
+/**
+ * A list of ids as a request gave it: strings of 1 to 200 characters, at most 200 of them, each once, in the list's
+ * order. The ids are not checked against what exists: a removed server or agent must not make every later save fail.
+ */
+function validateIdList(input: unknown, what: string): string[] {
+	if (!Array.isArray(input) || input.length > 200 || input.some((id) => typeof id !== "string" || id.length < 1 || id.length > 200)) {
+		throw new Error(`${what} must be a list of at most 200 ids, each 1 to 200 characters`);
+	}
+	return [...new Set(input)];
 }
 
 // Saving and duplicating share validation and defaults; the app never assembles a copy.
@@ -49,6 +80,16 @@ export async function saveAgent(given: Partial<AgentProfile> | undefined, option
 	if (input.setup !== undefined && typeof input.setup !== "string") throw new Error("The set-up command must be text");
 	if (typeof input.setup === "string" && input.setup.length > 4_000) throw new Error("The set-up command is too long: keep it under 4,000 characters, or put it in a script");
 	if (input.maxTurns !== undefined && input.maxTurns !== null && !(Number.isInteger(input.maxTurns) && input.maxTurns >= 1)) throw new Error("The turn limit must be a whole number, 1 or more");
+	if (input.color !== undefined && !(typeof input.color === "string" && (AGENT_COLORS as readonly string[]).includes(input.color))) throw new Error(`Unknown colour: ${shown(input.color)}`);
+	if (input.thinkingLevel !== undefined && input.thinkingLevel !== null && !(THINKING_LEVELS as readonly string[]).includes(input.thinkingLevel)) throw new Error(`The thinking level must be one of: ${THINKING_LEVELS.join(", ")}, or nothing`);
+	if (input.mcpServers !== undefined) validateIdList(input.mcpServers, "MCP servers");
+	if (input.delegates !== undefined) validateIdList(input.delegates, "Delegates");
+	if (input.codeMode !== undefined && typeof input.codeMode !== "boolean") throw new Error("codeMode must be true or false");
+	if (input.description !== undefined) {
+		if (typeof input.description !== "string") throw new Error("The description must be text");
+		if (input.description.trim().length > 2_000) throw new Error("The description is too long: keep it under 2,000 characters");
+	}
+	if (input.instructions !== undefined && typeof input.instructions !== "string") throw new Error("The instructions must be text");
 	// Names are unique among the templates (agents of no project), and among the agents of each project: every project's
 	// orchestrator may be called Orchestrator (docs/projects.md, 3.3). Removed agents count.
 	const taken = Object.values(agents).some((other) => other.id !== input.id && other.projectId === project && other.name.toLowerCase() === name.toLowerCase());
@@ -56,22 +97,26 @@ export async function saveAgent(given: Partial<AgentProfile> | undefined, option
 	// New identities are allocated in the commit, so two requests cannot pick the same name or id.
 	let id = input.id ?? "";
 	const previous = agents[id];
+	// Cleaned values, for the agent below: a model ref holding only its two fields, and id lists with duplicates out.
+	const model = input.model === undefined ? (previous?.model ?? null) : validateModelRef(input.model);
+	const mcpServers = input.mcpServers === undefined ? (previous?.mcpServers ?? []) : validateIdList(input.mcpServers, "MCP servers");
+	const delegates = input.delegates === undefined ? (previous?.delegates ?? []) : validateIdList(input.delegates, "Delegates");
 	const agent: AgentProfile = {
 		id,
 		name,
 		description: (input.description ?? previous?.description ?? "").trim(),
 		color: input.color ?? previous?.color ?? "violet",
-		model: input.model === undefined ? (previous?.model ?? null) : input.model,
+		model: model,
 		thinkingLevel: input.thinkingLevel === undefined ? (previous?.thinkingLevel ?? null) : input.thinkingLevel,
 		instructions: input.instructions ?? previous?.instructions ?? "",
 		access: input.access ?? previous?.access ?? "none",
 		cwd: input.cwd === undefined ? (previous?.cwd ?? null) : input.cwd,
 		worktree: input.worktree ?? previous?.worktree ?? false,
 		setup: (input.setup ?? previous?.setup ?? "").trim(),
-		delegates: (input.delegates ?? previous?.delegates ?? []).filter((other) => other !== id),
+		delegates: delegates.filter((other) => other !== id),
 		maxTurns: input.maxTurns === undefined ? (previous?.maxTurns ?? null) : input.maxTurns,
 		codeMode: input.codeMode ?? previous?.codeMode ?? false,
-		mcpServers: input.mcpServers ?? previous?.mcpServers ?? [],
+		mcpServers: mcpServers,
 		files: input.files === undefined ? (previous?.files ?? []) : validateReferenceFiles(input.files),
 		computer: input.computer === undefined ? (previous?.computer ?? { enabled: false, apps: [], ask: true, testCopies: false }) : validateComputer(input.computer),
 		browser: input.browser === undefined ? (previous?.browser ?? { enabled: false, ask: true }) : validateBrowser(input.browser),

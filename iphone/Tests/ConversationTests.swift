@@ -21,6 +21,10 @@ struct ConversationTests {
         return true
     }
 
+    /// The limit on a wait for WebKit (`thePageLoadsNothingFromTheNetwork`): there only so that a hang fails, many times
+    /// the slowest start seen on CI, and well inside the CI job's thirty minutes.
+    private static let patience: Double = 300
+
     private func decode<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
         try JSONDecoder().decode(type, from: Data(json.utf8))
     }
@@ -43,6 +47,8 @@ struct ConversationTests {
             (.picture(entry: 5, index: 0), .ignore),
             (.older, .loadOlder),
             (.fileMenu(path: "/x", code: false), .ignore),
+            // A file link opens the file's screen, which asks the engine for it (#698, `files.preview`).
+            (.showFile("notes/plan.md"), .previewFile("notes/plan.md")),
         ]
         for (action, expected) in cases {
             #expect(ConversationPagePolicy.response(to: action, subChats: [12], items: pictured) == expected, "\(action)")
@@ -53,7 +59,7 @@ struct ConversationTests {
             .answerNeed(id: "n1", answer: .reach(allow: true)), .undo(change: 3), .fork(entry: 2),
             .retry(entry: 2, model: nil), .edit(entry: 2, text: "x"), .version(after: nil, index: 1),
             .save(text: "x", name: "a.txt"), .savePicture(entry: 2, index: 0), .openDocument(entry: 2),
-            .saveDocument(entry: 2), .showFile("/tmp/a"), .output("bg-3"),
+            .saveDocument(entry: 2), .output("bg-3"),
         ]
         for action in acting {
             guard case .notice = ConversationPagePolicy.response(to: action, subChats: [12]) else {
@@ -189,6 +195,68 @@ struct ConversationTests {
         #expect(status.waiting.map(\.text) == ["Forge needs approval: Run npm test"])
     }
 
+    /// New Chat makes a chat titled "" with no agent (`conversation.create { chat: true }`): its screen said nothing in
+    /// its header beside an empty mark, and "Write to the agent below" over "Message the agent…" (#981). It is "New
+    /// chat", as the Mac and the phone's lists call it, with pi²'s mark, and speaks of pi²'s assistant.
+    @Test func anUntitledChatIsANewChatWithPiSquaredsAssistant() throws {
+        let chatAgent = #""agent":{"model":{"provider":"demo","modelId":"demo-1"},"thinkingLevel":null,"cwd":"/c","access":"ask","agentId":null,"parent":null}"#
+        let row = try decode(ConversationSummary.self, #"{"id":223,"title":"","updatedAt":0,"busy":false,"agentId":null,"parent":null,"chat":true}"#)
+        let idle = try state("\(chatAgent),\"chat\":true")
+        let header = ConversationNames.header(
+            conversationID: 223, summary: row, archived: nil, state: idle, agent: nil, model: "scripted", project: nil, busy: false
+        )
+        #expect(header.name == "New chat")
+        #expect(header.chat)
+        #expect(header.subtitle == "pi²’s assistant · scripted")
+        // A title of spaces names nothing either; the state alone says it is a chat before the library has come.
+        let spaces = try decode(ConversationSummary.self, #"{"id":223,"title":"  \n","updatedAt":0,"busy":false,"agentId":null,"parent":null,"chat":true}"#)
+        #expect(ConversationNames.header(conversationID: 223, summary: spaces, archived: nil, state: nil, agent: nil, model: "", project: nil, busy: false).name == "New chat")
+        #expect(ConversationNames.header(conversationID: 223, summary: nil, archived: nil, state: idle, agent: nil, model: "", project: nil, busy: false).name == "New chat")
+        let archived = try decode(ArchivedConversation.self, #"{"id":223,"title":"","archivedAt":0,"agentId":null,"subChats":0,"parent":null,"parentTitle":null,"chat":true}"#)
+        #expect(ConversationNames.header(conversationID: 223, summary: nil, archived: archived, state: nil, agent: nil, model: "", project: nil, busy: false).name == "New chat")
+        let titled = try decode(ConversationSummary.self, #"{"id":223,"title":"Trip ideas","updatedAt":0,"busy":false,"agentId":null,"parent":null,"chat":true}"#)
+        #expect(ConversationNames.header(conversationID: 223, summary: titled, archived: nil, state: idle, agent: nil, model: "", project: nil, busy: false).name == "Trip ideas")
+
+        let empty = ConversationNames.emptyWords(chat: true, agentName: nil)
+        #expect(empty.title == "What can I help with?")
+        #expect(!empty.text.contains("agent"))
+        #expect(ConversationNames.emptyWords(chat: false, agentName: "Forge").text == "Write to Forge below. It works on your Mac.")
+
+        // The field's words are the Mac's chat mode's; nothing is steered, and no line says what waits for what.
+        let status = ConversationStatus.make(
+            conversationID: 223, state: idle, agentName: nil, outgoing: [], connected: true, inbox: [], needs: [],
+            archivedInLibrary: false, models: [], chat: true
+        )
+        #expect(status.isChat)
+        #expect(status.placeholder(steer: true) == "Ask anything")
+        let busy = ConversationStatus.make(
+            conversationID: 223, state: try state("\(chatAgent),\"chat\":true,\"busy\":true,\"messageWaits\":{\"holds\":[],\"ends\":[]}"), agentName: nil,
+            outgoing: [], connected: true, inbox: [], needs: [], archivedInLibrary: false, models: []
+        )
+        #expect(busy.isChat)
+        #expect(busy.placeholder(steer: true) == "Write your next message…")
+        #expect(busy.arrivalSteered == nil && busy.arrivalQueued == nil)
+        #expect(!busy.agentName.contains("agent"))
+    }
+
+    /// An agent's conversation keeps its agent's name; one with no agent the screen knows and no title yet is a "New
+    /// conversation", as on the Mac, not an empty header.
+    @Test func anAgentsConversationIsNamedByItsAgent() throws {
+        let agent = try decode(AgentProfile.self, #"{"id":"a1","name":"Forge","description":"","color":"green","instructions":"","access":"full","delegates":[],"createdAt":0}"#)
+        let row = try decode(ConversationSummary.self, #"{"id":30,"title":"","updatedAt":0,"busy":false,"agentId":"a1","parent":null}"#)
+        let header = ConversationNames.header(
+            conversationID: 30, summary: row, archived: nil, state: try state(""), agent: agent, model: "scripted", project: "Demo project", busy: true
+        )
+        #expect(header.name == "Forge")
+        #expect(!header.chat)
+        #expect(header.color == "green")
+        #expect(header.subtitle == "scripted · Demo project")
+        #expect(ConversationNames.header(conversationID: 30, summary: row, archived: nil, state: nil, agent: nil, model: "", project: nil, busy: false).name == "New conversation")
+        #expect(ConversationNames.header(conversationID: 30, summary: nil, archived: nil, state: nil, agent: nil, model: "", project: nil, busy: false).name == "Conversation 30")
+        let titled = try decode(ConversationSummary.self, #"{"id":30,"title":"Fix the fold","updatedAt":0,"busy":false,"agentId":"a1","parent":null}"#)
+        #expect(ConversationNames.header(conversationID: 30, summary: titled, archived: nil, state: nil, agent: agent, model: "", project: nil, busy: false).subtitle == "Fix the fold")
+    }
+
     // MARK: Requests, through the session (the recording refuses them)
 
     @Test func requestsAreMadeAndTheirRefusalShown() async throws {
@@ -208,6 +276,37 @@ struct ConversationTests {
         #expect(await requests.withdraw(41) == "Not taken back. The recorded session (PI2_TRANSPORT=replay) does not answer withdraw.")
         #expect(await requests.carryOn() == "Not continued. The recorded session (PI2_TRANSPORT=replay) does not answer continue.")
         #expect(await requests.restore(9) == "Not restored. The recorded session (PI2_TRANSPORT=replay) does not answer conversation.unarchive.")
+    }
+
+    /// A message from the phone carries at most 1 MB of typed text (#924), counted in UTF-8 bytes as the engine counts
+    /// it: the composer says so in the engine's words, and a send over it is refused before any request, so the text goes
+    /// back in the field.
+    @Test func aMessageOverOneMegabyteIsHeldBackInTheEnginesWords() async throws {
+        let head = "/work 0 1000 "
+        let exactly = head + String(repeating: "t", count: TypedTextLimit.bytes - head.utf8.count)
+        let overByOne = head + String(repeating: "é", count: (TypedTextLimit.bytes - head.utf8.count - 1) / 2) + "tt"
+        #expect(exactly.utf8.count == 1_048_576 && overByOne.utf8.count == 1_048_577)
+        #expect(overByOne.count < 600_000, "far under the limit counted in characters")
+        #expect(TypedTextLimit.refusal(exactly) == nil)
+        // The engine's sentences, as engine/test/devices.ts holds them.
+        #expect(TypedTextLimit.refusal(overByOne) == "A message from a phone can carry at most 1 MB of typed text; this one has just over 1 MB. Shorten it, or send it from the Mac.")
+        #expect(TypedTextLimit.refusal(String(repeating: "t", count: 1_258_292)) == "A message from a phone can carry at most 1 MB of typed text; this one has 1.2 MB. Shorten it, or send it from the Mac.")
+        #expect(TypedTextLimit.refusal(overByOne, answer: true) == "An answer from a phone can carry at most 1 MB of typed text; this one has just over 1 MB. Shorten it, or answer on the Mac.")
+        #expect(TypedTextLimit.sizeText(66 * 1024 * 1024 + 13) == "66.0 MB")
+        // A half rounds up, as JavaScript's toFixed(1) does: 1.25 and 1.75 MB.
+        #expect(TypedTextLimit.sizeText(1_310_720) == "1.3 MB" && TypedTextLimit.sizeText(1_835_008) == "1.8 MB")
+
+        let transport = RecordingTransport()
+        let session = AppSession()
+        session.start(transport, as: .connected(.home))
+        #expect(try await eventually { session.engine.status == .connected })
+        let requests = ConversationRequests(engine: session.engine, conversationID: 9)
+        let outcome = await requests.send(overByOne, pictures: [], steer: false)
+        #expect(outcome == .refused("Not sent. A message from a phone can carry at most 1 MB of typed text; this one has just over 1 MB. Shorten it, or send it from the Mac."))
+        #expect(transport.params(of: "submit") == nil, "no request is made")
+        #expect(session.engine.outgoing[9] == nil)
+        _ = await requests.send(exactly, pictures: [], steer: false)
+        #expect(transport.params(of: "submit")?["text"] as? String == exactly, "exactly 1 MB goes")
     }
 
     @Test func sendingAPicturePutsItInTheRequest() async throws {
@@ -242,6 +341,17 @@ struct ConversationTests {
         #expect(params["index"] as? Int == 1)
     }
 
+    // MARK: The launch value that presses the screen's controls (debug builds)
+
+    @Test func debugActsAreReadInOrder() {
+        #expect(ConversationDebugAct.parse("send:Hello: there|queue:Later|steer:Now|take-back|stop|continue|restore|older|open-picture") == [
+            .send("Hello: there"), .queue("Later"), .steer("Now"), .takeBack, .stop, .carryOn, .restore, .older, .openPicture,
+        ])
+        #expect(ConversationDebugAct.parse("pictures:2:Two of them|pictures:1") == [.pictures(count: 2, text: "Two of them"), .pictures(count: 1, text: "")])
+        // What it cannot do is left out, rather than guessed at.
+        #expect(ConversationDebugAct.parse("pictures:11|pictures:0|send:|jump|") == [])
+    }
+
     // MARK: Pictures
 
     @Test func aLargePhotoIsMadeSmallEnough() throws {
@@ -267,6 +377,39 @@ struct ConversationTests {
     }
 
     // MARK: The page (docs/iphone.md section 8)
+
+    /// Against a copy (#687), a conversation at rest kept the screen's loading line under its page: the page was ready
+    /// before the conversation's state came, that state changed nothing the page draws, so the bridge said the page was
+    /// shown from inside `show`, which SwiftUI calls while it updates the view and where it drops a change to the
+    /// screen's state. It says so after `show` has returned.
+    @Test func thePageIsSaidToBeShownOutsideTheViewsUpdate() async throws {
+        let folder = try #require(TranscriptPage.folder)
+        let items = try decode([Item].self, #"[{"id":1,"kind":"user","text":"Hello"},{"id":2,"kind":"assistant","text":"At rest."}]"#)
+        let names = TranscriptFeed.Names(conversationId: 9, agentName: "Orchestrator", mcp: [:], agents: [], apps: [:])
+        let bridge = ConversationPageBridge()
+        var shown = false
+        bridge.onShown = { shown = true }
+        let view = bridge.makeView(folder: folder)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 852))
+        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene { window.windowScene = scene }
+        view.frame = window.bounds
+        window.addSubview(view)
+        window.isHidden = false
+        defer {
+            view.close()
+            window.isHidden = true
+        }
+        // The entries come first, with no state yet; the page gets them once it is ready.
+        bridge.show(ConversationPageContent(conversationID: 9, items: items, earlier: 0, state: nil, names: names))
+        try #require(try await eventually(Self.patience) { view.isReady }, "the page never said it was ready")
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(!shown, "no state yet")
+        // Then the state, at rest: nothing new for the page.
+        bridge.show(ConversationPageContent(conversationID: 9, items: items, earlier: 0, state: try state(""), names: names))
+        #expect(!shown, "said during show")
+        #expect(try await eventually { shown })
+        #expect(view.alpha == 1)
+    }
 
     /// The page is in this build's bundle, and once it has drawn a conversation holding addresses, pictures and markup
     /// that point at the network, it has loaded nothing but its own files: no picture, no fetch, no navigation. A
@@ -299,7 +442,13 @@ struct ConversationTests {
             window.isHidden = true
         }
         bridge.show(content)
-        #expect(try await eventually { shown })
+        // The first web view in the test's process waits for WebKit to start its processes, and the page, though a
+        // file, is loaded through the networking one: on a new simulator on CI that one took 40 and 45 seconds to start
+        // (#871), on other runs a second or two. So each wait is for the thing itself, and its limit only a hang guard,
+        // in two parts so that a failure says which never came; and the test stops there, rather than asking a page
+        // that has not loaded what it holds.
+        try #require(try await eventually(Self.patience) { view.isReady }, "the page never said it was ready")
+        try #require(try await eventually(Self.patience) { shown }, "the page was ready but never showed the conversation")
 
         func run(_ script: String) async throws -> Any? {
             try await view.callAsyncJavaScript(script, contentWorld: .page)

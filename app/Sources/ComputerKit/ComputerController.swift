@@ -504,11 +504,19 @@ public actor ComputerController {
             return .failure(.failure("There is no control \(number) in the latest view; it has \(view.controls.count). Take a screenshot to see the current ones."))
         }
         let control = view.controls[number - 1]
-        // The window may have changed since the look; a control that is gone no longer answers.
-        guard control.statusItem || AX.value(control.element, kAXRoleAttribute) != nil else {
-            return .failure(.failure("Control \(number) is no longer there; the window has changed. Take a screenshot to see it as it is now."))
+        // A menu bar item is checked against the menu bar items read again, where it is clicked (`clickStatusItem`).
+        if control.statusItem { return .success(control) }
+        let gone = ComputerReply.failure("Control \(number) is no longer there; the window has changed. Take a screenshot to see it as it is now.")
+        // The window may have changed since the look. A control that is gone no longer answers; one the app removed
+        // can still answer its role, its old frame and its press, so it must also be among the window's controls read
+        // now (#969). It is given where it is now, for a click at its centre.
+        guard AX.value(control.element, kAXRoleAttribute) != nil, let frame = AX.frame(control.element) else { return .failure(gone) }
+        switch Self.stillListed([control.element], in: view) {
+        case .found: return .success(control.at(frame))
+        case .gone: return .failure(gone)
+        case .unsure:
+            return .failure(.failure("pi² could not find control \(number) in the window in time to be sure it is still there, so nothing was done. Take a screenshot to look again."))
         }
-        return .success(control)
     }
 
     private func screenPoint(_ request: ComputerRequest, in view: View) -> Result<CGPoint, ComputerReply> {
@@ -564,25 +572,44 @@ public actor ComputerController {
 
     /// What a click or a context menu at `point` in the window last read acts on, as `AtPoint.target` decides it, with
     /// what the hit test there found. Outside a parked copy that is the hit test's own find, as it always was. In a
-    /// parked copy a hit test finds nothing where the window is off the screen or behind another window, as all of it
-    /// is but its corner, so there the innermost listed control at the point is taken instead (#748).
+    /// parked copy a hit test finds nothing in the window where it is off the screen or behind another window, as all
+    /// of it is but its corner (it can answer with the application element, #879), so there the innermost listed control
+    /// at the point is taken instead (#748).
     private static func target(at point: CGPoint, in view: View) -> (element: AXUIElement?, hit: AXUIElement?) {
         let hit = AX.hitTest(view.app, point)
         let listed = view.parked ? view.controls.map { (element: $0.element, frame: $0.statusItem ? CGRect.null : $0.frame) } : []
         let element = AtPoint.target(at: point, hit: hit, listed: listed, parked: view.parked) { hit in
-            // In the window read: the copy's own element, and not one of another of its windows.
+            // In the window read: the copy's own element, inside that window, not another of its windows, nor the
+            // application element a hit test answers with off the screen (#879).
             var owner: pid_t = 0
             guard AXUIElementGetPid(hit, &owner) == .success, owner == view.pid else { return false }
-            return Self.enclosingWindow(of: hit).map { $0 == view.window } ?? true
+            return AtPoint.inWindow(hit, ofCopy: true, enclosing: Self.enclosingWindow(of: hit), window: view.window)
         }
         return (element, hit)
     }
 
     /// What a click or context menu at a point acts on after its approval: the element its card named, while that is
     /// still what is at the point, or `.changed`, and the action is refused (#770). With no card, what is there now.
+    /// A listed control, the card's or with no card the last look's, counts as there only while it is among the window's
+    /// controls read again now (#955, #969); with no card, `.stale` when it is not.
     private func settledTarget(_ action: String, request: ComputerRequest, bundleID: String, point: CGPoint, in view: View) -> AtPoint.Settled<AXUIElement> {
         let now = Self.target(at: point, in: view)
-        return chosenAtPoint.settle(now.element, hit: now.hit, for: atPointKey(action, request, bundleID), at: point, frameNow: AX.frame)
+        return chosenAtPoint.settle(now.element, hit: now.hit, for: atPointKey(action, request, bundleID), at: point, frameNow: AX.frame) { kept in
+            Self.stillListed([kept], in: view) == .found
+        }
+    }
+
+    /// Whether `elements`, controls of the window read in `view`, are among its controls now, read as `look` reads them
+    /// (an open menu's items, then the window's), in its order and bounded as it is bounded (`WindowReader`: 4000
+    /// elements, 40 deep, 2.5 seconds), and stopping once all are found: one walk, for one control or several. Compared
+    /// by `CFEqual`, as AXUIElement's `==` is. A control the app removed, as a tab switched away, is not among them,
+    /// though it still answers its role, its old frame and its press (#955, #969).
+    private static func stillListed(_ elements: [AXUIElement], in view: View) -> Seeking<AXUIElement>.Outcome {
+        var reader = WindowReader(windowFrame: view.frame)
+        reader.seeking = Seeking(elements)
+        for menu in openMenus(of: view.app) { reader.read(menu) }
+        if let window = view.window { reader.read(window) }
+        return reader.seeking?.outcome(truncated: reader.truncated) ?? .unsure
     }
 
     /// Which action at which point a card's choice is kept for: one conversation's, in one app.
@@ -645,9 +672,13 @@ public actor ComputerController {
             case .failure(let reply): return reply
             }
             let target: AXUIElement?
+            // A card's listed control is clicked through accessibility or not at all (#955).
+            var only = false
             switch settledTarget("click", request: request, bundleID: bundleID, point: point, in: view) {
             case .act(let element): target = element
+            case .only(let element): target = element; only = true
             case .changed: return .failure(AtPoint.changed("nothing was clicked", x: request.x ?? 0, y: request.y ?? 0))
+            case .stale: return .failure(AtPoint.stale("nothing was clicked", x: request.x ?? 0, y: request.y ?? 0))
             }
             let found = target.map(Self.identify(element:))
             let named = found.map { thing in thing.label.map { "the “\($0.clipped(60))” \(thing.kind)" } ?? "the \(thing.kind)" } ?? "that point"
@@ -667,6 +698,14 @@ public actor ComputerController {
                 }
             } else {
                 did = ""
+            }
+            if !reached, only, count == 1 {
+                // The card named a listed control that the hit test does not find at the point, and it did not answer
+                // a press. A real click there is not sure to reach it (a parked copy ignores one anyway), and it is
+                // what the live trial of #955 sent after a removed control's press failed. A double-click has no press,
+                // and is a real click whatever it names.
+                let thing = found.map { $0.label == nil && $0.kind.isEmpty ? "the control" : named } ?? "the control"
+                return .failure(AtPoint.unanswered(thing, "nothing was clicked", x: request.x ?? 0, y: request.y ?? 0))
             }
             if !reached {
                 // Nothing there answers to accessibility, so send the app a real click. Some apps only take those
@@ -715,6 +754,7 @@ public actor ComputerController {
         let point: CGPoint
         let phrase: String
         let what: String
+        var only = false
         if let number = request.element {
             let control: Control
             switch self.control(number, in: view) {
@@ -733,7 +773,9 @@ public actor ComputerController {
             }
             switch settledTarget("context_menu", request: request, bundleID: bundleID, point: point, in: view) {
             case .act(let target): element = target
+            case .only(let target): element = target; only = true
             case .changed: return .failure(AtPoint.changed("no menu was opened", x: request.x ?? 0, y: request.y ?? 0))
+            case .stale: return .failure(AtPoint.stale("no menu was opened", x: request.x ?? 0, y: request.y ?? 0))
             }
             phrase = "what is at (\(Int(request.x ?? 0)), \(Int(request.y ?? 0)))"
             what = "(\(Int(request.x ?? 0)), \(Int(request.y ?? 0)))"
@@ -747,6 +789,12 @@ public actor ComputerController {
             // An app shows the menu inside its answer and answers only once the menu has closed, so do not wait for it.
             AXUIElementSetMessagingTimeout(target, 1)
             if AX.perform(target, Reaching.showMenu) { opened = await menuOpens(view.app) }
+        }
+        if !opened, only, let element {
+            // As for a click (#955): a secondary click at the point is not sure to reach the listed control the card named.
+            let found = Self.identify(element: element)
+            let named = found.label.map { "the “\($0.clipped(60))” \(found.kind)" } ?? "the \(found.kind.isEmpty ? "control" : found.kind)"
+            return .failure(AtPoint.unanswered(named, "no menu was opened", x: request.x ?? 0, y: request.y ?? 0))
         }
         if !opened {
             Input.rightClick(pid: view.pid, at: point, windowID: view.windowID)

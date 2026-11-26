@@ -79,8 +79,10 @@ struct HubProjectSections: View {
         .onChange(of: project.settings?.wakeOnReports) { _, _ in wakeChoice = nil }
         #if DEBUG
         .task {
+            guard HubDebugAct.act != nil else { return }
+            await HubDebugAct.whenLive(session)
             if showsWakeSwitch, HubDebugAct.take("wake") { wakeBinding.wrappedValue = true }
-            if HubDebugAct.take("stop"), let first = runs.first { stop(first) }
+            if HubDebugAct.take("stop"), let first = HubDebugAct.stopTarget(in: engine.hubRuns(project.id), engine: engine) { stop(first) }
         }
         #endif
         // A run that has ended is no longer being stopped.

@@ -60,7 +60,7 @@ private struct BackgroundCommandsList: View {
         #if DEBUG
         .task(id: engine.hasLoadedLibrary) {
             guard engine.hasLoadedLibrary || isSample else { return }
-            if await ConversationsSample.take("stop"), let first = rows.first { stop(first) }
+            if await ConversationsSample.take("stop", in: session), let first = rows.first { stop(first) }
         }
         #endif
     }
@@ -139,7 +139,8 @@ private struct BackgroundCommandsRowView: View {
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(stopping ? Color.orange.opacity(0.2) : Color.secondary.opacity(0.15), in: Capsule())
                         .foregroundStyle(stopping ? Color.orange : Color.secondary)
-                    Text(BackgroundCommandsClock.text(since: row.startedAt, until: context.date))
+                    // "for 6:15", as its output page says it: alone, "6:15" reads as a time of day.
+                    Text("for \(BackgroundCommandsClock.text(since: row.startedAt, until: context.date))")
                         .monospacedDigit()
                     Text("· \(row.folder)")
                         .lineLimit(1)

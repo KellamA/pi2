@@ -2,13 +2,14 @@ import EngineKit
 import PiModels
 import SwiftUI
 
-/// A new project, from a folder the Mac offers (its projects' folders, recent folders), since the phone cannot browse
+/// A new project, from a folder the Mac offers (those already used with pi²), since the phone cannot browse
 /// the Mac's disk (docs/design/iphone.md, "What stays on the Mac, and why"; "Choosing a project's folder: from the folders
 /// the Mac offers"). Its orchestrator is a copy of a template, or of pi²'s default orchestrator, as `projects.create`
 /// makes it; once made, the project's hub opens on its conversation with it.
 ///
-/// The folders come from `projects.folders` (docs/iphone.md 4.2), which #698's engine part adds; until a Mac answers it,
-/// the screen says the Mac did not offer any, and a project with no folder can still be made.
+/// The folders come from `projects.folders` (docs/iphone.md 4.2, `engine/src/folders.ts`), and the engine takes from a
+/// phone only a folder it offers. A Mac that does not answer it (an older engine) has the screen say it did not offer
+/// any, and a project with no folder can still be made.
 struct NewProjectView: View {
     @Environment(AppSession.self) private var session
     @Environment(\.openRoute) private var openRoute
@@ -46,12 +47,14 @@ struct NewProjectView: View {
         }
         .navigationTitle("New project")
         .navigationBarTitleDisplayMode(.inline)
-        // Asked once the Mac is connected, and again if it connects anew.
-        .task(id: engine.status == .connected || isSample) {
+        // Asked once the Mac is connected, and again if it connects anew: the client starts on the phone's last state,
+        // which refuses, and moves to the Mac once it is reached.
+        .task(id: isSample ? nil : ConversationsReach(session)) {
             guard engine.status == .connected || isSample else { return }
             await ask()
             #if DEBUG
-            if await ConversationsSample.take("make") { make() }
+            // Once the Mac's folders are here, so that the first it offers is the one chosen.
+            if case .offered = folders, await ConversationsSample.take("make", in: session) { make() }
             #endif
         }
     }
@@ -139,7 +142,7 @@ struct NewProjectView: View {
         } header: {
             Text("Folder")
         } footer: {
-            Text("Your Mac offers the folders of its projects' repositories and the folders used recently. Any other folder is chosen on the Mac, in its own panel.")
+            Text("Your Mac offers the folders you already use with pi²: those of its projects, its agents and your recent conversations. Any other folder is chosen on the Mac.")
         }
     }
 

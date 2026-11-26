@@ -73,7 +73,12 @@ expect "is too long" reopen test-7-with-a-suffix-much-too-long-for-a-socket
 expect "--show needs what to open on" reopen test-7 --show
 expect "--show takes one line" reopen test-7 --show $'one\ntwo'
 expect "unknown option --bogus" reopen test-7 --bogus
-for command in show size sidebar choose answer fill answer-of can-click; do
+expect "a suffix is required" remote-off
+expect "is not a suffix" remote-on ../pi2
+expect "'dev' is the suffix every development build has" remote-on dev
+expect "use: scripts/test-copy remote-off test-7" remote-off test-7 extra
+expect "use: scripts/test-copy remote-on test-7" remote-on test-7 --bogus
+for command in show size sidebar choose answer fill answer-of can-click pair attach; do
 	expect "a suffix is required" "$command"
 	expect "is not a suffix" "$command" ../pi2
 	expect "'dev' is the suffix every development build has" "$command" dev
@@ -99,6 +104,19 @@ expect "use: scripts/test-copy answer" answer test-7 8 always
 expect "use: scripts/test-copy fill" fill test-7 600 extra
 expect "use: scripts/test-copy choose" choose test-7
 expect "use: scripts/test-copy can-click" can-click test-7 extra
+# A phone in the simulator (#681): pair and attach's options, checked before anything is asked of a copy.
+for command in pair attach; do
+	expect "unknown option --bogus" "$command" test-7 --bogus
+	expect "--sim needs the name of a simulator" "$command" test-7 --sim
+	expect "--show needs the phone's route" "$command" test-7 --show
+	expect "--show takes one line" "$command" test-7 --show $'home\nsettings'
+	expect "--env needs NAME=VALUE for the phone's app" "$command" test-7 --env
+	expect "--env needs NAME=VALUE for the phone's app" "$command" test-7 --env PI2_HUB_ACT
+	expect "--env needs NAME=VALUE for the phone's app" "$command" test-7 --env 'lower=case'
+	for key in PI2_PAIR PI2_TRANSPORT PI2_SHOW; do
+		expect "--env does not take $key: this script sets it" "$command" test-7 --env "$key=x"
+	done
+done
 expect "a suffix is required" last-copy
 expect "is not a suffix" last-copy ../pi2
 expect "use: scripts/test-copy last-copy" last-copy test-7 extra
@@ -140,6 +158,28 @@ mkdir -p "$root/engine/src"
 touch "$root/engine/src/main.ts"
 /usr/libexec/PlistBuddy -c "Set :PI2EngineMain $root/engine/src/main.ts" "$dev/Contents/Info.plist"
 expect "the engine's packages are not installed" start test-7
+# A checkout reached through a symbolic link, as a scratch folder under /tmp is (/private/tmp; #880): build.sh names
+# the engine as the shell spelled the checkout, and the script, run by that spelling too, takes it as this checkout's.
+ln -s checkout "$T/linked"
+/usr/libexec/PlistBuddy -c "Set :PI2EngineMain $T/linked/engine/src/main.ts" "$dev/Contents/Info.plist"
+expect "the engine's packages are not installed" start test-7
+copy=$T/linked/scripts/test-copy expect "the engine's packages are not installed" start test-7
+/usr/libexec/PlistBuddy -c "Set :PI2EngineMain $root/engine/src/main.ts" "$dev/Contents/Info.plist"
+copy=$T/linked/scripts/test-copy expect "the engine's packages are not installed" start test-7
+# A link elsewhere is still elsewhere.
+mkdir -p "$T/other/engine/src"
+touch "$T/other/engine/src/main.ts"
+ln -s other "$T/linked-other"
+/usr/libexec/PlistBuddy -c "Set :PI2EngineMain $T/linked-other/engine/src/main.ts" "$dev/Contents/Info.plist"
+expect "not this checkout's" start test-7
+# A bundle that is itself a link, to the installed app or anything else, is never copied.
+mv "$dev" "$T/installed.app"
+ln -s "$T/installed.app" "$dev"
+/usr/libexec/PlistBuddy -c "Set :PI2EngineMain $root/engine/src/main.ts" "$T/installed.app/Contents/Info.plist"
+expect "is not a development build" start test-7
+rm "$dev"
+mv "$T/installed.app" "$dev"
+rm -rf "$T/other" "$T/linked-other"
 mkdir "$root/engine/node_modules"
 
 # A copy of that name started from this checkout already, or starting: its folder is there.
@@ -156,11 +196,12 @@ expect "--env needs NAME=VALUE" start test-8 --env
 expect "--env needs NAME=VALUE" start test-8 --env PI2_DEMO_COST
 expect "--env takes one line" start test-8 --env $'PI2_DEMO_COST=5\nPI2_HOME=elsewhere'
 expect "--env takes one line" start test-8 --env $'PI2_DEMO_COST=5\r'
-for key in PI2_HOME PI2_KEYCHAIN_SERVICE PI2_SHOW PI2_HUB PI2_TEST_COPY PI2_LOGIN_SHELL PI2_DEMO_UNKNOWN PATH HOME DYLD_INSERT_LIBRARIES ''; do
+for key in PI2_HOME PI2_KEYCHAIN_SERVICE PI2_SHOW PI2_HUB PI2_TEST_COPY PI2_LOGIN_SHELL PI2_DEMO_UNKNOWN PI2_UNPLACED_HANDLER PATH HOME DYLD_INSERT_LIBRARIES ''; do
 	expect "--env does not allow" start test-8 --env "$key=value"
 done
 expect "--env repeats PI2_DEMO_COST" start test-8 --env PI2_DEMO_COST=1 --env PI2_DEMO_COST=2
-for key in PI2_DEMO_PICTURES PI2_DEMO_TEXT_MODEL PI2_DEMO_COST PI2_DEMO_TOKENS_PER_SECOND PI2_DEMO_COMPACTION_GATE PI2_GH; do
+for key in PI2_DEMO_PICTURES PI2_DEMO_TEXT_MODEL PI2_DEMO_COST PI2_DEMO_TOKENS_PER_SECOND PI2_DEMO_COMPACTION_GATE PI2_GH \
+	PI2_REMOTE_STAND_IN PI2_APP_ATTEST_STAND_IN PI2_APP_ATTEST_TEAM; do
 	expect "unknown option --bogus" start test-8 --env "$key=explicit value=with equals" --bogus
 done
 # start --fill seeds the data folder before the first start (#779): what it takes, checked before anything is made.
@@ -180,6 +221,8 @@ expect "--menu needs the label" start test-8 --menu
 expect "--menu needs the label" start test-8 --menu ""
 expect "--menu takes one line" start test-8 --menu $'Atlas\nForge'
 expect "unknown option --bogus" start test-8 --menu "Fix the login bug" --bogus
+expect "unknown option --bogus" start test-8 --remote --bogus
+expect "unknown option --bogus" start test-8 --fill project --remote --show 'project:Demo project' --bogus
 rmdir "$root/app/build/test-copies/test-7" "$root/app/build/test-copies"
 # The stand-in build names no Node, which --fill needs to start the copy's engine before the app; refused before the
 # suffix is claimed.
@@ -207,6 +250,11 @@ PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" last-
 expect "no copy named test-7 was started from this checkout" stop test-7
 expect "no copy named test-7 was started from this checkout" status test-7
 expect "no copy named test-7 was started from this checkout" can-click test-7
+expect "no copy named test-7 was started from this checkout" pair test-7
+expect "no copy named test-7 was started from this checkout" remote-off test-7
+expect "no copy named test-7 was started from this checkout" remote-on test-7
+PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" pair test-7 --sim pi2-7 --show home --env PI2_HUB_ACT=send:Hello
+expect "no copy named test-7 was started from this checkout" attach test-7
 expect "no copy named test-7 was started from this checkout" call test-7 engine.info
 # An inherited data-folder override cannot make an unowned copy callable.
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" call test-7 engine.info
@@ -254,6 +302,198 @@ elif [[ -n $unfenced ]]; then
 else
 	echo "ok: every demo switch start --env allows is a test switch the engine fences"
 fi
+
+# start --remote gives the copy's engine the one switch with which it takes a pairing claim with no attestation, from
+# the simulator (#681): a test switch the engine fences, read in devices.ts together with testCopySuffix, the check
+# of PI2_TEST_COPY against the copy's own folders that main.ts makes for its fixtures.
+devices_src="$(dirname -- "$script")/../engine/src/devices.ts"
+if ! grep -qxF 'REMOTE_ENV=PI2_PAIR_UNATTESTED=1' "$script" ||
+	! grep -qF '	"PI2_PAIR_UNATTESTED",' "$(dirname -- "$script")/../engine/src/testswitches.ts" ||
+	! grep -qF 'testCopySuffix() !== undefined && testSwitch("PI2_PAIR_UNATTESTED") === "1"' "$devices_src" ||
+	! grep -qF 'const testSuffix = testCopySuffix();' "$(dirname -- "$script")/../engine/src/main.ts"; then
+	echo "FAIL: test-copy start --remote, TEST_SWITCHES and devices.ts no longer agree on PI2_PAIR_UNATTESTED"
+	failures=$((failures + 1))
+else
+	echo "ok: start --remote passes the switch devices.ts reads, which the engine fences"
+fi
+
+# start --remote turns the relay switch off (#921's security read): any process on the Mac may listen on *:9, where
+# REMOTE_RELAY points, and pi² Remote has a relay client now. remote_on as test-copy has it, on a stand-in engine that
+# answers as devices.set would: it must ask for the relay off, and refuse an engine that keeps it on.
+remote_functions=$(sed -n '/^from_json() {$/,/^}$/p; /^remote_on() {$/,/^}$/p' "$script")
+remote_on_with() {
+	(
+		REMOTE_RELAY=ws://127.0.0.1:9/v1 RELAY_ON=$1
+		die() { echo "test-copy: $*"; exit 1; }
+		engine_call() {
+			printf '%s %s\n' "$1" "$2" >"$T/remote-calls"
+			printf '{"id":1,"result":{"remote":{"on":true,"relay":%s,"home":true,"direct":false,"preview":true},"relay":"%s"}}\n' "$RELAY_ON" "$REMOTE_RELAY"
+		}
+		eval "$remote_functions"
+		remote_on
+		echo "went on"
+	) 2>&1
+}
+rm -f "$T/remote-calls"
+out=$(remote_on_with false)
+sent=$(cat "$T/remote-calls" 2>/dev/null)
+if [[ -z $remote_functions || $out != "went on" ]] ||
+	! node -e 'const [m, p] = [process.argv[1], JSON.parse(process.argv[2])]; process.exit(m === "devices.set" && p.relay === false && p.on === true && p.relayAddress === "ws://127.0.0.1:9/v1" ? 0 : 1)' "${sent%% *}" "${sent#* }"; then
+	echo "FAIL: start --remote does not ask the copy's engine for the relay switch off: $out; sent: $sent"
+	failures=$((failures + 1))
+elif [[ $(remote_on_with true) != *"did not turn remote access on as asked"* ]]; then
+	echo "FAIL: start --remote goes on with an engine that keeps the relay switch on"
+	failures=$((failures + 1))
+else
+	echo "ok: start --remote turns the relay switch off, so the copy's pi² Remote dials no relay at 127.0.0.1:9"
+fi
+
+# pair gives the phone no code unless the copy's pi² Remote has sockets on 127.0.0.1 alone, and closes the pairing it
+# opened first (#681): its two functions, as test-copy has them, on a stand-in lsof, engine and helper pid.
+loopback_functions=$(sed -n '/^loopback_helper_problem() {$/,/^}$/p; /^require_loopback_helper() {$/,/^}$/p' "$script")
+lsof_header='COMMAND    PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME'
+# loopback <what the stand-in lsof prints, or "fail">: what require_loopback_helper says; the stand-in engine's
+# requests go to $T/loopback-calls.
+loopback() {
+	rm -f "$T/loopback-calls"
+	(
+		LSOF_OUT=$1 DATA=$T/data
+		die() { echo "test-copy: $*"; exit 1; }
+		tidy() { printf '%s' "$1"; }
+		helper_pids() { echo 4242; }
+		engine_call() { echo "$1" >>"$T/loopback-calls"; }
+		lsof() { [[ $LSOF_OUT != fail ]] || return 1; printf '%s\n' "$LSOF_OUT"; }
+		eval "$loopback_functions"
+		require_loopback_helper
+		echo "went on"
+	) 2>&1
+}
+for case in "[::1]:50000 (LISTEN)|an IPv6 loopback" "*:50000 (LISTEN)|all addresses" "0.0.0.0:50000 (LISTEN)|0.0.0.0" \
+	"127.0.0.1:50000->10.0.0.2:443 (ESTABLISHED)|a connection off this Mac" "fail|lsof failing" "|lsof saying nothing"; do
+	name=${case%%|*} what=${case#*|}
+	if [[ $name == fail ]]; then given=fail
+	elif [[ -z $name ]]; then given=$lsof_header
+	else given="$lsof_header"$'\n'"pi2      4242 me     5u  IPv4 0x1      0t0  TCP 127.0.0.1:50001 (LISTEN)"$'\n'"pi2      4242 me     6u  IPv6 0x2      0t0  TCP $name"
+	fi
+	out=$(loopback "$given")
+	if [[ $out == *"the pairing was closed, and nothing was given to the phone"* && $out != *"went on"* &&
+		$(cat "$T/loopback-calls" 2>/dev/null) == devices.pairCancel ]]; then
+		echo "ok: pair closes its pairing and stops on $what"
+	else
+		echo "FAIL: pair on $what: $out; the engine was sent: $(cat "$T/loopback-calls" 2>/dev/null)"
+		failures=$((failures + 1))
+	fi
+done
+out=$(loopback "$lsof_header"$'\n'"pi2      4242 me     5u  IPv4 0x1      0t0  TCP 127.0.0.1:50001 (LISTEN)"$'\n'"pi2      4242 me     6u  IPv4 0x2      0t0  TCP 127.0.0.1:50001->127.0.0.1:50002 (ESTABLISHED)")
+if [[ $out == "went on" && ! -e $T/loopback-calls ]]; then
+	echo "ok: pair goes on when every socket of pi² Remote is on 127.0.0.1, and closes nothing"
+else
+	echo "FAIL: pair on sockets all on 127.0.0.1: $out"
+	failures=$((failures + 1))
+fi
+
+# remote-on (#951) finds pi² Remote's new port from its listening socket, and forwards the port the phone knows to it
+# only when they differ: its functions, as test-copy has them, on a stand-in lsof and forwarder.
+remote_on_functions=$(sed -n '/^helper_port() {$/,/^}$/p; /^forward_phone_address() {$/,/^}$/p' "$script")
+# port_of <what the stand-in lsof prints>: what helper_port says.
+port_of() {
+	(
+		LSOF_OUT=$1
+		helper_pids() { echo 4242; }
+		lsof() { printf '%s\n' "$LSOF_OUT"; }
+		eval "$remote_on_functions"
+		helper_port
+	) 2>&1
+}
+listen_line="pi2      4242 me     5u  IPv4 0x1      0t0  TCP 127.0.0.1:55161 (LISTEN)"
+connection_line="pi2      4242 me     6u  IPv4 0x2      0t0  TCP 127.0.0.1:55161->127.0.0.1:50002 (ESTABLISHED)"
+if [[ -n $remote_on_functions && $(port_of "$lsof_header"$'\n'"$connection_line"$'\n'"$listen_line") == 55161 &&
+	-z $(port_of "$lsof_header"$'\n'"$connection_line") && -z $(port_of "$lsof_header") &&
+	-z $(port_of "$lsof_header"$'\n'"pi2      4242 me     5u  IPv4 0x1      0t0  TCP *:55161 (LISTEN)") ]]; then
+	echo "ok: remote-on takes pi² Remote's port from its socket listening on 127.0.0.1, and none from anything else"
+else
+	echo "FAIL: remote-on's helper_port"
+	failures=$((failures + 1))
+fi
+# forward <the address the phone knows> <pi² Remote's port>: what forward_phone_address says, with a stand-in
+# forwarder that fails, and a record of what it was asked in $T/forward-asked.
+mkdir -p "$T/forward-root/scripts"
+printf '%s\n' "import { appendFileSync } from 'node:fs';" \
+	"appendFileSync('$T/forward-asked', process.argv.slice(3, 5).join(' ') + '\\n');" \
+	"console.error('test-copy-forward: could not listen on 127.0.0.1:' + process.argv[3]); process.exit(1);" \
+	>"$T/forward-root/scripts/test-copy-forward.mjs"
+forward() {
+	rm -f "$T/forward-asked"
+	(
+		PHONE_ADDRESS=$1 ROOT=$T/forward-root DIR=$T SUFFIX=test-7 FORWARD_PID=""
+		die() { echo "test-copy: $*"; exit 1; }
+		save_state() { echo saved; }
+		eval "$remote_on_functions"
+		eval "$(sed -n '/^stop_forward() {$/,/^}$/p' "$script")"
+		forward_phone_address "$2"
+		echo "went on"
+	) 2>&1
+}
+if [[ $(forward 127.0.0.1:49284 49284) == "went on" && ! -e $T/forward-asked &&
+	$(forward "" 55161) == "went on" && ! -e $T/forward-asked ]]; then
+	echo "ok: remote-on forwards nothing when pi² Remote is back on the port the phone knows, or no phone knows one"
+else
+	echo "FAIL: remote-on started a forwarder it did not need"
+	failures=$((failures + 1))
+fi
+out=$(forward 127.0.0.1:49284 55161)
+if [[ $out == *"could not forward 127.0.0.1:49284, which the phone knows, to pi² Remote's new port 55161"*"Pair the phone again"* &&
+	$out != *"went on"* && $(cat "$T/forward-asked" 2>/dev/null) == "49284 55161" ]]; then
+	echo "ok: remote-on forwards the port the phone knows to pi² Remote's new one, and says plainly when it cannot"
+else
+	echo "FAIL: remote-on's forward_phone_address: $out; the forwarder was asked: $(cat "$T/forward-asked" 2>/dev/null)"
+	failures=$((failures + 1))
+fi
+rm -rf -- "$T/forward-root" "$T/forward-asked"
+
+# attach and remote-on take the phone as attached when the copy's engine has a new session for it, or, if the session
+# was over before they looked, an attach of it the devices' log has since the launch (#984): attach_phone, as
+# test-copy has it, on a stand-in engine and iphone-sim, with the copy's own from_json.
+attach_functions=$(sed -n '/^attach_phone() {$/,/^}$/p; /^from_json() {$/,/^}$/p' "$script")
+mkdir -p "$T/attach-root/scripts"
+printf '%s\n' '#!/bin/bash' 'exit 0' >"$T/attach-root/scripts/iphone-sim"
+chmod +x "$T/attach-root/scripts/iphone-sim"
+# attach_with <devices.watch's sessions> <devices.log's entries>: what attach_phone says, waiting for a session other
+# than s1, for an attach since 5000, and no longer than one look.
+attach_with() {
+	(
+		SESSIONS=$1 ENTRIES=$2 ROOT=$T/attach-root SIM=pi2-7 NAME='pi² test-7' DATA=$T PHONE_DEVICE=dev_phone
+		die() { echo "test-copy: $*"; exit 1; }
+		tidy() { printf '%s' "$1"; }
+		sleep() { :; }
+		engine_call() {
+			case $1 in
+				devices.watch) printf '{"id":1,"result":{"sessions":%s}}\n' "$SESSIONS" ;;
+				devices.log) [[ $2 == '{"device":"dev_phone"}' ]] && printf '{"id":1,"result":{"entries":%s}}\n' "$ENTRIES" ;;
+			esac
+		}
+		eval "$attach_functions"
+		attach_phone 0 s1 5000
+	) 2>&1
+}
+attach_entry() { printf '{"at":%s,"device":"%s","path":"home","method":"%s","outcome":"%s"}' "$@"; }
+for case in \
+	"[{\"session\":\"s1\",\"device\":\"dev_phone\",\"path\":\"home\"},{\"session\":\"s2\",\"device\":\"dev_phone\",\"path\":\"home\"}]|[]|is attached to pi² test-7 over the home path (session s2)|a new session" \
+	"[]|[$(attach_entry 6000 dev_phone attach done)]|attached to pi² test-7 over the home path, and its session has already ended|an attach logged since the launch, its session over" \
+	"[]|[$(attach_entry 6000 dev_phone resume done)]|its session has already ended|a resume logged since the launch" \
+	"[{\"session\":\"s1\",\"device\":\"dev_phone\",\"path\":\"home\"}]|[$(attach_entry 4000 dev_phone attach done)]|did not attach within 0 seconds|only the session there before, and an attach before the launch" \
+	"[]|[$(attach_entry 6000 dev_phone attach refused)]|did not attach within 0 seconds|a refused attach" \
+	"[]|[$(attach_entry 6000 dev_phone pair done)]|did not attach within 0 seconds|a pairing but no attach"; do
+	IFS='|' read -r sessions entries want what <<<"$case"
+	out=$(attach_with "$sessions" "$entries")
+	if [[ -n $attach_functions && $out == *"$want"* ]]; then
+		echo "ok: attach_phone on $what ($want)"
+	else
+		echo "FAIL: attach_phone on $what: wanted $want, got: $out"
+		failures=$((failures + 1))
+	fi
+done
+rm -rf -- "$T/attach-root"
 
 # start --menu prints the file the app writes for PI2_MENU, by a name each keeps for itself.
 sources="$(dirname -- "$script")/../app/Sources/pi2"
@@ -486,6 +726,8 @@ HOME="$T/home" expect "different bundle id" reopen test-7
 /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier dev.pi2.app.test-7' "$saved/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :PI2EngineMain /elsewhere/main.ts' "$saved/Contents/Info.plist"
 HOME="$T/home" expect "not a development build of this checkout" reopen test-7
+/usr/libexec/PlistBuddy -c "Set :PI2EngineMain $T/linked/engine/src/main.ts" "$saved/Contents/Info.plist"
+HOME="$T/home" expect "recorded app executable is not the copy" reopen test-7
 /usr/libexec/PlistBuddy -c "Set :PI2EngineMain $root/engine/src/main.ts" "$saved/Contents/Info.plist"
 HOME="$T/home" expect "recorded app executable is not the copy" reopen test-7
 printf '%s\n' "app_pid=$$" 'app_start=not this process' \
@@ -503,6 +745,22 @@ HOME="$T/home" expect "has no recorded app running" choose test-7 cancel
 HOME="$T/home" expect "has no recorded app running" can-click test-7
 printf '%s\n' "engine_pid=$$" "engine_start=$(LC_ALL=en_US.UTF-8 ps -o lstart= -p $$)" \
 	"engine_exe=$(LC_ALL=en_US.UTF-8 ps -o comm= -p $$)" >>"$root/app/build/test-copies/test-7/state"
+# pair and attach need a copy started with --remote, attach a phone paired, and both a simulator iphone-sim made.
+HOME="$T/home" expect "was not started with --remote" pair test-7
+HOME="$T/home" expect "was not started with --remote" attach test-7
+HOME="$T/home" expect "no remote access to turn off or on" remote-off test-7
+HOME="$T/home" expect "no remote access to turn off or on" remote-on test-7
+printf '%s\n' remote=1 >>"$root/app/build/test-copies/test-7/state"
+HOME="$T/home" expect "no phone was paired with test-7" attach test-7
+HOME="$T/home" expect "no simulator to pair: make one with scripts/iphone-sim create pi2-7" pair test-7
+HOME="$T/home" expect "no simulator to pair: make one with scripts/iphone-sim create pi2-other" pair test-7 --sim pi2-other
+out=$(HOME="$T/home" "$copy" status test-7 2>&1)
+if [[ $out == *"remote access     on (start --remote)"* ]]; then
+	echo "ok: test-copy status says a copy was started with --remote"
+else
+	echo "FAIL: test-copy status of a copy started with --remote said: $out"
+	failures=$((failures + 1))
+fi
 /usr/libexec/PlistBuddy -c 'Set :PI2EngineMain /elsewhere/main.ts' "$dev/Contents/Info.plist"
 HOME="$T/home" expect "not this checkout's" reopen test-7
 /usr/libexec/PlistBuddy -c "Set :PI2EngineMain $root/engine/src/main.ts" "$dev/Contents/Info.plist"
@@ -713,18 +971,154 @@ respond '{"error":"unknown test-copy window command"}'
 PATH="$T/bin:$PATH" CAN_CLICK_APP=yes CAN_CLICK_WINDOW=yes HOME="$T/home" \
 	answers 2 "predates the request that raises its parked window" can-click test-7
 kill "$RESPONDER_PID" 2>/dev/null
+# The copy's own pi² Remote (#944): reopen keeps it with its engine, and stop stops it after the engine, which would
+# start it again; anything else from the bundle is still refused, and nothing outside the bundle is signalled. With
+# stand-ins, all ad-hoc-signed copies of sleep: the app as above, pi² Remote in the bundle's Helpers, and a shell
+# for the engine that starts its programs and the first of them again a moment after it goes, as the engine does.
+kill "$STANDIN_APP" 2>/dev/null
+helper="$saved/Contents/Helpers/pi² Remote.app/Contents/MacOS/pi² Remote"
+other_helper="$saved/Contents/Helpers/Other.app/Contents/MacOS/pi² Remote"
+outside="$T/elsewhere-copy/pi² test-7.app/Contents/Helpers/pi² Remote.app/Contents/MacOS/pi² Remote"
+outside_node="$T/elsewhere-copy/node"
+for program in "$helper" "$other_helper" "$outside" "$outside_node"; do
+	mkdir -p "$(dirname -- "$program")"
+	cp /bin/sleep "$program"
+	codesign --force --sign - "$program" >/dev/null 2>&1
+done
+printf '%s\n' '#!/bin/bash' 'first=$1; shift' 'for program; do "$program" 600 & done' \
+	'while :; do "$first" 600 & wait $!; sleep 0.2; done' >"$T/engine-stand-in"
+chmod +x "$T/engine-stand-in"
+# child_of <parent pid> <executable>: the pid of that parent's child running it, once it runs (ten seconds at most).
+child_of() {
+	local tries pid ppid exe
+	for ((tries = 0; tries < 100; tries++)); do
+		while read -r pid ppid exe; do
+			[[ $ppid == "$1" && $exe == "$2" ]] && { echo "$pid"; return 0; }
+		done < <(LC_ALL=en_US.UTF-8 ps -axww -o pid=,ppid=,comm=)
+		sleep 0.1
+	done
+}
+running() { [[ -n $(ps -o pid= -p "$1" 2>/dev/null) ]]; }
+# Stops the stand-ins by pid: the engine first, which would start its first program again, then every process run
+# from this temporary folder, which only this test runs.
+stop_stand_ins() {
+	local pid exe
+	kill "$STANDIN_APP" "${STANDIN_ENGINE-}" 2>/dev/null
+	while read -r pid exe; do
+		[[ $exe == "$T/"* ]] && kill "$pid" 2>/dev/null
+	done < <(LC_ALL=en_US.UTF-8 ps -axww -o pid=,comm=)
+	return 0
+}
+# copy_with <engine's programs...>: a new stand-in app and engine, recorded in the copy's state.
+copy_with() {
+	stop_stand_ins
+	"$saved/Contents/MacOS/pi2" 600 &
+	STANDIN_APP=$!
+	"$T/engine-stand-in" "$@" &
+	STANDIN_ENGINE=$!
+	printf '%s\n' "app_pid=$STANDIN_APP" "app_start=$(LC_ALL=en_US.UTF-8 ps -o lstart= -p $STANDIN_APP)" \
+		"app_exe=$saved/Contents/MacOS/pi2" "engine_pid=$STANDIN_ENGINE" \
+		"engine_start=$(LC_ALL=en_US.UTF-8 ps -o lstart= -p $STANDIN_ENGINE)" \
+		"engine_exe=$(LC_ALL=en_US.UTF-8 ps -o comm= -p $STANDIN_ENGINE)" >"$root/app/build/test-copies/test-7/state"
+}
+# still_running <what> <pid...>: each of them must be running yet.
+still_running() {
+	local what=$1 pid; shift
+	for pid; do
+		if [[ -z $pid ]] || ! running "$pid"; then
+			echo "FAIL: $what: process ${pid:-(never started)} is not running"
+			failures=$((failures + 1))
+			return
+		fi
+	done
+	echo "ok: $what"
+}
+# reopen gets past its check of the bundle's processes to staging the new build, which the stand-in ditto fails, so
+# nothing is launched, and it stops nothing on the way.
+copy_with "$helper" "$outside"
+helper_pid=$(child_of "$STANDIN_ENGINE" "$helper")
+outside_pid=$(child_of "$STANDIN_ENGINE" "$outside")
+HOME="$T/home" PATH="$T/bin:$PATH" expect "could not copy the latest development build" reopen test-7
+still_running "reopen takes the copy's pi² Remote, its engine's child, as the copy's own and stops nothing" \
+	"$STANDIN_APP" "$STANDIN_ENGINE" "$helper_pid" "$outside_pid"
+# The helper's program run by another parent than the recorded engine; another program from the bundle that the
+# engine started; and the helper's path in the bundle, a link that leads out of it: each is still unrecorded.
+# A refusal missed would go on to stage the new build, which the stand-in ditto fails.
+"$helper" 600 &
+stray=$!
+HOME="$T/home" PATH="$T/bin:$PATH" expect "an unrecorded process is running from the copy's bundle; nothing was stopped" reopen test-7
+still_running "reopen refuses pi² Remote's program run by another parent, and stops nothing" \
+	"$STANDIN_APP" "$STANDIN_ENGINE" "$helper_pid" "$stray"
+kill "$stray" 2>/dev/null
+copy_with "$helper" "$other_helper"
+other_pid=$(child_of "$STANDIN_ENGINE" "$other_helper")
+HOME="$T/home" PATH="$T/bin:$PATH" expect "an unrecorded process is running from the copy's bundle; nothing was stopped" reopen test-7
+still_running "reopen refuses another program from the bundle that the engine started, and stops nothing" \
+	"$STANDIN_APP" "$STANDIN_ENGINE" "$other_pid"
+mv "$saved/Contents/Helpers/pi² Remote.app" "$T/helper-aside.app"
+ln -s "$(dirname -- "$(dirname -- "$(dirname -- "$outside")")")" "$saved/Contents/Helpers/pi² Remote.app"
+copy_with "$helper"
+linked_pid=$(child_of "$STANDIN_ENGINE" "$helper")
+HOME="$T/home" PATH="$T/bin:$PATH" expect "an unrecorded process is running from the copy's bundle; nothing was stopped" reopen test-7
+still_running "reopen refuses pi² Remote's path in the bundle when it leads out of it, and stops nothing" \
+	"$STANDIN_APP" "$STANDIN_ENGINE" "$linked_pid"
+stop_stand_ins
+rm -- "$saved/Contents/Helpers/pi² Remote.app"
+mv "$T/helper-aside.app" "$saved/Contents/Helpers/pi² Remote.app"
+# stop stops the app, the engine and the pi² Remote it starts again, and nothing outside the bundle, not even the
+# engine's child or a node the data folder names. That node, unrecorded, keeps stop from removing anything.
+copy_with "$helper" "$outside"
+helper_pid=$(child_of "$STANDIN_ENGINE" "$helper")
+outside_pid=$(child_of "$STANDIN_ENGINE" "$outside")
+"$outside_node" 600 &
+node_pid=$!
+printf '%s\n' "$node_pid" >"$data/engine.pid"
+engine_pid=$STANDIN_ENGINE app_pid=$STANDIN_APP
+HOME="$T/home" expect "is named in" stop test-7
+left=""
+for pid in "$app_pid" "$engine_pid" "$helper_pid"; do running "$pid" && left+=" $pid"; done
+while read -r pid exe; do [[ $exe == "$saved/"* ]] && left+=" $pid"; done < <(LC_ALL=en_US.UTF-8 ps -axww -o pid=,comm=)
+if [[ -n $helper_pid && -z $left ]]; then
+	echo "ok: stop stops the app, the engine and the pi² Remote it would start again"
+else
+	echo "FAIL: stop left these of the copy running:$left"
+	failures=$((failures + 1))
+fi
+still_running "stop signals nothing outside the copy's bundle" "$outside_pid" "$node_pid"
+stop_stand_ins
+rm -f -- "$data/engine.pid"
+rm -rf -- "$saved/Contents/Helpers" "$T/elsewhere-copy" "$T/engine-stand-in"
+
 # Put back the symlinked data folder the reopen refusal below expects, and stop the stand-in app.
 kill "$STANDIN_APP" 2>/dev/null
 rm -rf -- "$data/test-copy-control"
 rmdir -- "$data"
 ln -s "$T" "$data"
 
-for test in test-test-copy-send.mjs test-test-copy-drive.mjs; do
+for test in test-test-copy-send.mjs test-test-copy-drive.mjs test-test-copy-forward.mjs; do
 	if ! node "$(dirname -- "$script")/$test"; then
 		failures=$((failures + 1))
 	fi
 done
 HOME="$T/home" expect "refusing a symlink" reopen test-7
+
+# A copy's data folder that is a link to the usual data folder (a stand-in here, never the real one), into it, or to
+# the development build's as built, is refused by every command, before anything is made, read or removed (#880).
+support="$T/home/Library/Application Support"
+mkdir -p "$support/pi2/worktrees" "$support/pi2-dev"
+for target in pi2 pi2/ pi2/worktrees PI2 pi2-dev "$support/pi2"; do
+	ln -s "$target" "$support/pi2-test-9"
+	for command in start stop status call socket reopen; do
+		HOME="$T/home" expect "refusing the data folder" "$command" test-9
+	done
+	rm -- "$support/pi2-test-9"
+done
+# And through a chain of links, one of them relative.
+ln -s "$support/pi2" "$T/usual-elsewhere"
+ln -s "../../../usual-elsewhere" "$support/pi2-test-9"
+HOME="$T/home" expect "refusing the data folder" start test-9
+rm -- "$support/pi2-test-9" "$T/usual-elsewhere"
+rm -rf -- "$support/pi2" "$support/pi2-dev"
 
 if ! swiftc -D PI2_DEVELOPMENT "$sources/ProjectCopyView.swift" "$(dirname -- "$script")/test-test-copy-project.swift" -o "$T/check-project-view" ||
 	! PI2_SHOW='project:Demo project#now' PI2_HUB=conversation-folded "$T/check-project-view"; then

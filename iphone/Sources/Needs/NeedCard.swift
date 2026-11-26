@@ -26,8 +26,12 @@ struct NeedCard: View {
     @State private var sending = false
     /// The engine took the answer; the card stays, saying so, until the engine's list no longer holds it.
     @State private var answered = false
+    /// The answer was kept in the Outbox, the Mac out of reach or not attached yet: it has not seen it.
+    @State private var kept = false
     /// Why the engine did not take the answer, in its words.
     @State private var problem: String?
+    /// A start allowed past a limit that the engine held again, its limit having moved on since the card was drawn.
+    @State private var heldAgain = false
     /// An answer in words being typed.
     @State private var words = ""
     /// A proposed rule being changed before it is accepted.
@@ -43,6 +47,10 @@ struct NeedCard: View {
             content
             outcome
         }
+        // As tall as what it holds, whatever height it is offered. A list sizes a row by offering it no limit, then lays
+        // it out in the height that gave: a card that came out shorter there (a line cut to one where it had wrapped)
+        // sat in the middle of a row taller than its cards, a gap above the first (#830).
+        .fixedSize(horizontal: false, vertical: true)
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
@@ -51,23 +59,46 @@ struct NeedCard: View {
                 RoundedRectangle(cornerRadius: 14).strokeBorder(Color(.systemOrange).opacity(0.45), lineWidth: 1)
             }
         }
-        .disabled(sending || answered)
+        .disabled(sending || answered || kept)
         .accessibilityElement(children: .contain)
+        .onChange(of: need.limit?.reason) {
+            // The engine took Start anyway and kept the card with its new reading: the card is to be answered again.
+            if answered, need.kind == "limit" { holdAgain() }
+        }
         #if DEBUG
         .onAppear(perform: pressForPicture)
+        .onChange(of: reachesTheMac) { pressForPicture() }
         #endif
     }
 
     #if DEBUG
-    /// `PI2_NEEDS_PRESS` (`NeedsSamples`): presses this card's first answer once, for a picture of what follows.
+    /// Whether an answer goes to the Mac now, on an attached channel (or the demo's, or the recording's), rather than to
+    /// the Outbox.
+    private var reachesTheMac: Bool {
+        guard session.engine.status == .connected else { return false }
+        switch session.connection {
+        case .connected, .demo: return true
+        case .notPaired, .connecting, .outOfReach: return false
+        }
+    }
+
+    /// `PI2_NEEDS_PRESS` (`NeedsSamples`): presses this card's first answer once, for a picture of what follows. It waits
+    /// until the answer would reach the Mac, so that it is the engine that takes or refuses it, unless
+    /// `PI2_NEEDS_PRESS_WHEN=now` asks for it at once (to the Outbox, before the channel has attached). With
+    /// `PI2_NEEDS_OPEN`, it is the opened card that is pressed, so that the picture shows what follows: the list draws
+    /// only the cards on screen, and a card further down would not be pressed at all.
     private func pressForPicture() {
-        guard let press = NeedsSamples.press, !NeedsSamples.pressed else { return }
+        guard let press = NeedsSamples.press, !NeedsSamples.pressed, reachesTheMac || NeedsSamples.pressNow,
+              opened == (NeedsSamples.open != nil) else { return }
         if press == "\(need.id):edit", need.kind == "rule" {
             NeedsSamples.pressed = true
             ruleText = need.text ?? ""
             ruleBinds = need.binds ?? .everyone
             editingRule = true
         } else if press == need.id, let reply = firstReply {
+            NeedsSamples.pressed = true
+            send(reply)
+        } else if let reply = NeedsSamples.reply(press, to: need, held: need.blocking && item != nil) {
             NeedsSamples.pressed = true
             send(reply)
         }
@@ -440,6 +471,26 @@ struct NeedCard: View {
             Label("Answered", systemImage: "checkmark.circle.fill")
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(Color(.systemGreen))
+        } else if kept {
+            Label {
+                Text("Kept in the Outbox. It goes to your Mac once it can be reached, and the Outbox says if your Mac did not take it.")
+                    .fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: "tray.and.arrow.up")
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .accessibilityElement(children: .combine)
+        } else if heldAgain {
+            Label {
+                Text("Still held: the limit's reading moved on since this was shown, so nothing was started. Read it again above, and start it anyway again if you still want it.")
+                    .fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: "info.circle")
+            }
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .accessibilityElement(children: .combine)
         } else if let problem {
             Label {
                 Text("Not sent. \(problem)")
@@ -454,21 +505,37 @@ struct NeedCard: View {
     }
 
     private func send(_ reply: NeedReply) {
-        guard !sending, !answered else { return }
+        guard !sending, !answered, !kept else { return }
         sending = true
         problem = nil
+        heldAgain = false
         Task {
-            let refused = await NeedAnswering.send(reply, to: need.id, through: session.engine)
+            let sent = await NeedAnswering.deliver(reply, to: need.id, through: session.engine)
             sending = false
-            if let refused {
-                problem = refused
-                UIAccessibility.post(notification: .announcement, argument: "Not sent. \(refused)")
-            } else {
-                answered = true
+            switch sent {
+            case .refused(let why):
+                problem = why
+                UIAccessibility.post(notification: .announcement, argument: "Not sent. \(why)")
+            case .taken, .kept:
+                answered = sent == .taken
+                kept = sent == .kept
                 words = ""
                 editingRule = false
+                if kept { UIAccessibility.post(notification: .announcement, argument: "Kept in the Outbox, for when your Mac can be reached.") }
+                // Start anyway past a limit that moved on: the engine answers it and keeps the card, with its new
+                // reading, rather than refusing it (`onAnswer("limit")`, engine/src/projectlimitstarts.ts). An engine
+                // from before #953 does not say so, but the card is still waiting.
+                if answered, NeedHeldAgain.isHeldAgain(reply, need: need.id, waiting: session.engine.needs) { holdAgain() }
+            case .held:
+                holdAgain()
             }
         }
+    }
+
+    private func holdAgain() {
+        answered = false
+        heldAgain = true
+        UIAccessibility.post(notification: .announcement, argument: "Still held: the limit moved on. Read it again before starting it anyway.")
     }
 }
 
@@ -505,6 +572,7 @@ struct NeedCardHeader: View {
                     Text(placeLine)
                         .font(.caption)
                         .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)

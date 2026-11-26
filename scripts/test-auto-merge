@@ -468,8 +468,8 @@ check "auto-merge on: not turned on again" refused
 # CODEOWNERS; a file beside one of them is not.
 for f in relay/src/index.ts app/Sources/RemoteKit/Relay/Client.swift app/Sources/pi2-remote/main.swift \
 	engine/src/devices.ts engine/src/remote.ts engine/src/appattest.ts engine/src/answers.ts \
-	.github/workflows/relay.yml .github/workflows/iphone.yml .github/workflows/ci.yml \
-	.github/CODEOWNERS scripts/auto-merge scripts/test-auto-merge docs/relay.md; do
+	.github/workflows/relay.yml .github/workflows/iphone.yml .github/workflows/ci.yml .github/workflows/mini-qualify.yml \
+	.github/CODEOWNERS scripts/auto-merge scripts/test-auto-merge scripts/ci-changes scripts/test-ci-changes docs/relay.md; do
 	pr owned OPEN BLOCKED null
 	files "$f"
 	run owned

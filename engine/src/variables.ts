@@ -21,6 +21,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import { KeychainObjects } from "./credentials.ts";
 import type { Engine, Feature } from "./features.ts";
+import { addSecrets, forgetSecrets, knowSecrets } from "./secrets.ts";
 import { type AgentProfile, type AgentVariable, Agents, agentOf as conversationAgent, type Meta } from "./state.ts";
 
 /** At most this many variables an agent, or an MCP server. */
@@ -71,7 +72,8 @@ export const withValue = (list: readonly AgentVariable[], name: string): AgentVa
 /**
  * The values of variables in the Keychain, one item to an owner (an agent, an MCP server) named by its account, each
  * read once and then kept in memory, so that what starts a command or a server does not ask the Keychain each time.
- * One change to an item at a time.
+ * One change to an item at a time. What each item holds is looked for in what a phone is sent (secrets.ts), from the
+ * moment it is read or given.
  */
 export class VariableValues {
 	readonly #keychain: KeychainObjects;
@@ -81,6 +83,12 @@ export class VariableValues {
 		this.#keychain = keychain;
 	}
 
+	/** `values` are what `account` holds now: kept, and looked for in what a phone is sent in place of what it held. */
+	#keep(account: string, values: Record<string, string>): void {
+		this.#known.set(account, values);
+		knowSecrets(account, Object.values(values));
+	}
+
 	/** The values kept for `account`, none if there is no item. Throws if the Keychain cannot be read. */
 	async read(account: string): Promise<Record<string, string>> {
 		const cached = this.#known.get(account);
@@ -88,17 +96,19 @@ export class VariableValues {
 		const stored = (await this.#keychain.read(account)) ?? {};
 		const values: Record<string, string> = {};
 		for (const [name, value] of Object.entries(stored)) if (typeof value === "string") values[name] = value;
-		this.#known.set(account, values);
+		this.#keep(account, values);
 		return values;
 	}
 
 	/** Set or replace one value. */
 	set(account: string, name: string, value: string): Promise<void> {
+		// Looked for from now, before the Keychain has it: it is a secret whether or not it is kept.
+		addSecrets(account, [value]);
 		return this.#keychain.exclusive(account, async () => {
 			this.#known.delete(account);
 			const next = { ...(await this.read(account)), [name]: value };
 			await this.#keychain.write(account, next, "the value");
-			this.#known.set(account, next);
+			this.#keep(account, next);
 		});
 	}
 
@@ -112,8 +122,9 @@ export class VariableValues {
 			const kept = await this.read(account);
 			if (name in kept) return kept[name] === value;
 			const next = { ...kept, [name]: value };
+			addSecrets(account, [value]);
 			await this.#keychain.write(account, next, "the value");
-			this.#known.set(account, next);
+			this.#keep(account, next);
 			return true;
 		});
 	}
@@ -127,7 +138,7 @@ export class VariableValues {
 			delete values[name];
 			if (Object.keys(values).length === 0) await this.#keychain.delete(account);
 			else await this.#keychain.write(account, values, "the change");
-			this.#known.set(account, values);
+			this.#keep(account, values);
 		});
 	}
 
@@ -136,6 +147,7 @@ export class VariableValues {
 		return this.#keychain.exclusive(account, async () => {
 			this.#known.delete(account);
 			await this.#keychain.delete(account);
+			forgetSecrets(account);
 		});
 	}
 }

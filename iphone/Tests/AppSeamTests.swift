@@ -66,6 +66,8 @@ struct AppSeamTests {
             (.backgroundCommands(), BackgroundCommandsView.self),
             (.backgroundCommands(output: "bg-1"), BackgroundCommandsView.self),
             (.newProject, NewProjectView.self),
+            (.filePreview(conversation: 9, path: "notes/plan.md"), FilePreviewView.self),
+            (.outbox, OutboxView.self),
         ]
         for (route, expected) in routes {
             let view = RouteView.view(for: route)
@@ -89,6 +91,8 @@ struct AppSeamTests {
         #expect((RouteView.view(for: .projectSettings("p-1")) as? ProjectSettingsView)?.projectID == "p-1")
         #expect((RouteView.view(for: .conversations(project: "p-1")) as? ConversationsView)?.projectID == "p-1")
         #expect((RouteView.view(for: .backgroundCommands(output: "bg-1")) as? BackgroundCommandsView)?.commandID == "bg-1")
+        let file = RouteView.view(for: .filePreview(conversation: 9, path: "notes/plan.md")) as? FilePreviewView
+        #expect(file?.conversationID == 9 && file?.path == "notes/plan.md")
     }
 
     @Test func openingRoutesMovesThePath() {
@@ -147,6 +151,7 @@ struct AppSeamTests {
             ("background-commands", .backgroundCommands()),
             ("background-commands:bg-1", .backgroundCommands(output: "bg-1")),
             ("new-project", .newProject),
+            ("file:9:notes/plan.md", .filePreview(conversation: 9, path: "notes/plan.md")),
             ("nothing", nil),
         ]
         for (text, route) in shown {

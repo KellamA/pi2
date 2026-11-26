@@ -1,82 +1,88 @@
 #!/bin/bash
-# Runs a workflow run's jobs again when they ended only because no runner took them (#245). GitHub cancels a job that
-# no runner picked up in time, with the annotation "The job was not acquired by Runner of type hosted even after
-# multiple attempts"; the check counts as failed and stays failed until someone runs it again. macOS runners are the
-# ones that run short.
-#
-#   scripts/rerun-if-no-runner <run-id> [--dry-run]
-#
-# Runs the failed jobs again only if every job of the run's latest attempt that did not pass ended that way: cancelled,
-# never started (no runner, no steps), with that annotation. A job that failed, or was cancelled for another reason
-# (a newer push, a person), is left alone, and so is the whole run then. So is a run that is not the newest of its
-# workflow on its branch (the newer one tests a newer commit, and running the old one again would cancel it), and one
-# already at its fourth attempt. The workflow "Rerun jobs no runner took" calls it each time CI or Release ends badly;
-# a person can run it too. --dry-run says what it would do and does nothing. Needs gh and jq; the repository is the
-# one gh finds here, or GH_REPO.
-
+# The default branch's "Rerun jobs no runner took" retries hosted capacity misses (#245). App/Engine runs that
+# used the mini stay manual (#993). A person can use --dry-run. Needs gh and jq; set GH_REPO outside the checkout.
 set -euo pipefail
 
 usage() { echo "usage: scripts/rerun-if-no-runner <run-id> [--dry-run]" >&2; exit 2; }
 id=${1:-}
-[[ $id =~ ^[0-9]+$ ]] || usage
+[[ $id =~ ^[1-9][0-9]*$ && $# -le 2 ]] || usage
 dry=false
 case ${2:-} in "") ;; --dry-run) dry=true ;; *) usage ;; esac
 
-MAX_ATTEMPTS=4 # three runs again after the first, about 45 minutes of waiting for a runner at most
-NO_RUNNER='was not acquired by Runner'
+MAX_ATTEMPTS=4 # Three retries for the existing hosted-only capacity case (#245).
+HOSTED='The job was not acquired by Runner of type hosted even after multiple attempts'
+api="repos/{owner}/{repo}"
+run_path="$api/actions/runs/$id"
 
-run=$(gh api "repos/{owner}/{repo}/actions/runs/$id")
-status=$(jq -r .status <<<"$run")
-attempt=$(jq -r .run_attempt <<<"$run")
-name=$(jq -r .name <<<"$run")
-echo "Run $id ($name), attempt $attempt: $status, $(jq -r '.conclusion // "no conclusion"' <<<"$run")."
-
-if [[ $status != completed ]]; then
-	echo "It has not finished (or has been started again already): nothing to do."
+run=$(gh api "$run_path")
+attempt=$(jq -re '.run_attempt | select(type == "number" and . >= 1 and floor == .)' <<<"$run")
+if ! jq -e '.status == "completed" and (.conclusion == "failure" or .conclusion == "cancelled")' <<<"$run" >/dev/null ||
+	[[ ${EXPECTED_ATTEMPT:-$attempt} != "$attempt" ]]; then
+	echo 'Not the completed failed attempt that triggered this controller: nothing to do.'
 	exit 0
 fi
 
-# The newest run of the same workflow, for the same event on the same branch (or tag). CI cancels a run when a newer one
-# starts on the same branch, and the reverse would happen here: an older run started again would cancel the newer one.
-newest=$(gh api -X GET "repos/{owner}/{repo}/actions/workflows/$(jq -r .workflow_id <<<"$run")/runs" \
-	-f branch="$(jq -r .head_branch <<<"$run")" -f event="$(jq -r .event <<<"$run")" -f per_page=1 --jq '.workflow_runs[0].id // empty')
-if [[ $newest != "$id" ]]; then
-	echo "Run ${newest:-?} is newer on the same branch: leaving this one."
-	exit 0
-fi
+event=$(jq -re '.event | select(type == "string" and length > 0)' <<<"$run")
+list_jobs() {
+	gh api --paginate "$1" | jq -se '.[0].total_count as $count | [.[].jobs[]] | select(length > 0 and length == $count)'
+}
+jobs=$(list_jobs "$run_path/attempts/$attempt/jobs?per_page=100")
 
-jobs=$(gh api --paginate "repos/{owner}/{repo}/actions/runs/$id/attempts/$attempt/jobs?per_page=100" --jq '.jobs[]' | jq -s .)
-unacquired=0
-other=0
-while IFS=$'\t' read -r job conclusion runner steps jobname; do
-	[[ -n $job ]] || continue
-	reason="$conclusion"
-	if [[ $conclusion == cancelled && $runner == 0 && $steps == 0 ]] &&
-		gh api "repos/{owner}/{repo}/check-runs/$job/annotations" --jq '.[].message' | grep -qF "$NO_RUNNER"; then
-		unacquired=$((unacquired + 1))
-		reason="cancelled: no runner took it"
-	else
-		other=$((other + 1))
+if [[ $event == pull_request ]]; then
+	# Keep the entire mini App/Engine run out of the hosted capacity retry, even if a partial manual retry only
+	# lists hosted jobs in its latest attempt. Missing runner data for a non-skipped App/Engine is not proof it was hosted.
+	history='[]'
+	if ((attempt > 1)); then
+		history=$(list_jobs "$run_path/jobs?filter=all&per_page=100")
 	fi
-	echo "- $jobname: $reason"
-done < <(jq -r '.[] | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")
-	| [.id, (.conclusion // "unfinished"), (.runner_id // 0), (.steps | length), .name] | @tsv' <<<"$jobs")
+	manual=$(printf '%s\n%s\n' "$jobs" "$history" | jq -sr 'add |
+		any(.[]; (.name == "App (build)" or .name == "Engine (type-check and tests)") and
+			(((.runner_name // "") | ascii_downcase) == "pi2-mini" or
+			any((.labels // [])[]; ascii_downcase == "pi2-mini") or
+			(.conclusion != "skipped" and ((.labels // []) | length == 0))))')
+	if [[ $manual == true ]]; then
+		# A run-ID POST can select a newer attempt. The job-ID POST also reruns dependents and has no documented
+		# precondition that rejects a request if another attempt became current. Neither is safe for mini fallback.
+		echo 'This PR run has mini or unknown App/Engine routing. Inspect the latest attempt and retry manually only for runner failures.'
+		exit 0
+	fi
+fi
 
-if ((unacquired == 0)); then
-	echo "No job ended for want of a runner: nothing to do."
+# The existing #245 hosted retry policy, not the mini fallback. Refuse ambiguous or incomplete observations.
+((attempt < MAX_ATTEMPTS)) || { echo 'Hosted retry budget exhausted.'; exit 0; }
+if ! jq -e 'all(.[]; .status == "completed" and (.id | type == "number"))' <<<"$jobs" >/dev/null; then
+	echo 'Not all jobs are terminal: leaving the run alone.'
 	exit 0
 fi
-if ((other > 0)); then
-	echo "Another job did not pass for another reason, which running the failed jobs again would retry too: leaving it to a person."
+failed=$(jq -c '[.[] | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")]' <<<"$jobs")
+count=$(jq 'length' <<<"$failed")
+((count > 0)) || exit 0
+while IFS= read -r job; do
+	if ! jq -e '.conclusion == "cancelled" and (.runner_id == 0 or .runner_id == null) and
+		(.runner_name == "" or .runner_name == null) and .steps == []' <<<"$job" >/dev/null ||
+		! gh api --paginate "$api/check-runs/$(jq -r .id <<<"$job")/annotations?per_page=100" |
+			jq -se --arg msg "$HOSTED" 'add | any(.[]; (.message // "") | contains($msg))' >/dev/null; then
+		echo 'Not every failed job ended for want of a hosted runner: leaving the failed checks alone.'
+		exit 0
+	fi
+done < <(jq -c '.[]' <<<"$failed")
+
+# Running an old run again could cancel a newer one. The last read narrows the race on #245's existing run-ID
+# endpoint, but isn't a compare-and-set; the mini path never reaches this endpoint.
+workflow=$(jq -re '.workflow_id | select(type == "number" and . >= 1 and floor == .)' <<<"$run")
+newest=$(gh api -X GET "$api/actions/workflows/$workflow/runs" -f branch="$(jq -r .head_branch <<<"$run")" \
+	-f event="$event" -f per_page=1 --jq '.workflow_runs[0].id // empty')
+if [[ $newest != "$id" ]]; then
+	echo 'Not the newest run on this branch: leaving it alone.'
 	exit 0
 fi
-if ((attempt >= MAX_ATTEMPTS)); then
-	echo "This was attempt $attempt, the last one run again by itself: leaving it to a person (gh run rerun $id --failed)."
+if ! gh api "$run_path" | jq -e --argjson attempt "$attempt" '.status == "completed" and .run_attempt == $attempt' >/dev/null; then
+	echo 'The attempt changed during review: leaving the run alone.'
 	exit 0
 fi
 if $dry; then
-	echo "Would run the $unacquired job(s) again (--dry-run)."
+	echo "Would rerun $count checks that no hosted runner took (--dry-run)."
 	exit 0
 fi
-gh api -X POST "repos/{owner}/{repo}/actions/runs/$id/rerun-failed-jobs" >/dev/null
-echo "Running the $unacquired job(s) again, as attempt $((attempt + 1))."
+gh api -X POST "$run_path/rerun-failed-jobs" >/dev/null
+echo "Requested attempt $((attempt + 1)) for $count checks that no hosted runner took. The checks still have to pass."

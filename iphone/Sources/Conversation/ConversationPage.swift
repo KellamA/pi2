@@ -26,6 +26,8 @@ struct ConversationPage: UIViewRepresentable {
     var onLink: (URL) -> Void = { _ in }
     /// A hand-off's sub-chat to show on its own screen.
     var onOpenConversation: (Int) -> Void = { _ in }
+    /// A file link's target, to show the file on its own screen.
+    var onFile: (String) -> Void = { _ in }
     /// The two reads the page may ask for (`ConversationPagePolicy`): the entries before those the client has, and one
     /// of an entry's pictures, as the engine answers it (nil when it could not be had).
     var loadOlder: () -> Void = {}
@@ -44,6 +46,7 @@ struct ConversationPage: UIViewRepresentable {
         bridge.onShown = onShown
         bridge.onLink = onLink
         bridge.onOpenConversation = onOpenConversation
+        bridge.onFile = onFile
         bridge.loadOlder = loadOlder
         bridge.fetchPicture = fetchPicture
         bridge.show(content)
@@ -70,8 +73,14 @@ final class ConversationPageBridge {
     var onShown: () -> Void = {}
     var onLink: (URL) -> Void = { _ in }
     var onOpenConversation: (Int) -> Void = { _ in }
+    var onFile: (String) -> Void = { _ in }
     var loadOlder: () -> Void = {}
     var fetchPicture: (_ entry: Int, _ index: Int) async -> (data: String, mimeType: String)? = { _, _ in nil }
+
+    #if DEBUG
+    /// The page last made, for `PI2_CONVERSATION_ACT`'s scrolling and tapping in it (`ConversationDebugAct`).
+    static weak var shown: TranscriptUIKitView?
+    #endif
 
     func makeView(folder: URL) -> TranscriptUIKitView {
         let view = TranscriptUIKitView(folder: folder)
@@ -93,6 +102,9 @@ final class ConversationPageBridge {
             self?.applyTextSize()
         }
         self.view = view
+        #if DEBUG
+        Self.shown = view
+        #endif
         return view
     }
 
@@ -129,7 +141,11 @@ final class ConversationPageBridge {
         guard hidden, ready, content?.state != nil else { return }
         hidden = false
         view?.alpha = 1
-        onShown()
+        // Never from inside `show`, which SwiftUI calls while it updates the view and where a change to the screen's
+        // state can be dropped: the screen then kept its loading line under the page and never marked the conversation
+        // shown (#687). That happened when the page was ready before the conversation's state came, and the state
+        // changed nothing the page draws, as for a conversation at rest.
+        Task { @MainActor [weak self] in self?.onShown() }
     }
 
     /// Sends the page what changed since it was last sent anything; `drawn` once it has drawn it, or at once.
@@ -178,6 +194,8 @@ final class ConversationPageBridge {
             onLink(url)
         case .openConversation(let id):
             onOpenConversation(id)
+        case .previewFile(let target):
+            onFile(target)
         case .loadOlder:
             // Not while the page still has older entries of the client's to come; the client asks the engine only when
             // it said there is more, one part at a time (`EngineSession.loadOlder`).

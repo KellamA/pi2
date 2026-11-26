@@ -241,11 +241,7 @@ struct BoardAgentForm: View {
     private var memory: some View {
         let enabled = data.memoryEnabled(saved.id)
         return Section {
-            Toggle("Remember things between conversations", isOn: Binding(get: { enabled }, set: { on in
-                let engine = session.engine
-                let id = saved.id
-                boardSend($memoryProblem) { await BoardRequests.setMemory(engine, agent: id, on: on).map { "Memory was not turned \(on ? "on" : "off"): \($0)" } }
-            }))
+            Toggle("Remember things between conversations", isOn: Binding(get: { enabled }, set: { on in setMemory(on) }))
             .disabled(!data.connected)
         } header: {
             Text("Memory")
@@ -255,6 +251,12 @@ struct BoardAgentForm: View {
                 Text(memoryFooter(enabled))
             }
         }
+    }
+
+    private func setMemory(_ on: Bool) {
+        let engine = session.engine
+        let id = saved.id
+        boardSend($memoryProblem) { await BoardRequests.setMemory(engine, agent: id, on: on).map { "Memory was not turned \(on ? "on" : "off"): \($0)" } }
     }
 
     private func memoryFooter(_ enabled: Bool) -> String {
@@ -275,25 +277,32 @@ struct BoardAgentForm: View {
             Picker("Tool access", selection: $draft.access) {
                 ForEach(AccessLevel.all, id: \.id) { Text($0.title).tag($0.id) }
             }
-            LabeledContent("Folder") {
+            // The path under its label, from the left: beside it, a long path broke into ragged right-aligned lines.
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Folder")
                 Text(draft.cwd ?? "pi²’s scratch folder, unless chosen per conversation")
-                    .font(draft.cwd == nil ? .body : .callout.monospaced())
+                    .font(draft.cwd == nil ? .subheadline : .callout.monospaced())
+                    .foregroundStyle(.secondary)
                     .lineLimit(3).truncationMode(.head)
-                    .multilineTextAlignment(.trailing)
             }
+            .accessibilityElement(children: .combine)
             Toggle(isOn: Binding(get: { draft.worktree ?? false }, set: { draft.worktree = $0 })) {
                 Text("Give each conversation its own worktree")
                 Text("Each new conversation works on a branch of its own in a separate checkout of the folder’s git repository.")
             }
             .disabled(draft.cwd == nil && draft.worktree != true)
-            TextField(text: Binding(get: { draft.setup ?? "" }, set: { draft.setup = $0 }), prompt: Text("None, for example npm ci")) {
+            // A form's field shows its prompt alone, so the label goes above it: without it the field read as an
+            // unexplained "None, for example npm ci".
+            VStack(alignment: .leading, spacing: 4) {
                 Text("Set-up command")
+                    .accessibilityHidden(true)
+                TextField("Set-up command", text: Binding(get: { draft.setup ?? "" }, set: { draft.setup = $0 }), prompt: Text("None, for example npm ci"))
+                    .font(.body.monospaced())
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .accessibilityLabel("Set-up command for each new worktree")
             }
-            .font(.body.monospaced())
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
             .disabled(draft.cwd == nil && (draft.setup ?? "").isEmpty)
-            .accessibilityLabel("Set-up command for each new worktree")
             LabeledContent("Turn limit per run") {
                 TextField("Turn limit per run", text: $turnsText, prompt: Text("No limit"))
                     .keyboardType(.numberPad)
@@ -634,6 +643,25 @@ struct BoardAgentForm: View {
         let id = saved.id
         boardSend($everythingProblem) { await BoardRequests.allowEverythingOff(engine, agent: id).map { "Allow everything is still on: \($0)" } }
     }
+
+    func debugEverythingOn() {
+        let engine = session.engine
+        let id = saved.id
+        boardSend($everythingProblem) { await BoardDebugAct.allowEverythingOn(engine, agent: id).map { "Allow everything was not turned on: \($0)" } }
+    }
+
+    func debugMemory(on: Bool) { setMemory(on) }
+    func debugAllow(_ words: String) {
+        newCommand = words
+        addCommand(in: newCommandFolder ?? commandFolders.first)
+    }
+    func debugRemoveCommand() {
+        if let rule = (saved.commandRules ?? []).sorted(by: { ($0.folder, $0.command) < ($1.folder, $1.command) }).first { removeCommand(rule) }
+    }
+    func debugDuplicate() { duplicate() }
+    func debugAskDelete() { confirmingDelete = true }
+    func debugDelete() { delete() }
+    func debugNewConversation() { newConversation() }
     #endif
 }
 
@@ -737,6 +765,13 @@ struct BoardTemplateUpdate: View {
         case .success(let list): changes = list; problem = nil
         case .failure(let failure): problem = "What would change could not be read: \(failure.message)"
         }
+        #if DEBUG
+        if BoardDebugAct.applyTemplate, changes?.isEmpty == false {
+            BoardDebugAct.applyTemplate = false
+            try? await Task.sleep(for: .seconds(1))
+            apply()
+        }
+        #endif
     }
 
     private func apply() {

@@ -6,7 +6,8 @@
 // ever leaving the window (WebKit is slow to draw a page put back in one); or in no window, when none keeps a place.
 // Then the page's layouts (#671): the Mac's page unmarked and the phone's marked before its scripts run; the page drawn
 // at a phone's width, 390 points, as the phone's view marks it (Narrow.swift), and at the Mac's narrowest pane as before.
-// `--pictures <folder>` writes both as drawn there.
+// Then a `present` call's card (#967, Presenting.swift), wide and at a phone's width. `--pictures <folder>` writes them
+// as drawn there.
 //
 // The real page is loaded from the repository (`Web/transcript`; run it from `app/`, or pass `--page <folder>`), in
 // web views of this program's own, in a window that never comes on screen, holding a place for the page loaded ahead
@@ -296,6 +297,9 @@ Task { @MainActor in
         let pictures = arguments.firstIndex(of: "--pictures").flatMap { arguments.indices.contains($0 + 1) ? URL(fileURLWithPath: arguments[$0 + 1], isDirectory: true) : nil }
         if let pictures { try? FileManager.default.createDirectory(at: pictures, withIntermediateDirectories: true) }
         await narrow(folder: url, pictures: pictures)
+        await presenting(folder: url, pictures: pictures)
+        await presentingBridge(folder: url)
+        await presentingDrawn()
     } else {
         check("the conversation page is found", false, "no index.html in \(url.path); run from app/ or pass --page <folder>")
     }
