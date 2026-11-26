@@ -23,12 +23,12 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { allowsHiddenApproval, checkDeviceLists, deviceLogged, HIDDEN_FROM_THE_PHONE, deviceMay, devicePlacement, type DeviceSession, MAX_TYPED_FROM_A_DEVICE, ONLY_FROM_THE_HELPER, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID, PERSON_REQUESTS, typedRefusal } from "../src/answers.ts";
+import { allowsHiddenApproval, checkDeviceLists, deviceLogged, type DevicePath, HIDDEN_FROM_THE_PHONE, deviceMay, devicePlacement, type DeviceSession, MAX_TYPED_FROM_A_DEVICE, ONLY_FROM_THE_HELPER, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID, PERSON_REQUESTS, typedRefusal } from "../src/answers.ts";
 import { APPROVAL_DEPTH, checkRequestItem, type Device, deviceRequests, DeviceLog, Devices, devicesState, flushDeviceLog, fromBase64url, helperWanted, hidesSomething, LEAVE_NOT_SIGNED, logDevice, macNameNow, maskValue, NOT_A_LEAVE, NOT_KEPT, pairClaim, PART_HIDDEN, remoteHooks, revokedWatchers, shownName, summarize, TOO_DEEP, ITEM_TOO_OLD, ITEM_TOO_OLD_FACE, KEY_HIDDEN, maskKeys, maskKeysFrom, readSigned, SECOND_CLAIM, START_AGAIN_CHANGED, wireDevices } from "../src/devices.ts";
 import type { Client } from "../src/clients.ts";
 import { attachChallenge, checkAttach, offerPresenceKey, PRESENCE_BY_NEITHER_KEY, PRESENCE_KEY_ALREADY_WAITS, PRESENCE_KEY_CHANGED, PRESENCE_KEY_WAITS } from "../src/devices.ts";
 import { personOnly } from "../src/answers.ts";
-import { ANSWER_NOT_SENT, DEVICE_LINE_FAILED, forDevice, MAX_HELPER_LINE, MAX_LINE_TO_HELPER, MAX_PHONE_LINE, NOT_AN_ID, PICTURE_TYPES, pictureAnswer, restartWait, RUN_THAT_LASTED, SESSION_OVER, sessionLine } from "../src/remote.ts";
+import { ANSWER_NOT_SENT, DEVICE_LINE_FAILED, forDevice, MAX_HELPER_LINE, MAX_LINE_TO_HELPER, MAX_PHONE_LINE, NOT_AN_ID, PICTURE_TYPES, pictureAnswer, restartWait, RUN_THAT_LASTED, sayFault, SESSION_OVER, sessionLine } from "../src/remote.ts";
 import { NOT_LINKED, NOT_OFFERED, TOO_MANY_PREVIEWS } from "../src/folders.ts";
 import { forgetEverySecret, forgetSecrets, knowSecrets, LEAST_SECRET, RETIRED_KEPT, SECRET_HIDDEN, secretCount, secretSpans } from "../src/secrets.ts";
 
@@ -1706,6 +1706,8 @@ const env = {
 	// Its log line and its handling from a device's line or a mailbox item throw (#895): the engine must answer and carry
 	// on. One a mailbox item may carry, so that both paths meet it.
 	PI2_DEVICE_FAULT: "inbox.answer",
+	// Its answer goes out and its step after it throws (#905): the device must be answered once, not twice.
+	PI2_DEVICE_FAULT_AFTER: "engine.info",
 };
 const main = join(import.meta.dirname, "..", "src", "main.ts");
 
@@ -2125,15 +2127,105 @@ try {
 	assert.deepEqual((await ask("pushes.follow", { projectId: made.id, activity, on: true })).result.follows, [{ projectId: made.id, activity }]);
 	assert.match((await ask("pushes.set", { project: { id: "constructor", quiet: true } })).error, /Unknown project/, "a name on Object's prototype is no project");
 	assert.deepEqual((await ask("pushes.set", {})).result.quiet, [made.id], "with nothing, it reads");
+	// One answer per request id (#905): a step after the answer throws (`PI2_DEVICE_FAULT_AFTER`), and the device is
+	// answered once, not twice, with the request kept in the log as the one that ran.
+	const answeredBefore = engineLog.length;
+	const answeredLinesBefore = remote.sessionLines.get(session)!.length;
+	const answered = await ask("engine.info", { id: "after-answer" });
+	assert.ok(answered.result, "the request is answered, before the fault");
+	const answers = () => remote.sessionLines.get(session)!.slice(answeredLinesBefore).filter((message) => message.id === answered.id);
+	// Either the fault said after the answer, or a second answer for the id: the second is what this test refuses.
+	await until("the fault after the answer, or a second answer", () => /answered, and a fault came after the answer|failed in the engine/.test(engineLog.slice(answeredBefore)) || answers().length > 1);
+	assert.equal(answers().length, 1, "exactly one answer for the id, not the answer and then a refusal");
+	assert.ok(answers()[0].result, "and it is the answer the handler gave");
+	assert.ok(!engineLog.slice(answeredBefore).includes("a device's request failed in the engine"), "the request is not said to have failed");
+	assert.match(engineLog.slice(answeredBefore), /remote: a device's request was answered, and a fault came after the answer[^\n]*: Error: PI2_DEVICE_FAULT_AFTER/, "the fault is said as what it is, after the answer");
 	// What once threw in the log line, before the request's own `try`, and so ended the engine (#895): refused, and the
-	// engine answers the next request.
+	// engine answers the next request. The device's fault for this minute is the one above, already said with its stack,
+	// so this one is only counted and says nothing more (#905).
 	for (const project of [null, "x", []]) assert.ok((await ask("pushes.set", { project })).error, `pushes.set with a project of ${JSON.stringify(project)} is refused`);
 	assert.ok((await ask("conversation.rename", { id: plain, title: { toString: 1, valueOf: 1 } })).error, "a title that is no text is refused");
 	const faultsBefore = engineLog.length;
 	assert.equal((await ask("inbox.answer", { id: "no-such", text: "x" })).error, DEVICE_LINE_FAILED, "a line that fails in the engine is refused, in words of its own");
-	await until("the fault in the engine's log", () => engineLog.slice(faultsBefore).includes("remote: a device's request failed in the engine: Error: PI2_DEVICE_FAULT"));
 	assert.ok((await ask("engine.info")).result, "the engine still answers in the same session");
+	assert.ok(!engineLog.slice(faultsBefore).includes("a device's request failed in the engine"), "and a second fault of the device in its minute is only counted");
 	assert.equal(engine.exitCode, null, "and still runs");
+	// A phone repeating a faulting request cannot fill engine.log (#905): its line is said once a minute for the device,
+	// whatever its path and method, and the request is kept in the devices' log as a failed one, in fixed words.
+	const floodsBefore = engineLog.length;
+	const flood = Array.from({ length: 1_000 }, (_, i) => `flood-${i}`);
+	for (const id of flood) remote.socket.write(`${JSON.stringify({ session, message: { id, method: "inbox.answer", params: { id: "no-such", text: "x" } } })}\n`);
+	await until("1,000 faults refused in the session", () => flood.every((id) => remote.sessionLines.get(session)?.some((message) => message.id === id)));
+	const faultLines = engineLog.slice(floodsBefore).split("\n").filter((line) => line.includes("remote: a device's request failed in the engine"));
+	assert.ok(faultLines.length <= 2, `1,000 faults leave at most two lines in engine.log, not 1,000: ${faultLines.length}`);
+	// The devices' log, where the person looks, names the failure: a failed request of that device, in fixed words and
+	// never the fault's text or the request's values.
+	const failures = (await app.call("devices.log", { device: phone.id })).entries.filter((entry: any) => entry.method === "inbox.answer" && entry.outcome === "failed");
+	assert.ok(failures.length > 0, "the devices' log names the failure");
+	assert.equal(failures[0].why, DEVICE_LINE_FAILED, "in the words a refused request has, not the fault's");
+	assert.ok(!JSON.stringify(failures).includes("PI2_DEVICE_FAULT"), "and never the fault's text");
+	// The throttle counts lines, not keys (#905's security read): a device's faults in a minute are counted by the device
+	// alone, so no choice of paths and method names can grow the table or cycle it.
+	const said = Array.from({ length: 1_000 }, (_, i) => sayFault(phone.id, "relay", "inbox.answer", false, new Error(`fault ${i}`), 1_000 + i));
+	assert.equal(said.filter((one) => one !== null).length, 1, "a thousand faults in a minute are said once");
+	assert.match(said.find((one) => one !== null)!.text, /^remote: a device's request failed in the engine:$/);
+	const next = sayFault(phone.id, "relay", "inbox.answer", false, new Error("after the minute"), 61_001);
+	assert.match(next!.text, /^remote: a device's request failed in the engine again, and 999 more since the last one said \(inbox\.answer\):$/, "and the next after the minute says how many came, naming the method");
+	// (a) One device cycling 70 placed methods, the four paths and both after and failed three times within one minute: one
+	// line with its stack, and one when the minute is over, whatever it asks and however it asks it.
+	const placed = deviceRequestsListed().filter((method) => devicePlacement(method) !== null).slice(0, 70);
+	assert.equal(placed.length, 70, "70 methods a list places, to cycle");
+	const paths: DevicePath[] = ["relay", "home", "direct", "mailbox"];
+	const cycled: { text: string; detail: unknown }[] = [];
+	let cyclingAt = 121_001;
+	for (let round = 0; round < 3; round++) {
+		for (const after of [false, true]) {
+			for (const path of paths) {
+				for (const method of placed) {
+					const one = sayFault("cycling-device", path, method, after, new Error(`fault of cycling-device in ${method}:`), cyclingAt++);
+					if (one !== null) cycled.push(one);
+				}
+			}
+		}
+	}
+	const cycledCount = placed.length * paths.length * 2 * 3;
+	const afterCycle = sayFault("cycling-device", "mailbox", "engine.info", false, new Error("after the minute"), cyclingAt + 60_000);
+	assert.equal(cycled.length, 1, `one device's ${cycledCount} faults over 70 methods, four paths and before and after the answer leave one line in a minute, not ${cycled.length}`);
+	assert.ok(afterCycle !== null, "and one when the minute is over and more came");
+	const linesForDevice = cycled.length + (afterCycle === null ? 0 : 1);
+	assert.ok(linesForDevice <= 2, `so at most two lines for the device in a minute, not ${linesForDevice}`);
+	assert.match(afterCycle!.text, new RegExp(`and ${cycledCount - 1} more since the last one said`), `the line says how many more came: ${afterCycle!.text}`);
+	const cycleNames = /\(([^)]*)\):$/.exec(afterCycle!.text)?.[1].split(", ") ?? [];
+	assert.ok(cycleNames.length <= 3 && cycleNames.every((name) => placed.includes(name)), `naming at most three methods, each a name a list places: ${JSON.stringify(cycleNames)}`);
+	// (b) More devices than the table keeps, each faulting within one minute: at most the ceiling's 30 lines for all of
+	// them, and no device said with its stack twice.
+	const many: { device: string; line: { text: string; detail: unknown } }[] = [];
+	const devices = Array.from({ length: 70 }, (_, i) => `many-devices-${i}`);
+	let manyAt = 242_700;
+	for (const device of devices) {
+		for (let round = 0; round < 5; round++) {
+			const one = sayFault(device, round % 2 === 0 ? "relay" : "direct", round % 3 === 0 ? "inbox.answer" : "engine.info", round % 2 === 1, new Error(`fault of ${device};`), manyAt++);
+			if (one !== null) many.push({ device, line: one });
+		}
+	}
+	assert.ok(many.length <= 30, `70 devices faulting in a minute leave at most the ceiling's 30 lines, not ${many.length}`);
+	assert.ok(many.length > 0, "and some of them are said");
+	for (const device of devices) {
+		const stacked = many.filter(({ line }) => String(line.detail).includes(`fault of ${device};`)).length;
+		assert.ok(stacked <= 1, `${device} is said with its stack at most once in the minute, not ${stacked}`);
+	}
+	// (c) The table full of devices inside their minute: a new device's faults share one entry, said without a stack, and a
+	// live entry is never dropped for it. Dropped, its next fault would be a first again, with its stack.
+	assert.ok(sayFault("ceiling-device", "relay", "inbox.answer", false, new Error("fault of ceiling-device;"), 303_000) !== null, "the first fault of a minute is said");
+	const busy = Array.from({ length: 63 }, (_, i) => `busy-device-${i}`);
+	for (const device of busy) sayFault(device, "relay", "inbox.answer", false, new Error(`fault of ${device};`), 303_400);
+	assert.equal(sayFault("busy-device-0", "relay", "inbox.answer", false, new Error("fault of busy-device-0;"), 303_402), null, "a device inside its minute is only counted, whatever the table holds");
+	assert.ok(sayFault("ceiling-device", "relay", "inbox.answer", false, new Error("fault of ceiling-device;"), 363_000) !== null, "the table is still full when the ceiling's next minute begins");
+	const owed = sayFault("busy-device-0", "relay", "inbox.answer", false, new Error("fault of busy-device-0;"), 363_050);
+	assert.match(owed!.text, /^remote: \d+ faults of devices' requests were not said in engine\.log in the last minute:$/, "past the ceiling, one line a minute says how many faults were not said");
+	const pastBound = sayFault("busy-device-63", "mailbox", "engine.info", false, new Error("fault of busy-device-63;"), 363_100);
+	assert.ok(pastBound !== null, "a device past the table's bound is said, once a minute");
+	assert.equal(pastBound!.detail, undefined, "and never with a stack, as a first is: no live entry was dropped for it");
 	assert.deepEqual((await ask("pushes.set", { limits: true, project: { id: made.id, quiet: false } })).result.quiet, []);
 	assert.deepEqual((await ask("pushes.follow", { projectId: made.id, activity, on: false })).result.follows, []);
 	for (const deadline = Date.now() + PATIENT_MS; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
@@ -3050,11 +3142,16 @@ try {
 		assert.ok(onDisk((entry) => entry.path === "mailbox" && entry.method === "inbox.decide" && entry.outcome === "done"), "its log entry is on disk when the engine answers taken");
 		assert.match((await app.notice("widening", widenedBefore)).text, /^Alex's iPhone: Answered an approval: always/, "the Mac is told of a widening request left in the mailbox");
 		// A fault of the engine's by mailbox (#895's catch): the fixed refusal in the receipt, taken, and the engine runs on.
-		const faultsBefore = engineLog.length;
 		const faulted = await leave(phone.item(remote.pairing, "inbox.answer", { id: "no-such", text: "x" }));
 		assert.deepEqual(faulted.reply.result, { taken: true, outcome: "failed" }, "an item whose handling fails in the engine is taken, and failed");
 		assert.equal((await remote.event("mailboxOut", faulted.before)).item.body.why, DEVICE_LINE_FAILED, "its receipt says so in fixed words");
-		await until("the mailbox's fault in the engine's log", () => engineLog.slice(faultsBefore).includes("remote: a device's request failed in the engine: Error: PI2_DEVICE_FAULT"));
+		// engine.log says it only as often as the device's minute allows (#905); the devices' log, where the person looks,
+		// names it by the mailbox path either way: a failed request of that device, in fixed words.
+		for (const deadline = Date.now() + PATIENT_MS; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
+			const logged = (await app.call("devices.log", { device: phone.id })).entries;
+			if (logged.some((entry: any) => entry.path === "mailbox" && entry.method === "inbox.answer" && entry.outcome === "failed" && entry.why === DEVICE_LINE_FAILED)) break;
+			assert.ok(Date.now() < deadline, `the mailbox's fault in the devices' log: ${JSON.stringify(logged.slice(0, 3))}`);
+		}
 		assert.ok((await ask("engine.info")).result, "the engine still answers");
 		assert.equal(engine.exitCode, null, "and still runs");
 		const stated = await remote.call("remote.state", { relay: { available: false, state: "down", why: "the connection to the relay was lost", retryAt: Date.now() + 1_000 } });

@@ -46,7 +46,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import type { Socket } from "node:net";
 import { join } from "node:path";
-import { allowsHiddenApproval, type DevicePath, deviceLogged, deviceMay, forTheHelper, HIDDEN_FROM_THE_PHONE, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID, typedRefusal } from "./answers.ts";
+import { allowsHiddenApproval, type DevicePath, deviceLogged, deviceMay, devicePlacement, forTheHelper, HIDDEN_FROM_THE_PHONE, ONLY_ON_THE_MAC, OPEN_WITH_FACE_ID, typedRefusal } from "./answers.ts";
 import { isPicture } from "./attachments.ts";
 import { type Client, clients, send, type Wire } from "./clients.ts";
 import {
@@ -86,6 +86,7 @@ import {
 	sessionsChanged,
 	summarize,
 	DEVICE_FAULT,
+	DEVICE_FAULT_AFTER,
 } from "./devices.ts";
 import type { SwitchName } from "./projects.ts";
 import { pushes } from "./pushes.ts";
@@ -688,9 +689,12 @@ async function mailboxIn(current: Helper, params: Params): Promise<{ taken: true
 			why = typeof body.error === "string" ? body.error : undefined;
 		});
 	} catch (error) {
-		// A fault of the engine's, as a live session's line has it (deviceLineFailed): logged, and the item refused in fixed
-		// words. Its nonce is stored, so it is taken: handed over again it would only be refused as taken before.
-		log("remote: a device's request failed in the engine:", error instanceof Error ? (error.stack ?? error.message) : error);
+		// A fault of the engine's, as a live session's line has it (deviceLineFailed): said in engine.log throttled, kept in the
+		// devices' log as a failed request in fixed words, and the item refused in fixed words. Its nonce is stored, so it is
+		// taken: handed over again it would only be refused as taken before.
+		const said = sayFault(device, "mailbox", method, false, error);
+		if (said !== null) log(said.text, said.detail);
+		requestFaulted(device, "mailbox", method, given);
 		outcome = "failed";
 		why = DEVICE_LINE_FAILED;
 	} finally {
@@ -853,20 +857,167 @@ export const ANSWER_NOT_SENT = "The answer could not be sent to the phone. Look 
 /** What a device is answered when its line failed in the engine, outside the request's own handling. */
 export const DEVICE_LINE_FAILED = "The Mac could not take this request. Look on the Mac.";
 
+/** How long a device's fault lines, and engine.log's ceiling, are counted over: a minute. */
+const FAULT_SAID_MS = 60_000;
+
+/**
+ * The most devices `faultsSaid` keeps an entry for. An entry is never dropped while its minute lasts: dropped, its
+ * next fault would be counted from nothing and said as its first again, with its stack, which is the bound the table
+ * keeps. When the table is full, only an entry whose minute is over is forgotten; with none of those, a new device's
+ * faults are counted in one shared entry (`otherFaults`), so a Mac's few devices bound the table, not a phone's choice.
+ */
+const MAX_FAULTS_SAID = 64;
+
+/**
+ * The most fault lines engine.log takes in a minute, all devices together, the line saying how many were not said among
+ * them. Past it a fault is only counted. engine.log is never rotated, so this is what bounds an hour of faults.
+ */
+const MAX_FAULT_LINES = 30;
+
+/** The most names of placed methods (`devicePlacement`) a counted fault's line says, each a fixed name from a list. */
+const MAX_FAULT_METHODS = 3;
+
+/**
+ * What is said of faults while a minute lasts, by the device's id alone: when its last line was said (`at`), how many
+ * of its faults came since (`more`), and up to `MAX_FAULT_METHODS` names of the methods they were for, each a name
+ * only a list places (answers.ts), never a device's text. A device choosing paths, methods and after-or-failed reaches
+ * one entry, not the 1,448 keys those four would give it: its first fault in a minute is said with its stack, every
+ * further fault of it in that minute, whatever its path and method, is only counted, and one line when the minute is
+ * over and more came says how many. So at most two lines for a device in a minute.
+ */
+type FaultSaid = { at: number; more: number; methods: string[]; shared: boolean };
+
+const faultsSaid = new Map<string, FaultSaid>();
+
+/** What faults of a device past the table's bound are counted in: said at most once a minute, and never with a stack. */
+const otherFaults: FaultSaid = { at: 0, more: 0, methods: [], shared: true };
+
+/** The ceiling's minute: when it began, the lines said in it, and the faults it kept from being said. */
+let linesAt = 0;
+let linesSaid = 0;
+let linesNotSaid = 0;
+
+/** The one line owed for the faults the last minute's ceiling kept from being said, said at the first fault after it. */
+let linesNotSaidLine: string | null = null;
+
+/**
+ * The window a device's faults are counted in, made if it has none, or the shared one when the table is full of devices
+ * inside their minutes. `fresh` says the entry was just made, so the fault is its first.
+ */
+function faultWindow(device: string, now: number): { entry: FaultSaid; fresh: boolean } {
+	const known = faultsSaid.get(device);
+	if (known !== undefined) return { entry: known, fresh: false };
+	if (faultsSaid.size >= MAX_FAULTS_SAID) {
+		for (const [id, one] of faultsSaid) {
+			// Only one whose minute is over: one inside it keeps its count, and its next fault said as its first again.
+			if (now - one.at >= FAULT_SAID_MS) {
+				faultsSaid.delete(id);
+				break;
+			}
+		}
+	}
+	if (faultsSaid.size < MAX_FAULTS_SAID) {
+		const entry: FaultSaid = { at: now, more: 0, methods: [], shared: false };
+		faultsSaid.set(device, entry);
+		return { entry, fresh: true };
+	}
+	return { entry: otherFaults, fresh: false };
+}
+
+/**
+ * What engine.log should say of a fault of a device's request, or null while nothing more is to be said: the first
+ * fault of a device in a minute with its stack, and one line when the minute is over and more came, saying how many and
+ * naming at most three placed methods. At most `MAX_FAULT_LINES` lines a minute, all devices together. The fault's own
+ * words go with the first line, never the request's: a fault can repeat what the phone sent. `_path` is no longer read:
+ * the count is the device's alone, and a test walks the four paths to show they change nothing.
+ */
+export function sayFault(device: string, _path: DevicePath, method: string, after: boolean, error: unknown, now = Date.now()): { text: string; detail: unknown } | null {
+	const what = after ? "remote: a device's request was answered, and a fault came after the answer" : "remote: a device's request failed in the engine";
+	const detail = error instanceof Error ? (error.stack ?? error.message) : error;
+	const named = devicePlacement(method) === null ? null : method;
+	const { entry, fresh } = faultWindow(device, now);
+	let line: { text: string; detail: unknown } | null;
+	if (fresh) line = { text: `${what}:`, detail };
+	else if (now - entry.at >= FAULT_SAID_MS) {
+		const counted = entry.more;
+		const names = entry.methods.splice(0);
+		entry.at = now;
+		entry.more = 0;
+		// The shared entry is never given a stack: it is no one device's first fault, and a stack says which code failed.
+		if (counted === 0) line = { text: `${what}${entry.shared ? "" : " again"}:`, detail: entry.shared ? undefined : detail };
+		else line = { text: `${what} again, and ${counted} more since the last one said${names.length > 0 ? ` (${names.join(", ")})` : ""}:`, detail: undefined };
+	} else {
+		entry.more += 1;
+		if (named !== null && entry.methods.length < MAX_FAULT_METHODS && !entry.methods.includes(named)) entry.methods.push(named);
+		line = null;
+	}
+	// The ceiling's minute, and the one line it owes the faults it kept from being said.
+	if (now - linesAt >= FAULT_SAID_MS) {
+		const kept = linesNotSaid;
+		linesAt = now;
+		linesSaid = 0;
+		linesNotSaid = 0;
+		if (kept > 0) linesNotSaidLine = `remote: ${kept} faults of devices' requests were not said in engine.log in the last minute:`;
+	}
+	if (line !== null) {
+		if (linesSaid < MAX_FAULT_LINES) {
+			linesSaid += 1;
+			return line;
+		}
+		linesNotSaid += 1;
+	}
+	if (linesNotSaidLine !== null && linesSaid < MAX_FAULT_LINES) {
+		const owed = linesNotSaidLine;
+		linesNotSaidLine = null;
+		linesSaid += 1;
+		return { text: owed, detail: undefined };
+	}
+	return null;
+}
+
+/**
+ * A fault of the engine's after the answer for a request went out: one answer per id, so nothing more is sent for it,
+ * and the fault is said in engine.log as what it is rather than as the request failing (#905).
+ */
+function faultAfterAnswer(device: string, path: DevicePath, method: string, error: unknown): void {
+	const said = sayFault(device, path, method, true, error);
+	if (said !== null) log(said.text, said.detail);
+}
+
+/**
+ * A fault of the engine's before the answer for a request: said in engine.log as `sayFault` says it, and kept in the
+ * devices' log where the person looks, as a failed request of that device in fixed words (DEVICE_LINE_FAILED), never
+ * the fault's text or the request's values: the summary is the request's own, cleaned and masked as a refused one's.
+ */
+function requestFaulted(device: string, path: DevicePath, method: string, params: unknown): void {
+	const given = (typeof params === "object" && params !== null && !Array.isArray(params) ? params : {}) as Params;
+	const named = requestLogged(method);
+	// A request refused for its text is summarized by its method alone: a summary reads the title, path or folder it names.
+	const summary = typedRefusal(method, given) === null ? summarize(named, given) : `${named}: refused for the text it carries`;
+	void logDevice({ device, path, method: named, summary, presence: true, outcome: "failed", why: DEVICE_LINE_FAILED }).catch((error) =>
+		log("devices: the log could not be written:", error instanceof Error ? error.message : error),
+	);
+}
+
 /**
  * For a device's line that failed outside its request's own `try` (a fault of the engine's, never left to end it:
- * main.ts stops on an unhandled rejection): logged, and the line refused, as a request that failed is, with words of
- * its own rather than the fault's. The session stays open: the fault is the engine's, in this one request, and the
- * device is still the one that attached, so closing its session would only ask the person for Face ID again, for the
- * same request to fail again.
+ * main.ts stops on an unhandled rejection): the fault said in engine.log at most twice a minute for the device, with
+ * its stack only for its first (`sayFault`), the request kept in the devices' log as failed in fixed words
+ * (`requestFaulted`), and the line refused as a request that failed is, with words of its own rather than the fault's.
+ * The session stays open: the fault is the engine's, in this one request, and the device is still the one that
+ * attached, so closing its session would only ask the person for Face ID again, for the same request to fail again.
  */
 function deviceLineFailed(id: string, message: unknown): (error: unknown) => void {
 	return (error) => {
-		log("remote: a device's request failed in the engine:", error instanceof Error ? (error.stack ?? error.message) : error);
+		const session = sessions.get(id);
+		const request = (typeof message === "object" && message !== null && !Array.isArray(message) ? message : {}) as { id?: unknown; method?: unknown; params?: unknown };
+		const method = typeof request.method === "string" ? request.method : "";
+		const said = sayFault(session?.device ?? "unknown", session?.path ?? "relay", method, false, error);
+		if (said !== null) log(said.text, said.detail);
+		if (session !== undefined) requestFaulted(session.device, session.path, method, request.params);
 		try {
 			const given = typeof message === "object" && message !== null && !Array.isArray(message) ? (message as { id?: unknown }).id : undefined;
 			const body = { id: deviceId(given) ? (given ?? null) : null, error: DEVICE_LINE_FAILED };
-			const session = sessions.get(id);
 			if (session !== undefined) send(session.client, body);
 			else {
 				const out = forDevice(JSON.stringify(body));
@@ -920,7 +1071,15 @@ async function deviceLine(id: string, message: unknown): Promise<void> {
 	const device = session === undefined ? undefined : pairedDevice(session.device);
 	if (session === undefined || device === undefined || device.suspendedAt !== null) {
 		reply({ error: OPEN_WITH_FACE_ID });
-		if (session !== undefined) closeSession(id, "The device is no longer paired, or is suspended.");
+		// The answer has gone out: a fault in closing the session sends nothing more for the id, and is said as what it is
+		// rather than as the request failing (#905).
+		if (session !== undefined) {
+			try {
+				closeSession(id, "The device is no longer paired, or is suspended.");
+			} catch (error) {
+				faultAfterAnswer(session.device, session.path, typeof request.method === "string" ? request.method : "", error);
+			}
+		}
 		return;
 	}
 	const method = request.method;
@@ -977,10 +1136,17 @@ function withPicture(out: string, data: string): string {
  * the app, logged under the log's own rule for a device's names (#786), on disk before it is answered when it widens
  * (4.4), and the person notified of a widening request, done or tried (4.2, 4.4, 4.5). Both paths call this, so that no
  * duty is kept on one alone (#921's security read). `reply` is given the result or the refusal; the outcome is
- * returned. What throws here outside the handler's own `try` (a fault of the engine's) is the caller's to catch, with
+ * returned. One answer per id (#905): a fault in a step after the answer sends nothing more, and the devices' log keeps
+ * the request as done. What throws here before the answer (a fault of the engine's) is the caller's to catch, with
  * `DEVICE_LINE_FAILED`'s words.
  */
 async function deviceRequest(device: Device, path: DevicePath, client: Client, method: string, params: Params, reply: (body: Record<string, unknown>, picture?: string) => void): Promise<"done" | "failed" | "refused"> {
+	// One answer per request id (#905): once the reply has gone out, a fault in a step after it sends nothing more.
+	let answered = false;
+	const answerOnce = (body: Record<string, unknown>, picture?: string) => {
+		reply(body, picture);
+		answered = true;
+	};
 	// A typed text over 1 MB first (#924), and any other text over its bound (#940), measured in place: nothing below
 	// reads or copies it before it is refused.
 	const tooLong = typedRefusal(method, params as Params);
@@ -995,14 +1161,14 @@ async function deviceRequest(device: Device, path: DevicePath, client: Client, m
 			log("devices: the log could not be written:", error instanceof Error ? error.message : error),
 		);
 	if (tooLong !== null) {
-		reply({ error: tooLong });
+		answerOnce({ error: tooLong });
 		record("refused", tooLong);
 		return "refused";
 	}
 	if (DEVICE_FAULT !== undefined && method === DEVICE_FAULT) throw new Error("PI2_DEVICE_FAULT: the device's line");
 	if (answer === "no" || !Object.hasOwn(handlers, method)) {
 		const why = answer !== "no" ? `Unknown method: ${method}` : allowsHiddenApproval(method, params as Params, gate) ? HIDDEN_FROM_THE_PHONE : ONLY_ON_THE_MAC;
-		reply({ error: why });
+		answerOnce({ error: why });
 		record("refused", why);
 		return "refused";
 	}
@@ -1022,16 +1188,33 @@ async function deviceRequest(device: Device, path: DevicePath, client: Client, m
 		if (logged) await writeLog("done");
 		// The rest of the answer is masked as any is; only the bytes the picture check took are left as they are.
 		const picture = PICTURE_ANSWERS.has(method) ? pictureAnswer(result) : undefined;
-		if (picture === undefined) reply({ result });
-		else reply({ result: { mimeType: picture.mimeType } }, picture.data);
+		if (picture === undefined) answerOnce({ result });
+		else answerOnce({ result: { mimeType: picture.mimeType } }, picture.data);
 		if (widens) notify("widening", device.id, `${device.name}: ${summary}`);
+		// A fault in a step after the answer, for a test (#905): `PI2_DEVICE_FAULT_AFTER`'s method, asked with the id
+		// "after-answer", throws here so that engine/test/devices.ts meets the one-answer-per-id rule. A development
+		// engine only; a release one ignores it.
+		if (DEVICE_FAULT_AFTER !== undefined && method === DEVICE_FAULT_AFTER && (params as Params).id === "after-answer") throw new Error("PI2_DEVICE_FAULT_AFTER: after the answer");
 		return "done";
 	} catch (error) {
+		// The answer for this id has gone out, so a fault in a step after it sends nothing more, and the request is not
+		// logged as failed: it ran. The fault is said as what it is, after the answer (#905).
+		if (answered) {
+			faultAfterAnswer(device.id, path, method, error);
+			return "done";
+		}
 		const refused = refusal(error);
 		if (tellMe) pushes?.answerNotWanted(device.id, conversation);
 		if (logged) await writeLog("failed", refused.error);
-		reply(refused);
-		if (widens) notify("widening", device.id, `${device.name} tried: ${summary}`);
+		answerOnce(refused);
+		if (widens) {
+			try {
+				notify("widening", device.id, `${device.name} tried: ${summary}`);
+			} catch (again) {
+				// The refusal has gone out: a fault in the notice after it sends nothing more, and is said after the answer.
+				faultAfterAnswer(device.id, path, method, again);
+			}
+		}
 		return "failed";
 	}
 }
