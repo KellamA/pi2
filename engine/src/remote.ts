@@ -857,56 +857,122 @@ export const ANSWER_NOT_SENT = "The answer could not be sent to the phone. Look 
 /** What a device is answered when its line failed in the engine, outside the request's own handling. */
 export const DEVICE_LINE_FAILED = "The Mac could not take this request. Look on the Mac.";
 
-/** How long a fault of a device's request is kept quiet in engine.log after it was said: once a minute for each method and device. */
+/** How long a device's fault lines, and engine.log's ceiling, are counted over: a minute. */
 const FAULT_SAID_MS = 60_000;
 
 /**
- * The most faults `faultsSaid` keeps. Its keys are bounded already — a device is one the engine paired, and only a
- * method the device lists place (answers.ts) gets its own, every other name sharing "unknown" — but a Mac keeps its
- * record of revoked devices too, so the table is capped as well: past this many, the oldest is forgotten and its fault
- * said again. engine.log is never rotated, so a phone repeating a faulting request must not fill the disk.
+ * The most devices `faultsSaid` keeps an entry for. An entry is never dropped while its minute lasts: dropped, its
+ * next fault would be counted from nothing and said as its first again, with its stack, which is the bound the table
+ * keeps. When the table is full, only an entry whose minute is over is forgotten; with none of those, a new device's
+ * faults are counted in one shared entry (`otherFaults`), so a Mac's few devices bound the table, not a phone's choice.
  */
 const MAX_FAULTS_SAID = 64;
 
 /**
- * Faults of a device's request said in engine.log, by `faultKey`: when each was last said and how many came since, while
- * the minute lasts. Bounded by the device, the method and whether the fault came after the answer: `MAX_FAULTS_SAID`
- * entries at most, and a phone choosing many method names shares one, so it cannot grow the table.
+ * The most fault lines engine.log takes in a minute, all devices together, the line saying how many were not said among
+ * them. Past it a fault is only counted. engine.log is never rotated, so this is what bounds an hour of faults.
  */
-const faultsSaid = new Map<string, { at: number; more: number }>();
+const MAX_FAULT_LINES = 30;
+
+/** The most names of placed methods (`devicePlacement`) a counted fault's line says, each a fixed name from a list. */
+const MAX_FAULT_METHODS = 3;
 
 /**
- * The key `faultsSaid` keeps a fault's count under: the device, the path (a live session's request or a mailbox item),
- * the method the device lists place or "unknown" for any other, and whether the fault came after the request's answer
- * (a request that ran) or before it. The path is one of the four `DevicePath` names, never a device's text.
+ * What is said of faults while a minute lasts, by the device's id alone: when its last line was said (`at`), how many
+ * of its faults came since (`more`), and up to `MAX_FAULT_METHODS` names of the methods they were for, each a name
+ * only a list places (answers.ts), never a device's text. A device choosing paths, methods and after-or-failed reaches
+ * one entry, not the 1,448 keys those four would give it: its first fault in a minute is said with its stack, every
+ * further fault of it in that minute, whatever its path and method, is only counted, and one line when the minute is
+ * over and more came says how many. So at most two lines for a device in a minute.
  */
-export function faultKey(device: string, path: DevicePath, method: string, after: boolean): string {
-	return `${device}|${path}|${devicePlacement(method) === null ? "unknown" : method}|${after ? "after" : "failed"}`;
+type FaultSaid = { at: number; more: number; methods: string[]; shared: boolean };
+
+const faultsSaid = new Map<string, FaultSaid>();
+
+/** What faults of a device past the table's bound are counted in: said at most once a minute, and never with a stack. */
+const otherFaults: FaultSaid = { at: 0, more: 0, methods: [], shared: true };
+
+/** The ceiling's minute: when it began, the lines said in it, and the faults it kept from being said. */
+let linesAt = 0;
+let linesSaid = 0;
+let linesNotSaid = 0;
+
+/** The one line owed for the faults the last minute's ceiling kept from being said, said at the first fault after it. */
+let linesNotSaidLine: string | null = null;
+
+/**
+ * The window a device's faults are counted in, made if it has none, or the shared one when the table is full of devices
+ * inside their minutes. `fresh` says the entry was just made, so the fault is its first.
+ */
+function faultWindow(device: string, now: number): { entry: FaultSaid; fresh: boolean } {
+	const known = faultsSaid.get(device);
+	if (known !== undefined) return { entry: known, fresh: false };
+	if (faultsSaid.size >= MAX_FAULTS_SAID) {
+		for (const [id, one] of faultsSaid) {
+			// Only one whose minute is over: one inside it keeps its count, and its next fault said as its first again.
+			if (now - one.at >= FAULT_SAID_MS) {
+				faultsSaid.delete(id);
+				break;
+			}
+		}
+	}
+	if (faultsSaid.size < MAX_FAULTS_SAID) {
+		const entry: FaultSaid = { at: now, more: 0, methods: [], shared: false };
+		faultsSaid.set(device, entry);
+		return { entry, fresh: true };
+	}
+	return { entry: otherFaults, fresh: false };
 }
 
 /**
- * What engine.log should say of a fault of a device's request, or null while the minute lasts: the first of each device
- * and method with its stack, and once the minute is over and more came, one line saying how many more. The fault's own
- * words go with it, never the request's: a fault can repeat what the phone sent.
+ * What engine.log should say of a fault of a device's request, or null while nothing more is to be said: the first
+ * fault of a device in a minute with its stack, and one line when the minute is over and more came, saying how many and
+ * naming at most three placed methods. At most `MAX_FAULT_LINES` lines a minute, all devices together. The fault's own
+ * words go with the first line, never the request's: a fault can repeat what the phone sent. `_path` is no longer read:
+ * the count is the device's alone, and a test walks the four paths to show they change nothing.
  */
-export function sayFault(device: string, path: DevicePath, method: string, after: boolean, error: unknown, now = Date.now()): { text: string; detail: unknown } | null {
-	const key = faultKey(device, path, method, after);
-	const detail = error instanceof Error ? (error.stack ?? error.message) : error;
+export function sayFault(device: string, _path: DevicePath, method: string, after: boolean, error: unknown, now = Date.now()): { text: string; detail: unknown } | null {
 	const what = after ? "remote: a device's request was answered, and a fault came after the answer" : "remote: a device's request failed in the engine";
-	const said = faultsSaid.get(key);
-	if (said === undefined) {
-		faultsSaid.set(key, { at: now, more: 0 });
-		if (faultsSaid.size > MAX_FAULTS_SAID) faultsSaid.delete(faultsSaid.keys().next().value!);
-		return { text: `${what}:`, detail };
+	const detail = error instanceof Error ? (error.stack ?? error.message) : error;
+	const named = devicePlacement(method) === null ? null : method;
+	const { entry, fresh } = faultWindow(device, now);
+	let line: { text: string; detail: unknown } | null;
+	if (fresh) line = { text: `${what}:`, detail };
+	else if (now - entry.at >= FAULT_SAID_MS) {
+		const counted = entry.more;
+		const names = entry.methods.splice(0);
+		entry.at = now;
+		entry.more = 0;
+		// The shared entry is never given a stack: it is no one device's first fault, and a stack says which code failed.
+		if (counted === 0) line = { text: `${what}${entry.shared ? "" : " again"}:`, detail: entry.shared ? undefined : detail };
+		else line = { text: `${what} again, and ${counted} more since the last one said${names.length > 0 ? ` (${names.join(", ")})` : ""}:`, detail: undefined };
+	} else {
+		entry.more += 1;
+		if (named !== null && entry.methods.length < MAX_FAULT_METHODS && !entry.methods.includes(named)) entry.methods.push(named);
+		line = null;
 	}
-	if (now - said.at < FAULT_SAID_MS) {
-		said.more += 1;
-		return null;
+	// The ceiling's minute, and the one line it owes the faults it kept from being said.
+	if (now - linesAt >= FAULT_SAID_MS) {
+		const kept = linesNotSaid;
+		linesAt = now;
+		linesSaid = 0;
+		linesNotSaid = 0;
+		if (kept > 0) linesNotSaidLine = `remote: ${kept} faults of devices' requests were not said in engine.log in the last minute:`;
 	}
-	const more = said.more;
-	said.at = now;
-	said.more = 0;
-	return { text: `${what}${more === 0 ? " again" : ` again, and ${more} more since the last one said`}:`, detail };
+	if (line !== null) {
+		if (linesSaid < MAX_FAULT_LINES) {
+			linesSaid += 1;
+			return line;
+		}
+		linesNotSaid += 1;
+	}
+	if (linesNotSaidLine !== null && linesSaid < MAX_FAULT_LINES) {
+		const owed = linesNotSaidLine;
+		linesNotSaidLine = null;
+		linesSaid += 1;
+		return { text: owed, detail: undefined };
+	}
+	return null;
 }
 
 /**
@@ -935,11 +1001,11 @@ function requestFaulted(device: string, path: DevicePath, method: string, params
 
 /**
  * For a device's line that failed outside its request's own `try` (a fault of the engine's, never left to end it:
- * main.ts stops on an unhandled rejection): the fault said in engine.log at most once a minute for each method and
- * device (`sayFault`), the request kept in the devices' log as failed in fixed words (`requestFaulted`), and the line
- * refused as a request that failed is, with words of its own rather than the fault's. The session stays open: the fault
- * is the engine's, in this one request, and the device is still the one that attached, so closing its session would only
- * ask the person for Face ID again, for the same request to fail again.
+ * main.ts stops on an unhandled rejection): the fault said in engine.log at most twice a minute for the device, with
+ * its stack only for its first (`sayFault`), the request kept in the devices' log as failed in fixed words
+ * (`requestFaulted`), and the line refused as a request that failed is, with words of its own rather than the fault's.
+ * The session stays open: the fault is the engine's, in this one request, and the device is still the one that
+ * attached, so closing its session would only ask the person for Face ID again, for the same request to fail again.
  */
 function deviceLineFailed(id: string, message: unknown): (error: unknown) => void {
 	return (error) => {
