@@ -11,9 +11,10 @@ import os
 ///   widget on the Lock Screen can still be drawn, its content marked `privacySensitive`; out of backups.
 /// - **Not drawn** once it is older than `WidgetsSnapshot.keptFor`, of another version, or unreadable.
 struct WidgetsFile: Sendable {
-    /// The app group the app and its extensions share. #682 (the owner's) makes it, with an entitlements file for the app
-    /// and for the widgets extension that names it; docs/iphone.md does not name it yet, and this is the name proposed.
-    static let appGroup = "group.dev.pi2.ios"
+    /// The app group the app and its extensions share, from `AppGroup` (`Common/`). #682 (the owner's) makes it, with
+    /// an entitlements file for the app and for the widgets extension that names it; docs/iphone.md does not name it
+    /// yet, and this is the name proposed.
+    static let appGroup = AppGroup.id
     static let name = "widgets.json"
 
     /// The folder the file is in; nil when there is none, as in an unsigned build.

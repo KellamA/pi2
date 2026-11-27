@@ -15,9 +15,10 @@ import Foundation
 /// An unsigned build has no app group (no entitlement reaches it), so `inAppGroup()` is nil there; the extension then
 /// says the Mac's projects are not known yet. A test gives the folder itself.
 struct ShareDrop: Sendable, Equatable {
-    /// The app group the app and its extensions share. Not made yet: #682 makes it, with the entitlements of the app,
-    /// the share extension, the widgets and the notification service, and the contract names it.
-    static let appGroup = "group.dev.pi2.ios"
+    /// The app group the app and its extensions share, from `AppGroup` (`Common/`). Not made yet: #682 makes it, with
+    /// the entitlements of the app, the share extension, the widgets and the notification service, and the contract
+    /// names it.
+    static let appGroup = AppGroup.id
 
     let folder: URL
 

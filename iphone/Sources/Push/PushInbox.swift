@@ -10,9 +10,9 @@ import Foundation
 /// group (no entitlement reaches an unsigned build), so there `shared` is nil and nothing is kept; the tests give a
 /// folder of their own.
 struct PushInbox: Sendable {
-    /// The app group the app and its extensions share, the name the widgets and the share extension use too; #682 makes
-    /// it, and the contract does not name it yet.
-    static let appGroup = "group.dev.pi2.ios"
+    /// The app group the app and its extensions share, from `AppGroup` (`Common/`); #682 makes it, and the contract
+    /// does not name it yet.
+    static let appGroup = AppGroup.id
     /// The most notices kept at once: past it a new one is not kept (the mailbox holds the need anyway, 5.3).
     static let limit = 200
 
