@@ -112,6 +112,12 @@ Usage: scripts/test-copy <command> [arguments]
                                    Answer one waiting approval (allow once); refuses if more than one is waiting.
   answer <suffix> <need-id> '<json answer>'
                                    Answer a Needs you item by id with its NeedAnswer object (docs/projects.md).
+  press <suffix> <label> [--within <card or group label>] [--conversation <id>]
+                                   Press a control of the conversation page shown in the main window by its label, as a
+                                   click would, such as Expand on a presented card: a label, never script, a selector
+                                   or a point. Refused, with why, when no control or several have it, or it is hidden,
+                                   disabled, or answers for the person (use answer). A presented page's own content
+                                   is never in reach.
   choose <suffix> <path>... | cancel
                                    Answer the running copy's next Open or Save panel without showing it.
                                    Paths go in its data folder, the launcher's scratch folder or app/build.
@@ -1049,9 +1055,14 @@ case $cmd in
 		launch_app
 		echo "Reopened $NAME from the latest development build (app pid $APP_PID); kept its data and engine (pid $ENGINE_PID)."
 		;;
-	show|size|sidebar|choose)
+	show|size|sidebar|choose|press)
 		names "${1-}"; shift
-		if [[ $cmd == show ]]; then
+		if [[ $cmd == press ]]; then
+			# A label and, optionally, the card it is in and the conversation: words, never script, a selector or a point
+			# (#1023). The copy's page side resolves them among the page's own controls, and test-copy-drive checks them.
+			{ (($# == 1)) || (($# == 3)) || (($# == 5)); } ||
+				die "use: scripts/test-copy press $SUFFIX <label> [--within <card or group label>] [--conversation <id>]"
+		elif [[ $cmd == show ]]; then
 			if [[ $# == 3 && ${2-} == --hub && ${1-} == project:* ]]; then
 				check_hub "$3"
 			else

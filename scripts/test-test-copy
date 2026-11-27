@@ -78,7 +78,7 @@ expect "is not a suffix" remote-on ../pi2
 expect "'dev' is the suffix every development build has" remote-on dev
 expect "use: scripts/test-copy remote-off test-7" remote-off test-7 extra
 expect "use: scripts/test-copy remote-on test-7" remote-on test-7 --bogus
-for command in show size sidebar choose answer fill answer-of can-click pair attach; do
+for command in show size sidebar choose press answer fill answer-of can-click pair attach; do
 	expect "a suffix is required" "$command"
 	expect "is not a suffix" "$command" ../pi2
 	expect "'dev' is the suffix every development build has" "$command" dev
@@ -103,6 +103,9 @@ expect "use: scripts/test-copy sidebar" sidebar test-7 250 300
 expect "use: scripts/test-copy answer" answer test-7 8 always
 expect "use: scripts/test-copy fill" fill test-7 600 extra
 expect "use: scripts/test-copy choose" choose test-7
+expect "use: scripts/test-copy press" press test-7
+expect "use: scripts/test-copy press" press test-7 Expand --within
+expect "use: scripts/test-copy press" press test-7 Expand --within Card --conversation
 expect "use: scripts/test-copy can-click" can-click test-7 extra
 # A phone in the simulator (#681): pair and attach's options, checked before anything is asked of a copy.
 for command in pair attach; do
@@ -242,6 +245,7 @@ done
 expect "no copy named test-7 was started from this checkout" size test-7 smallest
 expect "no copy named test-7 was started from this checkout" sidebar test-7 narrowest
 PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" choose test-7 cancel
+PI2_HOME="$T" expect "no copy named test-7 was started from this checkout" press test-7 Expand
 expect "no copy named test-7 was started from this checkout" answer test-7 8 allow
 expect "no copy named test-7 was started from this checkout" fill test-7 600
 expect "no copy named test-7 was started from this checkout" fill test-7 --project
@@ -742,6 +746,7 @@ HOME="$T/home" expect "has no recorded app running" show test-7 8
 HOME="$T/home" expect "has no recorded app running" size test-7 smallest
 HOME="$T/home" expect "has no recorded app running" sidebar test-7 300
 HOME="$T/home" expect "has no recorded app running" choose test-7 cancel
+HOME="$T/home" expect "has no recorded app running" press test-7 Expand
 HOME="$T/home" expect "has no recorded app running" can-click test-7
 printf '%s\n' "engine_pid=$$" "engine_start=$(LC_ALL=en_US.UTF-8 ps -o lstart= -p $$)" \
 	"engine_exe=$(LC_ALL=en_US.UTF-8 ps -o comm= -p $$)" >>"$root/app/build/test-copies/test-7/state"
@@ -838,6 +843,7 @@ HOME="$T/home" expect "refusing a symlink" show test-7 8
 HOME="$T/home" expect "refusing a symlink" size test-7 820 532
 HOME="$T/home" expect "refusing a symlink" sidebar test-7 narrowest
 HOME="$T/home" expect "refusing a symlink" choose test-7 cancel
+HOME="$T/home" expect "refusing a symlink" press test-7 Expand
 HOME="$T/home" expect "refusing a symlink" answer test-7 8 allow
 HOME="$T/home" expect "refusing a symlink" fill test-7 600
 rm "$data/engine.sock"
