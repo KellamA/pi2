@@ -1,85 +1,26 @@
 import AppKit
+import EngineKit
 import PiModels
 import SwiftUI
 
 // Commands agents left running in the background, as the person keeps an eye on them: a window with a command's output,
 // and the strip above a conversation's message field that names the ones it has running. See docs/background.md.
 
-/// What a window with a command's output shows, kept up to date from the engine while the window is open.
-///
-/// It asks the engine for the output from where the last answer ended, and the engine holds the request until there is
-/// more or the command ends (`background.output` with `wait`), so output shows as it arrives. Between answers it waits
-/// half a second, so a command that prints without pause is followed twice a second at most. Reading here does not
-/// change what counts as read for the agent.
-@MainActor
-@Observable
-final class BackgroundOutputFeed {
-    /// The engine keeps the last 128 KB of a command's output; the window keeps up to twice that before cutting it back.
-    static let keep = 128 * 1024
+/// The Mac's name for EngineKit's `BackgroundOutputFollower`, the one loop the Mac's output window and the phone's
+/// command's output screen follow a background command's output with: what it asks, how it waits and how it joins the
+/// parts are told there.
+typealias BackgroundOutputFeed = BackgroundOutputFollower
 
-    let id: String
-    /// The engine's last answer: how the command stands.
-    private(set) var latest: BackgroundOutput?
-    /// Why the output cannot be shown, from the engine.
-    private(set) var problem: String?
-    /// The output shown: plain text, exactly as the command printed it.
-    private(set) var text = ""
-    /// How many characters it printed before `text` that are not shown, because they were not kept.
-    private(set) var notShown = 0
-    /// Goes up whenever `text` is replaced rather than added to, so the view sets it whole.
-    private(set) var replaced = 0
-
-    init(id: String) {
-        self.id = id
-    }
-
+/// How the follower asks this app's engine, and hears whether it is connected.
+extension BackgroundOutputFollower {
     /// Follows the command until it ends or the task is cancelled (the window closed).
     func follow(_ engine: EngineClient) async {
-        var from = 0
-        var first = true
-        while !Task.isCancelled {
-            do {
-                // The first answer comes at once, so the window can say how the command stands before it prints.
-                let result = try await engine.call("background.output", ["id": id, "from": from, "wait": first ? 0 : 20])
-                first = false
-                let answer = try JSONDecoder().decode(BackgroundOutput.self, from: JSONEncoder().encode(result))
-                take(answer, askedFrom: from)
-                from = answer.total
-                problem = nil
-                if !answer.running { return }
-                try? await Task.sleep(for: .milliseconds(500))
-            } catch {
-                // The engine is restarting: ask again once it is back, when it says whether it still has the command.
-                if engine.status != .connected {
-                    try? await Task.sleep(for: .seconds(2))
-                    first = true
-                    continue
-                }
-                problem = error.localizedDescription
-                return
-            }
-        }
-    }
-
-    private func take(_ answer: BackgroundOutput, askedFrom: Int) {
-        latest = answer
-        if answer.dropped > 0 || answer.from < askedFrom || askedFrom == 0 {
-            // More was printed since the last answer than the engine keeps, or this is the first: start again from what it has.
-            text = answer.output
-            notShown = answer.from
-            replaced += 1
-        } else if !answer.output.isEmpty {
-            text += answer.output
-        }
-        // A command that prints for hours would otherwise fill the window without end: keep the last part, from a new line.
-        let units = text.utf16.count
-        if units > 2 * Self.keep {
-            var cut = text.utf16.index(text.utf16.startIndex, offsetBy: units - Self.keep)
-            if let newline = text[cut...].firstIndex(of: "\n") { cut = text.index(after: newline) }
-            notShown += text[..<cut].utf16.count
-            text = String(text[cut...])
-            replaced += 1
-        }
+        await follow(
+            { from, wait in
+                let result = try await engine.call("background.output", ["id": self.id, "from": from, "wait": wait])
+                return try JSONDecoder().decode(BackgroundOutput.self, from: JSONEncoder().encode(result))
+            },
+            connected: { engine.status == .connected })
     }
 }
 
