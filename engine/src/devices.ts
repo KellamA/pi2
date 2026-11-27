@@ -1287,6 +1287,8 @@ export async function pairUnkept(id: unknown): Promise<void> {
 		doc.devices = doc.devices.filter((one) => one.id !== device.id);
 	});
 	failures.delete(device.id);
+	// Removed, not revoked: but the device is gone, so what is kept for it elsewhere goes as a revoked device's does.
+	tellRevoked(device.id);
 	remoteHooks.closeSessions(device.id, "The pairing was not kept.");
 	closed = { why: NOT_KEPT, at: now };
 	log("devices: pi² Remote could not keep the pairing it was sent; the device was taken back");
@@ -1463,6 +1465,8 @@ async function pairConfirm(params: Params): Promise<{ device: string }> {
 		remoteHooks.changed();
 	}
 	if (replaced !== null) {
+		// Its settings and anything else kept for it go with it, as a revoked device's do (#905's second read).
+		tellRevoked(replaced);
 		remoteHooks.toHelper({ kind: "revoke", device: replaced });
 		remoteHooks.closeSessions(replaced, "replaced");
 	}
@@ -1494,14 +1498,12 @@ function forget(device: Device, now: number): void {
 /** Told of each device revoked, once its record says so: what is kept for it elsewhere goes with it (pushes.ts). */
 export const revokedWatchers = new Set<(device: string) => void>();
 
-async function revoke(id: string): Promise<void> {
-	const device = pairedDevice(id);
-	if (device === undefined) throw new Error("No such device is paired.");
-	await change((doc) => {
-		for (const one of doc.devices) if (one.id === id) forget(one, Date.now());
-	});
-	failures.delete(id);
-	// Each in its own `try`: no watcher's fault keeps the revocation from pi² Remote and the device's sessions.
+/**
+ * Tells every watcher of a device taken away — revoked, taken back or replaced — each in its own `try`: no watcher's fault
+ * keeps the others from hearing it. A device whose record now refuses it is gone to the watchers whether it was revoked
+ * or removed (#905's second read).
+ */
+function tellRevoked(id: string): void {
 	for (const watch of revokedWatchers) {
 		try {
 			watch(id);
@@ -1509,6 +1511,17 @@ async function revoke(id: string): Promise<void> {
 			log("devices: a watcher of revocations failed:", error instanceof Error ? error.message : error);
 		}
 	}
+}
+
+async function revoke(id: string): Promise<void> {
+	const device = pairedDevice(id);
+	if (device === undefined) throw new Error("No such device is paired.");
+	await change((doc) => {
+		for (const one of doc.devices) if (one.id === id) forget(one, Date.now());
+	});
+	failures.delete(id);
+	// Before the two below: no watcher's fault keeps the revocation from pi² Remote and the device's sessions.
+	tellRevoked(id);
 	// `revoke` first: pi² Remote sends the phone its signed `revoked` line on the channel, which closing the sessions
 	// next would otherwise have ended (3.6).
 	remoteHooks.toHelper({ kind: "revoke", device: id });
@@ -1603,13 +1616,7 @@ async function forgetAll(reason: string, pairing: string, address: string, word:
 	forgottenPairings.add(pairing);
 	for (const id of revoked) {
 		failures.delete(id);
-		for (const watch of revokedWatchers) {
-			try {
-				watch(id);
-			} catch (error) {
-				log("devices: a watcher of revocations failed:", error instanceof Error ? error.message : error);
-			}
-		}
+		tellRevoked(id);
 		// As `revoke`: the phone's signed `revoked` line first, then its sessions.
 		remoteHooks.toHelper({ kind: "revoke", device: id });
 		remoteHooks.closeSessions(id, "revoked");

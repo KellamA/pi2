@@ -1735,6 +1735,22 @@ function onDisk(matches: (entry: any) => boolean): boolean {
 	}
 }
 
+/** The ids the engine's store holds push settings for now, read beside the running engine (`pi2.devicePushes`). */
+function pushesKept(): string[] {
+	const db = new DatabaseSync(join(home, "session.sqlite"), { readOnly: true });
+	try {
+		const rows = db
+			.prepare("SELECT r.content AS text FROM document_revisions r JOIN documents d ON d.id = r.document_id WHERE d.kind = ? ORDER BY r.document_id, r.seq")
+			.all(JSON.stringify("pi2.devicePushes")) as { text: string }[];
+		// Each write of this document is the whole of it (`checkpointWhen`), so the last row is what the engine holds.
+		const last = rows.at(-1);
+		const value = last === undefined ? undefined : (JSON.parse(last.text) as { devices?: Record<string, unknown> });
+		return Object.keys(value?.devices ?? {});
+	} finally {
+		db.close();
+	}
+}
+
 // ---- A handler placed in no list stops the engine before it listens
 
 {
@@ -2326,6 +2342,26 @@ try {
 		assert.ok(seen.length <= wanted.length && Date.now() < deadline, `pushes.set and pushes.follow logged, saying what changed, and the read not: ${JSON.stringify(seen)}`);
 	}
 	step("a device attaches with both signatures, is greeted as the app less 5.7's events, and its table holds in its session");
+
+	// ---- A device taken away by a new pairing takes its push settings with it (#905's second read)
+	{
+		// What is kept in memory for a device shows from outside in one place: the settings stored for it. A device
+		// replaced by a new pairing is gone as a revoked one is, so its settings go at once instead of waiting for the
+		// engine to restart.
+		const gone = await pairNew("Replaced's iPhone");
+		const binding = randomBytes(32);
+		const challenge = (await remote.call("remote.attachBegin")).result.challenge;
+		const goneSession = (await remote.call("remote.attach", { attach: gone.attach({ pairing: remote.pairing, challenge, binding }), binding: b64url(binding), path: "relay" })).result.session as string;
+		await until("the phone's greeting", () => remote.sessionLines.get(goneSession)?.some((line) => line.event === "device"));
+		assert.equal((await remote.inSession(goneSession, "pushes.set", { limits: false })).result.limits, false, "its own settings, stored");
+		await until("its settings in the store", () => pushesKept().includes(gone.id));
+		const replacement = await pairNew("Replaced's iPhone", true);
+		await until("the replaced device's settings dropped", () => !pushesKept().includes(gone.id));
+		assert.ok(pushesKept().includes(phone.id), "and the other devices' settings stay");
+		assert.notEqual(app.devicesEvents.at(-1).devices.find((one: any) => one.id === gone.id)?.revokedAt ?? null, null, "the replaced device is revoked");
+		await app.call("devices.revoke", { device: replacement.id });
+		step("a device replaced by a new pairing has the push settings stored for it dropped at once, as a revoked device's are");
+	}
 
 	// ---- Secrets and key-shaped strings are never sent to a device (5.7)
 	const secrets = { provider: "gsk_providerSecretValue0123456789", variable: "variable-secret-value-673", endpoint: "endpoint-token-673" };
