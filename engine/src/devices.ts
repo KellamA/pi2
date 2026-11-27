@@ -176,6 +176,11 @@ let state: DevicesState = Devices.definition.initial();
 let unreadable: string | null = null;
 /** Devices being saved by `pairConfirm`: pi² Remote is wanted meanwhile, to tell the phone. */
 let saving = 0;
+/**
+ * Whether the relay last refused a Live Activity push because this Mac's clock seems wrong, and no activity push since
+ * has gone unanswered (pushes.ts, #915): the Devices page says so in words. In memory alone, gone with the engine.
+ */
+let pushClockWrong = false;
 export const remoteHooks: RemoteHooks = {
 	changed: () => {},
 	toHelper: () => {},
@@ -972,6 +977,16 @@ const watchers = new Set<Client>();
 let window: PairingWindow | null = null;
 let closed: { why: string; at: number } | null = null;
 
+/**
+ * The relay refused a Live Activity push for this Mac's clock, or no longer does (#915): the Devices page is told, once
+ * for each, and not at every refusal a minute apart.
+ */
+export function pushClockChanged(wrong: boolean): void {
+	if (pushClockWrong === wrong) return;
+	pushClockWrong = wrong;
+	announce();
+}
+
 /** The `devices` event: everything the Devices page shows, and, when there is one, what the Mac should notify of. */
 export function devicesEvent(notice?: Notice) {
 	const claim = window?.claim ?? null;
@@ -987,6 +1002,8 @@ export function devicesEvent(notice?: Notice) {
 		helper: remoteHooks.helper(),
 		/** Where this Mac's pairing is registered beside the relay now set (#917, #1013): what the page offers by. */
 		pairingRegistered: pairingRegisteredNow(),
+		/** The relay refused a Live Activity push for this Mac's clock, until one of its own goes unanswered (#915). */
+		...(pushClockWrong ? { pushClock: true as const } : {}),
 		devices: state.devices,
 		sessions: remoteHooks.sessions(),
 		pairingWindow:

@@ -157,6 +157,9 @@ struct DevicesEvent: Decodable, Equatable {
     /// Where this Mac's pairing is registered beside the relay now set (`here`, `another-relay`, `none`), by pi² Remote's
     /// last word about this address and pairing, kept while it is stopped (#917, #1013).
     var pairingRegistered: String?
+    /// The relay refused this Mac's Live Activity pushes because its clock seems wrong, and no activity push has gone
+    /// unanswered since (`pushClock`, #915): the page says so with its other relay lines, and says nothing when absent.
+    var pushClock: Bool?
     var devices: [PairedDevice]?
     var sessions: [Session]?
     var pairingWindow: Window?
@@ -348,6 +351,17 @@ enum RelaySample {
         guard let data = json?.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(DevicesEvent.RelayPath.self, from: data)
     }()
+}
+
+/// A stand-in for the engine's memory of a `clock` refusal (#915), so that a picture can show what the Devices page says
+/// when the relay refuses this Mac's Live Activity numbers for its clock: a copy's pi² Remote has no relay, so no refusal
+/// reaches its engine. The copy's own preference names it, set before launch (or before `reopen`), so nothing of the
+/// person's sets it, and only a development build has this file at all:
+///
+///     defaults write dev.pi2.app.test-7 push-clock -string on
+@MainActor
+enum PushClockSample {
+    static let asked: Bool? = UserDefaults.standard.string(forKey: "push-clock") == "on" ? true : nil
 }
 
 // MARK: - The store
@@ -695,6 +709,13 @@ struct DevicesSettings: View {
         return pairingRegistered == "another-relay" ? "another-relay" : pairingRegistered == "none" ? "unregistered" : nil
     }
 
+    /// Whether the relay refused this Mac's Live Activity numbers for its clock (#915), or a development build's stand-in
+    /// for it (`PushClockSample`).
+    private var pushClockWrong: Bool {
+        if let sample = PushClockSample.asked { return sample }
+        return state?.pushClock == true
+    }
+
     /// What pi² Remote last said of the relay path (6.5, #916), or a development build's stand-in for it (`RelaySample`).
     private var relayPath: DevicesEvent.RelayPath? {
         if let sample = RelaySample.asked { return sample }
@@ -727,6 +748,15 @@ struct DevicesSettings: View {
         if stops > 3 {
             Label {
                 Text("pi² Remote stopped unexpectedly \(stops) times in the last hour. pi² starts it again each time, waiting longer after each stop, and no iPhone can reach this Mac while it is stopped. Something on this Mac may be stopping it.")
+                    .font(.callout)
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warn)
+            }
+        }
+        // #915: a clock the relay refuses every Live Activity's numbers for, until one of them goes clean.
+        if store.remoteOn, pushClockWrong {
+            Label {
+                Text("The relay refused this Mac’s Live Activity updates because this Mac’s clock seems to be wrong. Check Date & Time in System Settings.")
                     .font(.callout)
             } icon: {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Theme.warn)
