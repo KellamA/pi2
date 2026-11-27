@@ -111,6 +111,7 @@
 		680E00000000000000000205 /* Widgets/Shared */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Widgets/Shared; sourceTree = "<group>"; };
 		680E00000000000000000206 /* ShareExtension/Shared */ = {isa = PBXFileSystemSynchronizedRootGroup; path = ShareExtension/Shared; sourceTree = "<group>"; };
 		700000000000000000000201 /* Widgets/LiveActivity */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Widgets/LiveActivity; sourceTree = "<group>"; };
+		855000000000000000000201 /* Common */ = {isa = PBXFileSystemSynchronizedRootGroup; path = Common; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -172,6 +173,7 @@
 				680E00000000000000000205 /* Widgets/Shared */,
 				680E00000000000000000206 /* ShareExtension/Shared */,
 				700000000000000000000201 /* Widgets/LiveActivity */,
+				855000000000000000000201 /* Common */,
 				680000000000000000000103 /* session.jsonl */,
 				680000000000000000000002 /* Products */,
 			);
@@ -213,6 +215,7 @@
 				680E00000000000000000205 /* Widgets/Shared */,
 				680E00000000000000000206 /* ShareExtension/Shared */,
 				700000000000000000000201 /* Widgets/LiveActivity */,
+				855000000000000000000201 /* Common */,
 			);
 			name = pi2;
 			packageProductDependencies = (
@@ -263,6 +266,7 @@
 			fileSystemSynchronizedGroups = (
 				680E00000000000000000201 /* NotificationService */,
 				680E00000000000000000204 /* Sources/Push */,
+				855000000000000000000201 /* Common */,
 			);
 			name = NotificationService;
 			packageProductDependencies = (
@@ -287,6 +291,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				680E00000000000000000202 /* Widgets */,
+				855000000000000000000201 /* Common */,
 			);
 			name = Widgets;
 			packageProductDependencies = (
@@ -310,6 +315,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				680E00000000000000000203 /* ShareExtension */,
+				855000000000000000000201 /* Common */,
 			);
 			name = ShareExtension;
 			packageProductDependencies = (
