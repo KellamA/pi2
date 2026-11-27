@@ -918,6 +918,10 @@ export class Pushes {
 			if (at !== true) wake = Math.min(wake, at);
 		};
 		const ready = this.#parts.ready();
+		// Each alert is made once for every device a `flush` sends it to: making one masks the item, and the same item
+		// owed to three phones was masked three times. Only for this call: one held back for a minute is made from what
+		// the item says then, as an item gone by then is null.
+		const bodies = new Map<Owed, AlertBody | null>();
 		for (const device of devices) {
 			const settings = this.#own(device.id);
 			// Alerts, oldest first.
@@ -936,7 +940,11 @@ export class Pushes {
 					break;
 				}
 				const next = owed.shift()!;
-				const body = next.make();
+				let body = bodies.get(next);
+				if (body === undefined) {
+					body = next.make();
+					bodies.set(next, body);
+				}
 				if (body === null) continue;
 				this.#send(device.id, { kind: "alert", collapse: next.collapse, body }, { owed: [next] });
 				if (next.need !== undefined) this.#told.set(device.id, [...(this.#told.get(device.id) ?? []).filter((one) => one !== next.need), next.need].slice(-TOLD_KEPT));
@@ -1055,6 +1063,74 @@ export const DevicePushes = defineDoc<{ devices: Record<string, PushSettings> }>
 /** The engine's choice of pushes, once the feature has started; remote.ts tells it of messages and pi² Remote's answers. */
 export let pushes: Pushes | undefined;
 
+/** How `keepForTheChoice` defers its turn: with `setImmediate`, or something of a test's own. */
+export type Defer = (run: () => void) => void | (() => void);
+
+/**
+ * What the watcher keeps for the choice, given after the app's own event has gone out (#905): the latest whole `needs`
+ * items and the latest whole `limits` notices of one turn, one slot each. A later event of a kind in the same turn
+ * replaces the earlier one, since each carries the whole list and `needs` and `limits` compare whole lists.
+ *
+ * `give` is asked in one turn of the event loop, each call in its own `try`, so that a fault in one leaves the other
+ * given and neither reaches the app's event. `stop` empties what is kept and, when the deferral can be called off,
+ * calls it off.
+ */
+export function keepForTheChoice(
+	give: { needs(items: readonly NeedItem[]): void; limits(notices: readonly LimitNoticeLike[]): void; log(text: string): void },
+	defer: Defer = (run) => {
+		const at = setImmediate(run);
+		return () => clearImmediate(at);
+	},
+): { keep(message: unknown): void; stop(): void } {
+	let items: readonly NeedItem[] | null = null;
+	let notices: readonly LimitNoticeLike[] | null = null;
+	/** Whether a turn is deferred for what is kept, and how to call it off, when the deferral can be called off. */
+	let waiting = false;
+	let cancel: void | (() => void) = undefined;
+	const say = (error: unknown) => give.log(`pushes: what to push could not be chosen: ${error instanceof Error ? error.message : String(error)}`);
+	const turn = () => {
+		waiting = false;
+		cancel = undefined;
+		const [keptItems, keptNotices] = [items, notices];
+		items = null;
+		notices = null;
+		// Each in its own `try`: a fault in the one leaves the other given.
+		if (keptItems !== null) {
+			try {
+				give.needs(keptItems);
+			} catch (error) {
+				say(error);
+			}
+		}
+		if (keptNotices !== null) {
+			try {
+				give.limits(keptNotices);
+			} catch (error) {
+				say(error);
+			}
+		}
+	};
+	return {
+		keep(message: unknown) {
+			if (typeof message !== "object" || message === null) return;
+			const event = message as { event?: unknown; items?: unknown; notices?: unknown };
+			if (event.event === "needs" && Array.isArray(event.items)) items = event.items as NeedItem[];
+			else if (event.event === "limits" && Array.isArray(event.notices)) notices = event.notices as LimitNoticeLike[];
+			else return;
+			if (waiting) return;
+			waiting = true;
+			cancel = defer(turn);
+		},
+		stop() {
+			items = null;
+			notices = null;
+			waiting = false;
+			if (typeof cancel === "function") cancel();
+			cancel = undefined;
+		},
+	};
+}
+
 /** The device a request came from, in its own session: these requests are a device's own, refused anywhere else. */
 function deviceOf(connection: object | undefined): string {
 	const device = pairedDevice((connection as Client | undefined)?.device?.id);
@@ -1066,15 +1142,14 @@ export const devicePushes: Feature = (host, engine) => {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let timerAt = Number.POSITIVE_INFINITY;
 	let saving: Promise<unknown> = Promise.resolve();
-	const watch = (message: unknown) => {
-		const event = message as { event?: unknown; items?: unknown; notices?: unknown };
-		try {
-			if (event.event === "needs" && Array.isArray(event.items)) pushes?.needs(event.items as NeedItem[]);
-			else if (event.event === "limits" && Array.isArray(event.notices)) pushes?.limits(event.notices as LimitNoticeLike[]);
-		} catch (error) {
-			engine.log("pushes: what to push could not be chosen:", error instanceof Error ? error.message : error);
-		}
-	};
+	// What the event says waits until the app's own copy of it has gone out (#905): choosing it there made the Mac's
+	// event, and every app's, wait on work done for the phones, once for each phone.
+	const keeping = keepForTheChoice({
+		needs: (items) => pushes?.needs(items),
+		limits: (notices) => pushes?.limits(notices),
+		log: (text) => engine.log(text),
+	});
+	const watch = keeping.keep;
 	const parts: PushParts = {
 		now: () => Date.now(),
 		devices: () => (remoteOn() ? activeDevices() : []),
@@ -1155,6 +1230,7 @@ export const devicePushes: Feature = (host, engine) => {
 		},
 		stopping: async () => {
 			broadcastWatchers.delete(watch);
+			keeping.stop();
 			revokedWatchers.delete(revoked);
 			clearTimeout(timer);
 			await saving;
