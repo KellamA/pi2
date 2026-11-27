@@ -168,6 +168,12 @@ export const HOLDS: Readonly<Record<Refusal, number | null>> = {
  * refusal leaves (HOLDS), so that the push sent when that hold ends is the one whose answer settles it.
  */
 const CLOCK_SETTLE_MS = MINUTE;
+/**
+ * How long a `clock` refusal is remembered at most, from the last one: a clock that stays wrong is refused again every
+ * minute while anything is followed, which renews it, so ten minutes without another means nothing says it is still
+ * wrong (#915) — even if the phone ended its Live Activity and no push is ever sent again.
+ */
+const CLOCK_FORGET_MS = 10 * MINUTE;
 /** While pi² Remote is not running, what is owed is looked at again this often. */
 const NOT_READY_RETRY_MS = 30_000;
 
@@ -760,7 +766,7 @@ export class Pushes {
 	 * token is dead has ended, and is followed no more. A push pi² Remote will never send as it is (DROPPED) is dropped
 	 * alone, and said in engine.log by its id. A `clock` refusal holds its activity a minute like `push-later`, and is
 	 * also remembered for the Devices page, which says this Mac's clock seems wrong until one of its own activity pushes
-	 * goes unanswered (#915).
+	 * goes unanswered, or ten minutes pass without another refusal (#915).
 	 */
 	refused(id: string, why: string): boolean {
 		const asked = this.#asked.get(id);
@@ -973,15 +979,23 @@ export class Pushes {
 	}
 
 	/**
-	 * Forgets the clock's refusal once a Live Activity push sent after it has gone CLOCK_SETTLE_MS unanswered, and says so
-	 * to the Devices page (#915). A push refused for the clock is answered at once, so waiting that long for one that was
-	 * not is what tells the two apart: clearing at the hand-off instead would take the warning away and put it back at
-	 * every refusal, a minute apart. Returns when to look again, or null for nothing to wait for.
+	 * Forgets the clock's refusal, and says so to the Devices page once, when either of two things says the clock is not
+	 * what failed (#915): a Live Activity push sent after the refusal has gone CLOCK_SETTLE_MS unanswered, since a push
+	 * refused for the clock is answered at once and waiting that long for one that was not tells them apart; or
+	 * CLOCK_FORGET_MS passed since the last refusal, since a clock that stays wrong is refused again every minute while
+	 * anything is followed, and nothing followed is left means no push will ever settle it. Clearing at the hand-off
+	 * instead would take the warning away and put it back at every refusal, a minute apart. Returns when to look again, or
+	 * null for nothing to wait for: while the memory stands, that time is always set, so a wake is always pending.
 	 */
 	#clockSettles(now: number): number | null {
 		const refusedAt = this.#clockRefusedAt;
 		if (refusedAt === null) return null;
-		let look: number | null = null;
+		if (now >= refusedAt + CLOCK_FORGET_MS) {
+			this.#clockRefusedAt = null;
+			this.#parts.clock?.(false);
+			return null;
+		}
+		let look = refusedAt + CLOCK_FORGET_MS;
 		for (const asked of this.#asked.values()) {
 			if (asked.kind !== "activity" || asked.at <= refusedAt) continue;
 			if (now >= asked.at + CLOCK_SETTLE_MS) {
@@ -989,8 +1003,7 @@ export class Pushes {
 				this.#parts.clock?.(false);
 				return null;
 			}
-			const at = asked.at + CLOCK_SETTLE_MS;
-			look = look === null ? at : Math.min(look, at);
+			look = Math.min(look, asked.at + CLOCK_SETTLE_MS);
 		}
 		return look;
 	}

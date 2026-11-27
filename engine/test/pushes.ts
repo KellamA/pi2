@@ -601,6 +601,27 @@ const alerts = (pushes: Push[]) => pushes.filter((push): push is Extract<Push, {
 }
 
 {
+	// What is followed can end while the clock stays wrong: then no activity push is ever asked again to settle it, so the
+	// refusal is forgotten ten minutes after the last one (#915).
+	const { state, pushes, later, sentOf } = world();
+	const activity = Buffer.alloc(16, 12).toString("base64url");
+	state.conversations.set(1, { projectId: "p1", chat: false });
+	pushes.needs([]);
+	pushes.follow("dev_a", { projectId: "p1", activity, on: true });
+	pushes.runs(new Set([1]));
+	assert.equal(pushes.refused(sentOf("activity")[0]!.id, "clock"), true);
+	assert.deepEqual(state.clocks, [true]);
+	// The phone ends its Live Activity: nothing is followed, so nothing will ask for its numbers again.
+	pushes.follow("dev_a", { projectId: "p1", activity, on: false });
+	later(9 * MINUTE);
+	assert.deepEqual(state.clocks, [true], "still set nine minutes after the last refusal");
+	assert.ok(state.wakes.some((at) => at === state.clock + MINUTE), "and woken for the tenth");
+	later(MINUTE);
+	assert.deepEqual(state.clocks, [true, false], "forgotten ten minutes after the last refusal, and told once");
+	step("a clock refusal nothing follows any more is forgotten ten minutes after the last one, and told once");
+}
+
+{
 	// pi² Remote's own too-large and malformed (#914): that one push is dropped, said in the log by its id, and nothing
 	// else is held back; it is not asked for again a minute later.
 	const logged: string[] = [];

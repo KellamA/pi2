@@ -678,11 +678,11 @@ For a value with a usable head, a cut at its end that leaves the complete head i
 | `unknown-device` | Everything to the device held until it next attaches |
 | `push-limit` | That kind held 15 minutes, what it held owed again |
 | `push-later` | That kind held a minute, what it held owed again |
-| `clock` | As `push-later`; and the engine remembers it, and the Devices page says this Mac's clock seems to be wrong, until one of the Mac's own Live Activity pushes goes unanswered for a minute, which clears it (#915) |
+| `clock` | As `push-later`; and the engine remembers it, and the Devices page says this Mac's clock seems to be wrong, until one of the Mac's own Live Activity pushes goes unanswered for a minute, or ten minutes pass without another refusal, which clears it (#915) |
 | `unavailable` | Everything to the device held an hour (the relay has no push key, or Apple refuses the key) |
 | `too-large`, `malformed` | That one push dropped, said in `engine.log` by its id, and nothing held back: built again, it would be refused again ([#914](https://github.com/KellamA/pi2/issues/914)). An item it was about is not named to the phone as gone |
 
-Alerts still waiting are owed again and items gone named again after a hold with an end; after one until the next attach, neither. A `why` the engine does not know counts as `push-later`. Only `clock` exactly, on a Live Activity's push, is remembered as more than a hold: the engine keeps no word of pi² Remote's beyond what the table says, and the memory is the Mac's own, not a device's, and gone with the engine.
+Alerts still waiting are owed again and items gone named again after a hold with an end; after one until the next attach, neither. A `why` the engine does not know counts as `push-later`. Only `clock` exactly, on a Live Activity's push, is remembered as more than a hold: the engine keeps no word of pi² Remote's beyond what the table says, and the memory is the Mac's own, not a device's, and gone with the engine. It is forgotten a minute after an activity push sent since goes unanswered, and ten minutes after the last refusal in any case, since a clock that stays wrong is refused again every minute while anything is followed.
 
 **Push tokens.** The engine keeps none. The relay holds each device's push token and each Live Activity's ([5.3](#53-the-relay)); the engine names a device by its id and an activity by the phone's own id for it, and learns only that a token is missing or dead, from pi² Remote's answers.
 
