@@ -196,6 +196,9 @@ final class TranscriptBridge {
             // Read again on a new connection: `conversation.presented` sent while the app had none was missed.
             followPresented()
         }
+        #if PI2_DEVELOPMENT
+        view?.shownConversation = conversationID
+        #endif
         self.items = items
         self.earlier = earlier
         self.older = older

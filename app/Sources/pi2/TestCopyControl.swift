@@ -1,5 +1,6 @@
 import ComputerKit
 import SwiftUI
+import TranscriptKit
 import WindowKit
 
 #if PI2_DEVELOPMENT
@@ -65,6 +66,8 @@ struct TestCopyControl: NSViewRepresentable {
             let narrowest: Bool?
             let paths: [String]?
             let window: Int?
+            let label: String?
+            let within: String?
         }
 
         let model: AppModel
@@ -78,6 +81,8 @@ struct TestCopyControl: NSViewRepresentable {
         private var hubWaiting: [(dir: URL, asked: ProjectCopyView, project: String, unfolded: Bool, until: Date)] = []
         /// `show` requests for the Dashboard, answered once it has drawn its columns, or after `limit` (#481).
         private var dashboardWaiting: [(dir: URL, until: Date)] = []
+        /// `press` requests the page has not answered yet (#1023).
+        private var pressing: Set<URL> = []
         /// The project `PI2_SHOW` named at launch, until it comes in the `projects` event and is shown, and how long to
         /// wait for an agent's conversation of it named there.
         private var launchProject: ProjectCopyView?
@@ -187,7 +192,7 @@ struct TestCopyControl: NSViewRepresentable {
             }
             for name in names.sorted() where name.hasPrefix("request-") {
                 let dir = folder.appendingPathComponent(name, isDirectory: true)
-                guard isDirectory(dir), !waiting.contains(where: { $0.dir == dir }) else { continue }
+                guard isDirectory(dir), !waiting.contains(where: { $0.dir == dir }), !pressing.contains(dir) else { continue }
                 let response = dir.appendingPathComponent("response.json")
                 let request = dir.appendingPathComponent("request.json")
                 guard !FileManager.default.fileExists(atPath: response.path),
@@ -382,6 +387,55 @@ struct TestCopyControl: NSViewRepresentable {
             return ["result": found.map(String.init).joined(separator: " ")]
         }
 
+        /// Presses a control of a conversation page in this window by its label (#1023), as a click would; nil while the
+        /// page answers. Only the conversation pages (`TranscriptWebKitView`) shown in this window are looked in: never a
+        /// presented page, which is drawn in a view of its own, nor another window. What is pressed, and what is refused,
+        /// is the page side's to say (`TranscriptPress`).
+        private func press(_ request: Request, in window: NSWindow, dir: URL) -> [String: String]? {
+            guard let label = request.label else { return ["error": "missing the label of the control to press"] }
+            var pages: [TranscriptWebKitView] = []
+            func walk(_ view: NSView) {
+                if let page = view as? TranscriptWebKitView {
+                    if page.shownConversation != nil, !page.isHiddenOrHasHiddenAncestor, page.alphaValue > 0, !page.visibleRect.isEmpty { pages.append(page) }
+                    return
+                }
+                view.subviews.forEach(walk)
+            }
+            if let content = window.contentView { walk(content) }
+            let shown = pages.compactMap(\.shownConversation)
+            let list = shown.map { "#\($0)" }.joined(separator: ", ")
+            let page: TranscriptWebKitView
+            if let id = request.id {
+                let showing = pages.filter { $0.shownConversation == id }
+                guard let one = showing.first else {
+                    return ["error": "conversation #\(id) is not shown in the main window\(shown.isEmpty ? "" : "; it shows \(list)"); scripts/test-copy show it first"]
+                }
+                guard showing.count == 1 else { return ["error": "conversation #\(id) is shown in \(showing.count) panes; show it in one"] }
+                page = one
+            } else {
+                guard let one = pages.first else {
+                    return ["error": "no conversation is shown in the main window; scripts/test-copy show one first"]
+                }
+                guard pages.count == 1 else { return ["error": "the main window shows conversations \(list); name one with --conversation"] }
+                page = one
+            }
+            let conversation = page.shownConversation ?? 0
+            pressing.insert(dir)
+            Task { @MainActor [weak self] in
+                let done = await TranscriptPress.press(label, within: request.within, in: page)
+                guard let self else { return }
+                self.pressing.remove(dir)
+                let dropped = done.dropped.isEmpty ? "" : "; the page then asked for \(done.dropped.joined(separator: ", ")), which a press may not set off, so it was not done"
+                if let refused = done.refused {
+                    self.answer(dir, ["error": "conversation #\(conversation): \(refused)\(dropped)"])
+                } else {
+                    let within = done.within.map { " in “\($0)”" } ?? ""
+                    self.answer(dir, ["result": "Pressed “\(done.pressed ?? label)”\(within) on the page of conversation #\(conversation)\(dropped)"])
+                }
+            }
+            return nil
+        }
+
         /// The answer to a request, or nil when it is to wait.
         private func apply(_ request: Request, to window: NSWindow, dir: URL) -> [String: String]? {
             switch request.command {
@@ -433,6 +487,8 @@ struct TestCopyControl: NSViewRepresentable {
                 return ["result": "Raised the parked main window within its own level, and the app gives it to accessibility, where the computer tool looks for it, at the size the window server has it"]
             case "attached":
                 return Self.attached(to: request.window)
+            case "press":
+                return press(request, in: window, dir: dir)
             case "size":
                 guard !window.styleMask.contains(.fullScreen) else { return ["error": "the main window is full screen"] }
                 let minimum = window.frameRect(forContentRect: NSRect(origin: .zero, size: window.contentMinSize)).size

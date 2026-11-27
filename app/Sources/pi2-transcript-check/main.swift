@@ -7,7 +7,7 @@
 // Then the page's layouts (#671): the Mac's page unmarked and the phone's marked before its scripts run; the page drawn
 // at a phone's width, 390 points, as the phone's view marks it (Narrow.swift), and at the Mac's narrowest pane as before.
 // Then a `present` call's card (#967, Presenting.swift), wide and at a phone's width. `--pictures <folder>` writes them
-// as drawn there.
+// as drawn there. Then a test copy's press on those cards (#1023, Pressing.swift).
 //
 // The real page is loaded from the repository (`Web/transcript`; run it from `app/`, or pass `--page <folder>`), in
 // web views of this program's own, in a window that never comes on screen, holding a place for the page loaded ahead
@@ -299,6 +299,7 @@ Task { @MainActor in
         await narrow(folder: url, pictures: pictures)
         await presenting(folder: url, pictures: pictures)
         await presentingBridge(folder: url)
+        await pressing(folder: url)
         await presentingDrawn()
     } else {
         check("the conversation page is found", false, "no index.html in \(url.path); run from app/ or pass --page <folder>")

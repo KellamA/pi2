@@ -76,8 +76,37 @@ public final class TranscriptWebKitView: WKWebView, WKNavigationDelegate, WKUIDe
     func received(_ message: WKScriptMessage) {
         // Only the transcript page itself, in this view's main frame, is listened to.
         guard let body = pageLoad.body(of: message, in: self) else { return }
+        #if PI2_DEVELOPMENT
+        // While a test copy's press is in flight, only what a press may set off goes on (TranscriptPress.mayFollow).
+        if pressesInFlight > 0 {
+            let kind = (body as? [String: Any])?["type"] as? String ?? "(no type)"
+            guard TranscriptPress.mayFollow.contains(kind) else {
+                droppedInPress.append(kind)
+                return
+            }
+        }
+        #endif
         onMessage(body)
     }
+
+    #if PI2_DEVELOPMENT
+    /// The conversation the app's bridge last sent this page, for a test copy's press to find the page by (#1023).
+    public var shownConversation: Int?
+    private var pressesInFlight = 0
+    private var droppedInPress: [String] = []
+
+    func beginPress() {
+        if pressesInFlight == 0 { droppedInPress = [] }
+        pressesInFlight += 1
+    }
+
+    /// Ends a press `settle` from now, and says which kinds of message the page posted meanwhile were dropped.
+    func endPress(after settle: Duration) async -> [String] {
+        try? await Task.sleep(for: settle)
+        pressesInFlight -= 1
+        return droppedInPress
+    }
+    #endif
 
     // MARK: Navigation
 

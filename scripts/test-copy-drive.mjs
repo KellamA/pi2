@@ -123,6 +123,27 @@ try {
 			summary = await windowCommand(target, { pid: Number(pid), command, ...asked });
 			break;
 		}
+		case 'press': {
+			// A control by its label, and optionally the card or group it is in and the conversation (#1023): words alone,
+			// which the copy's page side resolves among the page's own controls. Nothing here is script or a selector.
+			const [pid, label, ...rest] = args;
+			const line = (value, what) => {
+				const text = String(value ?? '').trim();
+				if (text === '') throw new Error(`${what} must not be empty`);
+				if (/[\r\n]/.test(text)) throw new Error(`${what} takes one line`);
+				if (text.length > 300) throw new Error(`${what} is at most 300 characters`);
+				return text;
+			};
+			const request = { pid: Number(pid), command, label: line(label, 'the label') };
+			while (rest.length) {
+				const [option, value] = rest.splice(0, 2);
+				if (option === '--within' && request.within === undefined) request.within = line(value, '--within');
+				else if (option === '--conversation' && request.id === undefined) request.id = integer(value, 'conversation');
+				else throw new Error('press takes a label, then --within <card or group label> and --conversation <id>, each once');
+			}
+			summary = await windowCommand(target, request);
+			break;
+		}
 		case 'expose': {
 			const [pid] = args;
 			summary = await windowCommand(target, { pid: Number(pid), command });

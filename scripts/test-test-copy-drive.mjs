@@ -143,6 +143,11 @@ try {
 			{ result: 'Armed the next panel with 2 path(s)' }],
 		['choose', ['cancel'], { paths: [] }, { result: 'Armed the next panel to cancel' }],
 		['choose', ['/outside'], { paths: ['/outside'] }, { error: 'path outside allowed roots' }],
+		// A control by its label, and the card and conversation, as words (#1023); what is pressed is the copy's to say.
+		['press', ['Expand'], { label: 'Expand' }, { result: 'Pressed “Expand “Mockups”” in “Mockups” on the page of conversation #9' }],
+		['press', ['  Expand ', '--within', 'Two pictures', '--conversation', '9'], { label: 'Expand', within: 'Two pictures', id: 9 },
+			{ result: 'Pressed “Expand “Two pictures”” in “Two pictures” on the page of conversation #9' }],
+		['press', ['Nothing like it'], { label: 'Nothing like it' }, { error: 'conversation #9: no control labelled “Nothing like it” is shown on the page' }],
 	]) {
 		const pending = run(command, control, '321', ...args);
 		// 60 seconds, not the 3 the poll needs: a loaded runner can take that long to start the child, and only a
@@ -216,8 +221,17 @@ try {
 	assert.deepEqual(await run('size', control, '321', '8.5', '532'), [1, '', 'test-copy: width must be a positive integer (up to 10000)']);
 	assert.deepEqual(await run('choose', control, '321', 'cancel', '/tmp/second'), [1, '', 'test-copy: choose takes one or more paths, or cancel on its own']);
 	assert.deepEqual(await run('choose', control, '321', ''), [1, '', 'test-copy: choose takes one or more paths, or cancel on its own']);
+	for (const [args, words] of [
+		[[''], 'the label must not be empty'],
+		[['two\nlines'], 'the label takes one line'],
+		[['x'.repeat(301)], 'the label is at most 300 characters'],
+		[['Expand', '--within', ''], '--within must not be empty'],
+		[['Expand', '--conversation', 'nine'], 'conversation must be a positive integer'],
+		[['Expand', '--selector', 'button'], 'press takes a label, then --within <card or group label> and --conversation <id>, each once'],
+		[['Expand', '--within', 'A', '--within', 'B'], 'press takes a label, then --within <card or group label> and --conversation <id>, each once'],
+	]) assert.deepEqual(await run('press', control, '321', ...args), [1, '', `test-copy: ${words}`]);
 	assert.deepEqual(readdirSync(control), []);
-	console.log('ok: show, size, choose and attached send requests to the recorded app and report only after it replies');
+	console.log('ok: show, size, choose, press and attached send requests to the recorded app and report only after it replies');
 } finally {
 	server.close();
 	rmSync(folder, { recursive: true, force: true });
