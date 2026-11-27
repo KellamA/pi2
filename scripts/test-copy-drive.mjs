@@ -20,6 +20,11 @@ function integer(value, label, max = Number.MAX_SAFE_INTEGER) {
 	return n;
 }
 
+// The copy's words, such as a pressed control's label, can hold anything the page holds: every control character, such
+// as an escape or a line break, becomes a space before the words reach the terminal. Used for both the answer and a
+// refusal, so they cannot drift apart.
+const flat = text => String(text).replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ');
+
 async function windowCommand(folder, request, wait = limit) {
 	mkdirSync(folder, { recursive: true, mode: 0o700 });
 	if (!lstatSync(folder).isDirectory()) throw new Error('the copy’s window control path is not a directory');
@@ -221,8 +226,8 @@ try {
 		}
 		default: throw new Error('unknown test-copy command');
 	}
-	if (summary !== undefined) console.log(`${summary} in ${suffix}.`);
+	if (summary !== undefined) console.log(`${flat(summary)} in ${suffix}.`);
 } catch (error) {
-	console.error(`test-copy: ${error.message.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')}`);
+	console.error(`test-copy: ${flat(error.message)}`);
 	process.exitCode = 1;
 }
