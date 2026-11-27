@@ -880,17 +880,21 @@ export class AppCheck {
 	readonly #bundle: string | null;
 	readonly #log: (...parts: unknown[]) => void;
 	readonly #patienceMs: number;
+	readonly #unstartedMs: number;
 	readonly #verdicts = new WeakMap<Socket, Promise<Verdict>>();
 
-	constructor(bundle: string | null, log: (...parts: unknown[]) => void, patienceMs = 10_000) {
+	constructor(bundle: string | null, log: (...parts: unknown[]) => void, patienceMs = 10_000, unstartedMs = 1_000) {
 		this.#bundle = bundle;
 		this.#log = log;
 		this.#patienceMs = patienceMs;
+		this.#unstartedMs = unstartedMs;
 	}
 
 	/**
 	 * Whether `socket`'s other end is the app. The process at the other end of a connection cannot change, so a
 	 * verdict is kept for the connection's life; a check that could not be made is not, and is made again next time.
+	 * A check that could not start is kept only for `unstartedMs`: each failed spawn leaves a pipe handle behind
+	 * (#978), so a connection must not be able to start failed spawns without end.
 	 * Anything that cannot be checked is not the app.
 	 */
 	verdict(socket: Socket): Promise<Verdict> {
@@ -901,9 +905,19 @@ export class AppCheck {
 			.catch((error: unknown) => ({
 				verdict: { app: false, why: `the connection could not be checked: ${error instanceof Error ? error.message : String(error)}` },
 				lasting: false,
+				unstarted: false,
 			}))
-			.then(({ verdict, lasting }) => {
-				if (!lasting) this.#verdicts.delete(socket);
+			.then(({ verdict, lasting, unstarted }) => {
+				if (!lasting) {
+					if (unstarted) {
+						// The handle the failed spawn left (#978) is not reachable to close; a moment without a new check is.
+						setTimeout(() => {
+							if (this.#verdicts.get(socket) === asked) this.#verdicts.delete(socket);
+						}, this.#unstartedMs).unref();
+					} else {
+						this.#verdicts.delete(socket);
+					}
+				}
 				this.#log("answers:", verdict.why, verdict.app ? "(may answer for the person)" : "(may not answer for the person)");
 				return verdict;
 			});
@@ -911,7 +925,7 @@ export class AppCheck {
 		return asked;
 	}
 
-	async #ask(socket: Socket): Promise<{ verdict: Verdict; lasting: boolean }> {
+	async #ask(socket: Socket): Promise<{ verdict: Verdict; lasting: boolean; unstarted?: boolean }> {
 		const bundle = this.#bundle;
 		if (bundle === null) return { verdict: { app: false, why: "this engine does not know which app it belongs to" }, lasting: true };
 		const helper = join(bundle, "Contents", "MacOS", "pi2-peer");
@@ -924,10 +938,10 @@ export class AppCheck {
 		return this.#askHelper(socket, helper, bundle);
 	}
 
-	/** One run of the helper. `slow`: it did not answer within the limit, and was stopped. */
-	#askHelper(socket: Socket, helper: string, bundle: string): Promise<{ verdict: Verdict; lasting: boolean; slow?: boolean }> {
+	/** One run of the helper. `slow`: it did not answer within the limit, and was stopped. `unstarted`: it could not be started. */
+	#askHelper(socket: Socket, helper: string, bundle: string): Promise<{ verdict: Verdict; lasting: boolean; slow?: boolean; unstarted?: boolean }> {
 		return new Promise((resolve) => {
-			const unchecked = (why: string, slow = false) => resolve({ verdict: { app: false, why: `the connection could not be checked: ${why}` }, lasting: false, slow });
+			const unchecked = (why: string, slow = false, unstarted = false) => resolve({ verdict: { app: false, why: `the connection could not be checked: ${why}` }, lasting: false, slow, unstarted });
 			// The connection's descriptor, not the socket: given a stream, Node stops reading it in this process for good, as it
 			// would if the child were to take it over. The helper only asks the socket about its other end, and never reads.
 			const descriptor = (socket as unknown as { _handle?: { fd?: unknown } })._handle?.fd;
@@ -940,7 +954,11 @@ export class AppCheck {
 			try {
 				child = spawn(helper, [bundle], { stdio: ["ignore", "pipe", "ignore", descriptor] });
 			} catch (error) {
-				unchecked(error instanceof Error ? error.message : String(error));
+				// The pipes Node made for the child's stdio are not closed by a spawn that could not start (#978), one handle left
+				// behind per failure, about 2 KB. They are not on the child (`child.stdio` is not yet set), so they cannot be
+				// closed here; verdict() instead keeps the promise for a moment, which bounds how many spawns one connection
+				// can fail.
+				unchecked(error instanceof Error ? error.message : String(error), false, true);
 				return;
 			} finally {
 				// libuv (1.53, Node 26's) starts the helper with posix_spawn, on macOS and, where it can, on Linux, and first clears
@@ -962,7 +980,7 @@ export class AppCheck {
 			let timer: ReturnType<typeof setTimeout> | undefined;
 			child.once("error", (error) => {
 				clearTimeout(timer);
-				unchecked(error.message);
+				unchecked(error.message, false, true);
 			});
 			try {
 				timer = setTimeout(() => {
