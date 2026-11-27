@@ -2915,7 +2915,18 @@ try {
 			assert.match((await ask("conversation.compact", { id: compacted, instructions: "i".repeat(20_001 + i) })).error ?? "", /this one has 20,0\d\d/);
 			assert.equal((await ask("conversation.pin", { id: `no-such-${i}`, pinned: true })).error, `Unknown conversation: no-such-${i}`);
 		}
-		const after = await logged();
+		// A refusal's entry is queued only once its answer has gone out, and the write of what waits in memory is held
+		// back for up to two seconds and can be under way when the last answer comes, so a read straight after the loop
+		// can come before the last few are in the log: a slow runner counted 22 and 27 of these 30 once each (#1054).
+		// Wait for the log itself, reading again and again until both kinds have grown by all `times`.
+		let read: DeviceLogEntryLike[] | undefined;
+		let reading: Promise<void> | undefined;
+		const after = await until(`the log to hold the ${times} refusals and the ${times} failures`, () => {
+			if (reading === undefined) reading = logged().then((entries) => { read = entries; }).finally(() => { reading = undefined; });
+			const grown = (method: string, outcome: string, why: (text: string) => boolean) =>
+				read !== undefined && counted(read, method, outcome, why).count - counted(before, method, outcome, why).count >= times;
+			return read !== undefined && grown("conversation.compact", "refused", compacting) && grown("conversation.pin", "failed", pinning) ? read : undefined;
+		});
 		for (const [what, method, outcome, why] of [
 			["refusals for their size", "conversation.compact", "refused", compacting],
 			["failures in words of their own", "conversation.pin", "failed", pinning],
