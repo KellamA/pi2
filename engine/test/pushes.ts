@@ -6,6 +6,7 @@
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { broadcast, broadcastWatchers, type Client, clients } from "../src/clients.ts";
 import { forDevice } from "../src/remote.ts";
 import { APPROVAL_DEPTH, hidesSomething, KEY_HIDDEN, PART_HIDDEN, TOO_DEEP } from "../src/devices.ts";
 import type { NeedItem } from "../src/needs.ts";
@@ -18,6 +19,7 @@ import {
 	highEntropy,
 	HOURLY,
 	IDLE_FOR_MS,
+	keepForTheChoice,
 	MAX_BODY,
 	MAX_BODY_BYTES,
 	MAX_FOLLOWS,
@@ -52,6 +54,8 @@ function world(options: { devices?: string[]; log?: (text: string) => void } = {
 		clocks: [] as boolean[],
 		saved: {} as Record<string, PushSettings>,
 		gated: new Set<string>(),
+		/** Every item `approvalHidden` was asked about, in order: one ask an alert built. */
+		hidden: [] as string[],
 		conversations: new Map<number, { projectId: string | null; chat: boolean }>(),
 		orchestrators: new Map<number, { projectId: string; agent: string | null }>(),
 	};
@@ -64,7 +68,10 @@ function world(options: { devices?: string[]; log?: (text: string) => void } = {
 		wake: (at) => state.wakes.push(at),
 		saved: (settings) => (state.saved = structuredClone(settings)),
 		projectName: (id) => (Object.hasOwn(projects, id) ? projects[id] : undefined),
-		approvalHidden: (id) => state.gated.has(id),
+		approvalHidden: (id) => {
+			state.hidden.push(id);
+			return state.gated.has(id);
+		},
 		conversation: (id) => state.conversations.get(id),
 		orchestrator: (id) => state.orchestrators.get(id),
 		clock: (wrong) => state.clocks.push(wrong),
@@ -166,6 +173,21 @@ const alerts = (pushes: Push[]) => pushes.filter((push): push is Extract<Push, {
 	assert.equal(needAlert(need({ kind: "rule", text: "Run the tests first", binds: "everyone", why: null }), false, undefined, 5).body, "Proposes a rule for every agent: Run the tests first");
 	assert.equal(needAlert(need({ kind: "limit", start: { title: "Docs", task: "Write the guide" } }), false, undefined, 5).body, "Held back by the limit: Docs: Write the guide");
 	step("each kind has the Mac's title and its category");
+}
+
+{
+	// One new approval owed to three devices: built once, and all three sent that one body (#905). An approval's body is
+	// made through the gate's judgement of the item and the channel's masks, work the same for every device.
+	const { state, pushes, sentOf } = world({ devices: ["dev_a", "dev_b", "dev_c"] });
+	pushes.needs([]);
+	const approval = need();
+	pushes.needs([approval]);
+	const told = ["dev_a", "dev_b", "dev_c"].map((device) => sentOf("alert", device)[0] as Extract<Push, { kind: "alert" }>);
+	assert.ok(told.every((push) => push !== undefined), "each of the three is sent it");
+	assert.deepEqual(state.hidden, [approval.id], "the approval is judged once, not once for each device");
+	assert.ok(told.every((push) => push.body === told[0]!.body), "and one body is made and sent to all three");
+	assert.equal(told[0]!.body.title, "Forge needs approval");
+	step("one new approval owed to three devices is built once, and all three are sent that one body");
 }
 
 {
@@ -671,6 +693,28 @@ const alerts = (pushes: Push[]) => pushes.filter((push): push is Extract<Push, {
 }
 
 {
+	// An item that goes before a device's turn comes, in a flush later than the one that made the body for another: still
+	// not sent, and never the other device's body (#905). A body is kept for one `flush` only.
+	const { state, pushes, later, sentOf } = world({ devices: ["dev_a", "dev_b"] });
+	pushes.needs([]);
+	const first = need();
+	pushes.needs([first]);
+	assert.equal((sentOf("alert", "dev_b")[0] as Extract<Push, { kind: "alert" }>).body.need, first.id, "both are told of the first");
+	// No token for dev_b: its alerts wait until its phone attaches.
+	pushes.refused(sentOf("alert", "dev_b")[0]!.id, "no-token");
+	const second = need();
+	pushes.needs([first, second]);
+	assert.equal(sentOf("alert", "dev_a").length, 2, "the device that can be pushed gets the second at once");
+	assert.equal(sentOf("alert", "dev_b").length, 1, "and the held one waits its turn");
+	// Answered before that turn: the item is gone, and the later flush sends nothing.
+	pushes.needs([first]);
+	state.devices[1]!.lastSeenAt = state.clock + 1;
+	later(1);
+	assert.equal(sentOf("alert", "dev_b").length, 1, "an item gone by a device's later turn is not sent, and no earlier body is used for it");
+	step("an alert whose item is gone by a device's later turn is not sent, and a body made for another device is not used for it");
+}
+
+{
 	// Revoked: its settings and Live Activities go at once, stored without it.
 	const { state, pushes } = world({ devices: ["dev_a", "dev_b"] });
 	pushes.set("dev_a", { needs: false });
@@ -879,3 +923,76 @@ const alerts = (pushes: Push[]) => pushes.filter((push): push is Extract<Push, {
 	assert.deepEqual(tools.sort(), [...SHOWN_IN_WORDS].sort(), "SHOWN_IN_WORDS and the app's InboxCard.inWords name different tools: change the two together");
 	step("SHOWN_IN_WORDS names the same tools as the app's InboxCard.inWords, read from InboxViews.swift");
 }
+
+// ---- Chosen after the app's own event has gone out (#905)
+//
+// The watcher runs inside `broadcast` (clients.ts), before the event is written to the apps: choosing the pushes there
+// made every app's event, and the Mac's own, wait on work done for the phones, once for each phone. So the watcher only
+// keeps what the event said, and the choice is made in a turn of its own.
+
+{
+	// With the real broadcast: the app has the event before anything is chosen for the phones.
+	const order: string[] = [];
+	const held: (() => void)[] = [];
+	const kept = keepForTheChoice({ needs: () => order.push("chosen"), limits: () => order.push("chosen"), log: () => {} }, (run) => void held.push(run));
+	broadcastWatchers.add(kept.keep);
+	const client = {
+		socket: {
+			write: (line: string) => order.push(`written ${JSON.parse(line).event}`),
+			destroyed: false,
+			destroy: () => {},
+		},
+		subscriptions: new Map(),
+		shown: new Set(),
+	} as unknown as Client;
+	clients.add(client);
+	try {
+		broadcast({ event: "needs", items: [] });
+		assert.deepEqual(order, ["written needs"], "the event is written to the client before anything is kept for the choice");
+	} finally {
+		clients.delete(client);
+		broadcastWatchers.delete(kept.keep);
+	}
+	assert.equal(held.length, 1, "and the choice waits for its own turn");
+	held[0]!();
+	assert.deepEqual(order, ["written needs", "chosen"], "which comes after the event has gone out");
+	step("a broadcast event is written to the app before what to push is chosen");
+}
+
+{
+	// Two `needs` events and one `limits` before the deferred turn: one call of each, with the latest whole list.
+	const given: [string, readonly unknown[]][] = [];
+	const logged: string[] = [];
+	const held: (() => void)[] = [];
+	const kept = keepForTheChoice(
+		{
+			needs: (items) => {
+				given.push(["needs", items]);
+				if (items.length === 2) throw new Error("the Inbox could not be read");
+			},
+			limits: (notices) => given.push(["limits", notices]),
+			log: (text) => logged.push(text),
+		},
+		(run) => void held.push(run),
+	);
+	const one = need();
+	const two = need();
+	const latest = [one, two];
+	const notice = { id: "anthropic:5h", name: "Anthropic", plan: null, label: "", stage: "reached" as const, reachedAt: 1 };
+	kept.keep({ event: "needs", items: [one] });
+	kept.keep({ event: "limits", notices: [notice] });
+	kept.keep({ event: "needs", items: latest });
+	assert.equal(given.length, 0, "nothing is chosen before the deferred turn runs");
+	assert.equal(held.length, 1, "one turn is deferred, not one for each event");
+	held[0]!();
+	assert.deepEqual(given.map(([what, kept]) => [what, kept.length]), [["needs", 2], ["limits", 1]], "one call of each, with the second needs event's items");
+	assert.equal(given[0]![1], latest, "the whole latest list, not the earlier one");
+	assert.deepEqual(logged, ["pushes: what to push could not be chosen: the Inbox could not be read"], "a fault in the one is logged, and the other is still given");
+	// Stopped: nothing of what came before is given, not even when the deferred turn runs all the same.
+	kept.keep({ event: "needs", items: [one] });
+	kept.stop();
+	held.at(-1)!();
+	assert.deepEqual(given.map(([what, kept]) => [what, kept.length]), [["needs", 2], ["limits", 1]], "nothing is given after stopping");
+	step("what an event keeps for the choice is given once in a turn of its own, the latest whole list of each kind, one fault logged and the other still given, and nothing after stopping");
+}
+
