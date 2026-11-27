@@ -2483,10 +2483,12 @@ try {
 		// three times the line's size from one request to the next, so one reading cannot tell a copy from a pause (#1030).
 		// Each request is made several times instead (sixteen for this text, eight for the others), in alternation
 		// with the table's refusal of the same line and with the table first every other round, and what is asserted is the
-		// mean of the differences: the collector's pause and the order of the pair cancel out, while a copy the engine keeps
-		// shows in every round. The text's own size, or half of it, is the bound: a refusal that read or kept it would show.
+		// median of the differences: a fault shows in every round, so the middle round shows it, while a round or two thrown
+		// by a busy runner's memory — which carried the mean past its bound on GitHub's runners twice (#1030) — do not move
+		// it. The text's own size, or half of it, is the bound: a refusal that read or kept it would show.
 		const grew = (one: { before: number; peak: number }) => one.peak - one.before;
 		const mean = (values: number[]) => values.reduce((sum, one) => sum + one, 0) / values.length;
+		const median = (values: number[]) => { const sorted = [...values].sort((one, another) => one - another); const middle = sorted.length / 2; return sorted.length % 2 ? sorted[Math.floor(middle)]! : (sorted[middle - 1]! + sorted[middle]!) / 2; };
 		const againstTable = async (what: string, method: string, params: () => Record<string, unknown> | Promise<Record<string, unknown>>, rounds = 8) => {
 			const tableRounds: { reply: any; took: number; before: number; peak: number }[] = [];
 			const sizedRounds: { reply: any; took: number; before: number; peak: number }[] = [];
@@ -2497,7 +2499,7 @@ try {
 				if (!tableFirst) tableRounds.push(await cost(`huge-${what}-table-${round}`, "variables.set", { agentId: "forge", name: "HUGE", value: huge }));
 			}
 			const differences = sizedRounds.map((one, index) => grew(one) - grew(tableRounds[index]!));
-			return { table: tableRounds[0]!, sized: sizedRounds[0]!, more: mean(differences), tableGrowth: mean(tableRounds.map(grew)), rounds };
+			return { table: tableRounds[0]!, sized: sizedRounds[0]!, more: median(differences), differences, tableGrowth: mean(tableRounds.map(grew)), rounds };
 		};
 		const hugeFrom = remote.sessionLines.get(session)!.length;
 		// In a conversation with no title yet, as the devices' log's summary is read below ("Sent a message").
@@ -2507,10 +2509,10 @@ try {
 		const typed = await againstTable("typed", "submit", async () => ({ id: (await ask("conversation.create", { model: { provider: "demo", modelId: "demo-1" } })).result.id, text: huge }), 16);
 		const { table, sized } = typed;
 		const mb = (bytes: number) => Math.round(bytes / 1e6);
-		assert.ok(typed.more <= huge.length / 2, `with the engine grown by ${mb(typed.more)} MB more than the table's refusal of the same line, in the mean of its ${typed.rounds} rounds (the table's refusal grew it by ${mb(typed.tableGrowth)} MB on average), where a copy of the ${mb(huge.length)} MB text would show in every round`);
+		assert.ok(typed.more <= huge.length / 2, `with the engine grown by ${mb(typed.more)} MB more than the table's refusal of the same line, in the median of its ${typed.rounds} rounds (rounds: ${typed.differences.map(mb).join(", ")}) (the table's refusal grew it by ${mb(typed.tableGrowth)} MB on average), where a copy of the ${mb(huge.length)} MB text would show in every round`);
 		assert.equal(table.reply.error, ONLY_ON_THE_MAC);
 		assert.equal(sized.reply.error, overMessage("66.0 MB"), "a phone's text of 66 MiB is refused");
-		console.log(`    66 MiB: refused by the table in ${Math.round(table.took)} ms, for its size in ${Math.round(sized.took)} ms; the mean of its ${typed.rounds} rounds grew the engine by ${mb(typed.more)} MB more than the table's refusal`);
+		console.log(`    66 MiB: refused by the table in ${Math.round(table.took)} ms, for its size in ${Math.round(sized.took)} ms; the median of its ${typed.rounds} rounds grew the engine by ${mb(typed.more)} MB more than the table's refusal (rounds: ${typed.differences.map(mb).join(", ")})`);
 		assert.ok(sized.took <= 3 * table.took + 2_000, `in ${Math.round(sized.took)} ms, where the same line refused by the table took ${Math.round(table.took)} ms`);
 		// The check itself, here in this process: it reads the string in place, faster than the line's JSON is parsed.
 		const hugeParams = { id: untitled, text: huge };
@@ -2660,11 +2662,14 @@ try {
 			await sampled;
 			return { reply, took, before, peak };
 		};
-		// Measured as in step 1 (#1030): eight rounds of each, alternating which comes first, and the mean of the eight
-		// differences. A task is handed to an item of its own each round, since an item assigned once takes the same task no
-		// further.
+		// Measured as in step 1 (#1030): eight rounds of each (sixteen for the title), alternating which comes first, and the
+		// median of the differences, as the step above says. A task is handed to an item of its own each round, since an item
+		// assigned once takes the same task no further. The title alone stays on the mean, with the rounds shown in its
+		// message: its fault reads 70 MB against its 69.2 bound as a mean, and its reading moves by a whole text in a round,
+		// so its fault's median (70.5 in the guard-out run of #1030) is not clearly above the one-text bound.
 		const grew = (one: { before: number; peak: number }) => one.peak - one.before;
 		const mean = (values: number[]) => values.reduce((sum, one) => sum + one, 0) / values.length;
+		const median = (values: number[]) => { const sorted = [...values].sort((one, another) => one - another); const middle = sorted.length / 2; return sorted.length % 2 ? sorted[Math.floor(middle)]! : (sorted[middle - 1]! + sorted[middle]!) / 2; };
 		const againstTable = async (what: string, method: string, params: () => Record<string, unknown> | Promise<Record<string, unknown>>, rounds = 8) => {
 			const tableRounds: { reply: any; took: number; before: number; peak: number }[] = [];
 			const sizedRounds: { reply: any; took: number; before: number; peak: number }[] = [];
@@ -2675,7 +2680,7 @@ try {
 				if (!tableFirst) tableRounds.push(await cost(`huge-${what}-table-${round}`, "variables.set", { agentId: "forge", name: "HUGE", value: huge }));
 			}
 			const differences = sizedRounds.map((one, index) => grew(one) - grew(tableRounds[index]!));
-			return { table: tableRounds[0]!, sized: sizedRounds[0]!, more: mean(differences), tableGrowth: mean(tableRounds.map(grew)), rounds };
+			return { table: tableRounds[0]!, sized: sizedRounds[0]!, more: mean(differences), median: median(differences), differences, tableGrowth: mean(tableRounds.map(grew)), rounds };
 		};
 		const hugeItem = (await app.call("work.create", { projectId: made.id, title: "Huge" })).id;
 		let items = 0;
@@ -2685,10 +2690,10 @@ try {
 		});
 		const { table, sized } = task;
 		const mb = (bytes: number) => Math.round(bytes / 1e6);
-		assert.ok(task.more <= huge.length, `with the engine grown by ${mb(task.more)} MB more than the table's refusal of the same line, in the mean of its ${task.rounds} rounds (the table's refusal grew it by ${mb(task.tableGrowth)} MB on average), where a copy of the ${mb(huge.length)} MB task would show in every round`);
+		assert.ok(task.median <= huge.length, `with the engine grown by ${mb(task.median)} MB more than the table's refusal of the same line, in the median of its ${task.rounds} rounds (rounds: ${task.differences.map(mb).join(", ")}) (the table's refusal grew it by ${mb(task.tableGrowth)} MB on average), where a copy of the ${mb(huge.length)} MB task would show in every round`);
 		assert.equal(table.reply.error, ONLY_ON_THE_MAC);
 		assert.equal(sized.reply.error, over("A task", 20_000, huge.length), "a task of 66 MiB is refused");
-		console.log(`    66 MiB task: refused by the table in ${Math.round(table.took)} ms, for its size in ${Math.round(sized.took)} ms; the mean of its ${task.rounds} rounds grew the engine by ${mb(task.more)} MB more than the table's refusal`);
+		console.log(`    66 MiB task: refused by the table in ${Math.round(table.took)} ms, for its size in ${Math.round(sized.took)} ms; the median of its ${task.rounds} rounds grew the engine by ${mb(task.median)} MB more than the table's refusal (rounds: ${task.differences.map(mb).join(", ")})`);
 		assert.ok(sized.took <= 3 * table.took + 2_000, `in ${Math.round(sized.took)} ms, where the same line refused by the table took ${Math.round(table.took)} ms`);
 		// The same in fields the devices' log's summary reads (#940's security read): a refused request is summarized by its
 		// method alone, so nothing cleans, masks or splits the title or the path first. Each field keeps its own bound.
@@ -2701,16 +2706,17 @@ try {
 		// sixteen rounds because its reading moves by a whole text in a round: the mean of eight landed on 33 to 35 MB,
 		// half of its bound, in four runs of five.
 		const { id: renamed } = (await ask("conversation.create", { model: demo })).result;
-		const reads: (Awaited<ReturnType<typeof againstTable>> & { what: string; method: string; rounds: number; texts: number })[] = [];
-		for (const [what, method, params, rounds, texts] of [
-			["path", "files.preview", { id: renamed, path: "/ŧ".repeat(huge.length / 2) }, 8, 2],
-			["title", "conversation.rename", { id: renamed, title: huge }, 16, 1],
+		const reads: (Awaited<ReturnType<typeof againstTable>> & { what: string; method: string; rounds: number; texts: number; measure: "mean" | "median" })[] = [];
+		for (const [what, method, params, rounds, texts, measure] of [
+			["path", "files.preview", { id: renamed, path: "/ŧ".repeat(huge.length / 2) }, 8, 2, "median"],
+			["title", "conversation.rename", { id: renamed, title: huge }, 16, 1, "mean"],
 		] as const)
-			reads.push({ what, method, texts, ...(await againstTable(what, method, () => params, rounds)) });
+			reads.push({ what, method, texts, measure, ...(await againstTable(what, method, () => params, rounds)) });
 		// Both figures are printed before either is checked, so that one run shows what the summary does with both fields.
-		for (const read of reads) console.log(`    66 MiB ${read.what}: refused in ${Math.round(read.sized.took)} ms; the mean of its ${read.rounds} rounds grew the engine by ${mb(read.more)} MB more than the table's refusal`);
+		for (const read of reads) console.log(`    66 MiB ${read.what}: refused in ${Math.round(read.sized.took)} ms; the ${read.measure} of its ${read.rounds} rounds grew the engine by ${mb(read.measure === "median" ? read.median : read.more)} MB more than the table's refusal (rounds: ${read.differences.map(mb).join(", ")})`);
 		for (const read of reads) {
-			assert.ok(read.more <= read.texts * huge.length, `with the engine grown by ${mb(read.more)} MB more than the table's refusal of the same line, in the mean of its ${read.rounds} rounds (the table's refusal grew it by ${mb(read.tableGrowth)} MB on average), where the summary reading the ${mb(huge.length)} MB ${read.what} would show in every round`);
+			const figure = read.measure === "median" ? read.median : read.more;
+			assert.ok(figure <= read.texts * huge.length, `with the engine grown by ${mb(figure)} MB more than the table's refusal of the same line, in the ${read.measure} of its ${read.rounds} rounds (rounds: ${read.differences.map(mb).join(", ")}) (the table's refusal grew it by ${mb(read.tableGrowth)} MB on average), where the summary reading the ${mb(huge.length)} MB ${read.what} would show in every round`);
 			assert.equal(read.sized.reply.error, overTheRest, `a ${read.what} of 66 MiB is past the rest's count`);
 			assert.ok(read.sized.took <= 2 * read.table.took + 1_000, `in ${Math.round(read.sized.took)} ms, where the same line refused by the table took ${Math.round(read.table.took)} ms`);
 			const entry = (await app.call("devices.log", { device: phone.id })).entries.find((one: any) => one.method === read.method && one.why === overTheRest);
