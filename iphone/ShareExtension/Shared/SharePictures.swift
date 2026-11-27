@@ -25,7 +25,8 @@ enum SharePictureReader {
 
     static func prepare(_ data: Data, name: String, budget: Int = budget) throws -> SharePicture {
         do {
-            let made = try PictureReader.prepare(data, name: name, budget: min(budget, Self.budget), rounds: 8, thumbnailSide: 240)
+            let made = try PictureReader.prepare(data, name: name, side: ShareLimits.pictureSide,
+                                                 budget: min(budget, Self.budget), rounds: 8, thumbnailSide: 240)
             return SharePicture(name: made.name, data: made.data, mimeType: made.mimeType, width: made.width, height: made.height,
                                 thumbnail: made.thumbnail)
         } catch let failure as PictureReader.Failure {
@@ -35,7 +36,8 @@ enum SharePictureReader {
 
     static func prepare(_ image: CGImage, name: String, budget: Int = budget) throws -> SharePicture {
         do {
-            let made = try PictureReader.prepare(image, name: name, budget: budget, rounds: 8, thumbnailSide: 240)
+            let made = try PictureReader.prepare(image, name: name, side: ShareLimits.pictureSide,
+                                                 budget: budget, rounds: 8, thumbnailSide: 240)
             return SharePicture(name: made.name, data: made.data, mimeType: made.mimeType, width: made.width, height: made.height,
                                 thumbnail: made.thumbnail)
         } catch let failure as PictureReader.Failure {

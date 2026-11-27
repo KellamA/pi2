@@ -35,7 +35,8 @@ struct ConversationPictureError: LocalizedError, Equatable {
 enum ConversationPictureReader {
     static func prepare(_ data: Data, name: String) throws -> ConversationPicture {
         do {
-            let made = try PictureReader.prepare(data, name: name)
+            let made = try PictureReader.prepare(data, name: name, side: Self.side, budget: Self.budget,
+                                                 rounds: 6, thumbnailSide: 160)
             return ConversationPicture(name: made.name, data: made.data, mimeType: made.mimeType, thumbnail: made.thumbnail)
         } catch let failure as PictureReader.Failure {
             throw error(failure)
@@ -44,12 +45,18 @@ enum ConversationPictureReader {
 
     static func prepare(_ image: CGImage, name: String) throws -> ConversationPicture {
         do {
-            let made = try PictureReader.prepare(image, name: name)
+            let made = try PictureReader.prepare(image, name: name, side: Self.side, budget: Self.budget,
+                                                 rounds: 6, thumbnailSide: 160)
             return ConversationPicture(name: made.name, data: made.data, mimeType: made.mimeType, thumbnail: made.thumbnail)
         } catch let failure as PictureReader.Failure {
             throw error(failure)
         }
     }
+
+    private static var side: Int { ConversationPictureLimits.side }
+
+    /// A little under the engine's limit.
+    private static var budget: Int { ConversationPictureLimits.bytes - 64 * 1024 }
 
     private static func error(_ failure: PictureReader.Failure) -> ConversationPictureError {
         switch failure {

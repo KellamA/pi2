@@ -4,9 +4,10 @@ import UniformTypeIdentifiers
 
 /// The steps that turn a photo's bytes into a picture a message can carry, shared by the conversation's composer
 /// (`ConversationPictureReader`) and the share sheet (`SharePictureReader`): drawn afresh (which leaves behind where
-/// and with what it was taken), at most `side` pixels on its longer side and under `budget` bytes, as the Mac's
+/// and with what it was taken), at most `side` pixels on the longer side and under `budget` bytes, as the Mac's
 /// `AttachmentReader` prepares one. Small pictures (a screenshot's text) stay sharp as PNG; photos go as JPEG, made
-/// smaller round by round until they fit. Run off the main thread: a large photo takes a moment.
+/// smaller over `rounds` rounds until they fit. Run off the main thread: a large photo takes a moment. Each caller
+/// passes its own limits, so a limit's change follows it here with no second number to change.
 enum PictureReader {
     /// A picture made ready, before its caller's own shape (`ConversationPicture`, `SharePicture`).
     struct Picture: Equatable, Sendable {
@@ -25,18 +26,8 @@ enum PictureReader {
         case unpreparable
     }
 
-    /// The conversation's present values, the defaults: the engine's limits on a message's picture (the Mac's
-    /// `AttachmentLimits`), the budget a little under the engine's 5 MB, six rounds of making it smaller, and a
-    /// 160-pixel PNG for its chip.
-    enum Conversation {
-        static let side = 2000
-        static let budget = 5 * 1024 * 1024 - 64 * 1024
-        static let rounds = 6
-        static let thumbnailSide = 160
-    }
-
-    static func prepare(_ data: Data, name: String, side: Int = Conversation.side, budget: Int = Conversation.budget,
-                        rounds: Int = Conversation.rounds, thumbnailSide: Int = Conversation.thumbnailSide) throws -> Picture {
+    static func prepare(_ data: Data, name: String, side: Int, budget: Int,
+                        rounds: Int, thumbnailSide: Int) throws -> Picture {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil), CGImageSourceGetCount(source) > 0 else {
             throw Failure.unreadable
         }
@@ -51,8 +42,8 @@ enum PictureReader {
         return try prepare(image, name: name, side: side, budget: budget, rounds: rounds, thumbnailSide: thumbnailSide)
     }
 
-    static func prepare(_ image: CGImage, name: String, side: Int = Conversation.side, budget: Int = Conversation.budget,
-                        rounds: Int = Conversation.rounds, thumbnailSide: Int = Conversation.thumbnailSide) throws -> Picture {
+    static func prepare(_ image: CGImage, name: String, side: Int, budget: Int,
+                        rounds: Int, thumbnailSide: Int) throws -> Picture {
         let longest = max(image.width, image.height)
         let scale = longest > side ? CGFloat(side) / CGFloat(longest) : 1
         guard var flat = draw(image, scale: scale) else { throw Failure.unpreparable }
