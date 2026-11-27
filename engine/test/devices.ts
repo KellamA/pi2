@@ -1764,6 +1764,107 @@ function pushesKept(): string[] {
 	}
 }
 
+/**
+ * The heap the bounded engine below may grow to, in MB (#1030): above what the three refusals there need, below what any
+ * of them needs with its bound taken out. A single copy of the text made and dropped fits under it, which is why the
+ * resident-size figure keeps its bound beside it.
+ */
+const BOUNDED_HEAP_MB = 448;
+/** How many times over each request is sent under it: with a bound out, the engine ends in the middle of that flood, not after it. */
+const BOUNDED_ROUNDS = 4;
+
+/**
+ * An engine of this test's own, on a data folder of its own, whose heap V8 may not grow past (#1030), with a stand-in
+ * phone of its own paired to it as the test pairs its first.
+ *
+ * V8 collects before it grows the heap past `--max-old-space-size`, then ends the process ("JavaScript heap out of
+ * memory"), on any machine alike: the limit counts what the engine keeps alive at once, where the process's resident
+ * size is moved by hundreds of MB by when the collector happens to run, so that a comparison against it failed on
+ * GitHub's runners and the owner's with nothing wrong. A request refused for the size of its text is answered under
+ * the limit and the engine carries on; a refusal that read or kept the text has a text more alive at once, and the
+ * engine ends in the middle of the flood. `flood` sends one request `rounds` times over, each with a conversation or
+ * an item of its own (a repeated one is cheaper), and answers what each round was answered, or undefined where the
+ * engine ended before it answered.
+ */
+async function heapBoundedEngine(limit: number) {
+	const boundedHome = mkdtempSync(join(work, "bounded-"));
+	// A pi² Remote of its own for it, on a socket of its own: one that joined the test's own would be one more in `remotes`,
+	// and the counts the steps after it wait for would name another.
+	const itsHelper = join(boundedHome, "helper.sock");
+	const itsStandIn = join(boundedHome, "stand-in.mjs");
+	writeFileSync(
+		itsStandIn,
+		`import { connect, Socket } from "node:net";
+const engine = new Socket({ fd: 3, readable: true, writable: true });
+const test = connect(${JSON.stringify(itsHelper)});
+test.write(JSON.stringify({ standIn: { pid: process.pid, ppid: process.ppid } }) + "\\n");
+engine.pipe(test);
+test.pipe(engine);
+const end = () => process.exit(0);
+for (const side of [engine, test]) side.on("close", end).on("error", end);
+`,
+	);
+	const itsRemotes: Remote[] = [];
+	const itsServer = createServer((socket) => itsRemotes.push(new Remote(socket)));
+	await new Promise<void>((resolve) => itsServer.listen(itsHelper, resolve));
+	const child = spawn(process.execPath, [`--max-old-space-size=${limit}`, main], { env: { ...env, PI2_HOME: boundedHome, PI2_REMOTE_STAND_IN: itsStandIn }, stdio: ["ignore", "ignore", "pipe"] });
+	engines.push(child);
+	// Its log comes nowhere: a heap running out prints a stack of its own, and nothing here reads it.
+	child.stderr!.resume();
+	const ended = () => (child.exitCode !== null || child.signalCode !== null ? `the engine ended (${child.exitCode ?? child.signalCode})` : undefined);
+	const boundedApp = await App.connect(child, boundedHome);
+	await boundedApp.call("devices.watch");
+	await boundedApp.call("devices.set", { on: true });
+	await boundedApp.call("devices.set", { preview: true, relayAddress: "ws://127.0.0.1:9/v1" });
+	// Paired as the test pairs its phone above: a code to the app, this test's pi² Remote claiming for it, its digits typed.
+	const opened = boundedApp.call("devices.pairStart");
+	const helper = await until("the bounded engine's own pi² Remote", () => (itsRemotes[0] !== undefined && itsRemotes[0].standIn !== null ? itsRemotes[0] : undefined), { over: ended });
+	const { payload } = await opened;
+	const secret = Buffer.from(new URL(payload).searchParams.get("s")!, "base64url");
+	const itsPhone = new Phone("A bounded engine's iPhone");
+	const binding = randomBytes(32);
+	const challenge = randomBytes(32);
+	await helper.call("remote.pairClaim", { claim: itsPhone.claim(helper.pairing, binding, challenge), binding: b64url(binding), challenge: b64url(challenge), path: "relay" });
+	const digits = String(createHmac("sha256", secret).update(Buffer.concat([Buffer.from("pi2-digits"), Buffer.from([0]), binding])).digest().readUInt32BE(0) % 1_000_000).padStart(6, "0");
+	itsPhone.id = (await boundedApp.call("devices.pairConfirm", { digits })).device;
+	const channel = randomBytes(32);
+	const attachChallenge = (await helper.call("remote.attachBegin")).result.challenge;
+	const session = (await helper.call("remote.attach", { attach: itsPhone.attach({ pairing: helper.pairing, challenge: attachChallenge, binding: channel }), binding: b64url(channel), path: "relay" })).result.session as string;
+	// The task needs a project and an agent of its own, as the file makes its own above.
+	const demo = { provider: "demo", modelId: "demo-1" };
+	const { id: project } = await boundedApp.call("projects.create", { folder: null });
+	const { id: agent } = await boundedApp.call("projects.addAgent", { projectId: project, template: "forge" });
+	let items = 0;
+	const flood = async (what: string, method: string, params: () => Record<string, unknown> | Promise<Record<string, unknown>>, rounds: number) => {
+		const answered: (string | undefined)[] = [];
+		for (let round = 0; round < rounds; round++) {
+			const id = `bounded-${what}-${round}`;
+			try {
+				helper.socket.write(`${JSON.stringify({ session, message: { id, method, params: await params() } })}\n`);
+				const reply = await until(`the bounded engine's answer to ${id}`, () => helper.sessionLines.get(session)?.find((message) => message.id === id), { over: () => (helper.closed ? "pi² Remote's connection closed" : ended()) });
+				answered.push(reply.error as string | undefined);
+			} catch {
+				break;
+			}
+		}
+		return { answered, rounds };
+	};
+	return {
+		/** A conversation of its own on it, as each round of a typed text or a path has. */
+		conversation: async () => (await boundedApp.call("conversation.create", { model: demo })).id as number,
+		/** A work item of its own on it, as each round of a task has. */
+		item: async () => (await boundedApp.call("work.create", { projectId: project, title: `Huge ${++items}` })).id as number,
+		project,
+		agent,
+		flood,
+		close: async () => {
+			boundedApp.close();
+			await stop(child);
+			itsServer.close();
+		},
+	};
+}
+
 // ---- A handler placed in no list stops the engine before it listens
 
 {
@@ -1788,6 +1889,9 @@ engine.stderr!.setEncoding("utf8").on("data", (text: string) => {
 	engineLog += text;
 	process.stderr.write(text);
 });
+/** The engine the memory bounds below are measured on (#1030), made when the first of them needs it and stopped with the rest. */
+let bounded: Awaited<ReturnType<typeof heapBoundedEngine>> | null = null;
+const boundedNow = async () => (bounded ??= await heapBoundedEngine(BOUNDED_HEAP_MB));
 const app = await App.connect(engine, home);
 const childrenOf = (pid: number) => {
 	try {
@@ -2603,10 +2707,12 @@ try {
 		// What each request grew the engine by, in the whole process's resident size, is what the collector moves by two or
 		// three times the line's size from one request to the next, so one reading cannot tell a copy from a pause (#1030).
 		// Each request is made several times instead (sixteen for this text, eight for the others), in alternation
-		// with the table's refusal of the same line and with the table first every other round, and what is asserted is the
-		// median of the differences: a fault shows in every round, so the middle round shows it, while a round or two thrown
-		// by a busy runner's memory — which carried the mean past its bound on GitHub's runners twice (#1030) — do not move
-		// it. The text's own size, or half of it, is the bound: a refusal that read or kept it would show.
+		// with the table's refusal of the same line and with the table first every other round, and what is asserted of the
+		// figures is the median of the differences, on a machine of 12 GB or more (a smaller one prints them, #1060): a fault
+		// shows in every round, so the middle round shows it, while a round or two thrown by a busy runner's memory — which
+		// carried the mean past its bound on GitHub's runners twice (#1030) — do not move it. The text's own size, or half of
+		// it, is the bound: a refusal that read it or kept it would show, and one that made a single copy would too, which the
+		// heap the engine may not grow past, on an engine of its own below, lets pass. That heap is asserted everywhere.
 		const grew = (one: { before: number; peak: number }) => one.peak - one.before;
 		const mean = (values: number[]) => values.reduce((sum, one) => sum + one, 0) / values.length;
 		const median = (values: number[]) => { const sorted = [...values].sort((one, another) => one - another); const middle = sorted.length / 2; return sorted.length % 2 ? sorted[Math.floor(middle)]! : (sorted[middle - 1]! + sorted[middle]!) / 2; };
@@ -2630,7 +2736,19 @@ try {
 		const typed = await againstTable("typed", "submit", async () => ({ id: (await ask("conversation.create", { model: { provider: "demo", modelId: "demo-1" } })).result.id, text: huge }), 16);
 		const { table, sized } = typed;
 		const mb = (bytes: number) => Math.round(bytes / 1e6);
+		// Two measures, and two faults (#1030). The rounds' figure is asserted on a machine of 12 GB or more and printed on
+		// a smaller one (#1060); it catches one copy of the text made and dropped, 69 MB against a bound of 34.6.
+		// The bound below is asserted everywhere, and catches a text read or kept: it is not the process's memory, which the
+		// collector moves by hundreds of MB from one round to the next, but what the engine keeps alive at once. An engine of
+		// the test's own, on a data folder of its own, whose heap V8 may not grow past, is sent the same line four times over.
+		// A refusal that read or kept the text has a text more alive at once and ends the engine in the middle of the flood;
+		// a refusal that copies none of it is answered and the engine carries on. Measured on a quiet Mac at `nice -n 15`,
+		// with this bound taken out of `engine/src/answers.ts` by hand as #1040's and #1059's reads did: refused in ten runs
+		// of ten at 448 MB, and with it out the engine ends in ten runs of ten there, and at 1024 MB too.
 		memoryOnlySaid(typed.more <= huge.length / 2, `with the engine grown by ${mb(typed.more)} MB more than the table's refusal of the same line, in the median of its ${typed.rounds} rounds (rounds: ${typed.differences.map(mb).join(", ")}) (the table's refusal grew it by ${mb(typed.tableGrowth)} MB on average), where a copy of the ${mb(huge.length)} MB text would show in every round`);
+		const boundedEngine = await boundedNow();
+		const boundedTyped = await boundedEngine.flood("typed", "submit", async () => ({ id: await boundedEngine.conversation(), text: huge }), BOUNDED_ROUNDS);
+		assert.deepEqual(boundedTyped.answered, Array.from({ length: BOUNDED_ROUNDS }, () => overMessage("66.0 MB")), `with an engine of the test's own held to ${BOUNDED_HEAP_MB} MB of heap, ${boundedTyped.answered.filter((why) => why !== undefined).length} of its ${BOUNDED_ROUNDS} rounds of the ${mb(huge.length)} MB text were refused with it still up, where a refusal that read or kept the text needs a text more alive at once and ends it`);
 		assert.equal(table.reply.error, ONLY_ON_THE_MAC);
 		assert.equal(sized.reply.error, overMessage("66.0 MB"), "a phone's text of 66 MiB is refused");
 		console.log(`    66 MiB: refused by the table in ${Math.round(table.took)} ms, for its size in ${Math.round(sized.took)} ms; the median of its ${typed.rounds} rounds grew the engine by ${mb(typed.more)} MB more than the table's refusal (rounds: ${typed.differences.map(mb).join(", ")})`);
@@ -2813,7 +2931,17 @@ try {
 		});
 		const { table, sized } = task;
 		const mb = (bytes: number) => Math.round(bytes / 1e6);
+		// As the typed text above (#1030): the rounds' figure on a machine of 12 GB or more, which catches one copy made and
+		// dropped, and beside it a bound asserted everywhere on what the engine keeps alive at once, sent four times over,
+		// each task to an item of its own. Measured on a quiet Mac at `nice -n 15`, with this bound taken out of `meet` in
+		// `engine/src/answers.ts` by hand: refused in ten runs of ten at 448 MB, and with it out the engine ends in ten runs
+		// of ten there.
 		memoryOnlySaid(task.more <= huge.length, `with the engine grown by ${mb(task.more)} MB more than the table's refusal of the same line, in the mean of its ${task.rounds} rounds (rounds: ${task.differences.map(mb).join(", ")}) (the table's refusal grew it by ${mb(task.tableGrowth)} MB on average), where a copy of the ${mb(huge.length)} MB task would show in every round`);
+		const boundedTask = await (await boundedNow()).flood("task", "work.act", async () => {
+			const on = await boundedNow();
+			return { projectId: on.project, id: await on.item(), action: "assign", agentId: on.agent, task: huge };
+		}, BOUNDED_ROUNDS);
+		assert.deepEqual(boundedTask.answered, Array.from({ length: BOUNDED_ROUNDS }, () => over("A task", 20_000, huge.length)), `with an engine of the test's own held to ${BOUNDED_HEAP_MB} MB of heap, ${boundedTask.answered.filter((why) => why !== undefined).length} of its ${BOUNDED_ROUNDS} rounds of the ${mb(huge.length)} MB task were refused with it still up, where a refusal that read or kept the task needs a copy of it alive at once and ends it`);
 		assert.equal(table.reply.error, ONLY_ON_THE_MAC);
 		assert.equal(sized.reply.error, over("A task", 20_000, huge.length), "a task of 66 MiB is refused");
 		console.log(`    66 MiB task: refused by the table in ${Math.round(table.took)} ms, for its size in ${Math.round(sized.took)} ms; the mean of its ${task.rounds} rounds grew the engine by ${mb(task.more)} MB more than the table's refusal (rounds: ${task.differences.map(mb).join(", ")})`);
@@ -2837,9 +2965,20 @@ try {
 			reads.push({ what, method, texts, measure, ...(await againstTable(what, method, () => params, rounds)) });
 		// Both figures are printed before either is checked, so that one run shows what the summary does with both fields.
 		for (const read of reads) console.log(`    66 MiB ${read.what}: refused in ${Math.round(read.sized.took)} ms; the ${read.measure} of its ${read.rounds} rounds grew the engine by ${mb(read.measure === "median" ? read.median : read.more)} MB more than the table's refusal (rounds: ${read.differences.map(mb).join(", ")})`);
+		// The path's own bound, as the typed text's above (#1030): an engine of the test's own, held to the same heap, is
+		// sent the same 66 MiB path four times over, and every round is refused with it still up. Measured on a quiet Mac at
+		// `nice -n 15`, with the summary made for every refused request in `engine/src/remote.ts`'s `deviceRequest` by hand
+		// (the method-only line still logged): refused in ten runs of ten, and the engine ends in ten runs of ten with the
+		// summary made. The title is not held to the heap: made for a refused title alone, the summary is a copy the engine
+		// makes and drops, 19 MB of resident size under its bound (the mean of its rounds above reads it), and at this limit
+		// the engine lives, ten runs of ten: the title keeps the mean of its rounds, and its time assertion is what fails
+		// for that fault, as #1040 said. Both fields keep that mean too, asserted where #1060 asserts it: it catches one copy
+		// the heap lets through, as a single 69 MB text made and dropped would pass at 448 MB.
+		const boundedPath = await (await boundedNow()).flood("path", "files.preview", async () => ({ id: await (await boundedNow()).conversation(), path: "/ŧ".repeat(huge.length / 2) }), BOUNDED_ROUNDS);
 		for (const read of reads) {
 			const figure = read.measure === "median" ? read.median : read.more;
 			memoryOnlySaid(figure <= read.texts * huge.length, `with the engine grown by ${mb(figure)} MB more than the table's refusal of the same line, in the ${read.measure} of its ${read.rounds} rounds (rounds: ${read.differences.map(mb).join(", ")}) (the table's refusal grew it by ${mb(read.tableGrowth)} MB on average), where the summary reading the ${mb(huge.length)} MB ${read.what} would show in every round`);
+			if (read.what === "path") assert.deepEqual(boundedPath.answered, Array.from({ length: BOUNDED_ROUNDS }, () => overTheRest), `with an engine of the test's own held to ${BOUNDED_HEAP_MB} MB of heap, ${boundedPath.answered.filter((why) => why !== undefined).length} of its ${BOUNDED_ROUNDS} rounds of the ${mb(huge.length)} MB path were refused with it still up, where the summary reading the path would show in every round and ends it`);
 			assert.equal(read.sized.reply.error, overTheRest, `a ${read.what} of 66 MiB is past the rest's count`);
 			assert.ok(read.sized.took <= 2 * read.table.took + 1_000, `in ${Math.round(read.sized.took)} ms, where the same line refused by the table took ${Math.round(read.table.took)} ms`);
 			const entry = (await app.call("devices.log", { device: phone.id })).entries.find((one: any) => one.method === read.method && one.why === overTheRest);
@@ -3856,5 +3995,6 @@ try {
 } finally {
 	app.close();
 	await stop(engine);
+	if (bounded !== null) await bounded.close();
 	server.close();
 }
