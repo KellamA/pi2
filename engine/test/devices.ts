@@ -41,7 +41,7 @@ import { SETTINGS_ONLY_IN_THE_APP } from "../src/answers.ts";
 import { deviceRequestsListed, MAX_OTHER_FROM_A_DEVICE } from "../src/answers.ts";
 import { NOT_PRESENTED } from "../src/presented.ts";
 import { forTheHelper } from "../src/answers.ts";
-import { activeDevices, devicesEvent, helperReported, PAIRING_AT_ANOTHER_RELAY, PAIRING_AT_ANOTHER_RELAY_OFF, PAIRING_AT_NO_RELAY, RELAY_WORD_MISSING } from "../src/devices.ts";
+import { activeDevices, devicesEvent, helperReported, PAIRING_AT_ANOTHER_RELAY, PAIRING_AT_ANOTHER_RELAY_OFF, PAIRING_AT_NO_RELAY, pushClockChanged, RELAY_WORD_MISSING } from "../src/devices.ts";
 import { helperRequests } from "../src/remote.ts";
 import { DatabaseSync } from "node:sqlite";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
@@ -1198,6 +1198,15 @@ console.log(JSON.stringify(outcome));
 	await wireDevices({ harness, context, log: () => {}, release: false, names: { conversation: () => undefined, project: () => undefined } });
 	assert.ok(untouched(), "none of these changed anything");
 	step("devices.startAgain refuses while pi² Remote says the pairing can use this relay, says nothing, or names no pairing or another reason; with a parameter; with the relay switch or remote access off");
+
+	// #915: what the Devices page is told when the relay refused a Live Activity's numbers for this Mac's clock, and when
+	// the engine forgets it. No engine here: `pushClockChanged` is what pushes.ts calls, and `devicesEvent` carries it.
+	assert.equal(Object.hasOwn(devicesEvent(), "pushClock"), false, "nothing refused: no field at all");
+	pushClockChanged(true);
+	assert.equal(devicesEvent().pushClock, true, "the relay refused a Live Activity's numbers for the Mac's clock");
+	pushClockChanged(false);
+	assert.equal(Object.hasOwn(devicesEvent(), "pushClock"), false, "forgotten: the field is gone, not false");
+	step("the Devices page is told of a clock refusal in the devices event while it lasts, and the field is gone when it clears");
 
 	assert.equal(devicesEvent().pairingRegistered, "another-relay", "the Devices page is told where the pairing is registered, from pi² Remote's last word");
 	// For a pairing at another relay, and with a window opened before the address changed: the window closed, every

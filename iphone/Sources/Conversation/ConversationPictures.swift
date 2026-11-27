@@ -1,8 +1,6 @@
 import Foundation
-import ImageIO
 import Observation
 import UIKit
-import UniformTypeIdentifiers
 
 /// A picture made ready to go with a message: drawn afresh (which leaves behind where and with what it was taken), at
 /// most 2,000 pixels on its longer side and under the engine's 5 MB, as the Mac's `AttachmentReader` prepares one.
@@ -32,72 +30,39 @@ struct ConversationPictureError: LocalizedError, Equatable {
 }
 
 /// Turns a photo's data into a picture a message can carry. Run off the main thread: a large photo takes a moment.
+/// The shared steps are `PictureReader` (`Common/`); this keeps the composer's names, its own error in the person's
+/// words, and a picture without the share's width and height.
 enum ConversationPictureReader {
     static func prepare(_ data: Data, name: String) throws -> ConversationPicture {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil), CGImageSourceGetCount(source) > 0 else {
-            throw ConversationPictureError(message: "This picture could not be read.")
+        do {
+            let made = try PictureReader.prepare(data, name: name, side: Self.side, budget: Self.budget,
+                                                 rounds: 6, thumbnailSide: 160)
+            return ConversationPicture(name: made.name, data: made.data, mimeType: made.mimeType, thumbnail: made.thumbnail)
+        } catch let failure as PictureReader.Failure {
+            throw error(failure)
         }
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: ConversationPictureLimits.side,
-        ]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-            throw ConversationPictureError(message: "This picture could not be read.")
-        }
-        return try prepare(image, name: name)
     }
 
     static func prepare(_ image: CGImage, name: String) throws -> ConversationPicture {
-        let failed = ConversationPictureError(message: "This picture could not be prepared for sending.")
-        // A little under the engine's limit.
-        let budget = ConversationPictureLimits.bytes - 64 * 1024
-        let side = max(image.width, image.height)
-        let scale = side > ConversationPictureLimits.side ? CGFloat(ConversationPictureLimits.side) / CGFloat(side) : 1
-        guard var flat = draw(image, scale: scale) else { throw failed }
-        // Small pictures (a screenshot's text) stay sharp as PNG; photos go as JPEG.
-        if flat.width * flat.height <= 640_000, let png = encode(flat, as: .png), png.count <= budget {
-            return ConversationPicture(name: name, data: png, mimeType: "image/png", thumbnail: thumbnail(flat))
+        do {
+            let made = try PictureReader.prepare(image, name: name, side: Self.side, budget: Self.budget,
+                                                 rounds: 6, thumbnailSide: 160)
+            return ConversationPicture(name: made.name, data: made.data, mimeType: made.mimeType, thumbnail: made.thumbnail)
+        } catch let failure as PictureReader.Failure {
+            throw error(failure)
         }
-        for _ in 0..<6 {
-            for quality in [0.85, 0.7, 0.5] {
-                if let jpeg = encode(flat, as: .jpeg, quality: quality), jpeg.count <= budget {
-                    return ConversationPicture(name: name, data: jpeg, mimeType: "image/jpeg", thumbnail: thumbnail(flat))
-                }
-            }
-            guard let smaller = draw(flat, scale: 0.7) else { break }
-            flat = smaller
+    }
+
+    private static var side: Int { ConversationPictureLimits.side }
+
+    /// A little under the engine's limit.
+    private static var budget: Int { ConversationPictureLimits.bytes - 64 * 1024 }
+
+    private static func error(_ failure: PictureReader.Failure) -> ConversationPictureError {
+        switch failure {
+        case .unreadable: ConversationPictureError(message: "This picture could not be read.")
+        case .unpreparable: ConversationPictureError(message: "This picture could not be prepared for sending.")
         }
-        throw failed
-    }
-
-    /// The picture drawn again on white, opaque, scaled.
-    private static func draw(_ image: CGImage, scale: CGFloat) -> CGImage? {
-        let width = max(1, Int((CGFloat(image.width) * scale).rounded()))
-        let height = max(1, Int((CGFloat(image.height) * scale).rounded()))
-        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: space,
-                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
-        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
-        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        context.interpolationQuality = .high
-        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-        return context.makeImage()
-    }
-
-    private static func encode(_ image: CGImage, as type: UTType, quality: Double = 1) -> Data? {
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(data, type.identifier as CFString, 1, nil) else { return nil }
-        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
-        guard CGImageDestinationFinalize(destination) else { return nil }
-        return data as Data
-    }
-
-    private static func thumbnail(_ image: CGImage) -> Data {
-        let side = 160
-        let scale = min(1, CGFloat(side) / CGFloat(max(image.width, image.height)))
-        guard let small = draw(image, scale: scale) else { return Data() }
-        return encode(small, as: .png) ?? Data()
     }
 }
 

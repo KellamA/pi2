@@ -221,10 +221,6 @@ struct ShareDestinationRow: View {
 }
 
 extension Color {
-    /// pi²'s accent, as the app's root sets it (`Color.pi2Accent` in `App/Shared/`, which an extension cannot build): the
-    /// two should become one, in a folder both build.
-    static let shareAccent = Color(uiColor: UIColor { traits in
-        let hex: UInt32 = traits.userInterfaceStyle == .dark ? 0x8B93FF : 0x5B62E8
-        return UIColor(red: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255, blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
-    })
+    /// pi²'s accent, the app's own (`Color.pi2Accent` in `Common/`, which every extension builds too).
+    static let shareAccent = Color.pi2Accent
 }
