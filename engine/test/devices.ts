@@ -28,7 +28,7 @@ import { APPROVAL_DEPTH, checkRequestItem, type Device, deviceRequests, DeviceLo
 import type { Client } from "../src/clients.ts";
 import { attachChallenge, checkAttach, offerPresenceKey, PRESENCE_BY_NEITHER_KEY, PRESENCE_KEY_ALREADY_WAITS, PRESENCE_KEY_CHANGED, PRESENCE_KEY_WAITS } from "../src/devices.ts";
 import { personOnly } from "../src/answers.ts";
-import { ANSWER_NOT_SENT, DEVICE_LINE_FAILED, forDevice, MAX_HELPER_LINE, MAX_LINE_TO_HELPER, MAX_PHONE_LINE, NOT_AN_ID, PICTURE_TYPES, pictureAnswer, restartWait, RUN_THAT_LASTED, sayFault, SESSION_OVER, sessionLine } from "../src/remote.ts";
+import { ANSWER_NOT_SENT, DEVICE_LINE_FAILED, forDevice, MAX_FAULT_DETAIL, MAX_HELPER_LINE, MAX_LINE_TO_HELPER, MAX_PHONE_LINE, NOT_AN_ID, PICTURE_TYPES, pictureAnswer, restartWait, RUN_THAT_LASTED, sayFault, SESSION_OVER, sessionLine } from "../src/remote.ts";
 import { NOT_LINKED, NOT_OFFERED, TOO_MANY_PREVIEWS } from "../src/folders.ts";
 import { forgetEverySecret, forgetSecrets, knowSecrets, LEAST_SECRET, RETIRED_KEPT, SECRET_HIDDEN, secretCount, secretSpans } from "../src/secrets.ts";
 
@@ -2150,6 +2150,19 @@ try {
 	assert.ok((await ask("engine.info")).result, "the engine still answers in the same session");
 	assert.ok(!engineLog.slice(faultsBefore).includes("a device's request failed in the engine"), "and a second fault of the device in its minute is only counted");
 	assert.equal(engine.exitCode, null, "and still runs");
+	// The first fault of a device in its minute reaches engine.log with its stack, through the live path (#905's read):
+	// the phone's minute began with the fault after its answer, which says nothing of a failed request, so a device of
+	// its own is attached here and fails once, before the answer. Without that line, only the flood's bound would be
+	// left to pass at none.
+	const witness = await pairNew("First Fault's iPhone");
+	const witnessChallenge = (await remote.call("remote.attachBegin")).result.challenge;
+	const witnessBinding = randomBytes(32);
+	const witnessSession = (await remote.call("remote.attach", { attach: witness.attach({ pairing: remote.pairing, challenge: witnessChallenge, binding: witnessBinding }), binding: b64url(witnessBinding), path: "relay" })).result.session as string;
+	await until("the witness's greeting", () => remote.sessionLines.get(witnessSession)?.some((line) => line.event === "device"));
+	const firstFaultBefore = engineLog.length;
+	assert.equal((await remote.inSession(witnessSession, "inbox.answer", { id: "no-such", text: "x" })).error, DEVICE_LINE_FAILED, "a line that fails in the engine is refused, in words of its own");
+	await until("the first fault of a device in its minute, with its stack", () => /remote: a device's request failed in the engine: Error: PI2_DEVICE_FAULT: the device's line/.test(engineLog.slice(firstFaultBefore)));
+	await app.call("devices.revoke", { device: witness.id });
 	// A phone repeating a faulting request cannot fill engine.log (#905): its line is said once a minute for the device,
 	// whatever its path and method, and the request is kept in the devices' log as a failed one, in fixed words.
 	const floodsBefore = engineLog.length;
@@ -2226,6 +2239,18 @@ try {
 	const pastBound = sayFault("busy-device-63", "mailbox", "engine.info", false, new Error("fault of busy-device-63;"), 363_100);
 	assert.ok(pastBound !== null, "a device past the table's bound is said, once a minute");
 	assert.equal(pastBound!.detail, undefined, "and never with a stack, as a first is: no live entry was dropped for it");
+	assert.match(pastBound!.text, /^remote: a device's request failed in the engine again \(a device past the table's bound\), and \d+ more since the last one said \([^)]*\):$/, "and with words of its own, which a device's line does not have");
+	// A fault's own words are clipped (#905's read): a fault of a stack of 100,000 characters leaves a line no longer than
+	// the fixed words and the bound, so one fault cannot grow engine.log without limit.
+	const deep = new Error("a deep stack");
+	deep.stack = "at deep ".repeat(12_500);
+	assert.equal(deep.stack.length, 100_000, "a stack of 100,000 characters to clip");
+	const clipped = sayFault("long-stack-device", "relay", "inbox.answer", false, deep, 400_000)!;
+	const clippedDetail = String(clipped.detail);
+	assert.equal(clipped.text, "remote: a device's request failed in the engine:", "its first fault, in the fixed words");
+	assert.equal(clippedDetail, deep.stack.slice(0, MAX_FAULT_DETAIL), `its stack is clipped to ${MAX_FAULT_DETAIL} characters, which is where it was cut`);
+	const clippedLine = `${clipped.text} ${clippedDetail}`;
+	assert.ok(clippedLine.length <= clipped.text.length + MAX_FAULT_DETAIL + 1, `the whole line is no longer than the fixed words and the bound: ${clippedLine.length} characters`);
 	assert.deepEqual((await ask("pushes.set", { limits: true, project: { id: made.id, quiet: false } })).result.quiet, []);
 	assert.deepEqual((await ask("pushes.follow", { projectId: made.id, activity, on: false })).result.follows, []);
 	for (const deadline = Date.now() + PATIENT_MS; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
@@ -3152,6 +3177,15 @@ try {
 			if (logged.some((entry: any) => entry.path === "mailbox" && entry.method === "inbox.answer" && entry.outcome === "failed" && entry.why === DEVICE_LINE_FAILED)) break;
 			assert.ok(Date.now() < deadline, `the mailbox's fault in the devices' log: ${JSON.stringify(logged.slice(0, 3))}`);
 		}
+		// The first fault of a device in its minute reaches engine.log with its stack, through the mailbox too (#905's
+		// read): the phone's minute began with the live faults above, so a device of its own, paired here, fails once by
+		// mailbox, and the line is the one `mailboxIn`'s catch writes.
+		const mailboxWitness = await pairNew("Mailbox Fault's iPhone");
+		const mailboxItem = mailboxWitness.item(remote.pairing, "inbox.answer", { id: "no-such", text: "x" });
+		const mailboxFaultBefore = engineLog.length;
+		assert.deepEqual((await remote.call("remote.mailboxIn", { device: mailboxWitness.id, id: JSON.parse(mailboxItem.signed).nonce, item: mailboxItem })).result, { taken: true, outcome: "failed" }, "an item whose handling fails in the engine is taken, and failed");
+		await until("the first fault of a device in its minute, by mailbox, with its stack", () => /remote: a device's request failed in the engine: Error: PI2_DEVICE_FAULT: the device's line/.test(engineLog.slice(mailboxFaultBefore)));
+		await app.call("devices.revoke", { device: mailboxWitness.id });
 		assert.ok((await ask("engine.info")).result, "the engine still answers");
 		assert.equal(engine.exitCode, null, "and still runs");
 		const stated = await remote.call("remote.state", { relay: { available: false, state: "down", why: "the connection to the relay was lost", retryAt: Date.now() + 1_000 } });
