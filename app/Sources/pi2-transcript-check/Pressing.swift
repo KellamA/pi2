@@ -3,6 +3,8 @@
 // cards (Presenting.swift). An absent label, an ambiguous one and one that answers for the person are refused, with
 // words saying which; and while a press is in flight the view passes on only what a press may set off, whatever the
 // page posts. Only a development build has any of it, as this check is.
+// TranscriptPress exists only in a development build; this target has no PI2_DEVELOPMENT of its own.
+#if DEBUG
 import AppKit
 import TranscriptKit
 
@@ -55,12 +57,13 @@ func pressing(folder: URL) async {
         check("nothing was posted, and the question still waits", posts().isEmpty && open == true, posts().joined(separator: "\n      "))
 
         // Whatever a pressed control's handler posts, only what a press may set off goes on: here a button of the page's
-        // own whose handler decides, opens a link, expands, and undoes a moment later.
+        // own whose handler decides, opens a link, opens a document, expands, and undoes a moment later.
         _ = await js(page.view, """
             (() => { const b = document.createElement('button'); b.textContent = 'Posts everything';
               b.addEventListener('click', () => { const h = window.webkit.messageHandlers.pi2;
                 h.postMessage({ type: 'decide', inbox: 'a1', decision: 'once' });
                 h.postMessage({ type: 'openLink', url: 'https://example.com/' });
+                h.postMessage({ type: 'openDocument', path: '/tmp/no-such-file.pdf' });
                 setTimeout(() => h.postMessage({ type: 'undo', change: 3 }), 50);
                 h.postMessage({ type: 'expand', presentation: 'p1', version: 1, item: 0 }); });
               document.getElementById('transcript').appendChild(b); return true; })()
@@ -68,7 +71,7 @@ func pressing(folder: URL) async {
         page.posted.removeAll()
         let mixed = await TranscriptPress.press("Posts everything", within: nil, in: page.view)
         check("a press passes on only what it may set off, and says what it dropped",
-              mixed.pressed == "Posts everything" && mixed.dropped == ["decide", "openLink", "undo"], "\(mixed)")
+              mixed.pressed == "Posts everything" && mixed.dropped == ["decide", "openLink", "openDocument", "undo"], "\(mixed)")
         check("so the app hears only expand", posts() == ["item=0 presentation=p1 type=expand version=1"], posts().joined(separator: "\n      "))
         // Once the press is over, the page's messages go on as before.
         page.posted.removeAll()
@@ -85,3 +88,4 @@ func pressing(folder: URL) async {
         check("a label is one line of text", script.refused == "a label is one line", script.refused ?? "pressed")
     }
 }
+#endif

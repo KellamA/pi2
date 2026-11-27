@@ -299,7 +299,10 @@ Task { @MainActor in
         await narrow(folder: url, pictures: pictures)
         await presenting(folder: url, pictures: pictures)
         await presentingBridge(folder: url)
+        // TranscriptPress exists only in a development build; this target has no PI2_DEVELOPMENT of its own.
+        #if DEBUG
         await pressing(folder: url)
+        #endif
         await presentingDrawn()
     } else {
         check("the conversation page is found", false, "no index.html in \(url.path); run from app/ or pass --page <folder>")

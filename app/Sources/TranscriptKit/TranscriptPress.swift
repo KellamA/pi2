@@ -15,8 +15,9 @@ import WebKit
 /// it is drawn in a view of its own (`PresentedPageView`), which this never looks in.
 ///
 /// Answers for the person stay with `scripts/test-copy answer`, which the copy's engine checks against its key: while a
-/// press is in flight, and for a moment after, the view passes on only the page's messages in `mayFollow`, and drops the
-/// rest (`TranscriptWebKitView.received`), so a press can never decide, answer, undo or open a link, whatever the page did.
+/// press runs, and for 300 ms after, the view passes on only the page's messages in `mayFollow` and drops the rest
+/// (`TranscriptWebKitView.received`). That covers what the pressed control's handler posts at once; the page's own scripts
+/// post only at once, and a model's text cannot add a handler, so nothing else gets through.
 @MainActor
 public enum TranscriptPress {
     /// The content world the press runs in: the page's own scripts are in `.page` and cannot reach it.
@@ -25,10 +26,11 @@ public enum TranscriptPress {
     /// What the page may ask of the app because of a press: what stays inside the copy and the engine does not keep for
     /// the person. Everything else the page posts during a press is dropped: `decide`, `answer`, `answerNeed`, `choose`
     /// and `undo`, which the engine takes only from the app because they answer for the person or undo what they set,
-    /// and `openLink`, which would open the person's browser. A new kind is added here when a test needs it, in review.
+    /// and `openLink`, which would open the person's browser, and `openDocument`, which would open a file in another
+    /// app. A new kind is added here when a test needs it, in review.
     static let mayFollow: Set<String> = [
         "ready", "older", "copy", "openChat", "fork", "retry", "edit", "version", "image", "output", "save", "savePicture",
-        "openDocument", "saveDocument", "showFile", "fileMenu", "presentedImage", "expand",
+        "saveDocument", "showFile", "fileMenu", "presentedImage", "expand",
     ]
 
     /// How long after the press's script returns the view still filters what the page posts: the page posts at once in

@@ -223,6 +223,6 @@ try {
 	}
 	if (summary !== undefined) console.log(`${summary} in ${suffix}.`);
 } catch (error) {
-	console.error(`test-copy: ${error.message.replace(/[\r\n]+/g, ' ')}`);
+	console.error(`test-copy: ${error.message.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')}`);
 	process.exitCode = 1;
 }
