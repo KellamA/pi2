@@ -232,6 +232,43 @@ struct ConversationsTests {
         #expect(feed.notShown + feed.text.utf16.count == big.utf16.count)
     }
 
+    // MARK: - The shared follower (EngineKit)
+
+    @Test func theFollowerJoinsThePartsInOrderAndStopsAtTheEnd() async throws {
+        let feed = BackgroundOutputFollower(id: "bg-3")
+        var asks: [(from: Int, wait: Int)] = []
+        let answers = [try output(total: 6, from: 0, "hello\n"), try output(running: false, total: 12, from: 6, "world\n")]
+        await feed.follow({ from, wait in
+            asks.append((from, wait))
+            return answers[asks.count - 1]
+        }, connected: { true })
+        #expect(feed.text == "hello\nworld\n")
+        #expect(feed.replaced == 1)
+        #expect(feed.notShown == 0)
+        #expect(feed.latest?.running == false)
+        #expect(feed.problem == nil)
+        #expect(asks.map(\.from) == [0, 6])
+        #expect(asks.map(\.wait) == [0, 20])
+    }
+
+    @Test func theFollowerStopsWhenItsTaskIsCancelled() async throws {
+        let feed = BackgroundOutputFollower(id: "bg-3")
+        var asks = 0
+        // A command that prints without end, each answer at once: only cancelling ends the follow.
+        let task = Task {
+            await feed.follow({ from, wait in
+                asks += 1
+                return try self.output(total: from + 1, from: from, "x")
+            }, connected: { true })
+        }
+        while asks == 0 { await Task.yield() }
+        task.cancel()
+        await task.value
+        // The follow is over (await above returned) and did not go on asking: the pause between answers lets it stop.
+        #expect(asks <= 2)
+        #expect(feed.problem == nil)
+    }
+
     // MARK: - A new project
 
     @Test func foldersAreReadFromTheAnswerAndATakenOneCannotBeChosen() throws {

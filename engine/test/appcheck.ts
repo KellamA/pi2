@@ -57,7 +57,10 @@ const log = (...parts: unknown[]) => logged.push(parts.join(" "));
 if (process.argv[2] === "out-of-descriptors") {
 	const { bundle, asked } = helper("out-of-descriptors", [], { app: true, why: "the stand-in app" });
 	const { socket, close } = await connection();
-	const check = new AppCheck(bundle, log, PATIENCE_MS);
+	// A check that could not start is kept for a moment (#978). The moment the test uses is short, so that the wait
+	// for it below is not a real second.
+	const UNSTARTED_MS = 50;
+	const check = new AppCheck(bundle, log, PATIENCE_MS, UNSTARTED_MS);
 	const held: number[] = [];
 	try {
 		while (true) held.push(openSync("/dev/null", "r"));
@@ -67,8 +70,13 @@ if (process.argv[2] === "out-of-descriptors") {
 	const first = check.verdict(socket);
 	const refused = await first;
 	const second = check.verdict(socket);
-	assert.notEqual(second, first, "a check that could not be made is not kept");
 	const refusedAgain = await second;
+	// Each failed spawn leaves a pipe handle behind (#978), so a burst of requests for one connection must not each
+	// start a spawn: counted here, asserted below, where a failure can be printed with the descriptors free again.
+	const handles = () => process.getActiveResourcesInfo().length;
+	const before = handles();
+	for (let i = 0; i < 300; i++) await check.verdict(socket);
+	const grown = handles() - before;
 	// An `error` event of the helper's that nothing listened to would end this process here, as it would the engine.
 	await new Promise((resolve) => setTimeout(resolve, 200));
 	for (const fd of held) closeSync(fd);
@@ -77,7 +85,12 @@ if (process.argv[2] === "out-of-descriptors") {
 		assert.match(verdict.why, /^the connection could not be checked: spawn .*pi2-peer E[MN]FILE$/);
 	}
 	assert.equal(asked().length, 0, "the helper could not be started");
+	// The check was kept for the moment between failed spawns (#978), so the burst started only a few. With the keep
+	// taken out, the burst starts one per request, and this is hundreds.
+	assert.ok(grown <= 6, `300 checks of one connection out of descriptors left ${grown} handles behind, one per failed spawn`);
+	assert.equal(second, first, "a check that could not start is kept for a moment");
 	console.log("ok  out of descriptors: the connection could not be checked, twice, and is not the app's");
+	// The wait above outlives the moment: with descriptors free again, the same connection is checked again.
 	assert.deepEqual(await check.verdict(socket), { app: true, why: "the stand-in app" });
 	assert.equal(asked().length, 1, "once descriptors are free, the next request checks again");
 	assert.deepEqual(await check.verdict(socket), { app: true, why: "the stand-in app" });
