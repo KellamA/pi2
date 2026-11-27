@@ -2735,10 +2735,12 @@ try {
 			return { reply, took, before, peak };
 		};
 		// Measured as in step 1 (#1030): eight rounds of each (sixteen for the title), alternating which comes first, and the
-		// median of the differences, as the step above says. A task is handed to an item of its own each round, since an item
-		// assigned once takes the same task no further. The title alone stays on the mean, with the rounds shown in its
-		// message: its fault reads 70 MB against its 69.2 bound as a mean, and its reading moves by a whole text in a round,
-		// so its fault's median (70.5 in the guard-out run of #1030) is not clearly above the one-text bound.
+		// differences held in the result, which each assertion below takes its own figure of. A task is handed to an item of
+		// its own each round, since an item assigned once takes the same task no further. The path takes the median, as the
+		// step above says. The task and the title stay on the mean, with the rounds shown in their messages: with the
+		// task's guard out the median passed in one run of two (#1030), so the mean, which read 170 and 209 MB against the
+		// 69 MB bound, is kept; with the title's out, its fault's median (70.5 in the guard-out run of #1030) is not clearly
+		// above the one-text bound.
 		const grew = (one: { before: number; peak: number }) => one.peak - one.before;
 		const mean = (values: number[]) => values.reduce((sum, one) => sum + one, 0) / values.length;
 		const median = (values: number[]) => { const sorted = [...values].sort((one, another) => one - another); const middle = sorted.length / 2; return sorted.length % 2 ? sorted[Math.floor(middle)]! : (sorted[middle - 1]! + sorted[middle]!) / 2; };
@@ -2762,10 +2764,10 @@ try {
 		});
 		const { table, sized } = task;
 		const mb = (bytes: number) => Math.round(bytes / 1e6);
-		assert.ok(task.median <= huge.length, `with the engine grown by ${mb(task.median)} MB more than the table's refusal of the same line, in the median of its ${task.rounds} rounds (rounds: ${task.differences.map(mb).join(", ")}) (the table's refusal grew it by ${mb(task.tableGrowth)} MB on average), where a copy of the ${mb(huge.length)} MB task would show in every round`);
+		assert.ok(task.more <= huge.length, `with the engine grown by ${mb(task.more)} MB more than the table's refusal of the same line, in the mean of its ${task.rounds} rounds (rounds: ${task.differences.map(mb).join(", ")}) (the table's refusal grew it by ${mb(task.tableGrowth)} MB on average), where a copy of the ${mb(huge.length)} MB task would show in every round`);
 		assert.equal(table.reply.error, ONLY_ON_THE_MAC);
 		assert.equal(sized.reply.error, over("A task", 20_000, huge.length), "a task of 66 MiB is refused");
-		console.log(`    66 MiB task: refused by the table in ${Math.round(table.took)} ms, for its size in ${Math.round(sized.took)} ms; the median of its ${task.rounds} rounds grew the engine by ${mb(task.median)} MB more than the table's refusal (rounds: ${task.differences.map(mb).join(", ")})`);
+		console.log(`    66 MiB task: refused by the table in ${Math.round(table.took)} ms, for its size in ${Math.round(sized.took)} ms; the mean of its ${task.rounds} rounds grew the engine by ${mb(task.more)} MB more than the table's refusal (rounds: ${task.differences.map(mb).join(", ")})`);
 		assert.ok(sized.took <= 3 * table.took + 2_000, `in ${Math.round(sized.took)} ms, where the same line refused by the table took ${Math.round(table.took)} ms`);
 		// The same in fields the devices' log's summary reads (#940's security read): a refused request is summarized by its
 		// method alone, so nothing cleans, masks or splits the title or the path first. Each field keeps its own bound.
