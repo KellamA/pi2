@@ -1764,7 +1764,11 @@ function pushesKept(): string[] {
 	}
 }
 
-/** The heap the bounded engine below may grow to, in MB (#1030): above what the three refusals there need, below what any of them needs with its bound taken out. */
+/**
+ * The heap the bounded engine below may grow to, in MB (#1030): above what the three refusals there need, below what any
+ * of them needs with its bound taken out. A single copy of the text made and dropped fits under it, which is why the
+ * resident-size figure keeps its bound beside it.
+ */
 const BOUNDED_HEAP_MB = 448;
 /** How many times over each request is sent under it: with a bound out, the engine ends in the middle of that flood, not after it. */
 const BOUNDED_ROUNDS = 4;
@@ -2703,10 +2707,12 @@ try {
 		// What each request grew the engine by, in the whole process's resident size, is what the collector moves by two or
 		// three times the line's size from one request to the next, so one reading cannot tell a copy from a pause (#1030).
 		// Each request is made several times instead (sixteen for this text, eight for the others), in alternation
-		// with the table's refusal of the same line and with the table first every other round, and the figures of those
-		// rounds are printed beside the bound below, for the next failure to be read. Nothing is asserted of them: a round or
-		// two thrown by a busy runner's memory carried the mean past a bound twice on GitHub's runners with nothing wrong
-		// (#1030). What is asserted of the engine's memory is the heap it may not grow past, on an engine of its own.
+		// with the table's refusal of the same line and with the table first every other round, and what is asserted of the
+		// figures is the median of the differences, on a machine of 12 GB or more (a smaller one prints them, #1060): a fault
+		// shows in every round, so the middle round shows it, while a round or two thrown by a busy runner's memory — which
+		// carried the mean past its bound on GitHub's runners twice (#1030) — do not move it. The text's own size, or half of
+		// it, is the bound: a refusal that read it or kept it would show, and one that made a single copy would too, which the
+		// heap the engine may not grow past, on an engine of its own below, lets pass. That heap is asserted everywhere.
 		const grew = (one: { before: number; peak: number }) => one.peak - one.before;
 		const mean = (values: number[]) => values.reduce((sum, one) => sum + one, 0) / values.length;
 		const median = (values: number[]) => { const sorted = [...values].sort((one, another) => one - another); const middle = sorted.length / 2; return sorted.length % 2 ? sorted[Math.floor(middle)]! : (sorted[middle - 1]! + sorted[middle]!) / 2; };
@@ -2730,13 +2736,16 @@ try {
 		const typed = await againstTable("typed", "submit", async () => ({ id: (await ask("conversation.create", { model: { provider: "demo", modelId: "demo-1" } })).result.id, text: huge }), 16);
 		const { table, sized } = typed;
 		const mb = (bytes: number) => Math.round(bytes / 1e6);
-		// What this guards is not the process's memory, which the collector moves by hundreds of MB from one round to the
-		// next (#1030), but what the engine keeps alive at once: an engine of the test's own, on a data folder of its own,
-		// whose heap V8 may not grow past, is sent the same line four times over. A refusal that read or kept the text has a
-		// text more alive at once and ends the engine in the middle of the flood; a refusal that copies none of it is
-		// answered and the engine carries on. Measured on a quiet Mac at `nice -n 15`, with this bound taken out of
-		// `engine/src/answers.ts` by hand as #1040's and #1059's reads did: refused in ten runs of ten at 448 MB, and with
-		// it out the engine ends in ten runs of ten there, and at 1024 MB too.
+		// Two measures, and two faults (#1030). The rounds' figure is asserted on a machine of 12 GB or more and printed on
+		// a smaller one (#1060); it catches one copy of the text made and dropped, 69 MB against a bound of 34.6.
+		// The bound below is asserted everywhere, and catches a text read or kept: it is not the process's memory, which the
+		// collector moves by hundreds of MB from one round to the next, but what the engine keeps alive at once. An engine of
+		// the test's own, on a data folder of its own, whose heap V8 may not grow past, is sent the same line four times over.
+		// A refusal that read or kept the text has a text more alive at once and ends the engine in the middle of the flood;
+		// a refusal that copies none of it is answered and the engine carries on. Measured on a quiet Mac at `nice -n 15`,
+		// with this bound taken out of `engine/src/answers.ts` by hand as #1040's and #1059's reads did: refused in ten runs
+		// of ten at 448 MB, and with it out the engine ends in ten runs of ten there, and at 1024 MB too.
+		memoryOnlySaid(typed.more <= huge.length / 2, `with the engine grown by ${mb(typed.more)} MB more than the table's refusal of the same line, in the median of its ${typed.rounds} rounds (rounds: ${typed.differences.map(mb).join(", ")}) (the table's refusal grew it by ${mb(typed.tableGrowth)} MB on average), where a copy of the ${mb(huge.length)} MB text would show in every round`);
 		const boundedEngine = await boundedNow();
 		const boundedTyped = await boundedEngine.flood("typed", "submit", async () => ({ id: await boundedEngine.conversation(), text: huge }), BOUNDED_ROUNDS);
 		assert.deepEqual(boundedTyped.answered, Array.from({ length: BOUNDED_ROUNDS }, () => overMessage("66.0 MB")), `with an engine of the test's own held to ${BOUNDED_HEAP_MB} MB of heap, ${boundedTyped.answered.filter((why) => why !== undefined).length} of its ${BOUNDED_ROUNDS} rounds of the ${mb(huge.length)} MB text were refused with it still up, where a refusal that read or kept the text needs a text more alive at once and ends it`);
@@ -2922,10 +2931,12 @@ try {
 		});
 		const { table, sized } = task;
 		const mb = (bytes: number) => Math.round(bytes / 1e6);
-		// As the typed text above (#1030): a bound on what the engine keeps alive at once, not on the process's memory, sent
-		// four times over, each task to an item of its own. Measured on a quiet Mac at `nice -n 15`, with this bound taken
-		// out of `meet` in `engine/src/answers.ts` by hand: refused in ten runs of ten at 448 MB, and with it out the
-		// engine ends in ten runs of ten there.
+		// As the typed text above (#1030): the rounds' figure on a machine of 12 GB or more, which catches one copy made and
+		// dropped, and beside it a bound asserted everywhere on what the engine keeps alive at once, sent four times over,
+		// each task to an item of its own. Measured on a quiet Mac at `nice -n 15`, with this bound taken out of `meet` in
+		// `engine/src/answers.ts` by hand: refused in ten runs of ten at 448 MB, and with it out the engine ends in ten runs
+		// of ten there.
+		memoryOnlySaid(task.more <= huge.length, `with the engine grown by ${mb(task.more)} MB more than the table's refusal of the same line, in the mean of its ${task.rounds} rounds (rounds: ${task.differences.map(mb).join(", ")}) (the table's refusal grew it by ${mb(task.tableGrowth)} MB on average), where a copy of the ${mb(huge.length)} MB task would show in every round`);
 		const boundedTask = await (await boundedNow()).flood("task", "work.act", async () => {
 			const on = await boundedNow();
 			return { projectId: on.project, id: await on.item(), action: "assign", agentId: on.agent, task: huge };
@@ -2958,15 +2969,16 @@ try {
 		// sent the same 66 MiB path four times over, and every round is refused with it still up. Measured on a quiet Mac at
 		// `nice -n 15`, with the summary made for every refused request in `engine/src/remote.ts`'s `deviceRequest` by hand
 		// (the method-only line still logged): refused in ten runs of ten, and the engine ends in ten runs of ten with the
-		// summary made. The title is not held to the same: made for a refused title alone, the summary is a copy the engine
-		// makes and drops, 19 MB of resident size under its bound (the mean of its rounds below reads it), and at this limit
+		// summary made. The title is not held to the heap: made for a refused title alone, the summary is a copy the engine
+		// makes and drops, 19 MB of resident size under its bound (the mean of its rounds above reads it), and at this limit
 		// the engine lives, ten runs of ten: the title keeps the mean of its rounds, and its time assertion is what fails
-		// for that fault, as #1040 said.
+		// for that fault, as #1040 said. Both fields keep that mean too, asserted where #1060 asserts it: it catches one copy
+		// the heap lets through, as a single 69 MB text made and dropped would pass at 448 MB.
 		const boundedPath = await (await boundedNow()).flood("path", "files.preview", async () => ({ id: await (await boundedNow()).conversation(), path: "/ŧ".repeat(huge.length / 2) }), BOUNDED_ROUNDS);
 		for (const read of reads) {
 			const figure = read.measure === "median" ? read.median : read.more;
+			memoryOnlySaid(figure <= read.texts * huge.length, `with the engine grown by ${mb(figure)} MB more than the table's refusal of the same line, in the ${read.measure} of its ${read.rounds} rounds (rounds: ${read.differences.map(mb).join(", ")}) (the table's refusal grew it by ${mb(read.tableGrowth)} MB on average), where the summary reading the ${mb(huge.length)} MB ${read.what} would show in every round`);
 			if (read.what === "path") assert.deepEqual(boundedPath.answered, Array.from({ length: BOUNDED_ROUNDS }, () => overTheRest), `with an engine of the test's own held to ${BOUNDED_HEAP_MB} MB of heap, ${boundedPath.answered.filter((why) => why !== undefined).length} of its ${BOUNDED_ROUNDS} rounds of the ${mb(huge.length)} MB path were refused with it still up, where the summary reading the path would show in every round and ends it`);
-			else memoryOnlySaid(figure <= read.texts * huge.length, `with the engine grown by ${mb(figure)} MB more than the table's refusal of the same line, in the ${read.measure} of its ${read.rounds} rounds (rounds: ${read.differences.map(mb).join(", ")}) (the table's refusal grew it by ${mb(read.tableGrowth)} MB on average), where the summary reading the ${mb(huge.length)} MB ${read.what} would show in every round`);
 			assert.equal(read.sized.reply.error, overTheRest, `a ${read.what} of 66 MiB is past the rest's count`);
 			assert.ok(read.sized.took <= 2 * read.table.took + 1_000, `in ${Math.round(read.sized.took)} ms, where the same line refused by the table took ${Math.round(read.table.took)} ms`);
 			const entry = (await app.call("devices.log", { device: phone.id })).entries.find((one: any) => one.method === read.method && one.why === overTheRest);
