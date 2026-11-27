@@ -2251,6 +2251,53 @@ try {
 	assert.equal(clippedDetail, deep.stack.slice(0, MAX_FAULT_DETAIL), `its stack is clipped to ${MAX_FAULT_DETAIL} characters, which is where it was cut`);
 	const clippedLine = `${clipped.text} ${clippedDetail}`;
 	assert.ok(clippedLine.length <= clipped.text.length + MAX_FAULT_DETAIL + 1, `the whole line is no longer than the fixed words and the bound: ${clippedLine.length} characters`);
+	// A fault that is not an error, or an error whose words are not text, is said in words of its own and still bounded
+	// (#905's read): engine.log never takes a thrown value as it came, and nothing a step throws can throw out of the fault
+	// handler itself. A value that is not an error is never asked for its own text: an object's toString can throw, and its
+	// keys can number in the hundreds of thousands, which log's inspection writes out whole.
+	const wide = Object.fromEntries(Array.from({ length: 100_000 }, (_, i) => [`k${i}`, i]));
+	const numberedStack = new Error("a stack that is not text");
+	Object.defineProperty(numberedStack, "stack", { value: 42, configurable: true });
+	const throwingStack = new Error("a stack that throws when read");
+	Object.defineProperty(throwingStack, "stack", { get: () => { throw new Error("no stack here"); }, configurable: true });
+	const faults: [string, unknown, string][] = [
+		["a text of 100,000 characters", "S".repeat(100_000), "S".repeat(MAX_FAULT_DETAIL)],
+		["an object of 100,000 keys", wide, "a value that is not an error"],
+		["an error whose stack is a number", numberedStack, "a stack that is not text"],
+		["an error whose stack throws when read", throwingStack, "a fault that could not be put in words"],
+		["an object whose toString is not a function", { toString: 1 }, "a value that is not an error"],
+	];
+	let faultsAt = 400_001;
+	for (const [what, value, inWords] of faults) {
+		const at = faultsAt++;
+		let said: { text: string; detail: unknown } | null = null;
+		assert.doesNotThrow(() => { said = sayFault(`fault-words-${at}`, "relay", "inbox.answer", false, value, at); }, `a fault of ${what} is said, not thrown`);
+		const detail = String(said!.detail);
+		assert.equal(detail, inWords.slice(0, MAX_FAULT_DETAIL), `a fault of ${what} is said in words of its own`);
+		assert.ok(detail.length <= MAX_FAULT_DETAIL, `a fault of ${what} adds at most ${MAX_FAULT_DETAIL} characters to engine.log, not ${detail.length}`);
+	}
+	// The shared entry's other line, with nothing counted: a device past the table's bound whose fault comes inside the
+	// shared entry's own minute, when the ceiling has room for it. The times are far past every step above and past the
+	// engine's own clock, so that the entries its own faults made are over, and the table filled and its entries' minutes
+	// renewed by hand: 30 lines a minute is the ceiling's bound, so the fill takes three minutes and one call more, and the
+	// call at 180_000 is the last held device's own minute beginning the ceiling's, owing nothing, so it says nothing.
+	const boundAt = 4_000_000_000_000;
+	const held: string[] = [];
+	for (const [after, count] of [[0, 30], [60_000, 30], [120_000, 3], [150_000, 1]] as const) {
+		for (let i = 0; i < count; i++) {
+			const device = `bound-device-${held.length}`;
+			const one = sayFault(device, "relay", "inbox.answer", false, new Error("a fault of the table's bound;"), boundAt + after);
+			assert.ok(one !== null && one.detail !== undefined, `the table takes ${held.length + 1} devices' first faults, each said`);
+			held.push(device);
+		}
+	}
+	assert.equal(held.length, 64, `the table holds 64 devices, and each of the ${held.length} faults was said`);
+	assert.equal(sayFault(held.at(-1)!, "relay", "inbox.answer", false, new Error("a fault of the table's bound;"), boundAt + 180_000), null, "a device inside its minute says nothing, and its call is where the ceiling's next minute begins");
+	for (const device of held) sayFault(device, "relay", "inbox.answer", false, new Error("a fault of the table's bound;"), boundAt + 210_000);
+	const alone = sayFault("past-the-bound-alone", "relay", "inbox.answer", false, new Error("a fault of the table's bound;"), boundAt + 240_000);
+	assert.ok(alone !== null, "a device past the table's bound is said when nothing was counted for the shared entry");
+	assert.equal(alone!.text, "remote: a device's request failed in the engine (a device past the table's bound):", "with words of its own, and no \"again\": nothing came since the shared entry's last line");
+	assert.equal(alone!.detail, undefined, "and never with a stack, as a first is");
 	assert.deepEqual((await ask("pushes.set", { limits: true, project: { id: made.id, quiet: false } })).result.quiet, []);
 	assert.deepEqual((await ask("pushes.follow", { projectId: made.id, activity, on: false })).result.follows, []);
 	for (const deadline = Date.now() + PATIENT_MS; ; await new Promise((resolve) => setTimeout(resolve, 50))) {
