@@ -878,6 +878,50 @@ const MAX_FAULT_LINES = 30;
 const MAX_FAULT_METHODS = 3;
 
 /**
+ * The most characters of a fault's own words that one line is said with: a fault can carry a deep stack, or a value a
+ * phone chose, and engine.log is never rotated. The line's fixed words come on top of it.
+ */
+export const MAX_FAULT_DETAIL = 4096;
+
+/** What a fault is said with when it is an error that has neither a stack nor a message: fixed words of our own. */
+const ERROR_WITH_NO_WORDS = "an error with no words";
+
+/** What a fault is said with when it is an object, an array or a function: never its own text, which can throw or be vast. */
+const NOT_AN_ERROR = "a value that is not an error";
+
+/** What a fault is said with when even reading it threw: a getter on `stack`, say. */
+const UNSPEAKABLE_FAULT = "a fault that could not be put in words";
+
+/**
+ * A fault's own words, always a string of at most `MAX_FAULT_DETAIL` characters, and never a throw of its own: a fault
+ * is `unknown` out of a `catch`, so it can be anything a step threw, and `engine.log` is never rotated.
+ *
+ * An error is said by its `stack`, its `message` when the stack is no string, or `ERROR_WITH_NO_WORDS`; a string, a
+ * number, a boolean, a bigint, a symbol, `undefined` and `null` by `String` of themselves (which does not throw for any
+ * of them); anything else — an object, an array, a function — by `NOT_AN_ERROR`, never `String(value)` or
+ * `JSON.stringify(value)`, since an object's own `toString` can throw and its keys can number in the hundreds of
+ * thousands, which `util.inspect` in `log` writes out (devices.ts's `said` refuses an object's text for the same
+ * reason). Reading a fault's `stack` can throw as well, so the whole is in a `try`.
+ */
+function faultWords(error: unknown): string {
+	try {
+		const words =
+			error instanceof Error
+				? typeof error.stack === "string"
+					? error.stack
+					: typeof error.message === "string"
+						? error.message
+						: ERROR_WITH_NO_WORDS
+				: typeof error === "string" || typeof error === "number" || typeof error === "boolean" || typeof error === "bigint" || typeof error === "symbol" || error === undefined || error === null
+					? String(error)
+					: NOT_AN_ERROR;
+		return words.slice(0, MAX_FAULT_DETAIL);
+	} catch {
+		return UNSPEAKABLE_FAULT;
+	}
+}
+
+/**
  * What is said of faults while a minute lasts, by the device's id alone: when its last line was said (`at`), how many
  * of its faults came since (`more`), and up to `MAX_FAULT_METHODS` names of the methods they were for, each a name
  * only a list places (answers.ts), never a device's text. A device choosing paths, methods and after-or-failed reaches
@@ -927,13 +971,14 @@ function faultWindow(device: string, now: number): { entry: FaultSaid; fresh: bo
 /**
  * What engine.log should say of a fault of a device's request, or null while nothing more is to be said: the first
  * fault of a device in a minute with its stack, and one line when the minute is over and more came, saying how many and
- * naming at most three placed methods. At most `MAX_FAULT_LINES` lines a minute, all devices together. The fault's own
- * words go with the first line, never the request's: a fault can repeat what the phone sent. `_path` is no longer read:
- * the count is the device's alone, and a test walks the four paths to show they change nothing.
+ * naming at most three placed methods. At most `MAX_FAULT_LINES` lines a minute, all devices together, and at most
+ * `MAX_FAULT_DETAIL` characters of the fault's own words with the line (`faultWords`), never the request's: a fault can
+ * repeat what the phone sent. `_path` is no longer read: the count is the device's alone, and a test walks the four paths to
+ * show they change nothing.
  */
 export function sayFault(device: string, _path: DevicePath, method: string, after: boolean, error: unknown, now = Date.now()): { text: string; detail: unknown } | null {
 	const what = after ? "remote: a device's request was answered, and a fault came after the answer" : "remote: a device's request failed in the engine";
-	const detail = error instanceof Error ? (error.stack ?? error.message) : error;
+	const detail = faultWords(error);
 	const named = devicePlacement(method) === null ? null : method;
 	const { entry, fresh } = faultWindow(device, now);
 	let line: { text: string; detail: unknown } | null;
@@ -944,8 +989,10 @@ export function sayFault(device: string, _path: DevicePath, method: string, afte
 		entry.at = now;
 		entry.more = 0;
 		// The shared entry is never given a stack: it is no one device's first fault, and a stack says which code failed.
-		if (counted === 0) line = { text: `${what}${entry.shared ? "" : " again"}:`, detail: entry.shared ? undefined : detail };
-		else line = { text: `${what} again, and ${counted} more since the last one said${names.length > 0 ? ` (${names.join(", ")})` : ""}:`, detail: undefined };
+		// Which entry it is, both its lines say, so that neither can be read as a device's first fault either.
+		const which = entry.shared ? " (a device past the table's bound)" : "";
+		if (counted === 0) line = { text: `${what}${which}${entry.shared ? "" : " again"}:`, detail: entry.shared ? undefined : detail };
+		else line = { text: `${what} again${which}, and ${counted} more since the last one said${names.length > 0 ? ` (${names.join(", ")})` : ""}:`, detail: undefined };
 	} else {
 		entry.more += 1;
 		if (named !== null && entry.methods.length < MAX_FAULT_METHODS && !entry.methods.includes(named)) entry.methods.push(named);
