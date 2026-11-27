@@ -228,9 +228,10 @@ function callLine(argumentsValue: unknown): { line: string; whole: boolean } {
 
 /**
  * The tools whose approval card the Mac puts in words, or shows more of than the call's line (InboxCard): an app, a site, a schedule's timing and prompt, a sub-chat's task.
- * The app's `InboxCard.inWords` (app/Sources/pi2/InboxViews.swift) names the same tools: change the two together.
+ * The app's `InboxCard.inWords` (app/Sources/pi2/InboxViews.swift) names the same tools: `test/pushes.ts` reads that
+ * file and fails when the two differ (#1046).
  */
-const SHOWN_IN_WORDS: ReadonlySet<string> = new Set(["computer", "browser", "schedule_task", "delegate"]);
+export const SHOWN_IN_WORDS: ReadonlySet<string> = new Set(["computer", "browser", "schedule_task", "delegate"]);
 
 type Approval = Extract<NeedItem, { kind: "approval" }>;
 /**

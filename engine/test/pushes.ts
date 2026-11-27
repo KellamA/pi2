@@ -5,6 +5,7 @@
 // nothing for a device revoked or suspended. engine/test/devices.ts checks the same through a real engine, at the sweep.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { forDevice } from "../src/remote.ts";
 import { APPROVAL_DEPTH, hidesSomething, KEY_HIDDEN, PART_HIDDEN, TOO_DEEP } from "../src/devices.ts";
 import type { NeedItem } from "../src/needs.ts";
@@ -26,6 +27,7 @@ import {
 	type PushParts,
 	Pushes,
 	type PushSettings,
+	SHOWN_IN_WORDS,
 } from "../src/pushes.ts";
 
 function step(name: string): void {
@@ -792,4 +794,26 @@ const alerts = (pushes: Push[]) => pushes.filter((push): push is Extract<Push, {
 	const body: AlertBody = needAlert(need(), false, "Pi Squared", 5);
 	assert.equal(Object.getPrototypeOf(body), Object.prototype);
 	assert.equal(JSON.stringify(body), JSON.stringify(JSON.parse(JSON.stringify(body))));
+}
+
+// The app puts an approval in words for the same tools SHOWN_IN_WORDS does: the two name each other in comments only,
+// so this holds them together (#1046), the way devices.ts holds the phone's longest line to the engine's.
+{
+	const table: Record<string, string> = {
+		"targetApp != nil": "computer",
+		isBrowser: "browser",
+		isSchedule: "schedule_task",
+		isWorktree: "delegate",
+	};
+	const source = readFileSync(new URL("../../app/Sources/pi2/InboxViews.swift", import.meta.url), "utf8");
+	const lines = source.split("\n").filter((line) => /private var inWords: Bool \{ (.+) \}/.test(line));
+	assert.equal(lines.length, 1, "InboxViews.swift no longer has inWords on one line: see #1046");
+	const inside = lines[0].match(/private var inWords: Bool \{ (.+) \}/)![1];
+	const tools = inside.split("||").map((term) => {
+		const tool = table[term.trim()];
+		assert.ok(tool, `inWords has a term this test does not know: ${term.trim()}. Add its tool to SHOWN_IN_WORDS (engine/src/pushes.ts) and to this table.`);
+		return tool;
+	});
+	assert.deepEqual(tools.sort(), [...SHOWN_IN_WORDS].sort(), "SHOWN_IN_WORDS and the app's InboxCard.inWords name different tools: change the two together");
+	step("SHOWN_IN_WORDS names the same tools as the app's InboxCard.inWords, read from InboxViews.swift");
 }
