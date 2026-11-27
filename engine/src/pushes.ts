@@ -26,7 +26,7 @@
 import type { Client } from "./clients.ts";
 import { broadcastWatchers } from "./clients.ts";
 import { isChat } from "./chat.ts";
-import { activeDevices, hidesSomething, maskKeys, maskValue, PART_HIDDEN, pairedDevice, remoteHooks, remoteOn, revokedWatchers, unhidden } from "./devices.ts";
+import { activeDevices, hidesSomething, maskKeys, maskValue, PART_HIDDEN, pairedDevice, pushClockChanged, remoteHooks, remoteOn, revokedWatchers, unhidden } from "./devices.ts";
 import type { Feature } from "./features.ts";
 import type { NeedItem } from "./needs.ts";
 import { orchestratorRole } from "./orchestrator.ts";
@@ -90,7 +90,7 @@ export type PushKind = Push["kind"];
 type Unaddressed = Push extends infer One ? (One extends Push ? Omit<One, "id" | "device"> : never) : never;
 
 /** Why the relay refused a push, as pi² Remote passes it on (relay/README.md, "Pushes"). */
-export const REFUSALS = ["no-token", "token-dead", "push-limit", "push-later", "unavailable", "unknown-device"] as const;
+export const REFUSALS = ["no-token", "token-dead", "push-limit", "push-later", "unavailable", "unknown-device", "clock"] as const;
 export type Refusal = (typeof REFUSALS)[number];
 /**
  * pi² Remote's own words for a push it will never send as it is, however often it is asked (7.1): a body that does not
@@ -158,9 +158,16 @@ export const HOLDS: Readonly<Record<Refusal, number | null>> = {
 	"token-dead": null,
 	"unknown-device": null,
 	"push-later": MINUTE,
+	"clock": MINUTE,
 	"push-limit": 15 * MINUTE,
 	unavailable: HOUR,
 };
+/**
+ * How long a Live Activity push handed to pi² Remote is waited for before it counts as not refused for the clock: pi²
+ * Remote answers a refused push at once, so one left unanswered that long was taken (#915). It is the hold a `clock`
+ * refusal leaves (HOLDS), so that the push sent when that hold ends is the one whose answer settles it.
+ */
+const CLOCK_SETTLE_MS = MINUTE;
 /** While pi² Remote is not running, what is owed is looked at again this often. */
 const NOT_READY_RETRY_MS = 30_000;
 
@@ -466,6 +473,11 @@ export type PushParts = {
 	conversation(id: number): { projectId: string | null; chat: boolean } | undefined;
 	/** The current conversation with a project's orchestrator: its project and the orchestrator's name; else undefined. */
 	orchestrator(id: number): { projectId: string; agent: string | null } | undefined;
+	/**
+	 * The relay last refused a Live Activity push for this Mac's clock, or no longer does (#915): the Devices page is
+	 * told, once for each and not at every refusal.
+	 */
+	clock?(wrong: boolean): void;
 	/** Says something in engine.log. */
 	log?(text: string): void;
 };
@@ -499,6 +511,11 @@ export class Pushes {
 	#holds = new Map<string, Hold>();
 	#asked = new Map<string, Asked>();
 	#next = 0;
+	/**
+	 * When the relay last refused a Live Activity push for this Mac's clock, while that still counts (#915): one time for
+	 * the Mac, not a device's, and gone with the engine.
+	 */
+	#clockRefusedAt: number | null = null;
 
 	/** Whether the stored settings are read: until then an event only sets what waits, and nothing is chosen. */
 	#loaded = false;
@@ -740,7 +757,9 @@ export class Pushes {
 	 * while for the limits, a busy push service and a relay with no push key, after which alerts still waiting are
 	 * owed again and gone items named again. A Live Activity is sent its latest numbers when the hold ends; one whose
 	 * token is dead has ended, and is followed no more. A push pi² Remote will never send as it is (DROPPED) is dropped
-	 * alone, and said in engine.log by its id.
+	 * alone, and said in engine.log by its id. A `clock` refusal holds its activity a minute like `push-later`, and is
+	 * also remembered for the Devices page, which says this Mac's clock seems wrong until one of its own activity pushes
+	 * goes unanswered (#915).
 	 */
 	refused(id: string, why: string): boolean {
 		const asked = this.#asked.get(id);
@@ -758,6 +777,12 @@ export class Pushes {
 		}
 		const refusal: Refusal = (REFUSALS as readonly string[]).includes(why) ? (why as Refusal) : "push-later";
 		const now = this.#parts.now();
+		// The relay refuses a Live Activity's numbers for its clock, and pi² Remote inside the trust boundary is still
+		// held to its exact word here: nothing of `why` is shown or logged, and only `clock` is remembered (#915).
+		if (refusal === "clock" && asked.kind === "activity") {
+			if (this.#clockRefusedAt === null) this.#parts.clock?.(true);
+			this.#clockRefusedAt = now;
+		}
 		const hold: Hold = { until: HOLDS[refusal] === null ? null : now + HOLDS[refusal]!, since: now };
 		// No token, or a dead one, is the device's, whatever kind found it: alerts and background pushes alike (7.1's table).
 		const kinds: PushKind[] =
@@ -941,7 +966,32 @@ export class Pushes {
 				if (at !== null) later(at);
 			}
 		}
+		const clock = this.#clockSettles(now);
+		if (clock !== null) later(clock);
 		if (wake !== Number.POSITIVE_INFINITY) this.#parts.wake(wake);
+	}
+
+	/**
+	 * Forgets the clock's refusal once a Live Activity push sent after it has gone CLOCK_SETTLE_MS unanswered, and says so
+	 * to the Devices page (#915). A push refused for the clock is answered at once, so waiting that long for one that was
+	 * not is what tells the two apart: clearing at the hand-off instead would take the warning away and put it back at
+	 * every refusal, a minute apart. Returns when to look again, or null for nothing to wait for.
+	 */
+	#clockSettles(now: number): number | null {
+		const refusedAt = this.#clockRefusedAt;
+		if (refusedAt === null) return null;
+		let look: number | null = null;
+		for (const asked of this.#asked.values()) {
+			if (asked.kind !== "activity" || asked.at <= refusedAt) continue;
+			if (now >= asked.at + CLOCK_SETTLE_MS) {
+				this.#clockRefusedAt = null;
+				this.#parts.clock?.(false);
+				return null;
+			}
+			const at = asked.at + CLOCK_SETTLE_MS;
+			look = look === null ? at : Math.min(look, at);
+		}
+		return look;
 	}
 
 	/** Sends a followed project's latest numbers if they changed and a minute has passed, or `end` once idle long enough; else when to look again. */
@@ -1051,6 +1101,7 @@ export const devicePushes: Feature = (host, engine) => {
 			const item = host.inbox.get(id);
 			return item !== undefined && item.kind === "approval" && hidesSomething(item);
 		},
+		clock: (wrong) => pushClockChanged(wrong),
 		conversation: (id) => {
 			const meta = engine.library().conversations[String(id)];
 			return meta === undefined ? undefined : { projectId: meta.projectId ?? null, chat: isChat(meta) };

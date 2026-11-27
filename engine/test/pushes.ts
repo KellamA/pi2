@@ -46,6 +46,8 @@ function world(options: { devices?: string[]; log?: (text: string) => void } = {
 		ready: true,
 		sent: [] as Push[],
 		wakes: [] as number[],
+		/** What the Devices page was told of the Mac's clock, once for each change (#915). */
+		clocks: [] as boolean[],
 		saved: {} as Record<string, PushSettings>,
 		gated: new Set<string>(),
 		conversations: new Map<number, { projectId: string | null; chat: boolean }>(),
@@ -63,6 +65,7 @@ function world(options: { devices?: string[]; log?: (text: string) => void } = {
 		approvalHidden: (id) => state.gated.has(id),
 		conversation: (id) => state.conversations.get(id),
 		orchestrator: (id) => state.orchestrators.get(id),
+		clock: (wrong) => state.clocks.push(wrong),
 		...(options.log === undefined ? {} : { log: options.log }),
 	};
 	const pushes = new Pushes(parts, {});
@@ -555,6 +558,44 @@ const alerts = (pushes: Push[]) => pushes.filter((push): push is Extract<Push, {
 	later(30_000);
 	assert.equal(sentOf("alert").length, 9);
 	step("the relay's refusals: later a minute, no token until the phone attaches, no push key an hour; what still waits goes after; nothing while pi² Remote is not running");
+}
+
+{
+	// The relay's clock (#915): a Live Activity's numbers refused for the Mac's clock are remembered, the Devices page
+	// is told once while it lasts, the activity waits its minute and goes again, and a push of its own that goes
+	// unanswered a minute clears it, once.
+	const { state, pushes, later, sentOf } = world();
+	const activity = Buffer.alloc(16, 11).toString("base64url");
+	state.conversations.set(1, { projectId: "p1", chat: false });
+	pushes.needs([]);
+	pushes.follow("dev_a", { projectId: "p1", activity, on: true });
+	pushes.runs(new Set([1]));
+	const first = sentOf("activity")[0] as Extract<Push, { kind: "activity" }>;
+	assert.equal(first.state.working, 1);
+	assert.deepEqual(state.clocks, [], "nothing said before a refusal");
+	assert.equal(pushes.refused(first.id, "clock"), true);
+	assert.deepEqual(state.clocks, [true], "the Devices page is told once");
+	// Held a minute, as `push-later` does, and then the fresh numbers go: the refusal is not the end of the activity.
+	assert.deepEqual(pushes.set("dev_a", {}).follows.map((one) => one.activity), [activity], "still followed");
+	const refusedAt = state.clock;
+	later(MINUTE);
+	const second = sentOf("activity")[1] as Extract<Push, { kind: "activity" }>;
+	assert.deepEqual([second.event, second.state.working, second.state.at], ["update", 1, state.clock], "the fresh numbers a minute later");
+	assert.ok(state.wakes.some((at) => at === refusedAt + MINUTE), "woken when the minute's hold ends");
+	assert.deepEqual(state.clocks, [true], "not told again a minute later while the memory still stands");
+	assert.equal(pushes.refused(second.id, "clock"), true);
+	assert.deepEqual(state.clocks, [true], "a second refusal within the minute says nothing new");
+	// The next push goes unanswered: a minute later the memory clears, and the page is told once.
+	later(MINUTE);
+	const third = sentOf("activity")[2] as Extract<Push, { kind: "activity" }>;
+	assert.equal(third.state.at, state.clock);
+	assert.deepEqual(state.clocks, [true], "still remembered while that push is unanswered");
+	later(MINUTE);
+	assert.deepEqual(state.clocks, [true, false], "cleared once one of its own pushes went unanswered, and told once");
+	const fourth = pushes.refused(sentOf("activity").at(-1)!.id, "no-such-answer");
+	assert.equal(fourth, true, "an answer the engine does not know holds as later does");
+	assert.deepEqual(state.clocks, [true, false], "and says nothing of the clock");
+	step("a Live Activity refused for the Mac's clock: the Devices page says so at once and once, the numbers go again a minute later, and a push of its own left unanswered clears it once");
 }
 
 {
