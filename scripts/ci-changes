@@ -201,6 +201,10 @@ else
 			app/Package.swift | app/Package@swift-*.swift | app/Package.resolved)
 				shopt -u nocasematch
 				need engine app relay ;;
+			# The engine's test/pushes.ts reads InboxViews.swift's inWords (#1046), as devices.ts reads Attach.swift.
+			app/Sources/pi2/InboxViews.swift)
+				shopt -u nocasematch
+				need engine app ;;
 			*)
 				shopt -u nocasematch
 				# Matched as written from here: the rest of app/ needs the App job alone, since no other macOS

@@ -151,6 +151,9 @@ decide "a phone test and docs" $PR "true false false false" "" "put iphone/Tests
 decide "a phone file and the changelog" $PR "true false false false" "" "put iphone/Sources/App.swift; put changelog.d/1034.md"
 # ...except the line the engine's tests read (engine/test/devices.ts): that file runs every macOS job.
 decide "the phone's line limit the engine reads" $PR "true true true true" "" "put iphone/Sources/Connection/Attach.swift"
+# The app's inWords: matched in any letter case, as the app/Sources lists above are (the runner's file system ignores it).
+decide "the app's inWords the engine reads" $PR "false true true false" "" "put app/Sources/pi2/InboxViews.swift"
+decide "the app's inWords in another case" $PR "false true true false" "" "put app/Sources/PI2/INBOXVIEWS.swift"
 decide "a phone file and the engine" $PR "true true true true" "" "put iphone/Sources/App.swift; put engine/src/engine.ts"
 decide "a phone file and one engine test" $PR "true true false false" "" "put iphone/Sources/App.swift; put engine/test/wipe.ts"
 decide "a phone file and the relay" $PR "true false false true" "" "put iphone/Sources/App.swift; put relay/src/index.ts"
