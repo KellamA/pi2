@@ -122,7 +122,10 @@ public enum TranscriptPress {
     }
 
     /// Presses the control labelled `label` (inside the element labelled `within`, if given) on the page `view` shows.
-    public static func press(_ label: String, within: String?, in view: TranscriptWebKitView) async -> Outcome {
+    /// `whileOpen` runs once the press's script has answered and before the settle ends, while the view is still
+    /// filtering what the page posts: the transcript check uses it to post at a moment it has chosen, so the check does
+    /// not depend on a page timer landing inside the settle on a busy machine.
+    public static func press(_ label: String, within: String?, in view: TranscriptWebKitView, whileOpen: (() async -> Void)? = nil) async -> Outcome {
         func refusal(_ words: String) -> Outcome { Outcome(pressed: nil, within: nil, refused: words, dropped: []) }
         let label = label.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !label.isEmpty else { return refusal("a label is needed") }
@@ -137,6 +140,7 @@ public enum TranscriptPress {
             _ = await view.endPress(after: settle)
             return refusal("the page did not answer: \(error.localizedDescription)")
         }
+        if let whileOpen { await whileOpen() }
         let dropped = await view.endPress(after: settle)
         let result = answer as? [String: Any] ?? [:]
         if let refused = result["refused"] as? String { return Outcome(pressed: nil, within: nil, refused: refused, dropped: dropped) }
