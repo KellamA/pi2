@@ -21,7 +21,9 @@ import RemoteKit
 ///   under it would be refused. Told the key waits, it stops with `problem` saying to accept it on the Mac; told it is
 ///   accepted, it attaches at once, under it; any other end of an offer stops it too, since a refused offer counts
 ///   towards suspending the device.
-/// - It moves no session between paths (#693): a path is chosen at connect time, and its loss is a drop.
+/// - It moves the session between paths (5.8, #693): over the relay, the Mac's addresses are tried in the background,
+///   and once one gives a channel whose Mac proves itself, the session resumes there and the relay channel is closed;
+///   when a channel drops, the next attempt resumes the session wherever the Mac answers (the relay, at once).
 @MainActor
 @Observable
 final class RemoteConnection {
@@ -45,6 +47,12 @@ final class RemoteConnection {
     @ObservationIgnored private var relay: RelayPath?
     @ObservationIgnored private var runner: Task<Void, Never>?
     @ObservationIgnored private var channel: OpenChannel?
+    /// The session moving to another path (5.8): the channel it is on, the channel it was resumed on, and how many of
+    /// that channel's first lines it had already — the lines in flight at the moment of the move, which come twice.
+    @ObservationIgnored private var move: (from: OpenChannel, to: OpenChannel, skip: Int)?
+    /// The channel a move from is being made on (5.8): its acks are held until the Mac has resumed elsewhere or the
+    /// round has ended, so that nothing it prunes its buffer by lies above the count the resume names.
+    @ObservationIgnored private var heldAcks: OpenChannel?
     @ObservationIgnored private var current: ChannelTransport?
     @ObservationIgnored private var session: SessionID?
     @ObservationIgnored private var lastSeen: Date?
@@ -53,6 +61,10 @@ final class RemoteConnection {
     @ObservationIgnored private let log = Logger(subsystem: "dev.pi2.ios", category: "connection")
     /// How long it waits before trying again, by failures in a row: as the relay's client does (remotekit.md).
     @ObservationIgnored var backoff = RelayBackoff()
+    /// How long it waits before the Mac's addresses are tried again, while the session runs over the relay (5.8): a Mac
+    /// that is not at home yet, or whose addresses a `device` event changes, is tried again this often. A check gives it
+    /// less.
+    @ObservationIgnored var moveAgain: Duration = .seconds(30)
 
     /// A connection for the pairing kept in `store` with the keys kept in `keyStore`, or nil when none is paired (or
     /// what is kept does not read, which counts as none: nothing half kept is used).
@@ -247,7 +259,10 @@ final class RemoteConnection {
                     // The lines waiting were the lost session's: its calls fail with it, and none goes to the next.
                     if !attached.resume, session != nil { forgetSession("The Mac did not resume the session.") }
                     session = attached.session
-                    await carry(channel, attached: attached)
+                    // Carried until it drops, or until the session moves to another path (5.8): then the channel it
+                    // moved to, with the lines of it the phone had already.
+                    var carried = (channel: channel, skip: 0)
+                    while let next = await carry(carried.channel, attached: attached, skip: carried.skip) { carried = next }
                     continue
                 case .refused(.resume?) where !resumeRefused:
                     // The session is gone: attach afresh at once, once (remotekit.md).
@@ -302,18 +317,27 @@ final class RemoteConnection {
         }
     }
 
-    /// Carries the session's lines on `channel` until it drops.
-    private func carry(_ channel: OpenChannel, attached: Attached) async {
+    /// Carries the session's lines on `channel` until it drops. `skip` is how many of its first session lines the phone
+    /// already has, which a move sends twice (5.8). The channel the session moved to is returned when it moves: the
+    /// session goes on there, with the count of its lines the phone already has, and nothing of the session ends.
+    private func carry(_ channel: OpenChannel, attached: Attached, skip: Int = 0) async -> (channel: OpenChannel, skip: Int)? {
         self.channel = channel
         let transport = transport()
-        lastAcked = transport.received
+        // What the phone has had, less what this channel sends again: the count the Mac's ack is owed from.
+        lastAcked = transport.received - UInt64(min(skip, Int(clamping: transport.received)))
         transport.channelStarted()
         transport.becameAttached()
         lastSeen = now()
         connection = .connected(channel.path, relayReachable: channel.path == .relay || relay?.status.ready == true)
+        var skip = skip
         let queued = waiting
         waiting = []
         for line in queued { send(line: line, from: transport) }
+        if skip > 0 {
+            // The lines in flight came twice, and the phone has had them: acknowledged at once, so that the Mac lets
+            // them go.
+            ack(force: true)
+        }
 
         let acks = Task { [weak self] in
             while !Task.isCancelled {
@@ -322,6 +346,10 @@ final class RemoteConnection {
             }
         }
         defer { acks.cancel() }
+        // Over the relay, the Mac's addresses are tried in the background: a channel that proves there resumes the
+        // session, and it moves (5.8). Cancelled with this channel, so that a move on the direct path tries none.
+        let mover = channel.path == .relay ? Task { [weak self] in await self?.moveOff(channel) } : nil
+        defer { mover?.cancel() }
         var bytes = 0
         while !Task.isCancelled {
             let event: ChannelEvent?
@@ -335,13 +363,18 @@ final class RemoteConnection {
                 log.notice("channel closed")
                 break
             }
+            // The session moved to another channel: what this one still holds is that channel's to send again.
+            if self.channel !== channel { break }
+            // The move is made: a line that was still in the channel comes again from the count the resume named, and
+            // delivering it here would be the second time (5.8).
+            if move?.from === channel { break }
             lastSeen = now()
             switch event {
             case let .line(line):
                 if line.starts(with: Data(#"{"revoked":"#.utf8)), case let .revoked(revocation)? = try? ControlLine.parse(line, from: .mac) {
                     if (try? Attach.verified(revocation, mac: mac)) == true {
                         await unpair()
-                        return
+                        return nil
                     }
                     channel.drop()
                     break
@@ -354,6 +387,14 @@ final class RemoteConnection {
                         break
                     }
                     keep(key)
+                    continue
+                }
+                // The Mac's addresses (5.6), which the next attempt and a move try: a line of the session's, counted
+                // with the rest (5.8), so it is passed on as well.
+                if let addresses = MacEvent.addresses(in: line) { keep(addresses) }
+                if skip > 0 {
+                    // A line the move sent twice, and the phone already had: dropped by its count (5.8).
+                    skip -= 1
                     continue
                 }
                 transport.deliver(line)
@@ -375,9 +416,70 @@ final class RemoteConnection {
         }
         if self.channel === channel { self.channel = nil }
         channel.drop()
+        // The channel the session moved to, once the Mac resumed it there: carried on, with the lines it sent twice.
+        if let moved = move, moved.from === channel {
+            move = nil
+            return (moved.to, moved.skip)
+        }
         // What the Mac had not counted is sent again, on the next channel, by the calls that wait on it (5.8).
         if transport === current { transport.channelEnded() }
         if !Task.isCancelled, !unpaired { connection = .connecting }
+        return nil
+    }
+
+    /// The session on `from` runs over the relay: tries the Mac's addresses in the background and moves the session to
+    /// the first channel whose Mac proves itself there (5.8). The attach names the session to resume, signed by the
+    /// device key and by the presence key as any other, and the count of lines the phone has had at that moment; once
+    /// the Mac resumes it, the session is on the new channel, the relay channel is closed, and `carry` goes on with it.
+    /// Cancelled with the channel it was started for.
+    private func moveOff(_ from: OpenChannel) async {
+        guard let session, let transport = current else { return }
+        while !Task.isCancelled, self.channel === from {
+            // Nothing this channel receives is acknowledged while the round runs (5.8): the count the resume names is
+            // read in it, and the Mac must not have pruned past that count when it resumes.
+            heldAcks = from
+            let paths = Paths(mac: mac, keys: keys, routes: routes, build: build, now: now)
+            let outcome = await paths.move(session: session) { [weak self] in self?.current?.received ?? 0 }
+            // The round ends the moment its outcome is known — moved, refused or unavailable, or cancelled with it — and
+            // the hold must end there too, never across the pause before the next round: a phone away from home has no
+            // address that answers, so round after round would otherwise acknowledge nothing at all, and the Mac, which
+            // prunes its buffer by these acks alone, would let its oldest lines go past what it keeps: the next drop
+            // would end the session instead of resuming it (5.8). What the round held goes now, if it was due, unless
+            // the session moves, whose own channel acks it from the count it has.
+            if heldAcks === from {
+                heldAcks = nil
+                if case .moved = outcome {} else { ack(force: true) }
+            }
+            guard !Task.isCancelled, self.channel === from else {
+                // The channel it was for ended while the address was tried: the session goes on from the next attempt.
+                if case let .moved(channel, _, _) = outcome { channel.drop() }
+                return
+            }
+            switch outcome {
+            case let .moved(channel, attached, named):
+                guard attached.session == session else {
+                    channel.drop()
+                    return
+                }
+                // The lines the phone had not had come again from `named` (5.8): the ones it had already, and what
+                // came before the session moved, are dropped by `carry`, counted from the session's own numbering.
+                let skip = Int(transport.received - min(named, transport.received))
+                log.notice("the session moves off the relay, to \(channel.path == .home ? "the home path" : "an address"), \(skip) line(s) sent twice")
+                move = (from: from, to: channel, skip: skip)
+                from.drop()
+                return
+            case let .refused(reason):
+                // The Mac's word for the device, not for this channel: the session over the relay goes on, and an attach
+                // afresh there answers it, in the words the connection bar shows. Not tried again: each refusal is
+                // counted towards a suspension of the device (3.6).
+                log.notice("the Mac refused a move to one of its addresses: \(String(describing: reason), privacy: .public)")
+                return
+            case .unavailable:
+                break
+            }
+            // Nothing answered this round: the Mac's addresses, or a device event's, are tried again in a while.
+            try? await Task.sleep(for: moveAgain)
+        }
     }
 
     /// Keeps a home key the Mac sent, if it is not the one held: in the record, and for the next Bonjour search.
@@ -395,8 +497,27 @@ final class RemoteConnection {
 
     private func ack(force: Bool) {
         guard let channel, let current, current.received > lastAcked else { return }
+        // A move from this channel is in flight: nothing is acknowledged on it until the Mac has resumed elsewhere or
+        // the round has ended (5.8). The count a resume names is read during the round, and pi² Remote prunes its
+        // buffer by every ack it takes: an ack above that count would make it send the session's lines again from
+        // above it, and the phone, dropping the lines in flight by their count, would drop lines it never had.
+        guard heldAcks !== channel else { return }
         lastAcked = current.received
         try? channel.sendAck(current.received)
+    }
+
+    /// Keeps the Mac's addresses as its `device` event gave them (5.6), if they changed: in the record, and for the
+    /// next attempt and any move to them.
+    private func keep(_ addresses: [String]) {
+        guard addresses != mac.addresses else { return }
+        do {
+            guard var record = try store.load() else { return }
+            record.addresses = addresses
+            try store.save(record)
+            mac = try record.mac()
+        } catch {
+            log.notice("the Mac's new addresses were not kept")
+        }
     }
 
     private func forgetSession(_ why: String) {
