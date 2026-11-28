@@ -172,7 +172,8 @@ final class DemoNotifications: NSObject, UNUserNotificationCenterDelegate {
         [.banner, .list, .sound]
     }
 
-    /// A tap or a button opens pi² on the card it came from (section 7: it never answers by itself).
+    /// A tap or a button opens pi² on the card it came from (section 7: it never answers by itself); a button then
+    /// answers, as against a Mac (`PushActions`): the demo's engine takes what the card's own button sends.
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         let info = response.notification.request.content.userInfo
         let kind = info["kind"] as? String
@@ -181,5 +182,24 @@ final class DemoNotifications: NSObject, UNUserNotificationCenterDelegate {
         await MainActor.run {
             DemoMode.shared.asked = Self.route(kind: kind, projectID: project, conversationID: conversation)
         }
+        // The demo's notifications carry the same keys a sealed push's do, so the response reads them the same way.
+        let session: AppSession? = await MainActor.run { DemoMode.shared.session }
+        guard let session else { return }
+        await PushActions.run(
+            PushResponse(response), session: session, isOpen: { true }, outbox: nil, mailbox: nil,
+            takeAway: { needs in await DemoNotifications.shared.takeAwayDemo(needs) },
+            tell: { _ in })
+    }
+
+    /// Takes away the demo's notifications of needs that are gone (answered here, or withdrawn).
+    func takeAwayDemo(_ needs: Set<String>) async {
+        let shown = await center.deliveredNotifications().map(\.request.identifier)
+        let waiting = await center.pendingNotificationRequests().map(\.identifier)
+        let identifiers = (shown + waiting).filter { identifier in
+            guard identifier.hasPrefix(Self.prefix) else { return false }
+            return needs.contains { String(identifier.dropFirst(Self.prefix.count)).contains($0) }
+        }
+        center.removeDeliveredNotifications(withIdentifiers: identifiers)
+        center.removePendingNotificationRequests(withIdentifiers: identifiers)
     }
 }

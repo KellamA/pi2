@@ -56,6 +56,9 @@ final class TestMac: @unchecked Sendable {
         var takesMessages = false
         /// How it answers an offer of a new presence key (#891), as pi² Remote passes on the engine's answer.
         var offers = OfferAnswer.waiting
+        /// Answers the engine's answer requests (`needs.answer`, `inbox.decide`, `inbox.answer`) as the engine takes
+        /// them: `{ "id": id, "result": {} }`, once for each request id. The recording alone refuses them.
+        var answersNeeds = false
     }
 
     enum OfferAnswer: Sendable {
@@ -117,6 +120,8 @@ final class TestMac: @unchecked Sendable {
     let state: Mutex<State>
     /// The digits the person types, as the test hands them in after reading them off the phone.
     let typed = Inbox<String>()
+    /// The Mac's mailbox items taken (`takeMailbox`), in the order the takes brought them.
+    let mailItems = Mutex<[RelayMailItem]>([])
     private var listener: NWListener?
     private(set) var port: UInt16 = 0
     private var relayClient: RelayClient?
@@ -252,6 +257,19 @@ final class TestMac: @unchecked Sendable {
         listener?.cancel()
         if let relayClient { Task { await relayClient.stop() } }
         dropChannels()
+    }
+
+    /// Takes the Mac's mailbox at the relay, keeping what is there (`mailItems`). The Mac's keys open what a phone
+    /// put there.
+    func takeMailbox() async throws {
+        guard let client = relayClient else { throw LinkError.closed }
+        let add: @Sendable ([RelayMailItem]) -> Void = { items in
+            self.mailItems.withLock { $0.append(contentsOf: items) }
+        }
+        _ = try await client.take { taken in
+            add(taken.items)
+            return Set(taken.items.map(\.id))
+        }
     }
 
     // MARK: - Serving a channel
@@ -559,6 +577,12 @@ final class EngineEnd: @unchecked Sendable {
     func request(_ line: Data) async {
         let request = try? JSONSerialization.jsonObject(with: line) as? [String: Any]
         if let method = request?["method"] as? String { mac?.requested(method) }
+        // The answers of a phone's cards, taken as the engine takes them (`rules.answersNeeds`), once for each request id.
+        if mac?.rules.withLock({ $0.answersNeeds }) == true, let request, let id = request["id"] as? Int,
+           ["needs.answer", "inbox.decide", "inbox.answer"].contains(request["method"] as? String) {
+            if let data = try? JSONSerialization.data(withJSONObject: ["id": id, "result": [String: Any]()]) { send(data) }
+            return
+        }
         // The recording answers no `submit`: answered here when the rules say, as the engine does, once for each request id.
         if request?["method"] as? String == "submit", mac?.rules.withLock({ $0.takesMessages }) == true, let id = request?["id"] as? Int,
            let requestId = (request?["params"] as? [String: Any])?["requestId"] as? String, let mac {
