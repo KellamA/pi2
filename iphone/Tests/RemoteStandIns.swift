@@ -27,6 +27,9 @@ final class SoftwarePresenceKey: PresenceSigning, Sendable {
     let waiting = Mutex(false)
     /// Whether that mark cannot be read, as when the Keychain refuses.
     let waitingUnreadable = Mutex(false)
+    /// How long a signature takes, as a Secure Enclave's does under Face ID (4.3): a check that needs a move's attach to
+    /// be in flight for a while gives it one, so that the acks of the channel it moves from fall inside it.
+    let signDelay = Mutex(Duration.zero)
     var publicKey: P256.Signing.PublicKey { key.publicKey }
 
     func presencePublicKeyDER() throws -> Data? { key.publicKey.derRepresentation }
@@ -38,6 +41,8 @@ final class SoftwarePresenceKey: PresenceSigning, Sendable {
 
     func signPresence(_ data: Data) async throws -> Data {
         guard open.withLock({ $0 }) else { throw KeysError.sessionNotOpen }
+        let delay = signDelay.withLock { $0 }
+        if delay > .zero { try? await Task.sleep(for: delay) }
         signed.withLock { $0.append(data) }
         return try key.signature(for: data).rawRepresentation
     }

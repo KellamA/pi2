@@ -447,6 +447,11 @@ final class TestMac: @unchecked Sendable {
             engines.withLock { $0[session] = end }
             await end.begin(on: channel)
         }
+        // The phone's acks on this channel prune the session's lines, as pi² Remote's session does (5.8).
+        channel.takesAcks { [weak end, weak channel] count in
+            guard let channel else { return }
+            end?.acknowledged(count, on: channel)
+        }
         // The phone's lines, to the engine, until the channel ends, each counted in an ack a second after the first one
         // not yet counted, as pi² Remote acknowledges them (5.8).
         let cut: @Sendable () -> Bool = { [weak self] in
@@ -536,9 +541,11 @@ final class TestMac: @unchecked Sendable {
 final class EngineEnd: @unchecked Sendable {
     let session: SessionID
     private weak var mac: TestMac?
-    /// The channel the session is on, and the lines sent in it: changed together, so that a resume's lines and new
-    /// ones are sealed in order.
-    private let state = Mutex<(channel: MacChannel?, lines: [Data])>((nil, []))
+    /// The channel the session is on, and the lines it keeps to send again: changed together, so that a resume's lines and
+    /// new ones are sealed in order. `sent` counts every line the session sent, and `acked` the last of them the phone
+    /// acknowledged on its present channel, which a resume sends on from, as pi² Remote's session does
+    /// (`PhoneConnection.swift`, `acknowledged`, `resume`): a phone's ack prunes the lines it has had.
+    private let state = Mutex<(channel: MacChannel?, lines: [(index: UInt64, line: Data)], sent: UInt64, acked: UInt64)>((nil, [], 0, 0))
     @MainActor private var replay: ReplayTransport?
 
     init(session: SessionID, mac: TestMac) {
@@ -561,15 +568,29 @@ final class EngineEnd: @unchecked Sendable {
     func resume(on channel: MacChannel, from received: UInt64) {
         state.withLock { state in
             state.channel = channel
-            for line in state.lines.dropFirst(Int(received)) { try? channel.send(line: line) }
+            // From the later of what the phone named and what it acknowledged: an ack pruned the lines up to its count,
+            // as pi² Remote's does, and a line gone from here cannot be sent again.
+            let from = max(received, state.acked)
+            for (index, line) in state.lines where index > from { try? channel.send(line: line) }
         }
     }
 
-    var sentCount: Int { state.withLock { $0.lines.count } }
+    var sentCount: Int { state.withLock { Int($0.sent) } }
+
+    /// The phone's ack on `channel`, as pi² Remote's session takes it: only from the session's own channel, and up to
+    /// what it sent, the lines it names dropped from the buffer.
+    func acknowledged(_ count: UInt64, on channel: MacChannel) {
+        state.withLock { state in
+            guard state.channel === channel, count <= state.sent, count > state.acked else { return }
+            state.acked = count
+            state.lines.removeAll { $0.index <= count }
+        }
+    }
 
     func send(_ line: Data) {
         state.withLock { state in
-            state.lines.append(line)
+            state.sent += 1
+            state.lines.append((state.sent, line))
             try? state.channel?.send(line: line)
         }
     }
@@ -605,6 +626,8 @@ final class MacChannel: Sendable {
     let link: any MessageLink
     private let order = Mutex(())
     private let outgoing = Inbox<Data>()
+    /// What the phone acknowledged on this channel, as pi² Remote's session takes it (5.8).
+    private let acks = Mutex<(@Sendable (UInt64) -> Void)?>(nil)
 
     init(_ channel: Channel, _ link: any MessageLink) {
         self.channel = channel
@@ -661,6 +684,11 @@ final class MacChannel: Sendable {
         try order.withLock { _ in outgoing.push(try channel.sealAck(count)) }
     }
 
+    /// Of the session's lines, the count the phone acknowledged: the session's to prune by, as pi² Remote's does.
+    func takesAcks(_ handler: @escaping @Sendable (UInt64) -> Void) {
+        acks.withLock { $0 = handler }
+    }
+
     /// The next whole line. `cutting`, asked at the first part of a line longer than one message, closes the link there
     /// when it says so: the rest of the line never comes.
     func nextLine(within limit: Duration = .seconds(3600), cutting: (@Sendable () -> Bool)? = nil) async throws -> Data? {
@@ -668,6 +696,9 @@ final class MacChannel: Sendable {
         while let message = try await link.inbox.next(within: limit) {
             switch try channel.open(message) {
             case let .line(line)?: return line
+            case let .ack(count)?:
+                acks.withLock { $0 }?(count)
+                continue
             case .bye?: return nil
             case nil:
                 // A part of a longer line.

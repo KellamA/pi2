@@ -4,6 +4,7 @@ import EngineKit
 import Foundation
 import Network
 import RemoteKit
+import Synchronization
 import Testing
 @testable import pi2
 
@@ -697,8 +698,14 @@ struct ConnectionTests {
     // MARK: - A session moving between paths (#693)
 
     /// The relay's channel is the one attached, and the Mac's own address answers too: the session moves there, resumed
-    /// from the lines the phone has had, while the Mac is sending. The same session goes on, with every line once. The
-    /// address is tried by `Paths`, which proves the Mac there before anything is signed on the channel.
+    /// from the lines the phone has had, while the Mac is sending. The same session goes on, with every line once.
+    ///
+    /// The presence signature sleeps, so the move's attach is in flight for seconds while the Mac sends through it: the
+    /// lines in flight are the ones the resume sends twice, and a tick of the phone's ack of the relay channel falls
+    /// inside the move. The Mac here prunes its lines by acks as pi² Remote does (`EngineEnd.acknowledged`), so an ack
+    /// above the count the resume names would have it send again from above that count, and the phone, dropping the
+    /// lines in flight by count, would drop lines it never had: the count of lines the phone had is checked against the
+    /// whole of what the Mac sent, which is that loss.
     @Test func theSessionMovesOffTheRelayToTheMacsAddress() async throws {
         let paired = try await Self.paired()
         defer { paired.mac.stop() }
@@ -707,6 +714,9 @@ struct ConnectionTests {
             paired, relay: PassingRelay(.connected(paired.mac)), dialer: LateDialer(by: .milliseconds(400)))
         // The addresses tried again as soon as the Mac has them, rather than 30 seconds on.
         connection.moveAgain = .milliseconds(100)
+        // A signature that takes longer than the phone's second of acks: the move's attach is in flight when one falls
+        // due, which is what must not prune the Mac's lines past the count the resume names (`heldAcks`).
+        paired.keys.software?.softwarePresence.signDelay.withLock { $0 = .milliseconds(2_500) }
         let app = AppSession()
         let transport = connection.transport()
         app.start(transport, as: .connecting)
@@ -715,19 +725,23 @@ struct ConnectionTests {
         #expect(await Wait.until { connection.connection == .connected(.relay, relayReachable: true) }, "\(connection.connection)")
         #expect(await Wait.until { !app.engine.projects.isEmpty }, "the Mac's lines come through the relay")
 
-        // The Mac sends, and goes on sending as the session moves.
-        for n in 1 ... 3 { paired.mac.sendEvent(#"{"event":"pi2-test","n":\#(n)}"#) }
-        #expect(await Wait.until { transport.received > 0 && Int(transport.received) == paired.mac.sentInSession })
+        // The Mac sends throughout, on a thread of its own: lines are in flight at the move, and after it.
+        let sender = LineSender(paired.mac)
+        defer { sender.stop() }
+        #expect(await Wait.until { transport.received > 3 })
         let had = transport.received
+        sender.start()
 
-        #expect(await Wait.until(20) { connection.connection == .connected(.direct, relayReachable: true) }, "\(connection.connection)")
-        for n in 4 ... 6 { paired.mac.sendEvent(#"{"event":"pi2-test","n":\#(n)}"#) }
+        #expect(await Wait.until(30) { connection.connection == .connected(.direct, relayReachable: true) }, "\(connection.connection)")
+        try await Task.sleep(for: .milliseconds(300))
+        sender.stop()
         #expect(
-            await Wait.until { Int(transport.received) == paired.mac.sentInSession },
+            await Wait.until(10) { Int(transport.received) == paired.mac.sentInSession },
             "every line the Mac sent came, and none twice: \(transport.received) of \(paired.mac.sentInSession)")
         let resume = try #require(paired.mac.state.withLock { $0.attaches.last })
         #expect(resume.session != nil, "the session to resume, not a new one")
         #expect((resume.received ?? 0) >= had, "from the lines the phone had, counted at the attach")
+        #expect(Int(resume.received ?? 0) < paired.mac.sentInSession, "with lines in flight at the move: the ones the resume sends twice")
         #expect(paired.mac.state.withLock { $0.attachedCount } == 2, "attached over the relay, and resumed at its address")
         #expect(paired.mac.state.withLock { $0.sessionEnds } == 0, "the move ends no session")
         #expect(connection.transport() === transport, "the same session, so the same transport: no new greeting")
@@ -735,8 +749,6 @@ struct ConnectionTests {
         #expect(try Self.presenceSignedOncePerChannel(paired) == nil)
     }
 
-    /// No address of the Mac's is known: nothing to move to, and the session goes on over the relay path, with no
-    /// session ended and the relay's channel the only one attached.
     @Test func withNoAddressTheSessionStaysOnTheRelay() async throws {
         let paired = try await Self.paired()
         defer { paired.mac.stop() }
@@ -793,6 +805,43 @@ final class SlowLink: MessageLink {
     }
 
     func close() { link.close() }
+}
+
+/// The Mac's engine sending lines on a thread of its own, until `stop`: an answer streaming while a session moves (#693).
+final class LineSender: @unchecked Sendable {
+    private let mac: TestMac
+    private let every: useconds_t
+    private let state = Mutex((running: false, number: 0))
+    private var thread: Thread?
+
+    /// One line every `every` microseconds, numbered on from the first.
+    init(_ mac: TestMac, every: useconds_t = 10_000) {
+        self.mac = mac
+        self.every = every
+    }
+
+    func start() {
+        state.withLock { $0.running = true }
+        let thread = Thread {
+            while self.state.withLock({ $0.running }) {
+                let n = self.state.withLock { state in
+                    state.number += 1
+                    return state.number
+                }
+                self.mac.sendEvent(#"{"event":"pi2-test","n":\#(n)}"#)
+                usleep(self.every)
+            }
+        }
+        self.thread = thread
+        thread.start()
+    }
+
+    /// Stops it, waiting for its last line.
+    func stop() {
+        state.withLock { $0.running = false }
+        while thread?.isFinished == false { usleep(1_000) }
+        thread = nil
+    }
 }
 
 /// TCP links that connect late: a dial to the Mac at home that takes longer than the relay takes to be ready (#898).
