@@ -57,22 +57,31 @@ func pressing(folder: URL) async {
         check("nothing was posted, and the question still waits", posts().isEmpty && open == true, posts().joined(separator: "\n      "))
 
         // Whatever a pressed control's handler posts, only what a press may set off goes on: here a button of the page's
-        // own whose handler decides, opens a link, opens a document, expands, and undoes a moment later.
+        // own whose handler decides, opens a link, opens a document and expands. The undo it holds until asked, and the
+        // check posts it through whileOpen at a moment the press is still filtering: a fixed setTimeout cannot be sure to
+        // land inside the settle on a busy machine, which once dropped it from the outcome on a GitHub runner (#1067).
         _ = await js(page.view, """
             (() => { const b = document.createElement('button'); b.textContent = 'Posts everything';
               b.addEventListener('click', () => { const h = window.webkit.messageHandlers.pi2;
+                window.lateUndo = () => h.postMessage({ type: 'undo', change: 3 });
                 h.postMessage({ type: 'decide', inbox: 'a1', decision: 'once' });
                 h.postMessage({ type: 'openLink', url: 'https://example.com/' });
                 h.postMessage({ type: 'openDocument', path: '/tmp/no-such-file.pdf' });
-                setTimeout(() => h.postMessage({ type: 'undo', change: 3 }), 50);
                 h.postMessage({ type: 'expand', presentation: 'p1', version: 1, item: 0 }); });
               document.getElementById('transcript').appendChild(b); return true; })()
             """)
         page.posted.removeAll()
-        let mixed = await TranscriptPress.press("Posts everything", within: nil, in: page.view)
+        let mixed = await TranscriptPress.press("Posts everything", within: nil, in: page.view) {
+            _ = await js(page.view, "window.lateUndo()")
+        }
         check("a press passes on only what it may set off, and says what it dropped",
               mixed.pressed == "Posts everything" && mixed.dropped == ["decide", "openLink", "openDocument", "undo"], "\(mixed)")
         check("so the app hears only expand", posts() == ["item=0 presentation=p1 type=expand version=1"], posts().joined(separator: "\n      "))
+        // A message of a kind the press drops, posted once the press is over, goes on to the app as the person's own.
+        page.posted.removeAll()
+        _ = await js(page.view, "window.lateUndo()")
+        _ = await until("a message after the press is over is heard", { !posts().isEmpty })
+        check("and once the press is over, what the page drops no longer is dropped", posts() == ["change=3 type=undo"], posts().joined(separator: "\n      "))
         // Once the press is over, the page's messages go on as before.
         page.posted.removeAll()
         _ = await js(page.view, "document.querySelectorAll('.card.present')[0].querySelector('.expand').click()")
