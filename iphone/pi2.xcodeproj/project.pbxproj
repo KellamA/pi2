@@ -19,6 +19,7 @@
 		680000000000000000000303 /* TranscriptKit in Frameworks */ = {isa = PBXBuildFile; productRef = 680000000000000000000403 /* TranscriptKit */; };
 		680000000000000000000304 /* RemoteKit in Frameworks */ = {isa = PBXBuildFile; productRef = 680000000000000000000404 /* RemoteKit */; };
 		680000000000000000000305 /* session.jsonl in Resources */ = {isa = PBXBuildFile; fileRef = 680000000000000000000103 /* session.jsonl */; };
+		682000000000000000000311 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 682000000000000000000301 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -72,6 +73,7 @@
 		680000000000000000000101 /* pi2.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = pi2.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		680000000000000000000102 /* pi2Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = pi2Tests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		680000000000000000000103 /* session.jsonl */ = {isa = PBXFileReference; lastKnownFileType = text; name = session.jsonl; path = "../app/Sources/pi2-client-check/Fixture/session.jsonl"; sourceTree = SOURCE_ROOT; };
+		682000000000000000000301 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		680E00000000000000000101 /* NotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		680E00000000000000000102 /* Widgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = Widgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		680E00000000000000000103 /* ShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -174,6 +176,7 @@
 				680E00000000000000000206 /* ShareExtension/Shared */,
 				700000000000000000000201 /* Widgets/LiveActivity */,
 				855000000000000000000201 /* Common */,
+				682000000000000000000301 /* Assets.xcassets */,
 				680000000000000000000103 /* session.jsonl */,
 				680000000000000000000002 /* Products */,
 			);
@@ -367,6 +370,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				680000000000000000000305 /* session.jsonl in Resources */,
+				682000000000000000000311 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -528,6 +532,7 @@
 		680000000000000000000711 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = pi2.entitlements;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -561,6 +566,7 @@
 		680000000000000000000712 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = pi2.entitlements;
 				ENABLE_PREVIEWS = YES;
 				EXCLUDED_SOURCE_FILE_NAMES = session.jsonl;
