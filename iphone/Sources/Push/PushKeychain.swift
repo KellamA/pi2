@@ -13,9 +13,11 @@ struct PushKeychain: Sendable {
     static let service = "dev.pi2.ios.keys"
     static let recordKeyItem = "record-key"
     static let macRecordItem = "mac"
-    /// The access group shared with the app: `SystemKeychain.sharedAccessGroup`, nil until #682 gives the two the
-    /// Keychain Sharing entitlement, and the items are then in the app's own group, which the extension cannot read.
-    static let accessGroup: String? = nil
+    /// The access group shared with the app (3.2): the group the extension's entitlements give it, which is the one the
+    /// app writes the record key and what it keeps of the Mac to (`KeychainGroup`, whose `PI2KeychainAccessGroup` this
+    /// bundle carries too, so the two name the same group). Nil in a build with none, which reads no item either way (an
+    /// unsigned build has no Keychain, and in the simulator this finds nothing).
+    static let accessGroup: String? = KeychainGroup.id
 
     /// The keys, or nil if the phone has none (not paired, or the items cannot be read).
     func keys() throws -> PushKeys? {

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The share extension's capability (docs/iphone.md 12.2, P33; #682). It is signed with this file in both
+     configurations (CODE_SIGN_ENTITLEMENTS in iphone/pi2.xcodeproj), and its App ID, `dev.pi2.ios.share`, must have
+     App Groups in Apple's developer site: docs/releasing.md, "The iPhone app and TestFlight", has the owner's steps.
+
+     - com.apple.security.application-groups: the group it leaves what the person shares in (`ShareDrop`), for the app
+       to send to the Mac. It reads no key and asks for nothing else. -->
+<dict>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.dev.pi2.ios</string>
+	</array>
+</dict>
+</plist>

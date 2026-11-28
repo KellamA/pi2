@@ -2,16 +2,28 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <!-- What the project's build settings cannot give (INFOPLIST_KEY_ takes no arrays), merged by Xcode into the
-     Info.plist it makes from those settings, in both configurations (docs/iphone-app.md). The service the home path
-     looks for on the network (docs/iphone.md 5.4); its usage text is INFOPLIST_KEY_NSLocalNetworkUsageDescription.
-     remote-notification: the Mac's background push that takes a notification away once its card is answered
-     (docs/iphone.md section 7, PushRemoval); it needs no entitlement of its own, and arrives only once #682 turns
-     Push Notifications on for the App ID. -->
+     Info.plist it makes from those settings, in both configurations (docs/iphone-app.md).
+     NSBonjourServices: the service the home path looks for on the network (docs/iphone.md 5.4); its usage text is
+     INFOPLIST_KEY_NSLocalNetworkUsageDescription.
+     UIBackgroundModes: remote-notification, the Mac's background push that takes a notification away once its card is
+     answered (docs/iphone.md section 7, PushRemoval); it needs no entitlement of its own, and now arrives because #682
+     gives the App ID its Push Notifications capability (pi2.entitlements).
+     ITSAppUsesNonExemptEncryption: the answer App Store Connect and TestFlight would otherwise ask for every build
+     (9.1, 9.5 item 6). pi²'s channel is its own composition of CryptoKit's standard algorithms (Noise, HPKE, ECDSA over
+     P-256), so it is declared as using encryption that is not exempt; with this key set, no build asks. The owner's
+     export-compliance answers in App Store Connect, and the yearly self-classification report they may owe, are theirs
+     (docs/releasing.md, "The iPhone app and TestFlight").
+     PI2KeychainAccessGroup: the app's group for the Keychain items the notification service extension reads, as only a
+     signed build knows it (docs/iphone.md 3.2; `KeychainGroup`). -->
 <dict>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<true/>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_pi2._tcp</string>
 	</array>
+	<key>PI2KeychainAccessGroup</key>
+	<string>$(AppIdentifierPrefix)group.dev.pi2.ios</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The notification service extension's capabilities (docs/iphone.md 3.2, section 7; #682). It is signed with this
+     file in both configurations (CODE_SIGN_ENTITLEMENTS in iphone/pi2.xcodeproj), and its App ID,
+     `dev.pi2.ios.notifications`, must have both capabilities in Apple's developer site: docs/releasing.md, "The iPhone
+     app and TestFlight", has the owner's steps. It needs no `aps-environment`: a push arrives at the app, and iOS hands
+     it to this extension.
+
+     - com.apple.security.application-groups: the group it reads what the app left for a push to open or take away
+       (`PushInbox`, `PushSeen`), as the app and its other extensions do.
+     - keychain-access-groups: the group the record key is in, so that a push which comes while the phone is locked is
+       opened and shown (3.2). It is the app's group, not the app's own: `PushKeychain` names the same one, and no other
+       item of the phone's is in it. -->
+<dict>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.dev.pi2.ios</string>
+	</array>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)group.dev.pi2.ios</string>
+	</array>
+</dict>
+</plist>
