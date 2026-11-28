@@ -7,7 +7,7 @@ import type { Api, Model, ModelsStore, ModelsStoreEntry } from "@earendil-works/
 import { plainProviderError } from "./providererror.ts";
 
 /** A model as a provider lists it: its id, and what the provider says about it, when it does. */
-export type ListedModel = { id: string; name?: string; contextWindow?: number; maxTokens?: number; vision?: boolean; thinkingLevels?: string[] };
+export type ListedModel = { id: string; name?: string; contextWindow?: number; maxTokens?: number; vision?: boolean; thinkingLevels?: string[]; api?: string };
 
 /** The credential a listing is asked with, as pi-ai resolves it for the provider's own requests. */
 export type ListingAuth = { apiKey?: string; headers?: Record<string, string>; baseUrl?: string };
@@ -93,6 +93,32 @@ function codexLister(baseUrl: string, who: string): Lister {
 				}));
 		},
 	};
+}
+
+/** Go publishes native protocols; returned URLs are deliberately ignored. Routing stays with trusted templates. */
+function goLister(models: readonly Model<Api>[], who: string): Lister {
+	const origin = new URL(models[0]?.baseUrl ?? "https://opencode.ai").origin;
+	if (origin !== "https://opencode.ai" && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(origin)) throw new Error("Unrecognized OpenCode Go origin");
+	const protocols: Record<string, string> = { messages: "anthropic-messages", responses: "openai-responses", "chat-completions": "openai-completions", "generate-content": "google-generative-ai" };
+	const url = `${origin}/inference/go/v1/models`;
+	return { url, list: async (auth, signal) => {
+		const body = await getJson(url, { authorization: `Bearer ${auth.apiKey ?? ""}` }, signal, who) as { data?: unknown };
+		if (!Array.isArray(body?.data)) throw new Error(`${who} did not answer with a list of models`);
+		const found: ListedModel[] = [];
+		for (const model of body.data) {
+			if (model?.type !== "chat" || typeof model.id !== "string") continue;
+			const keys = model.api && typeof model.api === "object" ? Object.keys(model.api) : [];
+			const api = keys.length === 1 ? protocols[keys[0]!] : undefined;
+			// Without a protocol we cannot safely invent a route for a new model on this mixed-API provider.
+			if (api === undefined) continue;
+			const reasoning = model.capabilities?.reasoning;
+			found.push({ id: model.id, name: text(model.name), api,
+				contextWindow: positive(model.limit?.context), maxTokens: positive(model.limit?.output),
+				...(Array.isArray(model.modalities?.input) ? { vision: model.modalities.input.some((value: unknown) => typeof value === "string" && (value === "image" || value.startsWith("image/"))) } : {}),
+				thinkingLevels: reasoning?.supported === false ? [] : Array.isArray(reasoning?.effort) ? levels(reasoning.effort, true) : undefined });
+		}
+		return found;
+	} };
 }
 
 /** Anthropic's `GET /v1/models`, with an API key or a Claude sign-in, a page of up to 1000 at a time. */
@@ -193,6 +219,7 @@ export function listerFor(providerId: string, providerName: string, models: read
 	if (reason !== undefined) return { cannot: `${reason}, so pi² cannot ask it which models you can use.` };
 	const base = (api: string) => models.find((model) => model.api === api && /^https?:\/\/[^{}]+$/.test(model.baseUrl))?.baseUrl;
 	if (providerId === "openai-codex") return credential === "oauth" ? codexLister(providerBaseUrl ?? base("openai-codex-responses") ?? "https://chatgpt.com/backend-api", who) : { cannot: `${who} is used with a ChatGPT sign-in.` };
+	if (providerId === "opencode-go") return credential === "api_key" ? goLister(models, who) : { cannot: "OpenCode Go uses an API key." };
 	if (providerId === "anthropic") return anthropicLister(providerBaseUrl ?? base("anthropic-messages") ?? "https://api.anthropic.com", who, credential === "oauth");
 	// Signed in to OpenAI with ChatGPT, the token is for api.openai.com, as a key is.
 	if (credential === "oauth" && providerId !== "openai") return { cannot: `pi² does not know how to ask ${who} which models a sign-in can use.` };

@@ -22,6 +22,14 @@ Each agent can use a different model, and so can each chat.
 
 A provider can offer dozens of models. **Models…** on its row (it shows how many are ticked, as in **Models (4 of 18)…**) lists them, and only the ticked ones appear in the model menus. Search the list by name or id, then **Select Matches** or **Deselect Matches**; **Select All** and **Deselect All** work on the whole list; **Newest Only** keeps one of each family. A hidden model that a conversation or agent already uses keeps working.
 
+## Automatically discovering subscription models
+
+With a saved ChatGPT or Claude sign-in, or an OpenCode Go key, pi² checks for new models in the background at startup, after sign-in or a key change, and every six hours. Models you hid stay hidden; settings you chose for a model added by hand take precedence.
+
+Claude listing depends on the subscription allowing it. OpenCode Go listing requires **Models › Read** for restricted or service-account keys. If listing is refused or unavailable, your catalog and manually added models remain, along with cached discoveries that still match your credential; pi² retries after fifteen minutes. Claude token rotation or a Go key change invalidates its discovery cache, so offline you may see only the catalog until listing succeeds again. Other providers keep their existing behavior.
+
+Go's listing must identify a chat model and its supported protocol. Entries without enough information to route safely are skipped; Add by ID remains available. Capabilities the provider does not report are inherited from a catalog model, and newly discovered models have no known price until the catalog includes them.
+
 ## Adding a model by its ID
 
 A model released after your copy of pi² can be added by its id, on the sign-in or key you already have. In the provider's **Models…**, choose **Add a Model by ID…** and type the id the provider gives it (`gpt-6.2-sol`, say), then **Look Up**.
@@ -43,6 +51,7 @@ pi² takes its context size, longest answer, thinking levels, whether it sees pi
 | Anthropic | API key, or Claude sign-in | `GET /v1/models` on api.anthropic.com |
 | Google | API key | `GET /v1beta/models` on generativelanguage.googleapis.com |
 | Mistral, Groq, DeepSeek, xAI and the others that speak OpenAI's API | API key | `GET /models` at the provider's address |
+| OpenCode Go | saved API key | `GET /inference/go/v1/models` on opencode.ai; account-filtered with the key |
 | Radius | key or sign-in | its own list, which pi² also fetches at each start |
 
 GitHub Copilot, Amazon Bedrock, Vertex AI, Azure OpenAI and sign-ins other than those above cannot be asked: the window says so, and a model is added by its id. Whether a subscription sign-in may list models is up to the provider; if it refuses, the window shows its answer.
