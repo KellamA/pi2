@@ -71,10 +71,22 @@ protocol KeychainStore: Sendable {
 /// The data-protection Keychain, as a signed phone build has it.
 struct SystemKeychain: KeychainStore {
     static let service = "dev.pi2.ios.keys"
-    /// The access group shared with the notification service extension, for the items marked `shared`. Nil until the
-    /// extension and its entitlement exist (#682): an unsigned build has no access group, and the items then go in the
-    /// app's own.
-    static let sharedAccessGroup: String? = nil
+    /// The access group shared with the notification service extension, for the items marked `shared` (3.2): the group
+    /// the app's entitlements give it, as the build expanded it (`KeychainGroup`). Nil in a build with no such group (an
+    /// unsigned one), where an item marked `shared` goes in the app's own group, which the extension cannot read.
+    static let sharedAccessGroup: String? = KeychainGroup.id
+
+    /// The access groups a search must reach: the app's own, named by no group at all (which is how Security means "the
+    /// group the app itself is in"), and the one the extension shares, when the build has one. The first launch's wipe
+    /// and Unpair this iPhone must reach the items in either (3.2, 3.6), since the shared group is not the app's own.
+    static func accessGroups(shared: String?) -> [String?] { shared.map { [nil, $0] } ?? [nil] }
+
+    /// Every search a list or a wipe makes: each item class in each access group (`accessGroups`). One list for both, so
+    /// that neither can reach one group and leave the other's items behind; `KeychainGroupTests` checks that both groups
+    /// are in it, which the simulator cannot show by emptying one, a build there having no group at all.
+    static func searches(shared: String?) -> [(itemClass: CFString, group: String?)] {
+        classes.flatMap { itemClass in accessGroups(shared: shared).map { (itemClass, $0) } }
+    }
 
     private static var classes: [CFString] { [
         kSecClassGenericPassword, kSecClassInternetPassword, kSecClassKey, kSecClassCertificate, kSecClassIdentity,
@@ -144,15 +156,16 @@ struct SystemKeychain: KeychainStore {
         let quiet = LAContext()
         quiet.interactionNotAllowed = true
         var names: [String] = []
-        for itemClass in Self.classes {
-            let query: [String: Any] = [
-                kSecClass as String: itemClass,
+        for search in Self.searches(shared: Self.sharedAccessGroup) {
+            var query: [String: Any] = [
+                kSecClass as String: search.itemClass,
                 kSecReturnAttributes as String: true,
                 kSecMatchLimit as String: kSecMatchLimitAll,
                 kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
                 kSecUseDataProtectionKeychain as String: true,
                 kSecUseAuthenticationContext as String: quiet,
             ]
+            if let group = search.group { query[kSecAttrAccessGroup as String] = group }
             var result: CFTypeRef?
             let status = SecItemCopyMatching(query as CFDictionary, &result)
             guard status == errSecSuccess || status == errSecItemNotFound else {
@@ -169,12 +182,13 @@ struct SystemKeychain: KeychainStore {
     }
 
     func deleteEverything() throws {
-        for itemClass in Self.classes {
-            let query: [String: Any] = [
-                kSecClass as String: itemClass,
+        for search in Self.searches(shared: Self.sharedAccessGroup) {
+            var query: [String: Any] = [
+                kSecClass as String: search.itemClass,
                 kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
                 kSecUseDataProtectionKeychain as String: true,
             ]
+            if let group = search.group { query[kSecAttrAccessGroup as String] = group }
             let status = SecItemDelete(query as CFDictionary)
             guard status == errSecSuccess || status == errSecItemNotFound else {
                 throw KeysError.keychain(status, "empty the Keychain")

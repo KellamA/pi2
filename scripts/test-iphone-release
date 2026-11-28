@@ -1,0 +1,292 @@
+#!/bin/bash
+# Checks scripts/iphone-release in a stand-in checkout with a stand-in xcodebuild first on the PATH: nothing is built,
+# signed or uploaded, and no Apple account, team, key or profile is needed (#682).
+#
+# The stand-in checkout holds copies of this checkout's iPhone project, Info.plist files and entitlements files, so that
+# the script's checks of them are checks of the real ones; each case that needs a broken one breaks a copy. The stand-in
+# xcodebuild writes down every call it is given, keeps the export options plist of an `-exportArchive` call, and can
+# fail on purpose (FAIL_MODE=archive or export), as Xcode would.
+#
+#   scripts/test-iphone-release
+#
+# Needs bash, plutil and git; it runs on macOS, where Xcode and plutil are. It builds nothing and touches no simulator.
+
+set -uo pipefail
+export LC_ALL=C
+
+here="$(cd -P -- "$(dirname -- "$0")" && pwd -P)"
+checkout="$(cd -P -- "$here/.." && pwd -P)"
+script="$here/iphone-release"
+[[ -f $script ]] || { echo "test-iphone-release: $script is not there" >&2; exit 1; }
+
+T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT
+T=$(cd -P -- "$T" && pwd -P)
+LOG=$T/log
+export LOG
+
+mkdir -p "$T/bin" "$T/tmp" "$T/real/NotificationService" "$T/real/Widgets" "$T/real/ShareExtension"
+cp "$checkout/iphone/pi2.xcodeproj/project.pbxproj" "$T/real/project.pbxproj"
+cp "$checkout/iphone/Info.plist" "$T/real/Info.plist"
+cp "$checkout/iphone/NotificationService/Info.plist" "$T/real/NotificationService/Info.plist"
+cp "$checkout/iphone/pi2.entitlements" "$T/real/pi2.entitlements"
+cp "$checkout/iphone/NotificationService/NotificationService.entitlements" "$T/real/NotificationService/NotificationService.entitlements"
+cp "$checkout/iphone/Widgets/Widgets.entitlements" "$T/real/Widgets/Widgets.entitlements"
+cp "$checkout/iphone/ShareExtension/ShareExtension.entitlements" "$T/real/ShareExtension/ShareExtension.entitlements"
+
+SECRET='FAKE-P8-SECRET-BODY-0123456789abcdef'
+
+# A checkout as the script finds one: this checkout's iPhone files, and no .git unless a case asks for one.
+reset_repo() {
+	rm -rf "${T:?}/repo"
+	mkdir -p "$T/repo/scripts" "$T/repo/iphone/pi2.xcodeproj" "$T/repo/iphone/NotificationService" \
+		"$T/repo/iphone/Widgets" "$T/repo/iphone/ShareExtension"
+	cp "$script" "$T/repo/scripts/iphone-release"
+	cp "$T/real/project.pbxproj" "$T/repo/iphone/pi2.xcodeproj/project.pbxproj"
+	cp "$T/real/Info.plist" "$T/repo/iphone/Info.plist"
+	cp "$T/real/NotificationService/Info.plist" "$T/repo/iphone/NotificationService/Info.plist"
+	cp "$T/real/pi2.entitlements" "$T/repo/iphone/pi2.entitlements"
+	cp "$T/real/NotificationService/NotificationService.entitlements" "$T/repo/iphone/NotificationService/NotificationService.entitlements"
+	cp "$T/real/Widgets/Widgets.entitlements" "$T/repo/iphone/Widgets/Widgets.entitlements"
+	cp "$T/real/ShareExtension/ShareExtension.entitlements" "$T/repo/iphone/ShareExtension/ShareExtension.entitlements"
+}
+git_commit() {
+	git -C "$T/repo" init -q
+	git -C "$T/repo" add -A
+	git -C "$T/repo" -c user.name=stand-in -c user.email=stand-in@example.invalid commit -qm "stand-in checkout"
+}
+# Apple's .p8, whose body is the secret no word of the script may say. 600 as the owner keeps it; 644 for the refusal.
+write_key() {
+	printf -- '-----BEGIN PRIVATE KEY-----\n%s\n-----END PRIVATE KEY-----\n' "$SECRET" >"$T/AuthKey_ABC1234567.p8"
+	chmod "$1" "$T/AuthKey_ABC1234567.p8"
+	KEY=$T/AuthKey_ABC1234567.p8
+}
+
+cat >"$T/bin/xcodebuild" <<'EOF'
+#!/bin/bash
+{ printf 'xcodebuild'; printf ' %q' "$@"; echo; } >>"$LOG"
+here=$(dirname "$LOG")
+previous=""
+for argument in "$@"; do
+	if [[ $previous == -exportOptionsPlist ]]; then
+		printf '%s' "$argument" >"$here/options-path"
+		cp "$argument" "$here/options.plist" 2>/dev/null || echo "no options at $argument" >"$here/options.plist"
+	fi
+	previous=$argument
+done
+for argument in "$@"; do
+	[[ $argument == archive && ${FAIL_MODE:-} == archive ]] && { echo "stand-in xcodebuild: the archive failed" >&2; exit 7; }
+	[[ $argument == -exportArchive && ${FAIL_MODE:-} == export ]] && { echo "stand-in xcodebuild: the export failed" >&2; exit 7; }
+done
+exit 0
+EOF
+chmod +x "$T/bin/xcodebuild"
+
+failures=0
+case_name=
+status=0
+fail() {
+	echo "FAIL: $case_name: $*" >&2
+	echo "  exit $status; stderr:" >&2
+	sed 's/^/    /' "$T/err" >&2
+	echo "  stdout:" >&2
+	sed 's/^/    /' "$T/out" >&2
+	if [[ -f $LOG ]]; then echo "  calls:" >&2; sed 's/^/    /' "$LOG" >&2; fi
+	failures=$((failures + 1))
+}
+
+# run <description> <arguments...>: the copy in the stand-in checkout, with the credentials the owner's environment
+# gives it, the stand-ins first on the PATH, and a temporary folder of its own.
+run() {
+	case_name=$1
+	shift
+	: >"$LOG"
+	rm -f "$T/options.plist" "$T/options-path"
+	(cd "$T/repo" && env PATH="$T/bin:$PATH" TMPDIR="$T/tmp" \
+		PI2_TEAM_ID="${TEAM-ABCDE12345}" PI2_ASC_KEY_ID="${KEY_ID-ABC1234567}" \
+		PI2_ASC_ISSUER_ID="${ISSUER-11111111-2222-3333-4444-555555555555}" PI2_ASC_KEY_PATH="${KEY-$T/AuthKey_ABC1234567.p8}" \
+		"$T/repo/scripts/iphone-release" "$@") >"$T/out" 2>"$T/err"
+	status=$?
+	grep -qF -- "$SECRET" "$T/out" "$T/err" && fail "the .p8 key's contents were printed"
+	[[ ! -f $LOG ]] || { grep -qF -- "$SECRET" "$LOG" && fail "the .p8 key's contents reached the command line"; }
+	return 0
+}
+expect_status() { [[ $status == "$1" ]] || fail "exit $status, expected $1"; }
+expect_err() { grep -qF -- "$1" "$T/err" || fail "stderr lacks: $1"; }
+expect_out() { grep -qF -- "$1" "$T/out" || fail "stdout lacks: $1"; }
+expect_no_out() { ! grep -qF -- "$1" "$T/out" || fail "stdout holds: $1"; }
+expect_log() { grep -qF -- "$1" "$LOG" || fail "no call with: $1"; }
+expect_calls() { local n; n=$(grep -c '^xcodebuild' "$LOG" 2>/dev/null || echo 0); [[ $n == "$1" ]] || fail "$n xcodebuild calls, expected $1"; }
+
+reset_repo
+write_key 600
+
+# --- the arguments -------------------------------------------------------------------------------------------------
+run "help" --help
+expect_status 0
+expect_out "Usage: scripts/iphone-release"
+run "an unknown argument" --everything
+expect_status 2
+expect_err "unknown argument --everything (try --help)"
+run "a value left out" --build
+expect_status 2
+expect_err "--build needs a build number"
+
+# --- the credentials -----------------------------------------------------------------------------------------------
+TEAM= run "no team id" --dry-run
+expect_status 1
+expect_err "set PI2_TEAM_ID in the environment"
+expect_err "docs/releasing.md"
+KEY_ID= run "no key id" --dry-run
+expect_status 1
+expect_err "set PI2_ASC_KEY_ID"
+TEAM=abcdefghij run "a team id that is not one" --dry-run
+expect_status 1
+expect_err "PI2_TEAM_ID is not a team id"
+KEY_ID=short run "a key id that is not one" --dry-run
+expect_status 1
+expect_err "PI2_ASC_KEY_ID is not a key id"
+ISSUER=abc run "an issuer id that is not one" --dry-run
+expect_status 1
+expect_err "PI2_ASC_ISSUER_ID is not an issuer id"
+KEY=$T/nothing.p8 run "a key file that is not there" --dry-run
+expect_status 1
+expect_err "PI2_ASC_KEY_PATH names no file"
+printf 'not a key\n' >"$T/wrong.p8"
+KEY=$T/wrong.p8 run "a file that is not Apple's key" --dry-run
+expect_status 1
+expect_err "does not look like Apple's .p8 key"
+write_key 644
+run "a key others can read" --dry-run
+expect_status 1
+expect_err "readable by others (mode 644)"
+expect_err "chmod 600"
+write_key 600
+
+# --- the checkout --------------------------------------------------------------------------------------------------
+reset_repo
+rm "$T/repo/iphone/Widgets/Widgets.entitlements"
+run "an entitlements file missing" --dry-run
+expect_status 1
+expect_err "there is no entitlements file at $T/repo/iphone/Widgets/Widgets.entitlements"
+
+reset_repo
+sed -i.bak 's/CODE_SIGN_ENTITLEMENTS = ShareExtension\/ShareExtension.entitlements;//' "$T/repo/iphone/pi2.xcodeproj/project.pbxproj"
+run "an entitlement the project does not sign with" --dry-run
+expect_status 1
+expect_err "does not sign dev.pi2.ios.share with ShareExtension/ShareExtension.entitlements"
+
+reset_repo
+sed -i.bak 's/PRODUCT_BUNDLE_IDENTIFIER = dev.pi2.ios.widgets;/PRODUCT_BUNDLE_IDENTIFIER = dev.pi2.ios.widget;/' \
+	"$T/repo/iphone/pi2.xcodeproj/project.pbxproj"
+run "an App ID not the one the instructions name" --dry-run
+expect_status 1
+expect_err "the project no longer builds dev.pi2.ios.widgets"
+
+reset_repo
+perl -0pi -e 's|\t<key>ITSAppUsesNonExemptEncryption</key>\n\t<true/>\n||' "$T/repo/iphone/Info.plist"
+run "no answer about encryption" --dry-run
+expect_status 1
+expect_err "has no ITSAppUsesNonExemptEncryption"
+
+reset_repo
+perl -0pi -e 's|\t<key>PI2KeychainAccessGroup</key>\n\t<string>[^<]*</string>\n||' \
+	"$T/repo/iphone/NotificationService/Info.plist"
+run "no keychain group in the extension" --dry-run
+expect_status 1
+expect_err "NotificationService/Info.plist has no PI2KeychainAccessGroup"
+reset_repo
+
+# --- a checkout with git -------------------------------------------------------------------------------------------
+git_commit
+git -C "$T/repo" branch -M main
+run "a clean checkout on main" --dry-run
+expect_status 0
+expect_out "commit "
+expect_no_out "warning: building from"
+touch "$T/repo/uncommitted"
+run "a checkout with uncommitted changes" --dry-run
+expect_status 1
+expect_err "uncommitted changes"
+run "uncommitted changes, allowed" --dry-run --allow-dirty
+expect_status 0
+rm "$T/repo/uncommitted"
+git -C "$T/repo" checkout -q -b feature
+run "a checkout on a branch that is not main" --dry-run
+expect_status 0
+expect_out "warning: building from feature, not main"
+git -C "$T/repo" checkout -q main
+
+# --- the dry run ---------------------------------------------------------------------------------------------------
+reset_repo
+run "a dry run" --dry-run --build 42
+expect_status 0
+[[ ! -s $LOG ]] || fail "a dry run called xcodebuild"
+expect_out "version 0.1 (42), team ABCDE12345, App Store Connect key ABC1234567"
+expect_out "archive $T/repo/iphone/build/release/pi2-0.1-42.xcarchive"
+expect_out "dry run: nothing is signed or uploaded"
+expect_out "-destination generic/platform=iOS"
+expect_out "-exportOptionsPlist"
+expect_out "method app-store-connect, destination upload, team ABCDE12345, signing automatic"
+expect_out "$KEY"
+[[ ! -e $T/repo/iphone/build/release ]] || fail "a dry run made the release folder"
+
+run "a dry run with the build number left out" --dry-run
+expect_status 0
+grep -qE -- "version 0\.1 \([0-9]{12}\), team" "$T/out" || fail "the default build number is not YYYYMMDDHHMM"
+run "a version given" --dry-run --version 1.2.3 --build 7
+expect_status 0
+expect_out "version 1.2.3 (7)"
+run "a version that is not one" --dry-run --version latest
+expect_status 1
+expect_err "--version is not a version"
+run "a build number that is not one" --dry-run --build v7
+expect_status 1
+expect_err "--build is not a build number"
+
+# --- an export up to App Store Connect, with stand-ins --------------------------------------------------------------
+reset_repo
+run "an upload" --build 42
+expect_status 0
+expect_log "xcodebuild -project $T/repo/iphone/pi2.xcodeproj -scheme pi2 -configuration Release"
+expect_log "-destination generic/platform=iOS"
+expect_log "-archivePath $T/repo/iphone/build/release/pi2-0.1-42.xcarchive"
+expect_log "MARKETING_VERSION=0.1 CURRENT_PROJECT_VERSION=42"
+expect_log "DEVELOPMENT_TEAM=ABCDE12345 -allowProvisioningUpdates"
+expect_log "-authenticationKeyPath $KEY -authenticationKeyID ABC1234567 -authenticationKeyIssuerID 11111111-2222-3333-4444-555555555555"
+expect_log "-exportArchive -archivePath $T/repo/iphone/build/release/pi2-0.1-42.xcarchive"
+expect_log "-exportPath $T/repo/iphone/build/release/pi2-0.1-42-export"
+expect_log "-exportOptionsPlist "
+expect_calls 2
+expect_out "uploaded 0.1 (42)"
+# What the export is given: an upload to App Store Connect for that team, no secret, and the run's own folder.
+plutil -lint "$T/options.plist" >/dev/null 2>&1 || fail "the export options are not a property list"
+[[ $(plutil -extract method raw "$T/options.plist" 2>/dev/null) == app-store-connect ]] || fail "the export method is not app-store-connect"
+[[ $(plutil -extract destination raw "$T/options.plist" 2>/dev/null) == upload ]] || fail "the export does not upload"
+[[ $(plutil -extract teamID raw "$T/options.plist" 2>/dev/null) == ABCDE12345 ]] || fail "the export team is not the one given"
+[[ $(plutil -extract manageAppVersionAndBuildNumber raw "$T/options.plist" 2>/dev/null) == false ]] || fail "Xcode would change the build number"
+grep -qF -- "$SECRET" "$T/options.plist" && fail "the .p8 key's contents reached the export options"
+options_path=$(cat "$T/options-path" 2>/dev/null || true)
+[[ -n $options_path ]] || fail "the export was given no options file"
+[[ ! -e $options_path ]] || fail "the export options stayed at $options_path"
+[[ -z $(ls -A "$T/tmp") ]] || fail "the temporary folder was left behind"
+[[ -d $T/repo/iphone/build/release ]] || fail "the release folder was not made"
+
+FAIL_MODE=archive run "an archive that fails" --build 42
+expect_status 1
+expect_err "the archive failed"
+expect_err "Nothing was uploaded"
+expect_calls 1
+FAIL_MODE=export run "an upload that fails" --build 42
+expect_status 1
+expect_err "the export or the upload failed"
+expect_calls 2
+[[ -z $(ls -A "$T/tmp") ]] || fail "the temporary folder was left behind after a failed upload"
+
+echo
+if [[ $failures == 0 ]]; then
+	echo "test-iphone-release: every case passed"
+	exit 0
+fi
+echo "test-iphone-release: $failures case(s) failed" >&2
+exit 1

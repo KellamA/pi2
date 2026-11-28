@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The widgets extension's capability (docs/iphone.md 12.2, P31; #682). It is signed with this file in both
+     configurations (CODE_SIGN_ENTITLEMENTS in iphone/pi2.xcodeproj), and its App ID, `dev.pi2.ios.widgets`, must have
+     App Groups in Apple's developer site: docs/releasing.md, "The iPhone app and TestFlight", has the owner's steps.
+
+     - com.apple.security.application-groups: the group the app leaves what the widgets and the Live Activity draw
+       (`WidgetsFile`), as the app and its other extensions read it. The widgets read no key and ask for nothing else. -->
+<dict>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.dev.pi2.ios</string>
+	</array>
+</dict>
+</plist>
