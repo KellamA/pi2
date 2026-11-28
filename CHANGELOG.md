@@ -6,6 +6,26 @@ What changed in each version, newest first. “For contributors” stays here bu
 
 What the next version will have is in [changelog.d](changelog.d/), a file for each entry, until a release gathers them here.
 
+## 0.8.13
+
+### Changed
+- The Devices log groups refusals and failures within a minute of the first entry when the device, path, method, outcome and stored summary match (and, for refusals, the reason is of the same kind). The count and last time are for that group, not proof that the original requests or targets were identical: different inputs can have the same cleaned, masked and shortened summary. An attach with a Face ID signature made by neither key now reads differently from one signed by the new key waiting to be accepted.
+- Each device's regular log entries have separate quotas: 1,000 for what was done and 1,000 for refusals and failures, subject to the log's age and total size limits. Either side can use spare space but may lose older entries above its quota when the other side fills.
+- A URL held in a variable no longer masks links on a paired iPhone just because they share a common scheme. The mask looks for matching text, not the same host, so it can still hide other links or ordinary text. For a value with a usable head match, a cut at the end before the full head can leave the scheme and up to seven characters after the skipped beginning visible. Short eligible URLs matched as complete values are masked where the whole value occurs, not simply wherever a fragment contains eight characters. The new short-key mask applies at the text's end only with a complete, recognized key prefix at the required boundary.
+
+### Fixed
+- On the iPhone, opening the app while the Mac is out of reach now says when the Mac was last seen, instead of only that it is out of reach.
+- When the Keychain would not keep a credential, the sign-in failed with "The Keychain did not accept the credential" and nothing more. It now says why, in plain words: the keychain is locked, there is no default keychain, the session may not show a prompt, or the status `security` exited with.
+- The devices' log now strips the same invisible characters as notifications, including variation selectors and Hangul fillers, before masking. This lets it recognize keys split by those characters. Line and paragraph separators are shown as spaces.
+- On the Mac, the note under a pull request's Send Back field now names the conversation that opened it (the orchestrator's, a sub-chat, or another agent's) instead of always calling it a sub-chat.
+
+### For contributors
+- A development build's Settings › Devices page says when the relay refused this Mac's Live Activity updates because the Mac's clock seems wrong, from the first refusal until one of the Mac's own updates goes unanswered for a minute or ten minutes pass without another refusal, and the development-only `push-clock` preference stands in for the refusal in a test copy.
+- `docs/ci-runner.md` has "Qualifying the mini": the short, separate runs that decide whether the owner's Mac mini can run the App and Engine checks, each one started by hand with the new dispatch-only `.github/workflows/mini-qualify.yml`, which no required check and no routing uses. `scripts/ci-runner-clean` now says when it cannot read the Keychain's items, with the status, instead of passing over it.
+- The Engine and App jobs give a job on the owner's runner a keychain of its own (`scripts/ci-runner-clean keychain-start` and `keychain-end`), since a job's security session there cannot open the account's login keychain; it needs no secret. `mini-qualify.yml` takes `keychain=job` to try it.
+- `scripts/test-copy press <suffix> <label> [--within <card>] [--conversation <id>]` presses a control of a throwaway copy's conversation page by its label, as a click would, such as Expand on a presented card, which the computer tool cannot reach: WebKit gives the page's buttons no accessibility, and a parked copy ignores a click at a point. It takes a label, never script, a selector or a point; refuses an absent, ambiguous, hidden or disabled control and any that answers for the person (use `answer`); never reaches a presented page's own content; and exists only in a development build's copy that `scripts/test-copy` started. `pi2-transcript-check` checks it on the real page.
+- The App and Engine checks of one of the owner's pull requests go to the owner's runner only when it is free as the run starts, one job of a run at most, and to GitHub's runners otherwise: `CI_MAC_RUNNER` now names the runner whose free time the run's first job asks about, with a read-only token in the new secret `CI_RUNNER_STATUS_TOKEN`. Without that secret nothing changes, and `docs/ci-runner.md` says what the owner sets and what "free" means.
+
 ## 0.8.12
 
 ### Added
