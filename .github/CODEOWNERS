@@ -79,6 +79,7 @@
 /iphone/Widgets/Widgets.entitlements @KellamA
 /iphone/ShareExtension/ShareExtension.entitlements @KellamA
 /scripts/iphone-release @KellamA
+/scripts/test-iphone-release @KellamA
 /engine/src/devices.ts @KellamA
 /engine/src/remote.ts @KellamA
 /engine/src/pushes.ts @KellamA

@@ -28,4 +28,19 @@ import Testing
         // group there, which is what the app and the extension did before #682.
         #expect(KeychainGroup.id == nil)
     }
+
+    @Test func aListAndAWipeGoThroughBothAccessGroups() {
+        // The first launch's wipe and Unpair must empty the shared group as well as the app's own (3.2, 3.6), and the
+        // list that checks the wipe must reach both. A simulator build has no shared group to leave items in, so the
+        // searches themselves are what is checked here: reaching one group and not the other fails this test.
+        let shared = "ABCDE12345.group.dev.pi2.ios"
+        let own = SystemKeychain.searches(shared: nil)
+        #expect(!own.isEmpty)
+        #expect(own.allSatisfy { $0.group == nil })
+
+        let both = SystemKeychain.searches(shared: shared)
+        #expect(both.count == own.count * 2)
+        #expect(both.filter { $0.group == nil }.map { $0.itemClass as String } == own.map { $0.itemClass as String })
+        #expect(both.filter { $0.group == shared }.map { $0.itemClass as String } == own.map { $0.itemClass as String })
+    }
 }
