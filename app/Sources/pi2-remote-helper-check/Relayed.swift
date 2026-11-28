@@ -142,6 +142,69 @@ final class RelayWire: @unchecked Sendable {
 	}
 }
 
+/// The engine's lines to one session, from a thread of the check's own, so that the Mac is sending while the phone
+/// is moved to another path (5.8, #693). One writer at a time on the control socket: this thread's lines and the check's
+/// own go through the same lock. Each line is one the Mac sends the session, numbered; the end marker names the last.
+final class Streamer: @unchecked Sendable {
+	private let engine: FakeEngine
+	private let session: String
+	private let lock = NSLock()
+	private var number = 0
+	private var running = false
+	private var thread: Thread?
+
+	init(_ engine: FakeEngine, session: String) {
+		self.engine = engine
+		self.session = session
+	}
+
+	/// How far it has sent, by the line's number.
+	var sent: Int { lock.withLock { number } }
+
+	/// Sends lines numbered on from the last, through `last`.
+	func send(through last: Int) {
+		lock.withLock {
+			while number < last {
+				number += 1
+				engine.toSession(session, #"{"event":"stream","n":\#(number)}"#)
+			}
+		}
+	}
+
+	/// Sends a line every `every` microseconds, until `stop`.
+	func start(every usec: useconds_t = 20_000) {
+		let thread = Thread { [weak self] in
+			while let self, self.isRunning {
+				self.send(through: self.sent + 1)
+				usleep(usec)
+			}
+		}
+		lock.withLock { running = true }
+		self.thread = thread
+		thread.start()
+	}
+
+	private var isRunning: Bool { lock.withLock { running } }
+
+	/// Stops the thread, waits for its last line to have gone, then sends the end marker: the last line's number, which
+	/// `read(.end(_))` checks every line against.
+	func stop() -> Int {
+		halt()
+		let last = sent
+		lock.withLock { engine.toSession(session, #"{"event":"end","n":\#(last)}"#) }
+		return last
+	}
+
+	/// Stops it with no end marker: the move it was started for did not happen.
+	func abandon() { halt() }
+
+	private func halt() {
+		lock.withLock { running = false }
+		while thread?.isFinished == false { usleep(1_000) }
+		thread = nil
+	}
+}
+
 enum Relayed {
 	static let team = Flows.team
 	static let phoneBuild = RelayBuild("7")!
@@ -313,6 +376,8 @@ enum Relayed {
 		third.sendLine(Data(#"{"sessionEnd":{}}"#.utf8))
 		Check.expect(engine.request("remote.sessionEnd")?.params["session"]?.stringValue == "r_one" && third.event() == .bye, "and back to the relay; the phone's sessionEnd ends it in the engine, and its channel")
 
+		moving(engine, mac: mac, device: device, keys: keys1, wire: wire)
+
 		hostile(engine, mac: mac, relay: relay, address: address, home: home)
 		mailbox(engine, mac: mac, device: device, keys: keys1, wire: wire, relay: relay)
 		RelayedPushes.through(engine, mac: mac, device: device, keys: keys1, wire: wire, relay: relay, home: home)
@@ -372,6 +437,118 @@ enum Relayed {
 		Check.expect(!log.contains(Base64URL.encode(secret)), "pi² Remote's log holds no pairing secret")
 		// Last: a write that fails leaves pi² Remote with no home key until the next claim makes one (Remote.keep).
 		unkept(engine, mac: mac, relay: relay, home: home, address: address)
+	}
+
+	/// A session moving between the relay and the home path in the middle of an answer (5.8, #693): the Mac is sending
+	/// as the phone resumes on the other path, both ways, and no line is lost. The lines in flight at the moment of a
+	/// move come twice, which a phone drops by their count; one that came where a later one was expected would be lost.
+	/// The stream of engine lines comes from a thread of the check's own, so that it goes on while the move is made.
+	static func moving(_ engine: FakeEngine, mac: Mac, device: DeviceID, keys: PhoneKeys, wire: RelayWire) {
+		Check.section("A session moves mid-answer, both ways, and loses no line (5.8, #693)")
+		let flows = mac.flows
+		let name = "r_move"
+		let session = SessionID(name)!
+		guard let (relayPhone, fresh) = Flows.attach(engine, mac: flows, device: device, keys: keys, session: name, path: "relay", make: { Phone(relay: wire) }) else {
+			return Check.expect(false, "the phone attached over the relay, for the mid-answer move")
+		}
+		Check.expect(!fresh.resume, "a new session starts over the relay")
+
+		let stream = Streamer(engine, session: name)
+		var expected = 1
+		var duplicates = 0
+		// Every line the phone has had of the session, counted: what a resume names (5.8).
+		var lines = 0
+		stream.send(through: 4)
+		Check.expect(read(relayPhone, .through(4), expected: &expected, duplicates: &duplicates, lines: &lines) == nil, "four lines come over the relay, before the move")
+		// From here the Mac is sending as fast as the check's thread gives it: through the whole of the move.
+		stream.start()
+
+		// Relay to the Mac's address (the home listener here), the session resumed on it at the count the phone has had.
+		guard let (homePhone, moved) = Flows.attach(
+			engine, mac: flows, device: device, keys: keys, session: name, resume: (session, UInt64(lines)), resumed: true)
+		else {
+			stream.abandon()
+			return Check.expect(false, "the session resumed on the home path")
+		}
+		Check.expect(moved.resume && moved.session == session, "the Mac resumes the session on the home path")
+		Check.expect(read(relayPhone, .bye, expected: &expected, duplicates: &duplicates, lines: &lines) == nil, "and closes the channel it moved from with bye")
+		let firstEnd = stream.stop()
+		Check.expect(
+			read(homePhone, .end(firstEnd), expected: &expected, duplicates: &duplicates, lines: &lines) == nil,
+			"every line the Mac sent comes on the home path, in order, none lost: the lines in flight come twice",
+			"\(expected - 1) of \(firstEnd) seen, \(duplicates) sent twice")
+		Check.expect(expected - 1 == firstEnd, "all \(firstEnd) lines were had, none skipped")
+
+		// And back, while the Mac is sending again.
+		stream.start()
+		guard let (backOnRelay, backAttached) = Flows.attach(
+			engine, mac: flows, device: device, keys: keys, session: name, resume: (session, UInt64(lines)), resumed: true, path: "relay",
+			make: { Phone(relay: wire) })
+		else {
+			stream.abandon()
+			return Check.expect(false, "the session resumed over the relay")
+		}
+		Check.expect(backAttached.resume && backAttached.session == session, "the Mac resumes the session over the relay")
+		Check.expect(read(homePhone, .bye, expected: &expected, duplicates: &duplicates, lines: &lines) == nil, "and closes the home channel with bye")
+		let secondEnd = stream.stop()
+		let backProblem = read(backOnRelay, .end(secondEnd), expected: &expected, duplicates: &duplicates, lines: &lines)
+		Check.expect(
+			backProblem == nil, "every line comes over the relay again, in order, none lost",
+			backProblem ?? "\(expected - 1) of \(secondEnd) seen, \(duplicates) sent twice")
+		Check.expect(expected - 1 == secondEnd, "all \(secondEnd) lines were had, none skipped")
+		backOnRelay.sendLine(Data(#"{"sessionEnd":{}}"#.utf8))
+		Check.expect(
+			engine.request("remote.sessionEnd")?.params["session"]?.stringValue == name && backOnRelay.event() == .bye,
+			"and the session ends as the phone says, in the engine and on its channel")
+	}
+
+	/// What `moving` reads a channel for.
+	enum Goal {
+		/// The lines numbered through `n`.
+		case through(Int)
+		/// The channel's end: the Mac's `bye`, or a link that closed.
+		case bye
+		/// The end marker, numbering the stream's last line `n`.
+		case end(Int)
+
+		var isBye: Bool { if case .bye = self { true } else { false } }
+	}
+
+	/// Reads the stream's lines from `phone` until `goal`: each one in its order, one numbered below the expected one
+	/// dropped as a line the move sent again (5.8), and one above it a line lost. nil when the goal was met; why not,
+	/// otherwise.
+	static func read(
+		_ phone: Phone, _ goal: Goal, expected: inout Int, duplicates: inout Int, lines: inout Int, within seconds: Double = 30) -> String?
+	{
+		while true {
+			if case let .through(last) = goal, expected > last { return nil }
+			switch phone.event(within: seconds) {
+			case nil:
+				return goal.isBye ? nil : "the channel ended before \(goal) (next \(expected))"
+			case .bye?:
+				return goal.isBye ? nil : "the channel ended with bye before \(goal) (next \(expected))"
+			case let .line(line)?:
+				guard let value = try? JSON.parse(line), let kind = value["event"]?.stringValue, let n = value["n"]?.integerValue else {
+					return "a line the check did not send: \(String(decoding: line, as: UTF8.self))"
+				}
+				if kind == "stream", n < expected {
+					// A line the move sent twice, which the phone already had: dropped by its count (5.8), so the count
+					// of lines the session has had does not grow.
+					duplicates += 1
+					continue
+				}
+				lines += 1
+				if kind == "end" {
+					guard case let .end(last) = goal else { return "an end marker where none was asked for" }
+					return n == last ? nil : "the end marker said \(n), not \(last)"
+				}
+				guard kind == "stream" else { return "an event the check did not send: \(kind)" }
+				guard n == expected else { return "line \(n) came where \(expected) was expected: a line was lost" }
+				expected += 1
+			default:
+				return "an event the check's phone does not read"
+			}
+		}
 	}
 
 	/// A pairing over the relay that pi² Remote cannot keep (#887): the engine is asked to take it back, the phone is told

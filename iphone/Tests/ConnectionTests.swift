@@ -694,6 +694,73 @@ struct ConnectionTests {
         }
     }
 
+    // MARK: - A session moving between paths (#693)
+
+    /// The relay's channel is the one attached, and the Mac's own address answers too: the session moves there, resumed
+    /// from the lines the phone has had, while the Mac is sending. The same session goes on, with every line once. The
+    /// address is tried by `Paths`, which proves the Mac there before anything is signed on the channel.
+    @Test func theSessionMovesOffTheRelayToTheMacsAddress() async throws {
+        let paired = try await Self.paired()
+        defer { paired.mac.stop() }
+        // The relay answers at once, the dial to the Mac's own address late: the relay's channel is the one attached.
+        let connection = try Self.connection(
+            paired, relay: PassingRelay(.connected(paired.mac)), dialer: LateDialer(by: .milliseconds(400)))
+        // The addresses tried again as soon as the Mac has them, rather than 30 seconds on.
+        connection.moveAgain = .milliseconds(100)
+        let app = AppSession()
+        let transport = connection.transport()
+        app.start(transport, as: .connecting)
+        connection.start()
+        defer { connection.stop() }
+        #expect(await Wait.until { connection.connection == .connected(.relay, relayReachable: true) }, "\(connection.connection)")
+        #expect(await Wait.until { !app.engine.projects.isEmpty }, "the Mac's lines come through the relay")
+
+        // The Mac sends, and goes on sending as the session moves.
+        for n in 1 ... 3 { paired.mac.sendEvent(#"{"event":"pi2-test","n":\#(n)}"#) }
+        #expect(await Wait.until { transport.received > 0 && Int(transport.received) == paired.mac.sentInSession })
+        let had = transport.received
+
+        #expect(await Wait.until(20) { connection.connection == .connected(.direct, relayReachable: true) }, "\(connection.connection)")
+        for n in 4 ... 6 { paired.mac.sendEvent(#"{"event":"pi2-test","n":\#(n)}"#) }
+        #expect(
+            await Wait.until { Int(transport.received) == paired.mac.sentInSession },
+            "every line the Mac sent came, and none twice: \(transport.received) of \(paired.mac.sentInSession)")
+        let resume = try #require(paired.mac.state.withLock { $0.attaches.last })
+        #expect(resume.session != nil, "the session to resume, not a new one")
+        #expect((resume.received ?? 0) >= had, "from the lines the phone had, counted at the attach")
+        #expect(paired.mac.state.withLock { $0.attachedCount } == 2, "attached over the relay, and resumed at its address")
+        #expect(paired.mac.state.withLock { $0.sessionEnds } == 0, "the move ends no session")
+        #expect(connection.transport() === transport, "the same session, so the same transport: no new greeting")
+        #expect(app.engine.status == .connected)
+        #expect(try Self.presenceSignedOncePerChannel(paired) == nil)
+    }
+
+    /// No address of the Mac's is known: nothing to move to, and the session goes on over the relay path, with no
+    /// session ended and the relay's channel the only one attached.
+    @Test func withNoAddressTheSessionStaysOnTheRelay() async throws {
+        let paired = try await Self.paired()
+        defer { paired.mac.stop() }
+        var routes = PairingTests.routes()
+        routes.relayConnector = PassingRelay(.connected(paired.mac))
+        // No Bonjour finder and no address kept: only the relay can reach the Mac.
+        var record = paired.record
+        record.addresses = []
+        record.relay = "wss://relay.example.dev/v1"
+        let connection = try RemoteConnection(
+            record: record, keys: try #require(try paired.keys.keys()), keyStore: paired.keys, store: paired.store, routes: routes)
+        connection.moveAgain = .milliseconds(100)
+        let app = AppSession()
+        app.start(connection.transport(), as: .connecting)
+        connection.start()
+        defer { connection.stop() }
+        #expect(await Wait.until { connection.connection == .connected(.relay, relayReachable: true) }, "\(connection.connection)")
+        #expect(await Wait.until { !app.engine.projects.isEmpty })
+        try await Task.sleep(for: .seconds(1))
+        #expect(connection.connection == .connected(.relay, relayReachable: true), "no address to move to: it goes on over the relay")
+        #expect(paired.mac.state.withLock { [$0.attachedCount, $0.sessionEnds] as [Int] } == [1, 0])
+        #expect(try Self.presenceSignedOncePerChannel(paired) == nil)
+    }
+
     @Test func everyProblemHasWordsOfItsOwn() {
         let problems: [ConnectionProblem] = [
             .update, .suspended, .presence, .clock, .faceID(.sessionNotOpen), .faceID(.faceIDNotPassed), .macNotProved, .presenceKeyWaits, .presenceKeyNotTaken, .presenceKeyNoAnswer,
