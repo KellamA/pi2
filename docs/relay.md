@@ -16,7 +16,7 @@ Make them in this order. Each takes a few minutes; the first takes longest.
 | 2 | Branch protection on `main`: the code owner's review, for administrators too | Settings › Branches |
 | 3 | Two environments, `relay-development` and `relay-production`, and a reviewer for `release` | Settings › Environments |
 | 4 | The push key, when the relay asks for it | Apple's developer site, Cloudflare |
-| 5 | The iPhone app's signing and upload credentials, when P14 asks for them | Settings › Environments |
+| 5 | The iPhone app's signing and upload credentials, when an upload workflow holds them | Settings › Environments |
 
 Once 1 to 3 are made, tell the agent that asked (the issue is #668): you and it then make the four checks of [Checking the settings](#checking-the-settings), which settle what the documentation leaves open. A review request alone proves nothing, since GitHub shows one without any rule; each check is of a merge that is blocked, or not.
 
@@ -96,11 +96,15 @@ What the test pull request cannot show here, the relay's first deployment (P9) d
 
 When the relay is ready for pushes (P20), and the app's App ID exists ([iphone.md 6.4](iphone.md#64-what-the-owner-sets-up-once), item 4), make one key for each relay, in Apple's developer site: **Certificates, Identifiers & Profiles › Keys › +**, a name, tick **Apple Push Notification service (APNs)**, **Configure**, choose the environment (**Sandbox** for the development relay, **Production** for the production one) and **Topic Specific**, with the topic `dev.pi2.ios` alone; then review it, **Confirm** and **Download**.[^apnskey] A topic-specific key can push to that app alone, where a team-scoped one could push to every app of the team ([iphone.md 6.4](iphone.md#64-what-the-owner-sets-up-once)). Apple lets you download it once.[^apnskey]
 
-Give each key to its relay as Workers secrets (`APNS_KEY`, `APNS_KEY_ID`, `APNS_TEAM_ID`), **never to GitHub**: in Cloudflare's dashboard (**Workers & Pages ›** the relay **› Settings › Variables and Secrets › Add**, type **Secret**), or with `npx wrangler secret put APNS_KEY --env development < AuthKey_<id>.p8`, which reads the value from its input.[^cfsecrets] Do it from the other device or macOS user of step 1. `npx wrangler logout` ends Wrangler's own sign-in; it does not revoke an API token made separately, which you revoke in Cloudflare's dashboard. Then keep the `.p8` file off the Mac, wherever you keep the Sparkle key: the relay needs no copy beside its secret.
+Give each key to its relay as Workers secrets (`APNS_KEY`, `APNS_KEY_ID`, `APNS_TEAM_ID`), **never to GitHub**: in Cloudflare's dashboard (**Workers & Pages ›** the relay **› Settings › Variables and Secrets › Add**, type **Secret**), or with `npx wrangler secret put APNS_KEY --env development < AuthKey_<id>.p8`, which reads the value from its input.[^cfsecrets] Do it from the other device or macOS user of step 1. `npx wrangler logout` ends Wrangler's own sign-in; it does not revoke an API token made separately, which you revoke in Cloudflare's dashboard. Then keep the `.p8` file off this Mac, on that user or device, wherever you keep the Sparkle key: the relay needs no copy beside its secret, and a key one can read is a key that can push to `dev.pi2.ios` ([releasing.md](releasing.md#the-iphone-app-and-testflight) step 7).
 
 ### 5. The iPhone app's credentials (P14)
 
-When P14 makes the iPhone app's signing and upload, it adds an environment for them to this list, made as in step 3, and the entitlements and the upload configuration to `CODEOWNERS`. Until then there is nothing to make.
+**Where things stand: nothing to make yet, and no environment.** #682 made the signing and the upload, and `CODEOWNERS` now names what it added: the app's four entitlements files, `scripts/iphone-release` and its test. What it did not make is an environment for the upload, and that is deliberate. An environment holds a secret for a workflow to read once its protection rules pass, and there is no upload workflow: the upload is the owner's own command, run as the other macOS user of step 1 ([releasing.md](releasing.md#the-iphone-app-and-testflight)). A workflow that named an environment nobody had made would create it with no protection rules ([step 3](#3-the-environments)), so making one now would be worse than making none.
+
+**So the credentials are not in GitHub at all.** The team id and the App Store Connect API key are the shell's of that other macOS user or device ([step 1](#1-the-agents-own-identity-on-github)), never this Mac's, and the key's file is `chmod 600` there; `scripts/iphone-release` refuses to sign while other users of its Mac can read it, which says nothing of a program running as its own user. The APNs key is the relay's, in Cloudflare ([step 4](#4-the-push-key-apns)).
+
+**When the upload becomes a workflow** — so that a build can be made from `main` without the key on anyone's Mac — it needs what [12.3](iphone.md#123-before-anything-is-built-the-repository-p0) asks of a credential: an environment of its own (`iphone-upload`, say), limited to `main`, with you as required reviewer ([step 3](#3-the-environments)), and the four values as its secrets alone, never the repository's. That is an issue of its own, not built here: this page gains a step above when it exists.
 
 ### Checking the settings
 

@@ -2,11 +2,13 @@
 # Archives pi² for iPhone for TestFlight and uploads it to App Store Connect (docs/iphone.md 9.1, #682), with
 # xcodebuild and Apple's own tools only.
 #
-# The owner runs it, and only the owner can. No agent has, or may have, an Apple account, a signing certificate, a
-# provisioning profile or an App Store Connect key; every upload is the owner's, and the credentials belong in a
-# protected place of their own (docs/iphone.md 12.3), never in this repository and never in the reach of a workflow run
-# from a branch. The script reads the four values it needs from the environment, and never prints them: the one secret
-# among them is the .p8 key, whose contents it does not read beyond its first line.
+# The owner runs it, and only the owner can, as another macOS user or on another Mac than the one agents work on: a
+# file that user can read, a program running as that user can read too, and no check here can tell the two apart
+# (docs/relay.md step 1). No agent has, or may have, an Apple account, a signing certificate, a provisioning profile or
+# an App Store Connect key; every upload is the owner's, and the credentials belong in a protected place of their own
+# (docs/iphone.md 12.3), never in this repository and never in the reach of a workflow run from a branch. The script
+# reads the four values it needs from the environment, and never prints them: the one secret among them is the .p8 key,
+# whose contents it does not read beyond its first line.
 #
 #   PI2_TEAM_ID        the Apple Developer team's id, ten capital letters or digits
 #   PI2_ASC_KEY_ID     the App Store Connect API key's id, ten capital letters or digits
@@ -166,8 +168,11 @@ team=$PI2_TEAM_ID key_id=$PI2_ASC_KEY_ID issuer=$PI2_ASC_ISSUER_ID key=$PI2_ASC_
 [[ -r $key ]] || die "PI2_ASC_KEY_PATH names a file this user cannot read."
 grep -q '^-----BEGIN PRIVATE KEY-----' "$key" ||
 	die "PI2_ASC_KEY_PATH does not look like Apple's .p8 key: its first line should begin it."
-# The one secret of the four. Apple downloads it readable by others, and on a Mac where agents and other people work
-# that is how it leaks. Refuse until it is the owner's alone.
+# The one secret of the four. Apple downloads it readable by others, and on a Mac where other users work that is how
+# it leaks. Refuse until only its user can read it. What this does not do: it cannot tell the owner apart from a program
+# running as the same user, an agent's shell among them, so the key is kept with another macOS user, or on another Mac,
+# than the one agents run commands as (docs/releasing.md "The iPhone app and TestFlight", step 6; docs/relay.md step 1).
+# Nothing here reads the key's contents: the mode is all it looks at, and no key is ever printed.
 if mode=$(stat -f '%Lp' "$key" 2>/dev/null) && [[ -n $mode ]]; then
 	if [[ ${#mode} -lt 3 || ${mode: -2} != 00 ]]; then
 		die "PI2_ASC_KEY_PATH is readable by others (mode $mode). Run: chmod 600 \"\$PI2_ASC_KEY_PATH\""
