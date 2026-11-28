@@ -77,6 +77,14 @@ process.on("exit", () => {
 		// None left.
 	}
 });
+// A run that fails says why it failed (#1063): cleanup stops the engines, and a call still waiting on one then rejects
+// where nothing waits for it any more (a read a wait had started, say). Node ends the process on an unhandled rejection,
+// printing that instead of the wait's or the assertion's own message, so it is said as a note and the run stays failed
+// with the failure itself printed last. Nothing is hidden: the note is in the output and the run's exit code is 1.
+process.on("unhandledRejection", (reason) => {
+	console.error("while this test was ending, a call still waiting on the engine rejected:", reason);
+	process.exitCode = 1;
+});
 
 function step(text: string): void {
 	console.log(`ok  ${text}`);
@@ -1889,9 +1897,19 @@ engine.stderr!.setEncoding("utf8").on("data", (text: string) => {
 	engineLog += text;
 	process.stderr.write(text);
 });
-/** The engine the memory bounds below are measured on (#1030), made when the first of them needs it and stopped with the rest. */
+/** The engine the memory bounds below are measured on (#1030), made when the first of them needs it. */
 let bounded: Awaited<ReturnType<typeof heapBoundedEngine>> | null = null;
 const boundedNow = async () => (bounded ??= await heapBoundedEngine(BOUNDED_HEAP_MB));
+/**
+ * Stops that engine and its stand-ins once its last assertion has run, so that its 448 MB of heap is not held through the
+ * rest of the file (#1063): on a 7 GB runner it sat beside the test's own engine until the very end. The outer `finally`
+ * calls it too, so an assertion before that still stops it.
+ */
+const stopBounded = async () => {
+	const one = bounded;
+	bounded = null;
+	if (one !== null) await one.close();
+};
 const app = await App.connect(engine, home);
 const childrenOf = (pid: number) => {
 	try {
@@ -2984,6 +3002,8 @@ try {
 			const entry = (await app.call("devices.log", { device: phone.id })).entries.find((one: any) => one.method === read.method && one.why === overTheRest);
 			assert.equal(entry?.summary, `${read.method}: refused for the text it carries`, `logged by its method alone: ${JSON.stringify(entry).slice(0, 200)}`);
 		}
+		// Its last assertion has run (the path's, above): the bounded engine stops here rather than at the file's end (#1063).
+		await stopBounded();
 		const hugeParams = { projectId: made.id, id: hugeItem, action: "assign", agentId: helper.id, task: huge };
 		const heapBefore = process.memoryUsage().heapUsed;
 		const checkedIn = performance.now();
@@ -3198,12 +3218,19 @@ try {
 		// Wait for the log itself, reading again and again until both kinds have grown by all `times`.
 		let read: DeviceLogEntryLike[] | undefined;
 		let reading: Promise<void> | undefined;
-		const after = await until(`the log to hold the ${times} refusals and the ${times} failures`, () => {
-			if (reading === undefined) reading = logged().then((entries) => { read = entries; }).finally(() => { reading = undefined; });
-			const grown = (method: string, outcome: string, why: (text: string) => boolean) =>
-				read !== undefined && counted(read, method, outcome, why).count - counted(before, method, outcome, why).count >= times;
-			return read !== undefined && grown("conversation.compact", "refused", compacting) && grown("conversation.pin", "failed", pinning) ? read : undefined;
-		});
+		// A read of its own, kept as one promise so that only one is in flight; a read refused (the engine answered an
+		// error, or the connection went) leaves the last one and the wait goes on, and its refusal is consumed here rather
+		// than left to reject after the engine stops (#1063).
+		const after = await until(
+			`the log to hold the ${times} refusals and the ${times} failures`,
+			() => {
+				if (reading === undefined) reading = logged().then((entries) => { read = entries; }, () => {}).finally(() => { reading = undefined; });
+				const grown = (method: string, outcome: string, why: (text: string) => boolean) =>
+					read !== undefined && counted(read, method, outcome, why).count - counted(before, method, outcome, why).count >= times;
+				return read !== undefined && grown("conversation.compact", "refused", compacting) && grown("conversation.pin", "failed", pinning) ? read : undefined;
+			},
+			{ over: () => (app.closed ? "the connection to the engine closed" : undefined) },
+		);
 		for (const [what, method, outcome, why] of [
 			["refusals for their size", "conversation.compact", "refused", compacting],
 			["failures in words of their own", "conversation.pin", "failed", pinning],
@@ -3241,11 +3268,15 @@ try {
 				while (!answered) peak = Math.max(peak, await rssOf());
 			})();
 			const sent = performance.now();
-			const reply = await lineWith(message);
-			const took = performance.now() - sent;
-			answered = true;
-			await sampled;
-			return { reply, took, grew: peak - before };
+			try {
+				const reply = await lineWith(message);
+				return { reply, took: performance.now() - sent, grew: peak - before };
+			} finally {
+				// The sampler ends even when the line was never answered, so that a wait that gives up does not leave it
+				// polling the engine after the failure and hiding the wait's own message (#1063).
+				answered = true;
+				await sampled.catch(() => {});
+			}
 		};
 		const table = await cost({ id: "huge-id-table", method: "variables.set", params: { agentId: "forge", name: "HUGE", value: huge } });
 		assert.deepEqual(table.reply, { id: "huge-id-table", error: ONLY_ON_THE_MAC });
@@ -3995,6 +4026,6 @@ try {
 } finally {
 	app.close();
 	await stop(engine);
-	if (bounded !== null) await bounded.close();
+	await stopBounded();
 	server.close();
 }
