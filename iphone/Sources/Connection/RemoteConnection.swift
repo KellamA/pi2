@@ -341,6 +341,9 @@ final class RemoteConnection {
             }
             // The session moved to another channel: what this one still holds is that channel's to send again.
             if self.channel !== channel { break }
+            // The move is made: a line that was still in the channel comes again from the count the resume named, and
+            // delivering it here would be the second time (5.8).
+            if move?.from === channel { break }
             lastSeen = now()
             switch event {
             case let .line(line):
