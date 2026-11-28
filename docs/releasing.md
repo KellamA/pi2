@@ -106,6 +106,63 @@ The workflow refuses a tag that does not match `app/VERSION`, a commit that is n
 
 If no macOS runner takes the job in time, GitHub cancels it before it starts, and it is run again by itself, as CI's jobs are ([CI](development.md#ci)). Nothing has been built, signed or drafted by then, so running it again is safe.
 
+## The iPhone app and TestFlight
+
+pi² for iPhone is given out to the owner alone, through TestFlight's internal testing, and built so that the App Store stays possible ([iphone.md](iphone.md#91-given-out-testflights-internal-testing), 9.1). It is a second distribution with a second version and its own builds: nothing here touches the Mac app's release, its version or its tags. **Every step below is the owner's.** No agent holds an Apple account, a signing certificate, a provisioning profile or an App Store Connect key, and no agent builds for a phone or uploads anything; the values the upload needs live where you keep them, never in this repository and never in the reach of a workflow run from a branch ([iphone.md](iphone.md#123-before-anything-is-built-the-repository-p0), 12.3).
+
+### The identifiers, and what each one is
+
+The five App IDs below are the ones the project builds; a build signs for the App ID its bundle identifier names, so they must be registered exactly ([iphone.md](iphone.md#91-given-out-testflights-internal-testing)). The four the app and its extensions need are in `iphone/pi2.xcodeproj`, and each one's capabilities are in the entitlements file beside its sources; `scripts/iphone-release` refuses to archive if any of them has been renamed or has lost its file.
+
+| App ID | What it is | Capabilities to turn on | Given by |
+|---|---|---|---|
+| `dev.pi2.ios` | pi² for iPhone | Push Notifications, App Attest, App Groups (`group.dev.pi2.ios`), Keychain Sharing (`group.dev.pi2.ios`) | `iphone/pi2.entitlements` |
+| `dev.pi2.ios.notifications` | the notification service extension, which opens a push that arrives while the phone is locked | App Groups (`group.dev.pi2.ios`), Keychain Sharing (`group.dev.pi2.ios`) | `iphone/NotificationService/NotificationService.entitlements` |
+| `dev.pi2.ios.widgets` | the widgets and the Live Activity | App Groups (`group.dev.pi2.ios`) | `iphone/Widgets/Widgets.entitlements` |
+| `dev.pi2.ios.share` | the share sheet | App Groups (`group.dev.pi2.ios`) | `iphone/ShareExtension/ShareExtension.entitlements` |
+| `dev.pi2.app.remote` | pi² Remote, the Mac app's helper (macOS) | Keychain Sharing (its own group) | `app/remote-helper.entitlements` |
+
+The App Group is one group for the app and its three extensions: make it first, then give it to each App ID. The Keychain Sharing group is the same name, `group.dev.pi2.ios`: Apple files it under the team's prefix, which is why the entitlements say `$(AppIdentifierPrefix)group.dev.pi2.ios` and no team id is written in this repository. Only the record key and what the phone keeps of the Mac are kept there, so that a notification that arrives while the phone is locked can be opened; the phone's other keys stay in the app's own group, which the extension cannot read ([iphone.md](iphone.md#32-the-keys), 3.2).
+
+**pi² Remote is not signed with its profile yet.** `app/remote-helper.sh` signs it ad hoc in a development build and with the Developer ID alone in a release build, so its `keychain-access-groups` entitlement reaches no build: a release build's helper cannot open its Keychain yet, and `app/Sources/pi2-remote/Keychain.swift` stops rather than keep its keys anywhere else. What changes that is #682's report to the orchestrator: a Developer ID provisioning profile for `dev.pi2.app.remote`, `app/build.sh` and `.github/workflows/release.yml` passing it to `app/remote-helper.sh`, which signs the helper with the entitlements and the profile, and `app/check-release-build.mts` allowing exactly that entitlement. Register the App ID now; make the profile when that change lands.
+
+### Setting it up, once
+
+1. **The team id.** In [developer.apple.com](https://developer.apple.com/account) → **Membership**, the **Team ID**: ten capital letters or digits. That is `PI2_TEAM_ID` below.
+2. **The App Group.** Certificates, Identifiers & Profiles → **Identifiers** → **App Groups** → **+**, description `pi²`, identifier `group.dev.pi2.ios`, **Continue**, **Register**.
+3. **The four App IDs.** **Identifiers** → **+** → **App IDs** → **App**, one at a time, with the bundle identifier from the table above and a name of your own, then the **Capabilities** tab of each and the boxes that table names. For each, **App Groups** → **Configure** → tick `group.dev.pi2.ios`; for `dev.pi2.ios` and `dev.pi2.ios.notifications`, **Keychain Sharing** → **Configure** → **+** → `group.dev.pi2.ios`; for `dev.pi2.ios`, tick **Push Notifications** and **App Attest**, neither of which has anything to configure. **Save** each. An extension's App ID must begin with the app's, which is why they all begin `dev.pi2.ios`.
+4. **The certificates and profiles are Xcode's to make.** `scripts/iphone-release` signs with the team's automatic signing (`DEVELOPMENT_TEAM`, `-allowProvisioningUpdates`), so Xcode makes the Apple Distribution certificate and the four App Store profiles the first time it archives, from the App IDs above. Nothing to download by hand.
+5. **The App Store Connect record.** [App Store Connect](https://appstoreconnect.apple.com) → **My Apps** → **+** → **New App**: platform **iOS**, name `pi²`, primary language, the bundle ID `dev.pi2.ios`, a SKU of your own (`pi2-ios`), and full access for yourself. Then **App Information → Test Information**: a short description of what the app does (that it pairs with the Mac app, and that the Mac app does the work) and the address people write to, for the TestFlight screen. App Privacy and the listing wait for the App Store ([iphone.md](iphone.md#95-if-it-goes-to-the-app-store), 9.5).
+6. **An App Store Connect API key, for the upload.** App Store Connect → **Users and Access** → **Integrations** (App Store Connect API) → **Team Keys** → **+**, a name, the **App Manager** role, **Generate**, then **Download** — Apple lets you download the `.p8` once. Write down its **Key ID** and the **Issuer ID** shown above the list. Keep the file where only you can read it, `chmod 600`, and never in this repository: it is the only secret of the four values the upload needs, and `scripts/iphone-release` refuses to run while other users can read it.
+7. **The push key.** `docs/relay.md` [step 4](relay.md#4-the-push-key-apns): one topic-specific APNs key for `dev.pi2.ios` for each relay, given to that relay as Workers secrets. It is the relay's, not the app's: the phone's `aps-environment` comes from the profile. It never goes to GitHub.
+8. **The internal tester.** App Store Connect → **Users and Access** → yourself is a member of the team already; TestFlight → **Internal Testing** → **+** next to **Groups**, a name (`Owner`), and **+** next to **Testers** to add yourself. Builds reach internal testers with no review by Apple, and each is testable for 90 days.
+
+### Making a build and sending it
+
+1. **The environment.** In the shell that will run it, the team id and the key, and nothing that prints them:
+
+   ```bash
+   export PI2_TEAM_ID=ABCDE12345                 # Membership, step 1
+   export PI2_ASC_KEY_ID=ABC1234567              # the key's Key ID, step 6
+   export PI2_ASC_ISSUER_ID=…                    # the Issuer ID, step 6: a UUID
+   export PI2_ASC_KEY_PATH=~/Keys/AuthKey_ABC1234567.p8   # the file, chmod 600
+   ```
+
+   A password manager that sets them for one command is better than exporting them: nothing in the repository, in a workflow or in a shell history should hold them.
+2. **Look before you upload.** `scripts/iphone-release --dry-run` checks the project, the entitlements, the identifiers, the key file and the credentials, says what it would archive and upload, and stops before signing and uploading anything. It archives nothing, and it cannot upload.
+3. **Upload.** From `main`, with the working tree committed (it refuses a dirty checkout, since a build nobody can trace is no use in TestFlight; `--allow-dirty` overrides it for a try of your own):
+
+   ```bash
+   scripts/iphone-release
+   ```
+
+   It archives the `pi2` scheme in the Release configuration for a phone, signs it with the team's automatic signing, and exports the archive straight up to App Store Connect with the API key. `--build` sets the build number (the default is the UTC minute, `YYYYMMDDHHMM`, since TestFlight refuses one it already has for that version) and `--version` the version (the default is the project's `MARKETING_VERSION`). The archive stays in `iphone/build/release`, with the dSYMs Apple's processing may ask for; the export's options plist is made for that one run in a temporary folder, holds no secret, and is removed after it.
+4. **Give it to the group.** App Store Connect → TestFlight: the build is **Processing** for a few minutes, then appears on the app's page, with no question about encryption because `ITSAppUsesNonExemptEncryption` is in `iphone/Info.plist` ([9.5](iphone.md#95-if-it-goes-to-the-app-store), item 6). Add it to the internal group; TestFlight on your phone offers it.
+
+**Encryption is your answer to give.** The app declares that it uses non-exempt encryption: its channel is its own composition of CryptoKit's standard algorithms, not only what an operating system's own services do ([9.5](iphone.md#95-if-it-goes-to-the-app-store), item 6). That declaration means App Store Connect's export-compliance questions are yours to answer once, and that a yearly self-classification report may be due; if you judge the use exempt instead, `ITSAppUsesNonExemptEncryption` becomes `false` in `iphone/Info.plist` and nothing else changes.
+
+**Before external testers.** Nothing puts a build in front of anyone but you yet. External testing, a public link and the App Store each add what [iphone.md](iphone.md#91-given-out-testflights-internal-testing) 9.1 and [9.5](iphone.md#95-if-it-goes-to-the-app-store) list, and the privacy policy's link and an address to reach pi² have to be in the app's settings first ([9.3](iphone.md#93-nothing-app-review-refuses-on-sight)): the Settings screen is P28's, and it has no row for them yet (#682's report to the orchestrator says so).
+
 ## Previewing the notes without releasing
 
 ```bash

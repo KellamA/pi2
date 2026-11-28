@@ -66,6 +66,19 @@
 # own test. Weakening them with build.sh in one pull request would let either change through unreviewed.
 /app/check-release-build.mts @KellamA
 /app/test-release-build.mts @KellamA
+# What a release build's helper may reach (#682, P14): its Keychain, through the provisioning profile the release signing
+# gives it. Nothing signs with this file yet; the change that does is #682's report, and until then a release build's
+# helper keeps no Keychain item at all.
+/app/remote-helper.entitlements @KellamA
+# How pi² for iPhone is signed and uploaded (#682, P14): the entitlements give the app and its three extensions their
+# capabilities (push, App Attest, App Groups, Keychain Sharing, and the group a push is opened with while the phone is
+# locked), and the upload script signs a Release build and sends it to the owner's TestFlight. A change here could give
+# the phone a reach nobody reviewed, or upload a build from another source.
+/iphone/pi2.entitlements @KellamA
+/iphone/NotificationService/NotificationService.entitlements @KellamA
+/iphone/Widgets/Widgets.entitlements @KellamA
+/iphone/ShareExtension/ShareExtension.entitlements @KellamA
+/scripts/iphone-release @KellamA
 /engine/src/devices.ts @KellamA
 /engine/src/remote.ts @KellamA
 /engine/src/pushes.ts @KellamA

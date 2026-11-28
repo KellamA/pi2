@@ -1,0 +1,266 @@
+#!/bin/bash
+# Archives pi² for iPhone for TestFlight and uploads it to App Store Connect (docs/iphone.md 9.1, #682), with
+# xcodebuild and Apple's own tools only.
+#
+# The owner runs it, and only the owner can. No agent has, or may have, an Apple account, a signing certificate, a
+# provisioning profile or an App Store Connect key; every upload is the owner's, and the credentials belong in a
+# protected place of their own (docs/iphone.md 12.3), never in this repository and never in the reach of a workflow run
+# from a branch. The script reads the four values it needs from the environment, and never prints them: the one secret
+# among them is the .p8 key, whose contents it does not read beyond its first line.
+#
+#   PI2_TEAM_ID        the Apple Developer team's id, ten capital letters or digits
+#   PI2_ASC_KEY_ID     the App Store Connect API key's id, ten capital letters or digits
+#   PI2_ASC_ISSUER_ID  that key's issuer id, a UUID
+#   PI2_ASC_KEY_PATH   the AuthKey_<id>.p8 file Apple let you download once
+#
+#   scripts/iphone-release [--dry-run] [--version <version>] [--build <build>] [--allow-dirty] [--root <folder>]
+#
+# It archives the pi2 scheme in the Release configuration for a phone, signs with the team's automatic signing (Xcode
+# fetches the profiles the App IDs have), and exports that archive straight up to App Store Connect with the same key.
+# TestFlight shows the build once Apple has processed it; the owner then gives it to the internal group
+# (docs/releasing.md, "The iPhone app and TestFlight").
+#
+# --dry-run checks everything that can be checked without signing or uploading, says what it would run, and stops
+# there: nothing is archived, signed or uploaded. Run it first, every time.
+#
+# --version defaults to the project's MARKETING_VERSION; --build defaults to the UTC minute, `YYYYMMDDHHMM`, since
+# TestFlight refuses a build number it already has for that version. --root is for scripts/test-iphone-release, which
+# runs a copy of this script in a stand-in checkout; a person does not need it.
+
+set -uo pipefail
+export LC_ALL=C
+
+# What the export is: an App Store Connect upload, which is what TestFlight is served from (Xcode 15.3's name for
+# `app-store`). The version and build number are the ones given on the command line, not ones Xcode makes up.
+EXPORT_METHOD=app-store-connect
+
+usage() {
+	cat <<'EOF'
+Usage: scripts/iphone-release [--dry-run] [--version <version>] [--build <build>] [--allow-dirty] [--root <folder>]
+
+Archives pi² for iPhone and uploads it to App Store Connect for TestFlight. The owner runs it; it needs these in the
+environment and never prints them:
+
+  PI2_TEAM_ID        the Apple Developer team's id
+  PI2_ASC_KEY_ID     the App Store Connect API key's id
+  PI2_ASC_ISSUER_ID  that key's issuer id
+  PI2_ASC_KEY_PATH   the AuthKey_<id>.p8 file
+
+  --dry-run        Check everything, say what it would run, and stop before signing or uploading.
+  --version <v>    The version to build (default: the project's MARKETING_VERSION), such as 0.1.
+  --build <n>      The build number (default: the UTC minute, YYYYMMDDHHMM).
+  --allow-dirty    Build from a checkout with uncommitted changes, which TestFlight could not trace.
+  --root <folder>  The checkout to build (default: this script's).
+EOF
+}
+
+die() {
+	echo "iphone-release: $1" >&2
+	exit 1
+}
+
+refuse() {
+	echo "iphone-release: $1" >&2
+	exit 2
+}
+
+dry_run=off
+allow_dirty=off
+version=""
+build=""
+root=""
+while [[ $# -gt 0 ]]; do
+	case $1 in
+		--dry-run) dry_run=on; shift ;;
+		--allow-dirty) allow_dirty=on; shift ;;
+		--version) [[ $# -ge 2 ]] || refuse "--version needs a version"; version=$2; shift 2 ;;
+		--build) [[ $# -ge 2 ]] || refuse "--build needs a build number"; build=$2; shift 2 ;;
+		--root) [[ $# -ge 2 ]] || refuse "--root needs a folder"; root=$2; shift 2 ;;
+		-h | --help) usage; exit 0 ;;
+		*) refuse "unknown argument $1 (try --help)" ;;
+	esac
+done
+
+[[ -n $root ]] || root="$(cd -P -- "$(dirname -- "$0")/.." && pwd -P)"
+[[ -d $root ]] || refuse "no such folder: $root"
+root="$(cd -P -- "$root" && pwd -P)"
+
+project="$root/iphone/pi2.xcodeproj"
+plist="$root/iphone/Info.plist"
+release="$root/iphone/build/release"
+
+# The app and its three extensions, with the file that gives each its capabilities. The App IDs must be these in Apple's
+# developer site: a build signed for another one would make a record nobody meant to make (docs/releasing.md, "The
+# iPhone app and TestFlight"). This list and that section's table are where they are written down, and the build fails
+# rather than sign for a fourth.
+BUNDLES=(
+	"dev.pi2.ios|pi2.entitlements"
+	"dev.pi2.ios.notifications|NotificationService/NotificationService.entitlements"
+	"dev.pi2.ios.widgets|Widgets/Widgets.entitlements"
+	"dev.pi2.ios.share|ShareExtension/ShareExtension.entitlements"
+)
+
+say() { echo "iphone-release: $1"; }
+
+# ---------------------------------------------------------------------------------------------------------------------
+# What has to be here before anything is signed.
+
+for tool in xcodebuild xcrun plutil; do
+	command -v "$tool" >/dev/null || die "$tool is not on the PATH: install Xcode and its command line tools."
+done
+
+[[ -f $project/project.pbxproj ]] || die "there is no iPhone project at $project"
+[[ -f $plist ]] || die "there is no $plist"
+
+for entry in "${BUNDLES[@]}"; do
+	id=${entry%%|*}
+	entitlements=${entry#*|}
+	file="$root/iphone/$entitlements"
+	[[ -f $file ]] || die "there is no entitlements file at $file"
+	plutil -lint "$file" >/dev/null || die "$file is not a well-formed property list"
+	grep -q "PRODUCT_BUNDLE_IDENTIFIER = $id;" "$project/project.pbxproj" ||
+		die "the project no longer builds $id, which is the one of the four the instructions name"
+	grep -q "CODE_SIGN_ENTITLEMENTS = $entitlements;" "$project/project.pbxproj" ||
+		die "the project does not sign $id with $entitlements, so its capabilities would be missing"
+done
+# So that TestFlight and App Store Connect do not ask the export-compliance question of every build (9.1, 9.5 item 6).
+plutil -extract ITSAppUsesNonExemptEncryption raw "$plist" >/dev/null 2>&1 ||
+	die "$plist has no ITSAppUsesNonExemptEncryption, so every build would be asked about encryption"
+# The group the notification service extension reads the record key in (3.2): the app and the extension each carry it.
+plutil -extract PI2KeychainAccessGroup raw "$plist" >/dev/null 2>&1 ||
+	die "$plist has no PI2KeychainAccessGroup, so a push that arrives while the phone is locked cannot be opened"
+plutil -extract PI2KeychainAccessGroup raw "$root/iphone/NotificationService/Info.plist" >/dev/null 2>&1 ||
+	die "NotificationService/Info.plist has no PI2KeychainAccessGroup, so the extension cannot read the record key"
+
+# A TestFlight build should be a commit, so that what is tested can be found again. A folder that is not a checkout (a
+# copy made for a test) is not a refusal: there is nothing to trace it to.
+if git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
+	if [[ $allow_dirty == off ]] && [[ -n $(git -C "$root" status --porcelain 2>/dev/null) ]]; then
+		die "this checkout has uncommitted changes, which the build could not be traced to. Commit them, or pass --allow-dirty."
+	fi
+	branch=$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
+	[[ $branch == main ]] || say "warning: building from $branch, not main, where TestFlight builds are cut."
+	say "commit $(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo "?")"
+fi
+
+# ---------------------------------------------------------------------------------------------------------------------
+# The credentials. Read here, printed never.
+
+missing=""
+for name in PI2_TEAM_ID PI2_ASC_KEY_ID PI2_ASC_ISSUER_ID PI2_ASC_KEY_PATH; do
+	case $name in
+		PI2_TEAM_ID) [[ -n ${PI2_TEAM_ID:-} ]] || missing="$missing $name" ;;
+		PI2_ASC_KEY_ID) [[ -n ${PI2_ASC_KEY_ID:-} ]] || missing="$missing $name" ;;
+		PI2_ASC_ISSUER_ID) [[ -n ${PI2_ASC_ISSUER_ID:-} ]] || missing="$missing $name" ;;
+		PI2_ASC_KEY_PATH) [[ -n ${PI2_ASC_KEY_PATH:-} ]] || missing="$missing $name" ;;
+	esac
+done
+[[ -z $missing ]] || die "set$missing in the environment: they are the owner's, and docs/releasing.md, The iPhone app and TestFlight, says where each comes from."
+
+team=$PI2_TEAM_ID key_id=$PI2_ASC_KEY_ID issuer=$PI2_ASC_ISSUER_ID key=$PI2_ASC_KEY_PATH
+[[ $team =~ ^[A-Z0-9]{10}$ ]] || die "PI2_TEAM_ID is not a team id: ten capital letters or digits."
+[[ $key_id =~ ^[A-Z0-9]{10}$ ]] || die "PI2_ASC_KEY_ID is not a key id: ten capital letters or digits."
+[[ $issuer =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]] ||
+	die "PI2_ASC_ISSUER_ID is not an issuer id: Apple's is a UUID."
+[[ -f $key ]] || die "PI2_ASC_KEY_PATH names no file."
+[[ -r $key ]] || die "PI2_ASC_KEY_PATH names a file this user cannot read."
+grep -q '^-----BEGIN PRIVATE KEY-----' "$key" ||
+	die "PI2_ASC_KEY_PATH does not look like Apple's .p8 key: its first line should begin it."
+# The one secret of the four. Apple downloads it readable by others, and on a Mac where agents and other people work
+# that is how it leaks. Refuse until it is the owner's alone.
+if mode=$(stat -f '%Lp' "$key" 2>/dev/null) && [[ -n $mode ]]; then
+	if [[ ${#mode} -lt 3 || ${mode: -2} != 00 ]]; then
+		die "PI2_ASC_KEY_PATH is readable by others (mode $mode). Run: chmod 600 \"\$PI2_ASC_KEY_PATH\""
+	fi
+fi
+
+# ---------------------------------------------------------------------------------------------------------------------
+# The version and the build number.
+
+if [[ -z $version ]]; then
+	version=$(sed -n 's/^[[:space:]]*MARKETING_VERSION = \(.*\);$/\1/p' "$project/project.pbxproj" | head -n 1)
+	[[ -n $version ]] || die "the project has no MARKETING_VERSION: pass --version."
+fi
+[[ $version =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || die "--version is not a version: up to three numbers, such as 0.1 or 1.2.3."
+if [[ -z $build ]]; then
+	build=$(date -u +%Y%m%d%H%M)
+fi
+[[ $build =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || die "--build is not a build number: up to three numbers, such as 42 or 202611280830."
+
+archive="$release/pi2-$version-$build.xcarchive"
+exports="$release/pi2-$version-$build-export"
+options="" temporary=""
+cleanup() { [[ -n $temporary ]] && rm -rf "$temporary"; }
+trap cleanup EXIT
+
+say "version $version ($build), team $team, App Store Connect key $key_id"
+
+# The export's options, written for this run alone: the team, the method, and straight up to App Store Connect. It holds
+# no secret, and it is removed with its temporary folder even when the export fails.
+make_options() {
+	temporary=$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/pi2-iphone-release.XXXXXX") ||
+		die "could not make a temporary folder for the export options"
+	options="$temporary/ExportOptions.plist"
+	cat >"$options" <<PLIST || die "could not write the export options"
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+	<key>method</key><string>$EXPORT_METHOD</string>
+	<key>destination</key><string>upload</string>
+	<key>teamID</key><string>$team</string>
+	<key>signingStyle</key><string>automatic</string>
+	<key>uploadSymbols</key><true/>
+	<key>manageAppVersionAndBuildNumber</key><false/>
+	<key>stripSwiftSymbols</key><true/>
+</dict></plist>
+PLIST
+}
+
+archive_cmd() {
+	printf '  '
+	printf '%q ' xcodebuild \
+		-project "$project" -scheme pi2 -configuration Release \
+		-destination generic/platform=iOS -archivePath "$archive" \
+		MARKETING_VERSION="$version" CURRENT_PROJECT_VERSION="$build" \
+		DEVELOPMENT_TEAM="$team" -allowProvisioningUpdates \
+		-authenticationKeyPath "$key" -authenticationKeyID "$key_id" -authenticationKeyIssuerID "$issuer" \
+		archive
+	echo
+}
+
+export_cmd() {
+	printf '  '
+	printf '%q ' xcodebuild \
+		-exportArchive -archivePath "$archive" -exportPath "$exports" \
+		-exportOptionsPlist "$1" -allowProvisioningUpdates \
+		-authenticationKeyPath "$key" -authenticationKeyID "$key_id" -authenticationKeyIssuerID "$issuer"
+	echo
+}
+
+if [[ $dry_run == on ]]; then
+	say "dry run: nothing is signed or uploaded. It would archive $archive, and then upload:"
+	archive_cmd
+	export_cmd "<temporary folder>/ExportOptions.plist"
+	say "the options it would write: method $EXPORT_METHOD, destination upload, team $team, signing automatic."
+	say "every check that needs no signing passed. Run it without --dry-run when you mean to upload."
+	exit 0
+fi
+
+mkdir -p "$release" || die "could not make $release"
+make_options
+say "archiving into $archive (it signs; this takes several minutes)…"
+xcodebuild -project "$project" -scheme pi2 -configuration Release \
+	-destination "generic/platform=iOS" -archivePath "$archive" \
+	MARKETING_VERSION="$version" CURRENT_PROJECT_VERSION="$build" \
+	DEVELOPMENT_TEAM="$team" -allowProvisioningUpdates \
+	-authenticationKeyPath "$key" -authenticationKeyID "$key_id" -authenticationKeyIssuerID "$issuer" \
+	archive || die "the archive failed, above. Nothing was uploaded."
+
+say "exporting and uploading…"
+rm -rf "$exports"
+xcodebuild -exportArchive -archivePath "$archive" -exportPath "$exports" \
+	-exportOptionsPlist "$options" -allowProvisioningUpdates \
+	-authenticationKeyPath "$key" -authenticationKeyID "$key_id" -authenticationKeyIssuerID "$issuer" ||
+	die "the export or the upload failed, above: read what Xcode said, and check App Store Connect for a build that did not finish."
+say "uploaded $version ($build). App Store Connect › TestFlight shows it once Apple has processed it; give it to the internal group."
+say "the archive stays at $archive, with the dSYMs Apple's processing may ask for."

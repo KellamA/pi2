@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- pi² Remote's capability (docs/iphone.md 5.5, 6.4; #682). NOT USED YET: app/remote-helper.sh signs the helper ad hoc
+     in a development build and with the Developer ID alone in a release build, so this file changes nothing until the
+     release signing is changed to sign pi² Remote with its provisioning profile and this file. #682's report to the
+     orchestrator says exactly what changes there, and docs/releasing.md, "The iPhone app and TestFlight", has the
+     owner's steps for the App ID it needs.
+
+     - keychain-access-groups: pi² Remote keeps its keys (the Mac's identity, channel, record, relay and home keys) and
+       its own list of paired devices in the data-protection Keychain, service `dev.pi2.remote`
+       (app/Sources/pi2-remote/Keychain.swift). On macOS that Keychain answers errSecMissingEntitlement without this
+       entitlement, which comes with a provisioning profile: without it pi² Remote stops rather than keep its keys
+       anywhere else. The group is its own default one, so no other program of the person's may read them. -->
+<dict>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)dev.pi2.app.remote</string>
+	</array>
+</dict>
+</plist>

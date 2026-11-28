@@ -71,10 +71,15 @@ protocol KeychainStore: Sendable {
 /// The data-protection Keychain, as a signed phone build has it.
 struct SystemKeychain: KeychainStore {
     static let service = "dev.pi2.ios.keys"
-    /// The access group shared with the notification service extension, for the items marked `shared`. Nil until the
-    /// extension and its entitlement exist (#682): an unsigned build has no access group, and the items then go in the
-    /// app's own.
-    static let sharedAccessGroup: String? = nil
+    /// The access group shared with the notification service extension, for the items marked `shared` (3.2): the group
+    /// the app's entitlements give it, as the build expanded it (`KeychainGroup`). Nil in a build with no such group (an
+    /// unsigned one), where an item marked `shared` goes in the app's own group, which the extension cannot read.
+    static let sharedAccessGroup: String? = KeychainGroup.id
+
+    /// The access groups this app may use in a search: its own, named by no group at all, and the one the extension
+    /// shares. The first launch's wipe and Unpair this iPhone must reach the items in either (3.2, 3.6), and the shared
+    /// group is not the app's own, so it is searched and emptied beside it.
+    private static var groups: [String?] { sharedAccessGroup.map { [nil, $0] } ?? [nil] }
 
     private static var classes: [CFString] { [
         kSecClassGenericPassword, kSecClassInternetPassword, kSecClassKey, kSecClassCertificate, kSecClassIdentity,
@@ -145,24 +150,27 @@ struct SystemKeychain: KeychainStore {
         quiet.interactionNotAllowed = true
         var names: [String] = []
         for itemClass in Self.classes {
-            let query: [String: Any] = [
-                kSecClass as String: itemClass,
-                kSecReturnAttributes as String: true,
-                kSecMatchLimit as String: kSecMatchLimitAll,
-                kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
-                kSecUseDataProtectionKeychain as String: true,
-                kSecUseAuthenticationContext as String: quiet,
-            ]
-            var result: CFTypeRef?
-            let status = SecItemCopyMatching(query as CFDictionary, &result)
-            guard status == errSecSuccess || status == errSecItemNotFound else {
-                throw KeysError.keychain(status, "list the Keychain")
-            }
-            for attributes in result as? [[String: Any]] ?? [] {
-                let name = attributes[kSecAttrAccount as String] as? String
-                    ?? attributes[kSecAttrLabel as String] as? String
-                    ?? "an item with no name"
-                names.append(name)
+            for group in Self.groups {
+                var query: [String: Any] = [
+                    kSecClass as String: itemClass,
+                    kSecReturnAttributes as String: true,
+                    kSecMatchLimit as String: kSecMatchLimitAll,
+                    kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
+                    kSecUseDataProtectionKeychain as String: true,
+                    kSecUseAuthenticationContext as String: quiet,
+                ]
+                if let group { query[kSecAttrAccessGroup as String] = group }
+                var result: CFTypeRef?
+                let status = SecItemCopyMatching(query as CFDictionary, &result)
+                guard status == errSecSuccess || status == errSecItemNotFound else {
+                    throw KeysError.keychain(status, "list the Keychain")
+                }
+                for attributes in result as? [[String: Any]] ?? [] {
+                    let name = attributes[kSecAttrAccount as String] as? String
+                        ?? attributes[kSecAttrLabel as String] as? String
+                        ?? "an item with no name"
+                    names.append(name)
+                }
             }
         }
         return names.sorted()
@@ -170,14 +178,17 @@ struct SystemKeychain: KeychainStore {
 
     func deleteEverything() throws {
         for itemClass in Self.classes {
-            let query: [String: Any] = [
-                kSecClass as String: itemClass,
-                kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
-                kSecUseDataProtectionKeychain as String: true,
-            ]
-            let status = SecItemDelete(query as CFDictionary)
-            guard status == errSecSuccess || status == errSecItemNotFound else {
-                throw KeysError.keychain(status, "empty the Keychain")
+            for group in Self.groups {
+                var query: [String: Any] = [
+                    kSecClass as String: itemClass,
+                    kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
+                    kSecUseDataProtectionKeychain as String: true,
+                ]
+                if let group { query[kSecAttrAccessGroup as String] = group }
+                let status = SecItemDelete(query as CFDictionary)
+                guard status == errSecSuccess || status == errSecItemNotFound else {
+                    throw KeysError.keychain(status, "empty the Keychain")
+                }
             }
         }
     }

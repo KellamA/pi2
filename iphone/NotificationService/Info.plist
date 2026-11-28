@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- The notification service extension's part of its Info.plist (#690); Xcode adds the rest from the build settings. -->
+<!-- The notification service extension's part of its Info.plist (#690); Xcode adds the rest from the build settings.
+     PI2KeychainAccessGroup: the group the record key is in, which the app writes and this extension reads while the
+     phone is locked (docs/iphone.md 3.2; `KeychainGroup`, the same key in the app's Info.plist and the same value, the
+     extension's own Bundle.main being this bundle). -->
 <plist version="1.0">
 <dict>
 	<key>NSExtension</key>
@@ -10,5 +13,7 @@
 		<key>NSExtensionPrincipalClass</key>
 		<string>$(PRODUCT_MODULE_NAME).NotificationService</string>
 	</dict>
+	<key>PI2KeychainAccessGroup</key>
+	<string>$(AppIdentifierPrefix)group.dev.pi2.ios</string>
 </dict>
 </plist>
