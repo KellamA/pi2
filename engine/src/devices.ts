@@ -846,6 +846,13 @@ const pendingLog: DeviceLogEntry[] = [];
  * yet written. While its entry waits in `pendingLog`, a repeat adds to the entry itself.
  */
 const refusalsMade = new Map<string, { entry: DeviceLogEntry; more: number; lastAt: number }>();
+/**
+ * Records whose key has moved on to a new entry while they still held `more`: their counts are owed a write, and the
+ * next write takes them (#1063). At most one for a key stands at a time: a record is moved here only when its minute
+ * is over, so two of one key are at least `COALESCE_MS` apart, and a write comes at most `FLUSH_MS` after the new
+ * entry that moved the first — and empties this as it writes.
+ */
+const refusalsOwed: { entry: DeviceLogEntry; more: number; lastAt: number }[] = [];
 let flushTimer: ReturnType<typeof setTimeout> | undefined;
 let flushing: Promise<void> = Promise.resolve();
 
@@ -863,7 +870,7 @@ export function flushDeviceLog(alongside?: (doc: DevicesState) => void): Promise
 
 async function writePending(alongside?: (doc: DevicesState) => void): Promise<void> {
 	const entries = pendingLog.splice(0);
-	const counts = [...refusalsMade.values()].filter((one) => one.more > 0 && !entries.includes(one.entry)).map((one) => ({ ...one }));
+	const counts = [...refusalsMade.values(), ...refusalsOwed.splice(0)].filter((one) => one.more > 0 && !entries.includes(one.entry)).map((one) => ({ ...one }));
 	for (const one of refusalsMade.values()) if (!entries.includes(one.entry)) one.more = 0;
 	if (entries.length === 0 && counts.length === 0 && alongside === undefined) return;
 	const now = Date.now();
@@ -943,6 +950,15 @@ export async function logDevice(entry: Omit<DeviceLogEntry, "at"> & { at?: numbe
 	} else {
 		if (key !== undefined) {
 			for (const [old, one] of refusalsMade) if (at - one.entry.at >= COALESCE_MS && one.more === 0) refusalsMade.delete(old);
+			const previous = refusalsMade.get(key);
+			if (previous !== undefined && previous.more > 0) {
+				// The record this replaces holds counts not written yet (#1063): onto its entry if that still waits, or it
+				// is owed a write, never dropped.
+				if (pendingLog.includes(previous.entry)) {
+					previous.entry.count = (previous.entry.count ?? 1) + previous.more;
+					previous.entry.lastAt = previous.lastAt;
+				} else refusalsOwed.push(previous);
+			}
 			refusalsMade.set(key, { entry: made, more: 0, lastAt: at });
 		}
 		pendingLog.push(made);
@@ -957,7 +973,7 @@ export async function logDevice(entry: Omit<DeviceLogEntry, "at"> & { at?: numbe
 /** The log as the Devices page and a device read it: what is stored and what waits in memory, together. */
 async function logEntries(device: string | null, before: number | undefined, count = 200): Promise<DeviceLogEntry[]> {
 	const stored = ((await harness.snapshot(DeviceLog, context))?.entries ?? []).map((entry) => ({ ...entry }));
-	for (const one of refusalsMade.values()) {
+	for (const one of [...refusalsMade.values(), ...refusalsOwed]) {
 		if (one.more === 0) continue;
 		const entry = stored.findLast((e) => e.at === one.entry.at && e.device === one.entry.device && e.path === one.entry.path && e.method === one.entry.method && e.summary === one.entry.summary && e.why === one.entry.why && e.outcome === one.entry.outcome);
 		if (entry === undefined) continue;

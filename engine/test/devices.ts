@@ -42,6 +42,7 @@ import { deviceRequestsListed, MAX_OTHER_FROM_A_DEVICE } from "../src/answers.ts
 import { NOT_PRESENTED } from "../src/presented.ts";
 import { forTheHelper } from "../src/answers.ts";
 import { activeDevices, devicesEvent, helperReported, PAIRING_AT_ANOTHER_RELAY, PAIRING_AT_ANOTHER_RELAY_OFF, PAIRING_AT_NO_RELAY, pushClockChanged, RELAY_WORD_MISSING } from "../src/devices.ts";
+import { type DeviceLogEntry, deviceRequests as devicesRequests } from "../src/devices.ts";
 import { helperRequests } from "../src/remote.ts";
 import { DatabaseSync } from "node:sqlite";
 import { EngineClient, PATIENT_MS, standInApp, stop, until } from "./patience.ts";
@@ -3122,6 +3123,46 @@ try {
 		mine = (await stored()).filter((entry) => entry.device === device);
 		assert.deepEqual([mine.filter((entry) => entry.outcome === "done").length, mine.filter((entry) => entry.outcome !== "done").length], [1_000, 1_000], "each side keeps its newest half");
 		await harness.close(context);
+
+		// The counts at the minute's edge (#1063): a repeat just after the first entry's minute ended keeps what the
+		// repeats before it had added but not yet written. No wait for a real minute: `logDevice` takes `at`, and each
+		// kind's first entry is written at once (`urgent`), as the two-second flush would have between the calls.
+		{
+			const harness = await Harness.open(await openNodeSqliteStorage(join(mkdtempSync(join(work, "edge-")), "session.sqlite")), { registry: createRegistry(), models: createModels() }, context);
+			await wireDevices({ harness, context, log: () => {}, release: false, names: { conversation: () => undefined, project: () => undefined } });
+			const shown = async (device: string) => ((await devicesRequests["devices.log"]({ device }, {} as Client)) as { entries: DeviceLogEntry[] }).entries;
+			const written = async () => {
+				await flushDeviceLog();
+				return (await harness.snapshot(DeviceLog, context))!.entries;
+			};
+			const base = Date.now() - 120_000;
+			const kinds = [
+				{ path: "relay" as const, method: "conversation.compact", summary: "conversation.compact: refused for the text it carries", presence: false, outcome: "refused" as const, why: "Instructions for compacting from a phone can be at most 20,000 characters; this one has 20,001. Shorten it, or do this on the Mac." },
+				{ path: "relay" as const, method: "files.preview", summary: "Showed the file “flood.md”", presence: false, outcome: "failed" as const, why: NOT_LINKED },
+			];
+			for (const kind of kinds) {
+				const device = `dev_${b64url(randomBytes(16))}`;
+				await logDevice({ device, ...kind, at: base }, true);
+				for (let i = 0; i < 10; i++) await logDevice({ device, ...kind, at: base + 59_000 });
+				assert.equal((await shown(device)).find((one) => one.at === base)?.count, 11, `${kind.outcome}: ten repeats in the entry's minute are 11 on the read before the flush`);
+				await logDevice({ device, ...kind, at: base + 61_000 });
+				const read = (await shown(device)).sort((one, two) => one.at - two.at);
+				assert.deepEqual(read.map((one) => [one.at, one.count ?? 1]), [[base, 11], [base + 61_000, 1]], `${kind.outcome}: the repeat past the minute's edge keeps the ten still unwritten (the read)`);
+				const kept = (await written()).filter((one) => one.device === device).sort((one, two) => one.at - two.at);
+				assert.deepEqual(kept.map((one) => [one.at, one.count ?? 1]), [[base, 11], [base + 61_000, 1]], `${kind.outcome}: the repeat past the minute's edge keeps the ten still unwritten (written)`);
+				assert.equal(kept[0]!.lastAt, base + 59_000, `${kind.outcome}: the first entry's last time is the last repeat inside its minute`);
+			}
+			// And a write between the repeats and the edge is not counted twice.
+			const device = `dev_${b64url(randomBytes(16))}`;
+			await logDevice({ device, ...kinds[0]!, at: base }, true);
+			for (let i = 0; i < 10; i++) await logDevice({ device, ...kinds[0]!, at: base + 59_000 });
+			await flushDeviceLog();
+			await logDevice({ device, ...kinds[0]!, at: base + 61_000 });
+			const mine = (await written()).filter((one) => one.device === device).sort((one, two) => one.at - two.at);
+			assert.deepEqual(mine.map((one) => [one.at, one.count ?? 1]), [[base, 11], [base + 61_000, 1]], "a write between the repeats and the edge is not counted twice");
+			await harness.close(context);
+			step("the devices' log at the minute's edge: ten repeats just before the first entry's minute ends and one just after it are 11 and 1, on the read and written, and a write between is not counted twice (#1063)");
+		}
 
 		// The ends rule from a value's first window that is no common beginning (the owner's decision of 24 November): a URL
 		// in a variable hides no other link, and leaves an approval with a URL answerable, while the value itself, whole or
