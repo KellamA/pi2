@@ -248,6 +248,13 @@ final class TestMac: @unchecked Sendable {
         state.withLock { $0.current }.flatMap { session in engines.withLock { $0[session] } }?.sentCount ?? 0
     }
 
+    /// How many acks of the session's lines the Mac has taken, of the session it attached last.
+    var ackCount: Int {
+        let session = state.withLock { $0.current }
+        guard let session, let end = engines.withLock({ $0[session] }) else { return 0 }
+        return end.ackCount
+    }
+
     func sendEvent(_ line: String) {
         let end = state.withLock { $0.current }.flatMap { session in engines.withLock { $0[session] } }
         end?.send(Data(line.utf8))
@@ -545,7 +552,7 @@ final class EngineEnd: @unchecked Sendable {
     /// new ones are sealed in order. `sent` counts every line the session sent, and `acked` the last of them the phone
     /// acknowledged on its present channel, which a resume sends on from, as pi² Remote's session does
     /// (`PhoneConnection.swift`, `acknowledged`, `resume`): a phone's ack prunes the lines it has had.
-    private let state = Mutex<(channel: MacChannel?, lines: [(index: UInt64, line: Data)], sent: UInt64, acked: UInt64)>((nil, [], 0, 0))
+    private let state = Mutex<(channel: MacChannel?, lines: [(index: UInt64, line: Data)], sent: UInt64, acked: UInt64, acks: Int)>((nil, [], 0, 0, 0))
     @MainActor private var replay: ReplayTransport?
 
     init(session: SessionID, mac: TestMac) {
@@ -577,12 +584,16 @@ final class EngineEnd: @unchecked Sendable {
 
     var sentCount: Int { state.withLock { Int($0.sent) } }
 
+    /// How many of the phone's acks the session took: what prunes its lines, as pi² Remote's session does.
+    var ackCount: Int { state.withLock { $0.acks } }
+
     /// The phone's ack on `channel`, as pi² Remote's session takes it: only from the session's own channel, and up to
     /// what it sent, the lines it names dropped from the buffer.
     func acknowledged(_ count: UInt64, on channel: MacChannel) {
         state.withLock { state in
             guard state.channel === channel, count <= state.sent, count > state.acked else { return }
             state.acked = count
+            state.acks += 1
             state.lines.removeAll { $0.index <= count }
         }
     }

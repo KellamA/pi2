@@ -749,6 +749,10 @@ struct ConnectionTests {
         #expect(try Self.presenceSignedOncePerChannel(paired) == nil)
     }
 
+    /// No address of the Mac's is known: nothing to move to, and the session goes on over the relay path, with no
+    /// session ended, the relay's channel the only one attached — and the phone acknowledging as usual between the
+    /// rounds, since pi² Remote prunes its session's lines by what it acknowledges and ends a session whose lines it no
+    /// longer holds when its channel drops, rather than resuming it (5.8).
     @Test func withNoAddressTheSessionStaysOnTheRelay() async throws {
         let paired = try await Self.paired()
         defer { paired.mac.stop() }
@@ -760,13 +764,20 @@ struct ConnectionTests {
         record.relay = "wss://relay.example.dev/v1"
         let connection = try RemoteConnection(
             record: record, keys: try #require(try paired.keys.keys()), keyStore: paired.keys, store: paired.store, routes: routes)
-        connection.moveAgain = .milliseconds(100)
+        // Rounds with nothing to try end at once, so a short pause is many of them: a phone away from home, where every
+        // round is one of these, and the acks that must still go between them.
+        connection.moveAgain = .milliseconds(200)
         let app = AppSession()
         app.start(connection.transport(), as: .connecting)
         connection.start()
         defer { connection.stop() }
         #expect(await Wait.until { connection.connection == .connected(.relay, relayReachable: true) }, "\(connection.connection)")
         #expect(await Wait.until { !app.engine.projects.isEmpty })
+        // The Mac takes an ack of the session's lines while the mover pauses between rounds, and another: a hold that
+        // spanned the pauses would let it have none.
+        #expect(
+            await Wait.until(15) { paired.mac.ackCount >= 2 },
+            "the phone goes on acknowledging between rounds: \(paired.mac.ackCount) ack(s) of the session's lines")
         try await Task.sleep(for: .seconds(1))
         #expect(connection.connection == .connected(.relay, relayReachable: true), "no address to move to: it goes on over the relay")
         #expect(paired.mac.state.withLock { [$0.attachedCount, $0.sessionEnds] as [Int] } == [1, 0])

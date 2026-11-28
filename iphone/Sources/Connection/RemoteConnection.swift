@@ -436,12 +436,20 @@ final class RemoteConnection {
         guard let session, let transport = current else { return }
         while !Task.isCancelled, self.channel === from {
             // Nothing this channel receives is acknowledged while the round runs (5.8): the count the resume names is
-            // read in it, and the Mac must not have pruned past that count when it resumes. Cleared at the end of every
-            // round, moved, refused or unavailable, and once more when the mover is cancelled and returns.
+            // read in it, and the Mac must not have pruned past that count when it resumes.
             heldAcks = from
-            defer { if heldAcks === from { heldAcks = nil } }
             let paths = Paths(mac: mac, keys: keys, routes: routes, build: build, now: now)
             let outcome = await paths.move(session: session) { [weak self] in self?.current?.received ?? 0 }
+            // The round ends the moment its outcome is known — moved, refused or unavailable, or cancelled with it — and
+            // the hold must end there too, never across the pause before the next round: a phone away from home has no
+            // address that answers, so round after round would otherwise acknowledge nothing at all, and the Mac, which
+            // prunes its buffer by these acks alone, would let its oldest lines go past what it keeps: the next drop
+            // would end the session instead of resuming it (5.8). What the round held goes now, if it was due, unless
+            // the session moves, whose own channel acks it from the count it has.
+            if heldAcks === from {
+                heldAcks = nil
+                if case .moved = outcome {} else { ack(force: true) }
+            }
             guard !Task.isCancelled, self.channel === from else {
                 // The channel it was for ended while the address was tried: the session goes on from the next attempt.
                 if case let .moved(channel, _, _) = outcome { channel.drop() }
