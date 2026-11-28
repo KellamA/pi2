@@ -4,6 +4,7 @@ import Foundation
 import Observation
 import os
 import PiModels
+import RemoteKit
 
 /// What pi² shows of the Mac outside its own screens, kept in step with the one session (docs/iphone-app.md, "The
 /// widgets", "The extensions", "Pushes", "The Live Activity"; #901): the widgets' file, and where a tap on a widget
@@ -42,6 +43,8 @@ final class PhoneSurfaces {
     @ObservationIgnored private let takeAway: @MainActor (Set<String>) async -> Void
     /// Makes the app's notification delegate and categories current again, when the demo (which sets its own) is left.
     @ObservationIgnored private let notificationsBack: @MainActor () -> Void
+    /// Answers a notification's button, once its card is open (`PushActions`); a tap answers nothing.
+    @ObservationIgnored private let answer: @MainActor (PushResponse) async -> Void
     /// The service extension's file, wiped when the pairing ends: nil without the app group (#682).
     @ObservationIgnored private let pushInbox: PushInbox?
     /// The needs the Mac listed when last connected, to tell which went.
@@ -70,12 +73,14 @@ final class PhoneSurfaces {
         pushInbox: PushInbox? = nil,
         takeAway: @escaping @MainActor (Set<String>) async -> Void = { _ in },
         notificationsBack: @escaping @MainActor () -> Void = {},
+        answer: @escaping @MainActor (PushResponse) async -> Void = { _ in },
         activityControl: any ProjectActivityControl = SystemProjectActivities(),
         activitiesFile: URL? = ProjectActivityFollowing.standardFile
     ) {
         self.pushInbox = pushInbox
         self.takeAway = takeAway
         self.notificationsBack = notificationsBack
+        self.answer = answer
         self.session = session
         self.widgets = widgets
         self.share = share
@@ -111,7 +116,20 @@ final class PhoneSurfaces {
             },
             pushInbox: PushInbox.shared,
             takeAway: { needs in await PushRemoval.takeAway(needs: needs) },
-            notificationsBack: { AppNotifications.shared.install() }
+            notificationsBack: { AppNotifications.shared.install() },
+            answer: { [weak link] response in
+                guard let link else { return }
+                await PushActions.run(
+                    response, session: link.session,
+                    isOpen: { [weak link] in
+                        // A tap is answered only under the session Face ID opened (4.5); with no Mac paired there
+                        // is nothing to answer, and the demo asks no Face ID.
+                        guard let link else { return false }
+                        return !link.paired || link.keyring.session.state == .open
+                    },
+                    outbox: link.outbox, mailbox: PushMailbox.forLink(link),
+                    takeAway: { needs in await PushRemoval.takeAway(needs: needs) })
+            }
         )
     }
 
@@ -221,9 +239,11 @@ final class PhoneSurfaces {
 
     // MARK: - Notifications (#690)
 
-    /// A notification's tap or button: its card's screen, once Face ID has opened the session.
+    /// A notification's tap or button: its card's screen, once Face ID has opened the session; a button then answers
+    /// once the card is shown (P22, `PushActions`), with no further tap.
     func pushTapped(_ response: PushResponse) {
         pendingRoute = response.route
+        Task { await answer(response) }
     }
 
     /// A need the Mac listed and lists no more (answered here, on the Mac, or withdrawn) takes its notifications away.
@@ -300,6 +320,28 @@ final class PhoneSurfaces {
         if let link = WidgetsLink(url) { return link.route }
         if let link = ProjectActivityLink(url) { return .project(link.projectID, tab: .now) }
         return nil
+    }
+}
+
+extension PushMailbox {
+    /// The app's own mailbox courier, from the pairing and keys `link` holds, putting through its connection's relay
+    /// path (#691): nil's ends when there is nothing to put through — not paired, or no connection this session.
+    @MainActor
+    static func forLink(_ link: PhoneLink) -> PushMailbox {
+        PushMailbox(
+            ends: { [weak link] in
+                guard let link, let record = link.record, let mac = try? record.mac(),
+                      let recordKey = try? link.keyring.keys.recordKey(), let deviceKey = try? link.keyring.keys.deviceKey()
+                else { return nil }
+                return Ends(
+                    pairing: mac.pairing, device: mac.device, macRecordKey: mac.recordKey, recordKey: recordKey,
+                    deviceKey: deviceKey, presence: link.keyring.session)
+            },
+            put: { [weak link] item, id, presence in
+                guard let link,
+                      let answer = await link.connection?.putInMailbox(item, id: id, presence: presence, within: PushActions.relayLimit),
+                      answer else { throw RemoteKitError("mailbox", PushMailbox.unreachable) }
+            })
     }
 }
 

@@ -13,6 +13,9 @@ final class DemoMode {
 
     /// The demo's transport while the demo is on.
     private(set) var transport: DemoTransport?
+    /// The session the demo is on, for a notification button's answer (`PushActions`): the demo's own engine, whose
+    /// script answers what a card's buttons send.
+    private(set) weak var session: AppSession?
     /// A screen a notification's button asked for, which the Demo bar opens and clears.
     var asked: Route?
 
@@ -25,6 +28,7 @@ final class DemoMode {
         }
         shared.transport?.close()
         shared.transport = transport
+        shared.session = session
         session.macName = DemoTransport.macName
         DemoNotifications.shared.install()
         session.start(transport, as: .demo)
@@ -51,6 +55,7 @@ final class DemoMode {
     static func leave(_ session: AppSession) {
         shared.transport?.close()
         shared.transport = nil
+        shared.session = nil
         shared.asked = nil
         session.engine.forgetConversations()
         session.macName = nil

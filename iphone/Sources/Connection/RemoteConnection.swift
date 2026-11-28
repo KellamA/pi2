@@ -139,6 +139,27 @@ final class RemoteConnection {
         start()
     }
 
+    /// Puts a sealed item in the Mac's mailbox through the relay (docs/iphone.md 5.3), waiting up to `within` for the
+    /// relay connection to be ready, as a notification action's answer goes while the Mac is away (#691; the Outbox's
+    /// own relay courier is #692's). Nil when there is no relay path to put it through, or it did not come ready;
+    /// false when the relay would not take it; true when it is in the mailbox. The relay stores an item whether the
+    /// Mac is connected or not, and the engine takes it only once, by its nonce (4.3).
+    func putInMailbox(_ item: Data, id: ItemID, presence: Bool, within: Duration) async -> Bool? {
+        guard let relay, relay.status.stopped == nil else { return nil }
+        let deadline = ContinuousClock.now + within
+        while !relay.status.ready {
+            guard ContinuousClock.now < deadline else { return nil }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        do {
+            switch try await relay.client.put(item, id: id, to: .mac, presence: presence) {
+            case .stored, .alreadyThere: return true
+            }
+        } catch {
+            return false
+        }
+    }
+
     // MARK: - From the transport
 
     func send(line: Data, from transport: ChannelTransport) {
