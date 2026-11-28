@@ -50,6 +50,9 @@ final class RemoteConnection {
     /// The session moving to another path (5.8): the channel it is on, the channel it was resumed on, and how many of
     /// that channel's first lines it had already — the lines in flight at the moment of the move, which come twice.
     @ObservationIgnored private var move: (from: OpenChannel, to: OpenChannel, skip: Int)?
+    /// The channel a move from is being made on (5.8): its acks are held until the Mac has resumed elsewhere or the
+    /// round has ended, so that nothing it prunes its buffer by lies above the count the resume names.
+    @ObservationIgnored private var heldAcks: OpenChannel?
     @ObservationIgnored private var current: ChannelTransport?
     @ObservationIgnored private var session: SessionID?
     @ObservationIgnored private var lastSeen: Date?
@@ -432,6 +435,11 @@ final class RemoteConnection {
     private func moveOff(_ from: OpenChannel) async {
         guard let session, let transport = current else { return }
         while !Task.isCancelled, self.channel === from {
+            // Nothing this channel receives is acknowledged while the round runs (5.8): the count the resume names is
+            // read in it, and the Mac must not have pruned past that count when it resumes. Cleared at the end of every
+            // round, moved, refused or unavailable, and once more when the mover is cancelled and returns.
+            heldAcks = from
+            defer { if heldAcks === from { heldAcks = nil } }
             let paths = Paths(mac: mac, keys: keys, routes: routes, build: build, now: now)
             let outcome = await paths.move(session: session) { [weak self] in self?.current?.received ?? 0 }
             guard !Task.isCancelled, self.channel === from else {
@@ -481,6 +489,11 @@ final class RemoteConnection {
 
     private func ack(force: Bool) {
         guard let channel, let current, current.received > lastAcked else { return }
+        // A move from this channel is in flight: nothing is acknowledged on it until the Mac has resumed elsewhere or
+        // the round has ended (5.8). The count a resume names is read during the round, and pi² Remote prunes its
+        // buffer by every ack it takes: an ack above that count would make it send the session's lines again from
+        // above it, and the phone, dropping the lines in flight by their count, would drop lines it never had.
+        guard heldAcks !== channel else { return }
         lastAcked = current.received
         try? channel.sendAck(current.received)
     }
